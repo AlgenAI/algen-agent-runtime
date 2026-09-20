@@ -23,6 +23,7 @@ from algen_agent_runtime.persistence.postgres import (
     PostgresDatabase,
     PostgresRunStore,
 )
+from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -33,6 +34,15 @@ from algen_agent_runtime.tools.contracts import (
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import RunRequest, RunState, RunStatus, utc_now
+
+
+def test_safe_error_exposes_only_runtime_optional_dependency_guidance() -> None:
+    assert AgentRuntime._safe_error(ImportError("install algen-agent-runtime[pgvector]")) == (
+        "install algen-agent-runtime[pgvector]"
+    )
+    assert AgentRuntime._safe_error(ImportError("No module named '/private/path'")) == (
+        "Internal error (ImportError)"
+    )
 
 
 def test_postgres_backends_require_secret_reference() -> None:

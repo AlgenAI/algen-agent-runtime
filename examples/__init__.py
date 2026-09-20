@@ -5,23 +5,23 @@ Portfolio tiers
 Tier 1 — Quickstarts (prefix: quickstart_)
     quickstart_local_chat      Local Ollama agent; no cloud credentials required
     quickstart_rag             Retrieval-augmented generation with citation verification
-    quickstart_cloud_chat      (placeholder) Smallest hosted-provider path
-    quickstart_tool            (placeholder) Typed read-only tool before introducing writes
-    quickstart_approval        (placeholder) Approval pause, decision, resume, and rejection
+    quickstart_cloud_chat      Smallest hosted-provider path
+    quickstart_tool            Typed read-only workflow resource
+    quickstart_approval        Human checkpoint, resume, and apply-or-abort
 
 Tier 2 — Focused patterns (prefix: pattern_)
     pattern_provider_fallback      Multi-provider fallback with routing evidence
     pattern_governed_research      Evidence-oriented research with citations (WIP)
     pattern_approval_workflow      Approval-gated CRM workflow (WIP)
     pattern_text_to_sql            Read-only Text-to-SQL; advanced/ adds pgvector schema retrieval
-    pattern_langgraph_governance   (placeholder) LangGraph wrapped by Traccia governance
-    pattern_multi_agent_fanout     (placeholder) Two-agent sequence and parallel fan-out
-    pattern_evaluation_gate        (placeholder) Evaluation fixtures and promotion gate
+    pattern_langgraph_governance   Graph execution through the Runtime adapter
+    pattern_multi_agent_fanout     Bounded dynamic agent fan-out and join
+    pattern_evaluation_gate        Evaluation fixtures and promotion gate
 
 Tier 3 — Enterprise reference applications (prefix: reference_)
-    reference_customer_support         (placeholder) Customer support case resolution
-    reference_incident_response        (placeholder) IT incident triage and remediation
-    reference_invoice_exceptions       (placeholder) Accounts-payable invoice exception handling
+    reference_customer_support         Customer support case resolution
+    reference_incident_response        IT incident triage and remediation
+    reference_invoice_exceptions       Accounts-payable invoice exception handling
 
 Case studies (prefix: case_study_)
     case_study_responsible_hiring      Responsible-AI hiring reference (formerly hiring_agent)

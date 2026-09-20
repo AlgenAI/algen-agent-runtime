@@ -1,18 +1,14 @@
 id: pattern_approval_workflow
 display_name: "Approval-Gated Workflow"
 tier: pattern
-status: wip
+status: runnable
 description: >
-  Demonstrates approval, clarification, cancellation, and resume in a CRM update workflow.
-  Not yet runnable — domain tools and native workflow execution are required.
+  Demonstrates proposal, bounded human clarification, resume, and idempotent synthetic CRM update.
 
 extras: []
 external_services: []
 
-secrets:
-  - name: DEEPSEEK_API_KEY
-    description: DeepSeek API key for the workflow agent
-    required: true
+secrets: []
 
 entry_points:
   cli: examples.pattern_approval_workflow.app
@@ -20,8 +16,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.pattern_approval_workflow.app"
-  test: "echo 'No tests yet — see README.md for implementation checklist.'"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 60
-deterministic_mock_support: false
+deterministic_mock_support: true

@@ -1,0 +1,36 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: langgraph-governed
+    version: 1.0.0
+    description: Configuration surface for the governed framework-adapter example
+    system_instructions: Framework execution is mediated by the configured Runtime adapter.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 2
+workflows:
+  langgraph-governance:
+    name: langgraph-governance
+    version: 1.0.0
+    description: Execute a graph through Runtime's LangGraph adapter and audit the normalized result
+    hook_provider: examples.pattern_langgraph_governance.hooks:create_hooks
+    nodes:
+      - id: graph
+        kind: handler
+        handler: framework.langgraph
+        output_key: graph_result
+        resources:
+          - {kind: service, name: langgraph, access: invoke, description: Runtime framework adapter}
+          - {kind: telemetry, name: governance-audit, access: observe, description: Framework run identity and status}
+    metadata: {pattern: framework-adapter, studio_importable: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

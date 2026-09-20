@@ -1,0 +1,76 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+retrieval:
+  synthetic-evidence:
+    type: memory
+    documents:
+      - {id: evidence, source: "synthetic://evidence", text: "Bounded evidence for the fan-out example."}
+
+agents:
+  - &base
+    name: fanout-planner
+    version: 1.0.0
+    description: Decomposes a request into bounded independent research tasks
+    system_instructions: Return only the supplied structured planning contract.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 3
+  - <<: *base
+    name: fanout-researcher
+    description: Processes one bounded research task
+  - <<: *base
+    name: fanout-editor
+    description: Synthesizes parallel findings into a final answer
+
+workflows:
+  multi-agent-fanout:
+    name: multi-agent-fanout
+    version: 1.0.0
+    description: Plan, bounded dynamic fan-out, join, and synthesis
+    hook_provider: examples.pattern_multi_agent_fanout.hooks:create_hooks
+    maximum_concurrency: 4
+    timeout_seconds: 60
+    nodes:
+      - id: plan
+        kind: agent
+        agent: fanout-planner
+        input_builder: fanout.plan
+        output_schema_hook: fanout.plan_schema
+        validator: fanout.plan_validator
+        max_repairs: 1
+        output_key: plan
+      - id: research
+        kind: map_agent
+        depends_on: [plan]
+        agent: fanout-researcher
+        input_builder: fanout.research
+        output_schema_hook: fanout.finding_schema
+        output_key: findings
+        map_from: plan.tasks
+        max_fan_out: 3
+        resources:
+          - {kind: retrieval, name: synthetic-evidence, access: read, description: Synthetic evidence corpus}
+      - id: evidence
+        kind: join
+        depends_on: [research]
+        output_key: evidence
+        join_strategy: json_array
+      - id: synthesize
+        kind: agent
+        depends_on: [evidence]
+        agent: fanout-editor
+        input_builder: fanout.synthesize
+        output_schema_hook: fanout.answer_schema
+        output_key: answer
+    metadata: {pattern: dynamic-fan-out, studio_importable: "true"}
+
+storage: &memory
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

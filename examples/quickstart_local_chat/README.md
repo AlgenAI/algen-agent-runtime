@@ -8,7 +8,7 @@ Run a conversational agent entirely on your machine using [Ollama](https://ollam
 
 | Requirement | Notes |
 |---|---|
-| Python 3.11+ | — |
+| Python 3.12+ | — |
 | [Ollama](https://ollama.com/download) running on `http://127.0.0.1:11434` | Default install |
 | `llama3.2` model pulled | `ollama pull llama3.2` |
 

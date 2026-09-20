@@ -1,0 +1,99 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - &base
+    name: incident-classifier
+    version: 1.0.0
+    description: Classifies a synthetic infrastructure alert
+    system_instructions: Return only the supplied structured incident contract.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 3
+  - <<: *base
+    name: incident-analyst
+    description: Analyzes bounded telemetry evidence
+  - <<: *base
+    name: incident-remediation-planner
+    description: Produces a human-reviewable remediation plan
+  - <<: *base
+    name: incident-report-writer
+    description: Produces the final incident report
+workflows:
+  incident-response:
+    name: incident-response
+    version: 1.0.0
+    description: Classify, collect telemetry in parallel, analyze, plan, checkpoint, and report
+    hook_provider: examples.reference_incident_response.application.workflow:create_hooks
+    maximum_concurrency: 4
+    nodes:
+      - id: classify
+        kind: agent
+        agent: incident-classifier
+        input_builder: incident.classify
+        output_schema_hook: incident.classification_schema
+        output_key: classification
+      - id: logs
+        kind: handler
+        depends_on: [classify]
+        handler: incident.logs
+        output_key: logs
+        resources:
+          - {kind: service, name: synthetic-logs, access: read, description: Synthetic log API}
+      - id: metrics
+        kind: handler
+        depends_on: [classify]
+        handler: incident.metrics
+        output_key: metrics
+        resources:
+          - {kind: service, name: synthetic-metrics, access: read, description: Synthetic metrics API}
+      - id: evidence
+        kind: join
+        depends_on: [logs, metrics]
+        output_key: evidence
+        join_strategy: json_array
+      - id: analyze
+        kind: agent
+        depends_on: [evidence]
+        agent: incident-analyst
+        input_builder: incident.analyze
+        output_schema_hook: incident.analysis_schema
+        output_key: analysis
+      - id: plan
+        kind: agent
+        depends_on: [analyze]
+        agent: incident-remediation-planner
+        input_builder: incident.plan
+        output_schema_hook: incident.plan_schema
+        output_key: plan
+        pause:
+          when: {source: plan.status, operator: equals, value: awaiting_approval}
+          question_from: plan.question
+          state_from: [classification, analysis, plan]
+          occurrences_from: clarifications
+          maximum_occurrences: 1
+      - id: execute
+        kind: handler
+        depends_on: [plan]
+        handler: incident.execute
+        output_key: execution
+        resources:
+          - {kind: service, name: synthetic-infrastructure, access: write, description: Synthetic remediation only}
+      - id: report
+        kind: agent
+        depends_on: [execute]
+        agent: incident-report-writer
+        input_builder: incident.report
+        output_schema_hook: incident.report_schema
+        output_key: report
+    metadata: {domain: incident-response, studio_importable: "true", synthetic_only: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

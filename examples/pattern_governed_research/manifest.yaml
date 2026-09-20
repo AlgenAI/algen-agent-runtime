@@ -1,18 +1,14 @@
 id: pattern_governed_research
 display_name: "Governed Research Agent"
 tier: pattern
-status: wip
+status: runnable
 description: >
-  Evidence-oriented research agent with citation verification. Not yet runnable —
-  requires a retrieval or HTTP tool to be registered before the agent can fetch evidence.
+  Evidence-oriented research workflow with bounded local retrieval and citation verification.
 
 extras: []
 external_services: []
 
-secrets:
-  - name: OPENAI_API_KEY
-    description: OpenAI API key for generation
-    required: true
+secrets: []
 
 entry_points:
   cli: examples.pattern_governed_research.app
@@ -20,8 +16,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.pattern_governed_research.app"
-  test: "echo 'No tests yet — see README.md for implementation checklist.'"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 30
-deterministic_mock_support: false
+deterministic_mock_support: true

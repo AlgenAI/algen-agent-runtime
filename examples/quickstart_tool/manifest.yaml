@@ -1,9 +1,9 @@
 id: quickstart_tool
 display_name: "Tool Quickstart"
 tier: quickstart
-status: placeholder
+status: runnable
 description: >
-  Introduces one typed read-only tool before showing write-side-effect tools. Not yet implemented.
+  Introduces one typed read-only capability as a Runtime workflow resource.
 
 extras: []
 external_services: []
@@ -15,8 +15,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.quickstart_tool.app"
-  test: "python -m pytest examples/quickstart_tool/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 10
-deterministic_mock_support: false
+deterministic_mock_support: true

@@ -99,9 +99,14 @@ path = "src/algen_agent_runtime/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/algen_agent_runtime"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"examples" = "examples"
+
 [tool.hatch.build.targets.sdist]
 include = [
+  "/.agents/skills",
   "/src/algen_agent_runtime",
+  "/examples",
   "/CHANGELOG.md",
   "/LICENSE",
   "/NOTICE",

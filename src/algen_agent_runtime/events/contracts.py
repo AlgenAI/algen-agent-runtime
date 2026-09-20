@@ -15,9 +15,12 @@ EventType = Literal[
     "model.started",
     "model.delta",
     "model.completed",
+    "model.retrying",
     "tool.started",
     "tool.completed",
     "verification.completed",
+    "policy.evaluated",
+    "memory.written",
     "clarification.required",
     "approval.required",
     "run.completed",
@@ -40,6 +43,8 @@ class RunEvent(BaseModel):
     parent_run_id: str | None = None
     workflow_run_id: str | None = None
     step_id: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
     sequence: int = Field(ge=1)
     timestamp: datetime = Field(default_factory=utc_now)
     data: dict[str, Any] = Field(default_factory=dict)

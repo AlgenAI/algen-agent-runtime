@@ -1,0 +1,6 @@
+interface:
+  display_name: "Algen Runtime Extension"
+  short_description: "Add providers, stores, tools, and adapters"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $algen-runtime-extension to add this integration behind Runtime contracts and deterministic tests."
+

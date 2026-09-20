@@ -77,6 +77,18 @@ class AnalyticalGraphEngine:
         self._checkpoint_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._concurrency_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+    def register_handler(
+        self,
+        kind: AnalyticalNodeKind,
+        handler: AnalyticalNodeHandler,
+    ) -> None:
+        """Register an application-owned node handler on the composed graph engine."""
+        self._registry.register(kind, handler)
+
+    def handler_kinds(self) -> tuple[AnalyticalNodeKind, ...]:
+        """Return node kinds available in this composed engine."""
+        return self._registry.kinds()
+
     async def run(
         self, graph: AnalyticalGraph, context: GraphExecutionContext
     ) -> AnalyticalGraphState:

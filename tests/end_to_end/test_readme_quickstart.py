@@ -12,9 +12,7 @@ from algen_agent_runtime.types.contracts import RunRequest
 async def test_readme_offline_quickstart() -> None:
     settings = AppSettings.model_validate(
         {
-            "providers": {
-                "mock": {"type": "mock", "default_model": "deterministic"}
-            },
+            "providers": {"mock": {"type": "mock", "default_model": "deterministic"}},
             "agents": [
                 {
                     "name": "hello",

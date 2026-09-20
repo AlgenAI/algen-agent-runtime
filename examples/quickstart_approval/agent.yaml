@@ -1,0 +1,48 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: approval-proposer
+    version: 1.0.0
+    description: Creates a bounded proposal for human review
+    system_instructions: Return only the supplied proposal contract.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 3
+workflows:
+  approval-quickstart:
+    name: approval-quickstart
+    version: 1.0.0
+    description: Proposal, human checkpoint, and deterministic apply-or-abort
+    hook_provider: examples.quickstart_approval.hooks:create_hooks
+    nodes:
+      - id: propose
+        kind: agent
+        agent: approval-proposer
+        input_builder: approval.propose
+        output_schema_hook: approval.proposal_schema
+        output_key: proposal
+        pause:
+          when: {source: proposal.status, operator: equals, value: needs_approval}
+          question_from: proposal.question
+          state_from: [proposal]
+          occurrences_from: clarifications
+          maximum_occurrences: 1
+      - id: decide
+        kind: handler
+        depends_on: [propose]
+        handler: approval.apply
+        output_key: result
+        resources:
+          - {kind: tool, name: synthetic.change, access: write, description: Idempotent synthetic write}
+    metadata: {pattern: human-checkpoint, studio_importable: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

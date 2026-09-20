@@ -1,1 +1,1 @@
-"""Pattern: LangGraph application wrapped by Traccia governance (not yet implemented)."""
+"""Pattern: graph application executed through Runtime's LangGraph adapter."""

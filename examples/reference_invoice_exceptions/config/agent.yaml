@@ -1,0 +1,88 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - &base
+    name: invoice-extractor
+    version: 1.0.0
+    description: Extracts a bounded invoice contract after document screening
+    system_instructions: Return only the supplied structured invoice contract.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 3
+  - <<: *base
+    name: invoice-policy-router
+    description: Routes reconciled invoice evidence according to payment policy
+workflows:
+  invoice-exception-review:
+    name: invoice-exception-review
+    version: 1.0.0
+    description: Screen, extract, parallel reconcile, route, checkpoint, and recommend
+    hook_provider: examples.reference_invoice_exceptions.application.workflow:create_hooks
+    maximum_concurrency: 4
+    nodes:
+      - id: screen
+        kind: handler
+        handler: invoice.screen
+        output_key: document_security
+        resources:
+          - {kind: service, name: document-security, access: invoke, description: Hostile-document screening}
+      - id: extract
+        kind: agent
+        depends_on: [screen]
+        agent: invoice-extractor
+        input_builder: invoice.extract
+        output_schema_hook: invoice.invoice_schema
+        validator: invoice.extract_validator
+        max_repairs: 1
+        output_key: invoice
+      - id: po-match
+        kind: handler
+        depends_on: [extract]
+        handler: invoice.po_match
+        output_key: po_match
+        resources:
+          - {kind: service, name: synthetic-erp, access: read, description: Synthetic purchase orders}
+      - id: duplicate-check
+        kind: handler
+        depends_on: [extract]
+        handler: invoice.duplicate
+        output_key: duplicate_check
+        resources:
+          - {kind: storage, name: invoice-ledger, access: read, description: Synthetic invoice ledger}
+      - id: evidence
+        kind: join
+        depends_on: [po-match, duplicate-check]
+        output_key: reconciliation
+        join_strategy: json_array
+      - id: route
+        kind: agent
+        depends_on: [evidence]
+        agent: invoice-policy-router
+        input_builder: invoice.route
+        output_schema_hook: invoice.route_schema
+        output_key: decision
+        pause:
+          when: {source: decision.status, operator: equals, value: needs_review}
+          question_from: decision.question
+          state_from: [invoice, reconciliation, decision]
+          occurrences_from: clarifications
+          maximum_occurrences: 1
+      - id: recommend
+        kind: handler
+        depends_on: [route]
+        handler: invoice.recommend
+        output_key: recommendation
+        resources:
+          - {kind: service, name: synthetic-erp, access: write, description: Recommendation record only; no payment}
+    metadata: {domain: accounts-payable, studio_importable: "true", payment_execution: "disabled"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

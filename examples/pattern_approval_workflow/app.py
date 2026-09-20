@@ -1,35 +1,23 @@
 from __future__ import annotations
 
-# TODO: Implement this entry point once domain tools and native workflow execution are available.
-#
-# The workflow agent requires:
-#   1. CRM domain tools (crm.lookup, crm.update) registered via container.tools.register().
-#   2. Native runtime workflow execution of the AgentDefinition.workflow graph
-#      (or an explicit workflow.py implementation using a workflow SDK).
-#
-# See agent.yaml and README.md for the full implementation checklist.
-#
-# Placeholder structure (not yet runnable):
-#
-#   async def run_workflow(case_id: str) -> str:
-#       settings = load_settings((Path(__file__).parent / "agent.yaml",))
-#       container = build_container(settings)
-#       # container.tools.register(create_crm_lookup_tool())
-#       # container.tools.register(create_crm_update_tool())
-#       try:
-#           result = await AlgenAgentRuntimeClient(container.runtime).run(
-#               RunRequest(agent="pattern-approval-workflow", input=case_id, ...)
-#           )
-#           return result.output or ""
-#       finally:
-#           container.close()
+import argparse
+import asyncio
+from pathlib import Path
+
+from examples.workflow_cli import print_result, run_example
 
 
 def main() -> None:
-    raise NotImplementedError(
-        "pattern_approval_workflow is not yet runnable. "
-        "See agent.yaml and README.md for the implementation checklist."
+    parser = argparse.ArgumentParser(description="Run the approval-gated synthetic CRM workflow")
+    parser.add_argument("change", nargs="?", default="Enable account credit for C-100")
+    values = asyncio.run(
+        run_example(
+            Path(__file__).with_name("agent.yaml"),
+            "approval-gated-crm",
+            parser.parse_args().change,
+        )
     )
+    print_result(values)
 
 
 if __name__ == "__main__":

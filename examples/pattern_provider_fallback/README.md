@@ -8,7 +8,7 @@ Demonstrates provider-neutral multi-provider fallback with visible routing decis
 
 | Requirement | Notes |
 |---|---|
-| Python 3.11+ | — |
+| Python 3.12+ | — |
 | At least one provider credential | See secrets below |
 
 Set the credentials you have:
@@ -38,13 +38,16 @@ python -m examples.pattern_provider_fallback.app "What year did the first moon l
 The first moon landing occurred in 1969, when Apollo 11 landed on the lunar surface on July 20th.
 ```
 
-## TODO — Deterministic failure scenario
+## Deterministic failure scenario
 
-The current configuration does not simulate a primary-provider failure. To demonstrate routing in CI:
+The CLI includes a credential-free planned primary failure followed by an in-memory fallback:
 
-1. Configure the primary provider with an invalid endpoint or inject a mock error.
-2. Assert that the `model_used` field in the result matches the expected fallback.
-3. Show the routing decision in telemetry spans.
+```bash
+python -m examples.pattern_provider_fallback.app --deterministic
+```
+
+This uses the real `ModelRouter` and prints `mock/deterministic` as the selected route. The default
+mode continues to demonstrate the configured Anthropic → OpenAI → Ollama chain.
 
 ## Test
 
@@ -58,6 +61,5 @@ No persistent state. Nothing to reset.
 
 ## Production gaps
 
-- No deterministic mock mode: running without paid credentials may fall through to Ollama silently.
 - Cost and latency budgets are not declared per-provider.
 - Provider selection criteria (cost tier, quality tier, latency) are not exposed in this minimal configuration.

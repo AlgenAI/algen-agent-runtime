@@ -36,6 +36,19 @@ def _engine() -> AnalyticalGraphEngine:
     return AnalyticalGraphEngine(registry, InMemoryAnalyticalGraphStore())
 
 
+def test_engine_exposes_application_handler_registration() -> None:
+    registry = AnalyticalNodeRegistry()
+    engine = AnalyticalGraphEngine(registry, InMemoryAnalyticalGraphStore())
+
+    async def semantic_query(node, inputs, context):  # type: ignore[no-untyped-def]
+        del inputs, context
+        return AnalyticalResult(node_id=node.id, value=[])
+
+    engine.register_handler(AnalyticalNodeKind.SEMANTIC_QUERY, semantic_query)
+
+    assert AnalyticalNodeKind.SEMANTIC_QUERY in engine.handler_kinds()
+
+
 async def test_graph_keeps_query_results_separate_and_joins_by_reference() -> None:
     graph = AnalyticalGraph(
         name="comparison",

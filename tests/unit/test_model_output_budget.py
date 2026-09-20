@@ -70,6 +70,13 @@ async def test_runtime_retries_and_charges_truncated_structured_completion() -> 
     assert result.execution_summary.retries == 1
     assert result.execution_summary.usage.total_tokens >= 611
     assert provider.requests[1].max_output_tokens == 16_384
+    history = await runtime.events.history(result.run_id)
+    retry_event = next(event for event in history if event.type == "model.retrying")
+    assert retry_event.data["attempt"] == 1
+    assert retry_event.data["next_attempt"] == 2
+    assert retry_event.data["error_kind"] == "invalid_response"
+    assert retry_event.data["provider"] == "mock"
+    assert retry_event.data["model"] == "deterministic"
 
 
 async def test_runtime_increases_small_output_cap_after_truncation() -> None:

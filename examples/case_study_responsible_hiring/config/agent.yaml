@@ -242,3 +242,61 @@ agents:
     budget: *budget
     max_steps: 4
     model_allowlist: [openai/gpt-4o-2024-11-20]
+
+workflows:
+  responsible-hiring-review:
+    name: responsible-hiring-review
+    version: 1.0.0
+    description: Security gate, parallel evidence reviews, bias verification, and human-reviewable communication
+    hook_provider: examples.case_study_responsible_hiring.application.workflow_hooks:create_hooks
+    maximum_concurrency: 4
+    timeout_seconds: 300
+    nodes:
+      - id: gatekeeper
+        kind: agent
+        agent: hiring-gatekeeper
+        input_builder: hiring.gate_input
+        output_schema_hook: hiring.gate_schema
+        output_key: gate
+        resources:
+          - {kind: service, name: document-security, access: read, description: Deterministic document findings}
+      - id: fraud-review
+        kind: agent
+        depends_on: [gatekeeper]
+        agent: hiring-fraud-reviewer
+        input_builder: hiring.fraud_input
+        output_schema_hook: hiring.fraud_schema
+        output_key: fraud
+        run_if: {source: gate.safe_to_continue, operator: truthy}
+        resources:
+          - {kind: retrieval, name: resume_templates, access: read, description: Synthetic similarity corpus}
+      - id: screening
+        kind: agent
+        depends_on: [gatekeeper]
+        agent: hiring-screening
+        input_builder: hiring.screen_input
+        output_schema_hook: hiring.screen_schema
+        output_key: screening
+        run_if: {source: gate.safe_to_continue, operator: truthy}
+        resources:
+          - {kind: retrieval, name: job_requirements, access: read, description: Versioned job evidence}
+      - id: bias-review
+        kind: agent
+        depends_on: [fraud-review, screening]
+        agent: hiring-bias-observer
+        input_builder: hiring.bias_input
+        output_schema_hook: hiring.bias_schema
+        output_key: bias
+      - id: communication
+        kind: agent
+        depends_on: [bias-review]
+        agent: hiring-communications
+        input_builder: hiring.communication_input
+        output_schema_hook: hiring.communication_schema
+        output_key: communication
+      - id: result
+        kind: join
+        depends_on: [gatekeeper, communication]
+        output_key: assessment
+        join_strategy: json_array
+    metadata: {domain: responsible-hiring, human_decision_owner: "true", studio_importable: "true"}

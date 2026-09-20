@@ -3,7 +3,7 @@ display_name: "Provider Fallback and Budget Routing"
 tier: pattern
 description: >
   Shows provider-neutral multi-provider fallback (Anthropic → OpenAI → Ollama).
-  TODO: Add a deterministic primary-provider failure scenario and visible routing/cost trace.
+  Includes a credential-free planned primary failure and visible selected route.
 
 extras: []
 external_services: []
@@ -22,8 +22,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.pattern_provider_fallback.app"
-  test: "python -m pytest examples/pattern_provider_fallback/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 15
-deterministic_mock_support: false
+deterministic_mock_support: true

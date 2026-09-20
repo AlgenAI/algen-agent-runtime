@@ -1,21 +1,11 @@
-# quickstart_cloud_chat
+# Cloud chat quickstart
 
-**Tier:** Quickstart | **Status:** 🚧 Placeholder — not yet implemented
+The smallest hosted-provider example: one agent, an explicit model allowlist, guardrails, verification,
+and budgets. Set `OPENAI_API_KEY`, then run:
 
-> [!NOTE]
-> This example will be the smallest hosted-provider path: one agent, one cloud API key, one command.
+```bash
+python -m examples.quickstart_cloud_chat.app "Explain governed agents in one sentence."
+```
 
-## Planned scope
-
-- Single agent using a hosted provider (OpenAI or Anthropic).
-- No tools, no retrieval — pure conversational inference.
-- Runnable in under five minutes from a clean install.
-- One smoke test that does not require credentials (mock/stub mode).
-
-## Implementation checklist
-
-- [ ] Create `agent.yaml` with a minimal cloud-provider agent definition.
-- [ ] Create `app.py` as a thin CLI entry point.
-- [ ] Create `manifest.yaml`.
-- [ ] Create `tests/test_smoke.py` with a deterministic mock mode.
-- [ ] Update this README with prerequisites, setup, run, test, and reset instructions.
+Import `agent.yaml` into Studio to inspect and run `cloud-chat`. This example makes a paid network
+request. It uses in-memory stores and is not a deployment template.

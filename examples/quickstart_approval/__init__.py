@@ -1,1 +1,1 @@
-"""Quickstart: approval pause, decision, resume, and rejection (not yet implemented)."""
+"""Quickstart: human checkpoint, resume, and apply-or-abort."""

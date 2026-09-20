@@ -51,6 +51,25 @@ Built-in handlers implement relationship-checked row joins, period deltas, allow
 ranking, structural verification, and composition. Applications register semantic-query, LLM, and
 model-call handlers because those require deployment-specific providers and policies.
 
+The container-owned engine exposes `register_handler(kind, handler)` for those application adapters.
+This keeps concurrency bounds, checkpoints, schemas, retries, result budgets, caching, and lineage in
+Runtime while leaving database drivers and domain policy in the application. Application query
+credentials can be declared without embedding a secret:
+
+```yaml
+query_sources:
+  analytics:
+    type: postgres
+    connection_url: env://ANALYTICS_QUERY_DSN
+    read_only: true
+    purpose: executive_analytics
+    authorization_tags: [analytics.read]
+```
+
+`query_sources` describes an application-owned governed backend; Runtime does not infer a schema or
+execute arbitrary SQL from this configuration. Register a `semantic_query` handler that applies the
+semantic compiler, query governance, and the deployment's read-only executor.
+
 `SemanticQueryGraphPlanner` lowers one or more `SemanticQueryTask` definitions into independently
 executable query nodes using `ProductionSemanticQueryCompiler`, then validates all application-owned
 comparison, calculation, ranking, method, verification, and composition dependencies as one DAG.

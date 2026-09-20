@@ -1,17 +1,14 @@
 id: reference_incident_response
 display_name: "IT Incident Triage and Remediation"
 tier: reference
-status: placeholder
+status: runnable
 description: >
   Multi-agent incident response: alert classification, evidence collection, analysis,
   remediation planning, and human-approved execution using a synthetic infrastructure API only.
 
 extras: []
 external_services: []
-secrets:
-  - name: OPENAI_API_KEY
-    description: Generation provider
-    required: true
+secrets: []
 
 entry_points:
   cli: examples.reference_incident_response.app
@@ -19,8 +16,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.reference_incident_response.app"
-  test: "python -m pytest examples/reference_incident_response/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'See README.md for reset instructions once implemented.'"
 
 expected_duration_seconds: 180
-deterministic_mock_support: false
+deterministic_mock_support: true

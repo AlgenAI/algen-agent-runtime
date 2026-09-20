@@ -14,6 +14,7 @@ from algen_agent_runtime.cache.contracts import CacheScope
 from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
+from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
 
 
 class StrictSettings(BaseModel):
@@ -298,6 +299,22 @@ class QueryGovernanceSettings(StrictSettings):
     audit_retention_days: int = Field(default=365, ge=1)
 
 
+class QuerySourceSettings(StrictSettings):
+    """Secret-safe configuration for an application-owned governed query backend."""
+
+    type: Literal["postgres"] = "postgres"
+    connection_url: str = Field(description="env:// reference to a read-only database DSN")
+    read_only: Literal[True] = True
+    purpose: str
+    authorization_tags: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_connection_reference(self) -> QuerySourceSettings:
+        if not self.connection_url.startswith("env://"):
+            raise ValueError("query source connection_url must be an env:// secret reference")
+        return self
+
+
 class DistributedExecutionSettings(StrictSettings):
     enabled: bool = False
     queue_backend: Literal["memory", "postgres"] = "memory"
@@ -308,6 +325,7 @@ class DistributedExecutionSettings(StrictSettings):
 class AppSettings(StrictSettings):
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     agents: tuple[AgentDefinition, ...] = ()
+    workflows: dict[str, WorkflowManifest] = Field(default_factory=dict)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     retrieval: dict[str, RetrievalSettings] = Field(default_factory=dict)
@@ -325,6 +343,7 @@ class AppSettings(StrictSettings):
         default_factory=AnalyticalExecutionSettings
     )
     query_governance: QueryGovernanceSettings = Field(default_factory=QueryGovernanceSettings)
+    query_sources: dict[str, QuerySourceSettings] = Field(default_factory=dict)
     distributed_execution: DistributedExecutionSettings = Field(
         default_factory=DistributedExecutionSettings
     )
@@ -349,6 +368,48 @@ class AppSettings(StrictSettings):
             raise ValueError(
                 "conversation follow-up generation requires its configured agent to be registered"
             )
+        agent_names = {agent.name for agent in self.agents}
+        for workflow_name, workflow in self.workflows.items():
+            if workflow_name != workflow.name:
+                raise ValueError(
+                    f"workflow registry key {workflow_name!r} must match manifest name "
+                    f"{workflow.name!r}"
+                )
+            missing_agents = {
+                node.agent
+                for node in workflow.nodes
+                if node.agent is not None and node.agent not in agent_names
+            }
+            if missing_agents:
+                raise ValueError(
+                    f"workflow {workflow_name!r} references unknown agents {sorted(missing_agents)}"
+                )
+            for node in workflow.nodes:
+                for resource in node.resources:
+                    if (
+                        resource.kind == WorkflowResourceKind.QUERY_SOURCE
+                        and resource.name not in self.query_sources
+                    ):
+                        raise ValueError(
+                            f"workflow node {node.id!r} references unknown query source "
+                            f"{resource.name!r}"
+                        )
+                    if (
+                        resource.kind == WorkflowResourceKind.RETRIEVAL
+                        and resource.name not in self.retrieval
+                    ):
+                        raise ValueError(
+                            f"workflow node {node.id!r} references unknown retrieval index "
+                            f"{resource.name!r}"
+                        )
+                    if (
+                        resource.kind == WorkflowResourceKind.CACHE
+                        and resource.name not in self.cache.policies
+                    ):
+                        raise ValueError(
+                            f"workflow node {node.id!r} references unknown cache policy "
+                            f"{resource.name!r}"
+                        )
         return self
 
 

@@ -1,21 +1,11 @@
-# quickstart_tool
+# Typed capability quickstart
 
-**Tier:** Quickstart | **Status:** 🚧 Placeholder — not yet implemented
+Demonstrates a Runtime workflow resource backed by a deterministic, read-only inventory handler:
 
-> [!NOTE]
-> This example will introduce one typed read-only tool before showing write-side-effect tools.
+```text
+lookup (handler/tool resource) -> present (agent)
+```
 
-## Planned scope
-
-- One agent with one typed read-only tool (e.g. a lookup or calculator).
-- Demonstrates `ToolDefinition` with Pydantic-derived schema, explicit permissions, `SideEffect.READ`, and `Idempotency.IDEMPOTENT`.
-- Runnable in under five minutes.
-- One smoke test without paid credentials.
-
-## Implementation checklist
-
-- [ ] Create `agent.yaml`.
-- [ ] Create `app.py` registering and invoking the tool.
-- [ ] Create `manifest.yaml`.
-- [ ] Create `tests/test_smoke.py`.
-- [ ] Update this README with setup/run/test/reset instructions and expected output.
+Run with `python -m examples.quickstart_tool.app`, or import this folder into Studio. No credentials or
+external services are required. The inventory is synthetic; replace only the domain handler when
+adapting the pattern.

@@ -141,6 +141,26 @@ agents:
       risk_tier: limited
     tags: [example, education, cerai, responsible-ai, openai]
 
+workflows:
+  teaching-assistant:
+    name: teaching-assistant
+    version: 1.0.0
+    description: Governed teaching response with retrieval, memory, policy, and typed learning tools
+    hook_provider: examples.case_study_teaching_assistant.application.workflow_hooks:create_hooks
+    nodes:
+      - id: tutor
+        kind: agent
+        agent: virtual-teaching-assistant
+        input_builder: teaching.question
+        output_key: answer
+        resources:
+          - {kind: retrieval, name: responsible-ai-course, access: read, description: Course evidence}
+          - {kind: memory, name: conversation, access: read_write, description: Redacted learner context}
+          - {kind: tool, name: teaching.build_study_plan, access: invoke, description: Typed study-plan tool}
+          - {kind: tool, name: teaching.get_case_evidence, access: invoke, description: Bounded case evidence}
+          - {kind: telemetry, name: traccia, access: observe, description: Optional policy-safe telemetry}
+    metadata: {domain: education, studio_importable: "true"}
+
 storage:
   run_store: memory
   memory_store: memory

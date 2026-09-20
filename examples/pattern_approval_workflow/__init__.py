@@ -1,1 +1,1 @@
-"""Pattern: approval-gated workflow automation agent (work in progress)."""
+"""Pattern: approval-gated synthetic workflow automation."""

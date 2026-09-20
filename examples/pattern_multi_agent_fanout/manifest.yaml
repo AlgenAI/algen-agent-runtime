@@ -1,10 +1,9 @@
 id: pattern_multi_agent_fanout
 display_name: "Multi-Agent Fan-Out"
 tier: pattern
-status: placeholder
+status: runnable
 description: >
-  Two-agent sequence and parallel fan-out pattern with correlation, failure policy, and resume.
-  Not yet implemented.
+  Planner, bounded dynamic agent fan-out, join, and synthesis using the Runtime DAG executor.
 
 extras: []
 external_services: []
@@ -16,8 +15,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.pattern_multi_agent_fanout.app"
-  test: "python -m pytest examples/pattern_multi_agent_fanout/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 30
-deterministic_mock_support: false
+deterministic_mock_support: true

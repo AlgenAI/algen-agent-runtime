@@ -1,1 +1,1 @@
-"""Reference application: customer support case resolution (not yet implemented)."""
+"""Reference application: synthetic customer support case resolution."""

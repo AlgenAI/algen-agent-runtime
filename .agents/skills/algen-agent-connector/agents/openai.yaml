@@ -1,0 +1,5 @@
+interface:
+  display_name: "Algen Agent Connector"
+  short_description: "Connect agents without bypassing governance"
+  brand_color: "#06B6D4"
+  default_prompt: "Use $algen-agent-connector to connect this agent to the requested systems safely."

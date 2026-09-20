@@ -1,10 +1,9 @@
 id: pattern_evaluation_gate
 display_name: "Evaluation and Promotion Gate"
 tier: pattern
-status: placeholder
+status: runnable
 description: >
-  Shows evaluation fixtures, acceptance thresholds, regression output, and a promotion decision gate.
-  Not yet implemented.
+  Shows golden fixtures, acceptance thresholds, structured failures, and a promotion decision gate.
 
 extras: []
 external_services: []
@@ -16,7 +15,7 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.pattern_evaluation_gate.app"
-  test: "python -m pytest examples/pattern_evaluation_gate/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 60

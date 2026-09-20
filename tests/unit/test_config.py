@@ -68,6 +68,35 @@ def test_cache_configuration_supports_scoped_policies() -> None:
     assert settings.cache.policies["query_results"].scope.value == "user"
 
 
+def test_query_sources_require_secret_references_and_remain_separate_from_storage() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "query_sources": {
+                "analytics": {
+                    "type": "postgres",
+                    "connection_url": "env://ANALYTICS_QUERY_DSN",
+                    "purpose": "executive_analytics",
+                    "authorization_tags": ["analytics.read"],
+                }
+            }
+        }
+    )
+    assert settings.query_sources["analytics"].read_only is True
+    assert settings.query_sources["analytics"].connection_url == "env://ANALYTICS_QUERY_DSN"
+    assert settings.storage.postgres_dsn is None
+    with pytest.raises(ValidationError, match="env://"):
+        AppSettings.model_validate(
+            {
+                "query_sources": {
+                    "analytics": {
+                        "connection_url": "postgresql://user:secret@localhost/db",
+                        "purpose": "analytics",
+                    }
+                }
+            }
+        )
+
+
 def test_redis_cache_requires_environment_secret_reference() -> None:
     with pytest.raises(ValidationError, match="requires redis_url"):
         AppSettings.model_validate({"cache": {"backend": "redis"}})

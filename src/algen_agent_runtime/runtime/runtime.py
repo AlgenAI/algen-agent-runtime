@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Any
@@ -134,9 +135,16 @@ class AgentRuntime:
 
     async def run(self, request: RunRequest) -> RunResult:
         state = await self.start(request)
-        task = self._tasks[state.id]
-        await task
-        current = await self._require_state(state.id, request.tenant_id)
+        return await self.wait(state.id, request.tenant_id)
+
+    async def wait(self, run_id: str, tenant_id: str) -> RunResult:
+        """Wait for an already-started run and compose its current result."""
+        await self._require_state(run_id, tenant_id)
+        async with self._task_lock:
+            task = self._tasks.get(run_id)
+        if task is not None:
+            await task
+        current = await self._require_state(run_id, tenant_id)
         agent = self.agents.get(current.request.agent, current.request.agent_version)
         composer = self.composers.get(agent.response_composer)
         return await composer.compose(current)
@@ -383,7 +391,21 @@ class AgentRuntime:
                     {
                         "message_count": len(state.messages),
                         "source_count": len(state.citations),
-                        "source_ids": [item.id for item in state.citations],
+                        "citations": (
+                            [
+                                {
+                                    "id": item.id,
+                                    "source": item.source,
+                                    "title": item.title,
+                                    "uri": item.uri,
+                                    "score": item.score,
+                                }
+                                for item in state.citations
+                            ]
+                            if self.telemetry_include_content
+                            else []
+                        ),
+                        "citation_details_included": self.telemetry_include_content,
                     },
                 )
                 await self._transition(state, RunStatus.PLANNING)
@@ -555,6 +577,13 @@ class AgentRuntime:
                 "model": response.model,
                 "finish_reason": response.finish_reason.value,
                 "cache_hit": cache_hit,
+                "latency_ms": response.latency_ms,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "cached_tokens": response.usage.cached_tokens,
+                "total_tokens": response.usage.total_tokens,
+                "estimated_cost_usd": response.usage.estimated_cost_usd,
+                "tool_call_count": len(response.tool_calls),
             },
             action.id,
         )
@@ -699,6 +728,20 @@ class AgentRuntime:
                     agent.retry_policy.max_backoff_seconds,
                     agent.retry_policy.initial_backoff_seconds * (2**attempt),
                 )
+                await self._emit(
+                    state,
+                    "model.retrying",
+                    {
+                        "attempt": attempt + 1,
+                        "next_attempt": attempt + 2,
+                        "max_attempts": agent.retry_policy.max_attempts,
+                        "error_kind": exc.error_kind.value,
+                        "delay_seconds": delay,
+                        "provider": profiles[0].provider,
+                        "model": profiles[0].model,
+                    },
+                    step_id,
+                )
                 await asyncio.sleep(delay)
                 await self._transition(state, RunStatus.INVOKING_MODEL)
         assert last_error is not None
@@ -784,7 +827,16 @@ class AgentRuntime:
             await self._emit(state, "approval.required", state.pause_payload, action.id)
             return
         await self._transition(state, RunStatus.INVOKING_TOOL)
-        await self._emit(state, "tool.started", {"tool": tool.definition.name}, action.id)
+        await self._emit(
+            state,
+            "tool.started",
+            {
+                "tool": tool.definition.name,
+                "status": "running",
+                "side_effect": tool.definition.side_effect.value,
+            },
+            action.id,
+        )
         context = ToolContext(
             run_id=state.id,
             step_id=action.id,
@@ -833,7 +885,19 @@ class AgentRuntime:
         state.summary = state.summary.model_copy(
             update={"tool_calls": state.summary.tool_calls + 1}
         )
-        await self._emit(state, "tool.completed", {"tool": tool.definition.name}, action.id)
+        await self._emit(
+            state,
+            "tool.completed",
+            {
+                "tool": tool.definition.name,
+                "status": "completed",
+                "side_effect": tool.definition.side_effect.value,
+                "result_redacted": result.redacted,
+                "artifact_count": len(result.artifact_ids),
+                "artifact_ids": list(result.artifact_ids) if self.telemetry_include_content else [],
+            },
+            action.id,
+        )
         await self._audit(
             state,
             "tool.call",
@@ -882,7 +946,18 @@ class AgentRuntime:
         await self._emit(
             state,
             "verification.completed",
-            {"passed": passed, "results": [item.model_dump(mode="json") for item in results]},
+            {
+                "passed": passed,
+                "checks": [
+                    {
+                        "passed": item.passed,
+                        "confidence": item.confidence,
+                        "reason_code": item.reason_code,
+                    }
+                    for item in results
+                ],
+                "repair_attempt": state.attempt_count,
+            },
             step_id,
         )
         if not passed:
@@ -925,6 +1000,16 @@ class AgentRuntime:
                     "memory.retention_seconds", agent.memory_policy.retention_seconds
                 )
                 await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+            await self._emit(
+                state,
+                "memory.written",
+                {
+                    "operation": "append",
+                    "item_count": len(persisted),
+                    "retention_seconds": agent.memory_policy.retention_seconds,
+                },
+                step_id,
+            )
             await self._policy_value(
                 "after_memory_write", {"items": len(persisted)}, state, {"agent": agent}
             )
@@ -946,6 +1031,7 @@ class AgentRuntime:
         step_id: str | None = None,
     ) -> None:
         sequence = await self.events.next_sequence(state.id)
+        span_context = trace.get_current_span().get_span_context()
         await self.events.publish(
             RunEvent(
                 type=event_type,
@@ -958,6 +1044,8 @@ class AgentRuntime:
                 parent_run_id=state.request.parent_run_id,
                 workflow_run_id=state.request.workflow_run_id,
                 step_id=step_id,
+                trace_id=(f"{span_context.trace_id:032x}" if span_context.is_valid else None),
+                span_id=(f"{span_context.span_id:016x}" if span_context.is_valid else None),
                 sequence=sequence,
                 data=data,
             )
@@ -1012,7 +1100,7 @@ class AgentRuntime:
         state: RunState,
         context: Mapping[str, Any],
     ) -> PolicyDecision:
-        return await evaluate_policy_observed(
+        decision = await evaluate_policy_observed(
             tracer=self._tracer,
             engine=self.policies,
             point=point,
@@ -1027,6 +1115,22 @@ class AgentRuntime:
             },
             attributes=self._span_attributes(state),
         )
+        invoked = tuple(decision.audit_metadata.get("policies_invoked", ()))
+        triggered = tuple(decision.audit_metadata.get("policies_triggered", ()))
+        skipped = tuple(decision.audit_metadata.get("policies_skipped", ()))
+        await self._emit(
+            state,
+            "policy.evaluated",
+            {
+                "boundary": str(point),
+                "action": decision.action.value,
+                "reason_code": decision.reason_code,
+                "invoked_count": len(invoked),
+                "triggered_count": len(triggered),
+                "skipped_count": len(skipped),
+            },
+        )
+        return decision
 
     async def _audit(
         self,
@@ -1121,6 +1225,13 @@ class AgentRuntime:
     @staticmethod
     def _safe_error(exc: Exception) -> str:
         if isinstance(exc, AlgenAgentRuntimeError):
+            return str(exc)
+        if isinstance(exc, ImportError) and re.fullmatch(
+            r"install algen-agent-runtime\[[a-z0-9-]+\](?: for [A-Za-z0-9 ._-]+)?",
+            str(exc),
+        ):
+            # Runtime-authored dependency guidance is safe to expose. Arbitrary import errors
+            # remain hidden because they can disclose local module names and filesystem details.
             return str(exc)
         return f"Internal error ({type(exc).__name__})"
 

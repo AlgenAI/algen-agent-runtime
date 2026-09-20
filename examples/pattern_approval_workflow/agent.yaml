@@ -1,8 +1,5 @@
 providers:
-  deepseek:
-    type: deepseek
-    api_key: env://DEEPSEEK_API_KEY
-    default_model: deepseek-chat
+  mock: {type: mock, default_model: deterministic}
 
 agents:
   - name: pattern-approval-workflow
@@ -10,19 +7,52 @@ agents:
     description: Approval-gated workflow automation agent
     capabilities: [workflow, approval]
     system_instructions: Follow the configured workflow and never perform external changes without approval.
-    default_model: {name: workflow-model, provider: deepseek, model: deepseek-chat, required_capabilities: [chat, tools]}
-    # TODO: Register domain tools (e.g. crm.lookup, crm.update) in app.py via container.tools.register()
-    # before re-enabling tool references. The previously declared crm.lookup and crm.update tools are
-    # not registered by build_container, causing a configuration-versus-runtime mismatch.
-    # Once tools are registered, add:
-    #   enabled_tools: [crm.lookup, crm.update]
-    #   tool_permissions: [crm.read, crm.write]
-    planning_strategy: react
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
     approval_policy: {require_for_side_effects: true, require_for_destructive: true, expires_seconds: 1800}
-    # TODO: The workflow graph below is not yet compiled or executed by the runtime.
-    # Publish this example only when the runtime natively interprets AgentDefinition.workflow,
-    # or implement it explicitly through a workflow SDK in workflow.py.
-    # workflow:
-    #   nodes: [lookup, propose_update, approve, update]
-    #   edges: [[lookup, propose_update], [propose_update, approve], [approve, update]]
     max_steps: 16
+
+workflows:
+  approval-gated-crm:
+    name: approval-gated-crm
+    version: 1.0.0
+    description: Lookup, proposal, bounded human checkpoint, and idempotent synthetic CRM update
+    hook_provider: examples.pattern_approval_workflow.hooks:create_hooks
+    nodes:
+      - id: lookup
+        kind: handler
+        handler: crm.lookup
+        output_key: customer
+        resources:
+          - {kind: service, name: synthetic-crm, access: read, description: Synthetic customer record}
+      - id: propose
+        kind: agent
+        depends_on: [lookup]
+        agent: pattern-approval-workflow
+        input_builder: crm.propose
+        output_schema_hook: crm.proposal_schema
+        output_key: proposal
+        pause:
+          when: {source: proposal.status, operator: equals, value: needs_clarification}
+          question_from: proposal.question
+          state_from: [customer, proposal]
+          occurrences_from: clarifications
+          maximum_occurrences: 1
+      - id: update
+        kind: handler
+        depends_on: [propose]
+        handler: crm.update
+        output_key: result
+        resources:
+          - {kind: service, name: synthetic-crm, access: write, description: Idempotent synthetic update}
+
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

@@ -1,1 +1,1 @@
-"""Pattern: governed research agent with citation verification (work in progress)."""
+"""Pattern: governed research workflow with citation verification."""

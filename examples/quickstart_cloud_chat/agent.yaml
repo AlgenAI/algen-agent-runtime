@@ -1,0 +1,28 @@
+providers:
+  openai:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5-mini
+agents:
+  - name: cloud-chat
+    version: 1.0.0
+    description: Minimal hosted-provider assistant
+    system_instructions: Answer accurately and concisely. State uncertainty and never invent sources.
+    default_model: {name: cloud-default, provider: openai, model: gpt-5-mini, required_capabilities: [chat]}
+    planning_strategy: direct
+    guardrail_policy: {policies: [secrets, authorization], require_citations: false}
+    verification_policy: {verifiers: [non_empty], minimum_confidence: 0, max_repairs: 1}
+    budget: {max_tokens: 4000, max_output_tokens: 1000, max_cost_usd: 0.25, max_latency_seconds: 45}
+    max_steps: 3
+    model_allowlist: [openai/gpt-5-mini]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

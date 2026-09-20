@@ -1,42 +1,12 @@
-# reference_incident_response
+# IT incident response
 
-**Tier:** Reference Application | **Status:** 🚧 Placeholder — not yet implemented
+A synthetic multi-agent workflow:
 
-> [!IMPORTANT]
-> This example **must only use a synthetic infrastructure API**. It must never execute local shell commands by default.
+```text
+classify -> [logs || metrics] -> join -> analyze -> remediation plan -> checkpoint -> execute -> report
+```
 
-## Enterprise problem
-
-Incident responders lose time collecting telemetry and must tightly control production changes.
-
-## Planned scope
-
-**Shape:** Multi-agent workflow with alert classifier, evidence collector, incident analyst, remediation planner, and human-approved executor.
-
-**What it should prove:**
-
-- Parallel read-only tool execution (log fetching, metrics, alerting API — all synthetic).
-- Correlation across agents with bounded budgets.
-- Provider fallback under load.
-- Approval gates before any remediation action.
-- Non-idempotent tool protection and cancellation.
-- Resume after restart.
-- Redacted audit events.
-- Post-incident report generation.
-
-## Implementation checklist
-
-- [ ] Define Pydantic models in `application/models.py`.
-- [ ] Implement synthetic infrastructure API tools in `application/tools.py`.
-- [ ] Implement the multi-agent workflow in `application/workflow.py`.
-- [ ] Create `config/agent.yaml`.
-- [ ] Populate `data/` with synthetic alert and telemetry fixtures.
-- [ ] Create `manifest.yaml`.
-- [ ] Create `tests/` covering alert classification, evidence collection, and remediation approval.
-- [ ] Update this README with architecture, setup/run/test/reset instructions, and production gaps.
-
-## Production gaps (anticipated)
-
-- Synthetic infrastructure API only — no real monitoring or orchestration integrations.
-- Resume-after-restart requires persistent run state (not in-memory).
-- Non-idempotent tool protection needs runtime-level enforcement.
+Run `python -m examples.reference_incident_response.app` or import this folder into Studio. The
+execution handler never invokes a shell or real infrastructure API; it records only a simulated,
+idempotent outcome. Production use requires authenticated telemetry adapters, durable checkpoints,
+role-separated approval, and a reviewed remediation allowlist.

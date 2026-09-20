@@ -28,10 +28,7 @@ async def principal(request: Request) -> Principal:
 
 
 def require_scope(identity: Principal, scope: str) -> None:
-    if (
-        scope not in identity.scopes
-        and "*" not in identity.scopes
-    ):
+    if scope not in identity.scopes and "*" not in identity.scopes:
         raise HTTPException(status_code=403, detail=f"missing scope {scope}")
 
 

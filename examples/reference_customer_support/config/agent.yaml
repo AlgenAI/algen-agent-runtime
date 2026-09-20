@@ -1,0 +1,83 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+retrieval:
+  tenant-knowledge:
+    type: memory
+    documents:
+      - {id: refund-policy, source: "synthetic://support/refunds", text: "Refunds require an order identifier and human review."}
+agents:
+  - &base
+    name: customer-support-triage
+    version: 1.0.0
+    description: Classifies a support case and identifies sensitive actions
+    system_instructions: Return only the supplied structured support contract.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 3
+  - <<: *base
+    name: customer-support-response
+    description: Drafts a grounded customer response from support evidence
+workflows:
+  customer-support-resolution:
+    name: customer-support-resolution
+    version: 1.0.0
+    description: Triage, parallel evidence, response drafting, human checkpoint, and idempotent action
+    hook_provider: examples.reference_customer_support.application.workflow:create_hooks
+    maximum_concurrency: 4
+    nodes:
+      - id: triage
+        kind: agent
+        agent: customer-support-triage
+        input_builder: support.triage
+        output_schema_hook: support.triage_schema
+        output_key: triage
+        pause:
+          when: {source: triage.status, operator: equals, value: needs_clarification}
+          question_from: triage.question
+          state_from: [triage]
+          occurrences_from: clarifications
+          maximum_occurrences: 2
+      - id: knowledge
+        kind: handler
+        depends_on: [triage]
+        handler: support.knowledge
+        output_key: knowledge
+        resources:
+          - {kind: retrieval, name: tenant-knowledge, access: read, description: Tenant-scoped policy evidence}
+      - id: entitlement
+        kind: handler
+        depends_on: [triage]
+        handler: support.entitlement
+        output_key: entitlement
+        resources:
+          - {kind: service, name: synthetic-billing, access: read, description: Synthetic entitlement service}
+      - id: draft
+        kind: agent
+        depends_on: [knowledge, entitlement]
+        agent: customer-support-response
+        input_builder: support.draft
+        output_schema_hook: support.response_schema
+        output_key: response
+      - id: action
+        kind: handler
+        depends_on: [draft]
+        handler: support.action
+        output_key: action_result
+        resources:
+          - {kind: service, name: synthetic-crm, access: write, description: Idempotent synthetic case action}
+      - id: complete
+        kind: join
+        depends_on: [draft, action]
+        output_key: resolution
+        join_strategy: json_array
+    metadata: {domain: customer-support, studio_importable: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="480" viewBox="0 0 1440 480" role="img" aria-labelledby="title desc">
+  <title id="title">Algen Agent Runtime banner</title><desc id="desc">Build governed agents and own the runtime.</desc>
+  <defs><linearGradient id="bg" x2="1440" y2="480"><stop stop-color="#07111F"/><stop offset="1" stop-color="#11183A"/></linearGradient><linearGradient id="g" x1="870" y1="90" x2="1320" y2="400"><stop stop-color="#67E8F9"/><stop offset=".5" stop-color="#818CF8"/><stop offset="1" stop-color="#C084FC"/></linearGradient><pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0v32" fill="none" stroke="#A5B4FC" stroke-opacity=".08"/></pattern></defs>
+  <rect width="1440" height="480" rx="28" fill="url(#bg)"/><rect width="1440" height="480" rx="28" fill="url(#grid)"/>
+  <rect x="70" y="62" width="68" height="68" rx="19" fill="#4F46E5"/><path d="m88 103 9-20 20-6 12 17-8 20-22-1Z" fill="none" stroke="#fff" stroke-width="4"/><circle cx="108" cy="98" r="6" fill="#67E8F9"/>
+  <text x="158" y="107" fill="#F8FAFC" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="32" font-weight="750">Algen Agent Runtime</text>
+  <text x="72" y="224" fill="#F8FAFC" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="57" font-weight="790" letter-spacing="-2">Build governed agents.</text>
+  <text x="72" y="290" fill="#A5B4FC" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="57" font-weight="790" letter-spacing="-2">Own the runtime.</text>
+  <text x="75" y="344" fill="#CBD5E1" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="22">Typed · provider-neutral · observable · open source</text>
+  <text x="75" y="419" fill="#94A3B8" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="16" letter-spacing="1.2">RUNTIME  →  STUDIO  →  MARKETPLACE  →  DEPLOY</text>
+  <g fill="none" stroke="url(#g)" stroke-width="5" stroke-linecap="round"><path d="M864 246 978 132l129 60 109-94 139 132-90 130-147-31-123 72-131-155Z"/><path d="m978 132 17 269m112-209 11 137m98-231 49 262M864 246l243-54m-112 209 221-303" opacity=".48"/></g>
+  <g fill="#07111F" stroke="url(#g)" stroke-width="8"><circle cx="864" cy="246" r="17"/><circle cx="978" cy="132" r="17"/><circle cx="1107" cy="192" r="17"/><circle cx="1216" cy="98" r="17"/><circle cx="1355" cy="230" r="17"/><circle cx="1265" cy="360" r="17"/><circle cx="1118" cy="329" r="21"/><circle cx="995" cy="401" r="17"/></g><circle cx="1118" cy="329" r="8" fill="#818CF8"/>
+</svg>

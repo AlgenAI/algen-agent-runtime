@@ -1,10 +1,9 @@
 id: quickstart_approval
 display_name: "Approval Quickstart"
 tier: quickstart
-status: placeholder
+status: runnable
 description: >
-  Shows one visible pause, a human approval decision, and a resume or abort path.
-  Not yet implemented.
+  Shows one visible human-input checkpoint and an idempotent apply-or-abort path.
 
 extras: []
 external_services: []
@@ -16,8 +15,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.quickstart_approval.app"
-  test: "python -m pytest examples/quickstart_approval/tests/ -q"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 30
-deterministic_mock_support: false
+deterministic_mock_support: true

@@ -1,1 +1,1 @@
-"""Quickstart: typed read-only tool agent (not yet implemented)."""
+"""Quickstart: typed read-only workflow capability."""

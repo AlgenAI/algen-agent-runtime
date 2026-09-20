@@ -1,1 +1,1 @@
-"""Pattern: evaluation fixtures, thresholds, regression output, and promotion gate (not yet implemented)."""
+"""Pattern: evaluation fixtures, thresholds, and promotion gate."""

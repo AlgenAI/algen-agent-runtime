@@ -1,0 +1,36 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: evaluation-target
+    version: 1.0.0
+    description: Deterministic target used by the promotion-gate example
+    system_instructions: Return the supplied structured answer.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 2
+workflows:
+  evaluation-gate:
+    name: evaluation-gate
+    version: 1.0.0
+    description: Execute golden fixtures and produce a promotion decision
+    hook_provider: examples.pattern_evaluation_gate.hooks:create_hooks
+    nodes:
+      - id: evaluate
+        kind: handler
+        handler: evaluation.run
+        output_key: report
+        resources:
+          - {kind: storage, name: golden-fixtures, access: read, description: Versioned deterministic fixtures}
+          - {kind: telemetry, name: evaluation-metrics, access: observe, description: Promotion evidence}
+    metadata: {pattern: evaluation-gate, studio_importable: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
+

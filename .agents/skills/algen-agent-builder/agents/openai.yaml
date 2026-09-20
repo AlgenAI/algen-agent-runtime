@@ -1,0 +1,6 @@
+interface:
+  display_name: "Algen Agent Builder"
+  short_description: "Build Runtime-native agents and DAG workflows"
+  brand_color: "#8B5CF6"
+  default_prompt: "Use $algen-agent-builder to create a Studio-importable agent project for this use case."
+
