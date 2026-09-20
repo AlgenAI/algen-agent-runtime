@@ -70,15 +70,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t algen-agent-runtime:scan .
-      - uses: aquasecurity/trivy-action@v0.36.0
+
+      # 1. Print human-readable vulnerability table in GitHub Actions log
+      - name: Scan container image (console output)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: algen-agent-runtime:scan
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # 2. (Optional) Save SARIF report as a downloadable artifact if the repo is private without GHAS
+      - name: Generate SARIF report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: algen-agent-runtime:scan
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
-      - uses: github/codeql-action/upload-sarif@v3
+
+      - name: Archive Trivy results
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: trivy-results.sarif
+          name: trivy-results
+          path: trivy-results.sarif
