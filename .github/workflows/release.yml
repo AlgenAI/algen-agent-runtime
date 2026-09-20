@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip build twine
+      - name: Verify release tag matches package version
+        run: |
+          version=$(python -c 'import pathlib, re; text = pathlib.Path("src/algen_agent_runtime/__init__.py").read_text(); print(re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE).group(1))')
+          test "v${version}" = "${GITHUB_REF_NAME}"
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff format --check src tests examples
+      - run: ruff check src tests examples
+      - run: mypy src/algen_agent_runtime
+      - run: pytest -q -p no:cacheprovider
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Inspect release artifacts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          wheel = next(Path("dist").glob("*.whl"))
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+              required = {
+                  "algen_agent_runtime/py.typed",
+                  "algen_agent_runtime/persistence/migrations/001_initial.sql",
+              }
+              missing = required - names
+              if missing:
+                  raise SystemExit(f"wheel missing required files: {sorted(missing)}")
+              if any("studio" in name.lower() for name in names):
+                  raise SystemExit("Runtime artifact unexpectedly contains Studio files")
+              if any("__pycache__" in name or name.endswith(".pyc") for name in names):
+                  raise SystemExit("wheel contains Python cache files")
+          with tarfile.open(sdist) as archive:
+              names = archive.getnames()
+              for required in ("LICENSE", "NOTICE", "README.md"):
+                  if not any(name.endswith(f"/{required}") for name in names):
+                      raise SystemExit(f"sdist missing {required}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

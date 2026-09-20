@@ -1,0 +1,29 @@
+id: pattern_provider_fallback
+display_name: "Provider Fallback and Budget Routing"
+tier: pattern
+description: >
+  Shows provider-neutral multi-provider fallback (Anthropic → OpenAI → Ollama).
+  TODO: Add a deterministic primary-provider failure scenario and visible routing/cost trace.
+
+extras: []
+external_services: []
+
+secrets:
+  - name: ANTHROPIC_API_KEY
+    description: Anthropic API key (primary provider)
+    required: false
+  - name: OPENAI_API_KEY
+    description: OpenAI API key (cloud fallback)
+    required: false
+
+entry_points:
+  cli: examples.pattern_provider_fallback.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_provider_fallback.app"
+  test: "python -m pytest examples/pattern_provider_fallback/tests/ -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 15
+deterministic_mock_support: false

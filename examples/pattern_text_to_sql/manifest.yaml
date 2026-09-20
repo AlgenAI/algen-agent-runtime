@@ -1,0 +1,52 @@
+id: pattern_text_to_sql
+display_name: "Text-to-SQL Pattern"
+tier: pattern
+description: >
+  Read-only analytics assistant that translates natural-language questions into SQLite SQL.
+  Supports OpenAI and Mistral providers. The advanced/ sub-directory adds pgvector schema
+  retrieval as an extended mode.
+
+extras:
+  - name: pgvector
+    description: Required for advanced/ mode (pgvector schema retrieval)
+    install: "pip install -e '.[dev,pgvector]'"
+
+external_services:
+  - name: PostgreSQL with pgvector
+    description: Required only for advanced/ mode
+    required: false
+
+secrets:
+  - name: OPENAI_API_KEY
+    description: OpenAI API key (default provider)
+    required: false
+  - name: MISTRAL_API_KEY
+    description: Mistral API key (alternative provider)
+    required: false
+  - name: PGVECTOR_DSN
+    description: PostgreSQL DSN for pgvector (advanced/ mode only)
+    required: false
+
+modes:
+  - name: openai
+    description: Default — SQLite with OpenAI gpt-5
+    agent: text-to-sql
+  - name: mistral
+    description: Alternative — SQLite with Mistral ministral-3b-2512
+    agent: text-to-sql-mistral
+  - name: advanced
+    description: pgvector schema retrieval — see advanced/README.md
+    entry: examples.pattern_text_to_sql.advanced.app
+
+entry_points:
+  cli: examples.pattern_text_to_sql.app
+  cli_advanced: examples.pattern_text_to_sql.advanced.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_text_to_sql.app \"Which region has the highest completed order revenue?\""
+  test: "python -m pytest examples/pattern_text_to_sql/tests/ -q"
+  reset: "echo 'No persistent state to reset. SQLite database is in-memory.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: false

@@ -1,0 +1,41 @@
+services:
+  algen-agent-runtime:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      ALGEN_AGENT_RUNTIME_CONFIG: /config/algen-agent-runtime.yaml
+      ALGEN_AGENT_RUNTIME__API__HOST: 0.0.0.0
+      ALGEN_AGENT_RUNTIME__API__ALLOW_INSECURE_DEVELOPMENT_AUTH: "true"
+      ALGEN_AGENT_RUNTIME_POSTGRES_DSN: postgresql://algen:local-only@postgres:5432/algen_agent_runtime
+      ALGEN_AGENT_RUNTIME__STORAGE__RUN_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__MEMORY_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__EVENT_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__AUDIT_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__APPROVAL_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__ARTIFACT_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__TOOL_EXECUTION_STORE: postgres
+      ALGEN_AGENT_RUNTIME__STORAGE__POSTGRES_DSN: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+    volumes:
+      - ./examples/quickstart_local_chat/agent.yaml:/config/algen-agent-runtime.yaml:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: algen
+      POSTGRES_PASSWORD: local-only
+      POSTGRES_DB: algen_agent_runtime
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U algen -d algen_agent_runtime"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]

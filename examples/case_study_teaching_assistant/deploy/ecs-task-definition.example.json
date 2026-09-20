@@ -1,0 +1,46 @@
+{
+  "family": "algen-agent-virtual-teaching-assistant",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::REPLACE_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::REPLACE_ACCOUNT_ID:role/algenAgentTeachingAssistantTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "teaching-assistant",
+      "image": "REPLACE_ACCOUNT_ID.dkr.ecr.REPLACE_REGION.amazonaws.com/algen-agent-teaching-assistant:latest",
+      "essential": true,
+      "readonlyRootFilesystem": true,
+      "user": "10001:10001",
+      "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
+      "environment": [
+        {"name": "PORT", "value": "8080"},
+        {"name": "ALGEN_AGENT_RUNTIME__TELEMETRY__SERVICE_NAME", "value": "cerai-teaching-assistant"}
+      ],
+      "secrets": [
+        {"name": "OPENAI_API_KEY", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:openai-api-key"},
+        {"name": "TRACCIA_API_KEY", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:traccia-api-key"},
+        {"name": "ALGEN_AGENT_RUNTIME_POSTGRES_DSN", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:runtime-postgres-dsn"},
+        {"name": "ALGEN_AGENT_RUNTIME_REDIS_URL", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:runtime-redis-url"},
+        {"name": "ALGEN_AGENT_RUNTIME_CACHE_KEY", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:runtime-cache-key"},
+        {"name": "ALGEN_AGENT_RUNTIME_JWT_PUBLIC_KEY", "valueFrom": "arn:aws:secretsmanager:REPLACE_REGION:REPLACE_ACCOUNT_ID:secret:runtime-jwt-public-key"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/algen-agent-virtual-teaching-assistant",
+          "awslogs-region": "REPLACE_REGION",
+          "awslogs-stream-prefix": "app"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=3)\" || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      }
+    }
+  ]
+}

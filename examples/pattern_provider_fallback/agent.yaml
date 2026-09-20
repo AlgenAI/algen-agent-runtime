@@ -1,0 +1,25 @@
+providers:
+  primary:
+    type: anthropic
+    api_key: env://ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-5
+  fallback:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5
+  local:
+    type: ollama
+    base_url: http://127.0.0.1:11434/v1
+    default_model: qwen3:8b
+agents:
+  - name: resilient
+    version: 1.0.0
+    description: Multi-provider assistant with cloud and local fallbacks
+    system_instructions: Produce a concise, verified response.
+    default_model: {name: quality, provider: anthropic, model: claude-sonnet-4-5, quality_tier: 3}
+    fallback_models:
+      - {name: cloud-fallback, provider: openai, model: gpt-5, quality_tier: 2}
+      - {name: local-fallback, provider: ollama, model: "qwen3:8b", quality_tier: 1}
+    planning_strategy: direct
+    max_steps: 5
+

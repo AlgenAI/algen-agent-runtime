@@ -1,0 +1,23 @@
+id: pattern_multi_agent_fanout
+display_name: "Multi-Agent Fan-Out"
+tier: pattern
+status: placeholder
+description: >
+  Two-agent sequence and parallel fan-out pattern with correlation, failure policy, and resume.
+  Not yet implemented.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_multi_agent_fanout.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_multi_agent_fanout.app"
+  test: "python -m pytest examples/pattern_multi_agent_fanout/tests/ -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: false

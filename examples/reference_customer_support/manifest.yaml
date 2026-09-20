@@ -1,0 +1,37 @@
+id: reference_customer_support
+display_name: "Customer Support Case Resolution"
+tier: reference
+status: placeholder
+description: >
+  First enterprise reference application: grounded answers and safe account changes across
+  CRM, billing, and ticketing systems. Demonstrates tenant-scoped RAG, PII redaction,
+  tool permissions, approval before writes, idempotent actions, and evaluation.
+
+extras: []
+external_services:
+  - name: CRM system (synthetic)
+    required: false
+  - name: Billing system (synthetic)
+    required: false
+  - name: Ticketing system (synthetic)
+    required: false
+
+secrets:
+  - name: CUSTOMER_SUPPORT_CRM_URL
+    description: CRM base URL
+    required: false
+  - name: OPENAI_API_KEY
+    description: Generation provider
+    required: true
+
+entry_points:
+  cli: examples.reference_customer_support.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.reference_customer_support.app"
+  test: "python -m pytest examples/reference_customer_support/tests/ -q"
+  reset: "echo 'See README.md for reset instructions once implemented.'"
+
+expected_duration_seconds: 120
+deterministic_mock_support: false

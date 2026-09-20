@@ -1,0 +1,34 @@
+id: quickstart_local_chat
+display_name: "Local Chat Quickstart"
+tier: quickstart
+description: >
+  Five-minute local chat agent running entirely on Ollama — no cloud API key required.
+  Supports two modes: default llama3.2 and a privacy-first qwen3:8b allowlist mode.
+
+extras: []
+external_services:
+  - name: Ollama
+    url: http://127.0.0.1:11434
+    required: true
+
+secrets: []
+
+modes:
+  - name: ollama
+    description: Default mode using llama3.2
+    agent: minimal
+  - name: ollama-private
+    description: Privacy-first mode using qwen3:8b with a strict model allowlist
+    agent: local-private
+
+entry_points:
+  cli: examples.quickstart_local_chat.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.quickstart_local_chat.app"
+  test: "python -m pytest examples/quickstart_local_chat/tests/ -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 10
+deterministic_mock_support: false

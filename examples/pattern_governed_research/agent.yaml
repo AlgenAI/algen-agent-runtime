@@ -1,0 +1,23 @@
+providers:
+  openai:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5
+
+agents:
+  - name: pattern-governed-research
+    version: 1.0.0
+    description: Evidence-oriented research agent with citation verification
+    capabilities: [research, citations]
+    system_instructions: Synthesize supplied evidence, cite its source identifiers, and separate fact from inference.
+    default_model: {name: primary, provider: openai, model: gpt-5, required_capabilities: [chat, tools]}
+    # TODO: Register retrieval tools (e.g. a Retriever adapter backed by a web search or document store)
+    # before enabling tool permissions. The previously declared core.http tool is not registered
+    # by build_container; enabling it here caused a configuration-versus-runtime mismatch.
+    # Once a retrieval/HTTP tool is registered, add:
+    #   enabled_tools: [research.fetch, research.search]
+    #   tool_permissions: [network.http]
+    context_builder: default
+    planning_strategy: react
+    guardrail_policy: {policies: [secrets, authorization, side_effects], require_citations: true}
+    max_steps: 12

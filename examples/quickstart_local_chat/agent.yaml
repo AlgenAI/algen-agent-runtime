@@ -1,0 +1,31 @@
+providers:
+  local:
+    type: ollama
+    base_url: http://127.0.0.1:11434/v1
+    default_model: llama3.2
+    capabilities: {chat: true, streaming: true, tools: true, structured_output: true, json_schema: true, embeddings: true, images: false, files: false}
+  # Provider: ollama-private — same Ollama server, privacy-first model allowlist
+  local-private:
+    type: ollama
+    base_url: http://127.0.0.1:11434/v1
+    default_model: qwen3:8b
+    capabilities: {chat: true, streaming: true, tools: false, structured_output: false, json_schema: false, embeddings: true, images: false, files: false}
+
+agents:
+  - name: minimal
+    version: 1.0.0
+    description: General-purpose local assistant using the default Ollama model
+    system_instructions: Answer accurately and concisely. State uncertainty.
+    default_model: {name: local-default, provider: ollama, model: llama3.2, required_capabilities: [chat]}
+    planning_strategy: direct
+    max_steps: 4
+
+  # Provider: ollama-private — cloud-free, restricted to the local allowlist
+  - name: local-private
+    version: 1.0.0
+    description: Cloud-free local knowledge assistant with an explicit model allowlist
+    system_instructions: Use only locally supplied context.
+    default_model: {name: local, provider: ollama, model: "qwen3:8b", required_capabilities: [chat]}
+    model_allowlist: ["ollama/qwen3:8b"]
+    planning_strategy: direct
+    max_steps: 4

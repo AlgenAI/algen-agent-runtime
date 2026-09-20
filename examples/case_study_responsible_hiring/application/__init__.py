@@ -1,0 +1,1 @@
+"""Hiring-example application layer."""

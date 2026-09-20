@@ -1,0 +1,37 @@
+storage:
+  run_store: postgres
+  memory_store: redis
+  event_store: postgres
+  audit_store: postgres
+  approval_store: postgres
+  artifact_store: postgres
+  tool_execution_store: postgres
+  conversation_store: postgres
+  postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  redis_url: env://ALGEN_AGENT_RUNTIME_REDIS_URL
+  initialize_schema: true
+  postgres_min_pool_size: 2
+  postgres_max_pool_size: 10
+cache:
+  backend: redis
+  redis_url: env://ALGEN_AGENT_RUNTIME_REDIS_URL
+  key_secret: env://ALGEN_AGENT_RUNTIME_CACHE_KEY
+  policies:
+    model_response: {enabled: false, scope: user, ttl_seconds: 120}
+    retrieval: {enabled: true, scope: tenant, ttl_seconds: 900}
+telemetry:
+  traccia:
+    enabled: true
+    api_key: env://TRACCIA_API_KEY
+    environment: production
+    governance_enabled: true
+    governance_fail_open: false
+    governance_agent_id: virtual-teaching-assistant
+api:
+  port: 8080
+  auth_mode: jwt
+  jwt_key: env://ALGEN_AGENT_RUNTIME_JWT_PUBLIC_KEY
+  jwt_algorithms: [RS256]
+  jwt_issuer: https://replace-with-your-issuer.example/
+  jwt_audience: algen-agent-teaching-assistant
+  cors_allowed_origins: [https://replace-with-your-dashboard.example]

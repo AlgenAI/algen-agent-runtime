@@ -1,0 +1,101 @@
+# providers.yaml — shared provider and storage reference configuration
+#
+# This file documents all supported providers, storage backends, telemetry, and security
+# defaults. Individual examples define only the providers they need in their own agent.yaml.
+# Do not add example-specific credentials here; each example declares its own secrets in
+# its manifest.yaml and reads them from environment variables (e.g. EXAMPLE_OPENAI_API_KEY).
+#
+# Naming conventions (from docs/Example Portfolio and Ownership Analysis.md):
+#   - Provider names: lowercase (openai, anthropic, mistral, ollama, azure, deepseek).
+#   - Environment variables: UPPER_SNAKE_CASE scoped to the application
+#     (e.g. CUSTOMER_SUPPORT_CRM_URL, not CRM_URL).
+#   - Secret values belong in environment variables or a secret manager — never in YAML fixtures.
+
+providers:
+  openai:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5
+    capabilities: {chat: true, streaming: true, tools: true, structured_output: true, json_schema: true, embeddings: true, images: true, files: true}
+  azure:
+    type: azure_openai
+    base_url: https://YOUR-RESOURCE.openai.azure.com
+    api_key: env://AZURE_OPENAI_API_KEY
+    api_version: "2024-10-21"
+    default_model: YOUR-DEPLOYMENT
+  anthropic:
+    type: anthropic
+    api_key: env://ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-5
+  deepseek:
+    type: deepseek
+    api_key: env://DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+  mistral:
+    type: mistral
+    api_key: env://MISTRAL_API_KEY
+    base_url: https://api.mistral.ai/v1
+    default_model: mistral-small-latest
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      json_schema: true
+      embeddings: true
+      images: true
+      files: false
+  ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434/v1
+    default_model: qwen3:8b
+  huggingface:
+    type: huggingface_inference
+    api_key: env://HF_TOKEN
+    default_model: meta-llama/Llama-3.1-8B-Instruct
+  compatible:
+    type: openai_compatible
+    base_url: https://llm.example.invalid/v1
+    api_key: env://COMPATIBLE_API_KEY
+    default_model: enterprise-chat
+    capabilities:
+      chat: true
+      streaming: true
+      tools: false
+      structured_output: false
+      json_schema: false
+      embeddings: false
+      images: false
+      files: false
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+telemetry:
+  enabled: true
+  service_name: algen-agent-runtime
+  include_content: false
+  max_content_chars: 16384
+  traccia:
+    enabled: false
+    api_key: env://TRACCIA_API_KEY
+    endpoint: https://api.traccia.ai/v2/traces
+    environment: development
+    sample_rate: 1.0
+    enable_patching: false
+    enable_token_counting: true
+    enable_costs: true
+    enable_metrics: true
+    redact_pii: true
+    max_spans_per_second: 100
+    flush_timeout_seconds: 5
+security:
+  max_request_bytes: 1048576
+  max_artifact_bytes: 10485760
+  allowed_http_hosts: [api.example.com]
+  allow_private_networks: false
+  allow_subprocess_tools: false

@@ -1,0 +1,37 @@
+id: quickstart_rag
+display_name: "RAG Quickstart"
+tier: quickstart
+description: >
+  Grounded company-handbook assistant with verified source citations.
+  Demonstrates retrieval-augmented generation with OpenAI or Mistral as the generation provider.
+
+extras: []
+external_services: []
+
+secrets:
+  - name: OPENAI_API_KEY
+    description: OpenAI API key (default provider)
+    required: false
+  - name: MISTRAL_API_KEY
+    description: Mistral API key (alternative provider)
+    required: false
+
+modes:
+  - name: openai
+    description: Default — uses OpenAI gpt-5
+    agent: handbook-rag
+  - name: mistral
+    description: Alternative — uses Mistral ministral-3b-2512
+    agent: handbook-rag-mistral
+
+entry_points:
+  cli: examples.quickstart_rag.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.quickstart_rag.app \"How much annual leave do employees receive?\""
+  test: "python -m pytest examples/quickstart_rag/tests/ -q"
+  reset: "echo 'No persistent state to reset. Retrieval index is in-memory.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: false

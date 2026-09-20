@@ -1,0 +1,138 @@
+providers:
+  openai:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5
+    timeout_seconds: 60
+    max_concurrency: 10
+    requests_per_minute: 120
+  mistral:
+    type: mistral
+    api_key: env://MISTRAL_API_KEY
+    base_url: https://api.mistral.ai/v1
+    default_model: ministral-3b-2512
+    timeout_seconds: 60
+    max_concurrency: 10
+    requests_per_minute: 120
+
+agents:
+  - &text_to_sql_base
+    name: text-to-sql
+    version: 1.0.0
+    description: Read-only analytics assistant that translates questions into SQL
+    capabilities: [text-to-sql, analytics]
+    system_instructions: |
+      You are a read-only analytics assistant for the SQLite schema below.
+
+      Tables:
+        customers(
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          region TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+        orders(
+          id INTEGER PRIMARY KEY,
+          customer_id INTEGER NOT NULL REFERENCES customers(id),
+          ordered_at TEXT NOT NULL,
+          status TEXT NOT NULL,
+          total_amount REAL NOT NULL
+        )
+
+      Known values:
+        orders.status is one of: completed, pending, cancelled.
+
+      Relationships:
+        orders.customer_id = customers.id
+
+      Rules:
+        - Use analytics.query whenever data is needed.
+        - Generate only a single read-only SELECT or WITH query.
+        - Use only columns and tables listed above.
+        - Prefer explicit column names over SELECT *.
+        - Use SQLite-compatible SQL.
+        - Never invent query results.
+        - Treat a user term matching a known status as that exact status value.
+        - "completed orders" unambiguously means orders.status = 'completed'; query it directly.
+        - Ask a concise clarification question only when required information cannot be mapped to
+          the documented schema or known values.
+        - In the final answer, summarize the result and include the SQL in a fenced sql block.
+        - Mention when the result was truncated.
+    default_model:
+      name: openai-primary
+      provider: openai
+      model: gpt-5
+      required_capabilities: [chat, tools]
+      quality_tier: 3
+    enabled_tools: [analytics.query]
+    tool_permissions: [database.read]
+    planning_strategy: react
+    context_builder: default
+    memory_policy:
+      enabled: true
+      retention_seconds: 3600
+      max_items: 20
+      store_tool_payloads: false
+      redact_pii: true
+    guardrail_policy:
+      policies: [secrets, authorization, side_effects]
+      require_citations: false
+    verification_policy:
+      verifiers: [non_empty]
+      minimum_confidence: 0.0
+      max_repairs: 1
+    approval_policy:
+      require_for_side_effects: true
+      require_for_destructive: true
+      expires_seconds: 900
+    retry_policy:
+      max_attempts: 3
+      initial_backoff_seconds: 0.25
+      max_backoff_seconds: 2.0
+      retryable_errors: [rate_limit, timeout, unavailable]
+    budget:
+      max_tokens: 12000
+      max_cost_usd: 1.0
+      max_latency_seconds: 90
+    max_steps: 8
+    model_allowlist: [openai/gpt-5]
+    tags: [example, analytics, sqlite, openai]
+  - <<: *text_to_sql_base
+    name: text-to-sql-mistral
+    description: Read-only analytics assistant backed by Mistral AI
+    default_model:
+      name: mistral-primary
+      provider: mistral
+      model: ministral-3b-2512
+      required_capabilities: [chat, tools]
+      quality_tier: 3
+      extensions:
+        temperature: 0
+    model_allowlist: [mistral/ministral-3b-2512]
+    tags: [example, analytics, sqlite, mistral]
+
+telemetry:
+  enabled: true
+  service_name: text-to-sql-example
+  include_content: false
+  max_content_chars: 16384
+  include_content: true
+  traccia:
+    enabled: true
+    api_key: env://TRACCIA_API_KEY
+    endpoint: https://api.traccia.ai/v2/traces
+    environment: production
+    sample_rate: 1.0
+    enable_patching: false
+    enable_token_counting: true
+    enable_costs: true
+    enable_metrics: true
+    redact_pii: true
+    max_spans_per_second: 100
+    flush_timeout_seconds: 5
+
+security:
+  max_request_bytes: 65536
+  max_artifact_bytes: 1048576
+  allow_private_networks: false
+  allow_subprocess_tools: false

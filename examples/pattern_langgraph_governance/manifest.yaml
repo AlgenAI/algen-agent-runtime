@@ -1,0 +1,27 @@
+id: pattern_langgraph_governance
+display_name: "LangGraph Governance Adapter"
+tier: pattern
+status: placeholder
+description: >
+  LangGraph application wrapped by the Traccia governance adapter and launched through the
+  normal Traccia run API. Not yet implemented — requires the framework adapter.
+
+extras:
+  - name: langgraph
+    description: LangGraph and LangChain dependencies
+    install: "pip install langgraph langchain"
+
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_langgraph_governance.app
+
+commands:
+  setup: "pip install -e '.[dev]' && pip install langgraph langchain"
+  run: "python -m examples.pattern_langgraph_governance.app"
+  test: "python -m pytest examples/pattern_langgraph_governance/tests/ -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: false

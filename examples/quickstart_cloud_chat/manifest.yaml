@@ -1,0 +1,26 @@
+id: quickstart_cloud_chat
+display_name: "Cloud Chat Quickstart"
+tier: quickstart
+status: placeholder
+description: >
+  Smallest hosted-provider path: one agent, one cloud API key, one command. Not yet implemented.
+
+extras: []
+external_services: []
+
+secrets:
+  - name: OPENAI_API_KEY
+    description: OpenAI API key (planned default provider)
+    required: true
+
+entry_points:
+  cli: examples.quickstart_cloud_chat.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.quickstart_cloud_chat.app"
+  test: "python -m pytest examples/quickstart_cloud_chat/tests/ -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 15
+deterministic_mock_support: false

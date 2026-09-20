@@ -1,0 +1,7 @@
+Algen Agent Runtime
+
+This distribution includes an optional integration with Traccia telemetry.
+Traccia remains a separate telemetry product and dependency; the Apache-2.0
+license for Algen Agent Runtime does not grant rights to Traccia trademarks.
+
+Third-party dependencies retain their respective copyright and license terms.

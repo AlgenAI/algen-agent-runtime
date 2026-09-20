@@ -1,0 +1,184 @@
+providers:
+  openai:
+    type: openai
+    api_key: env://OPENAI_API_KEY
+    default_model: gpt-5-mini
+    capabilities:
+      chat: true
+      streaming: true
+
+retrieval:
+  responsible-ai-course:
+    type: memory
+    mode: hybrid
+    limit: 4
+    minimum_score: 0.02
+    keyword_weight: 0.55
+    vector_weight: 0.45
+    max_query_chars: 2048
+    max_retrieval_tokens: 2200
+    max_context_tokens: 7000
+    chunk_size: 700
+    chunk_overlap: 80
+    documents:
+      - id: rai-understandable
+        title: Making AI understandable
+        source: course://responsible-ai/understandability
+        uri: https://cerai.iitm.ac.in/themes/
+        text: |
+          Understandable AI combines interpretable mechanisms, post-hoc explanations, and
+          meaningful human oversight. An explanation must be appropriate for its audience,
+          identify important limitations, and distinguish observed evidence from inference.
+          A trace is operational evidence of what components ran; it is not automatically a
+          faithful explanation of a model's internal reasoning.
+        metadata: {tenant_id: cerai-demo, module: understandable-ai}
+      - id: rai-safety
+        title: AI safety, privacy, and operational controls
+        source: course://responsible-ai/safety
+        uri: https://cerai.iitm.ac.in/themes/
+        text: |
+          Responsible AI safety includes privacy, security, consent, anonymisation, robustness,
+          performance guarantees, monitoring, and maintenance. Data minimisation means collecting
+          and retaining only what is necessary. Direct identifiers should be removed before data
+          reaches models, logs, or external services whenever the task does not require them.
+          Token and cost limits are operational governance controls, not substitutes for quality.
+        metadata: {tenant_id: cerai-demo, module: ai-safety}
+      - id: rai-society
+        title: AI and society
+        source: course://responsible-ai/society
+        uri: https://cerai.iitm.ac.in/themes/
+        text: |
+          AI-and-society analysis considers fairness, ethics, law and policy, work, human-computer
+          interaction, and public perception. Group averages do not establish inherent ability.
+          Responsible analysis asks how access, measurement, sampling, history, and institutional
+          conditions affect an observed disparity, and reports uncertainty and within-group variation.
+        metadata: {tenant_id: cerai-demo, module: ai-and-society}
+      - id: course-integrity
+        title: AI-assisted learning and academic integrity
+        source: course://policy/academic-integrity
+        text: |
+          The teaching assistant may explain concepts, ask diagnostic questions, give hints,
+          critique learner-authored work, and create analogous practice examples. It must not
+          produce submission-ready answers for active graded assessments. When assessed work is
+          detected, it should transparently switch to tutor mode and help the learner make progress.
+        metadata: {tenant_id: cerai-demo, module: learning-policy}
+      - id: trace-literacy
+        title: Reading an agent trace
+        source: course://lab/trace-literacy
+        text: |
+          A useful agent trace records the request boundary, retrieval, model calls, policy decisions,
+          retries, token usage, estimated cost, latency, and final outcome under a correlation and run
+          identifier. Audit records answer who did what and which policy acted. Private chain-of-thought
+          should not be captured; concise execution summaries and policy reasons are sufficient.
+        metadata: {tenant_id: cerai-demo, module: laboratory}
+
+agents:
+  - name: virtual-teaching-assistant
+    version: 1.0.0
+    description: A grounded, Socratic responsible-AI teaching assistant with observable governance
+    capabilities: [education, rag, citations, privacy, responsible-ai]
+    system_instructions: |
+      You are an inclusive virtual teaching assistant for a Responsible AI learning laboratory.
+      Teach rather than merely answer: adapt to the learner, explain terms plainly, use a short
+      example, and end with one useful reflection or check-for-understanding question when appropriate.
+      Ground factual course claims only in retrieved notes and cite them as [S1], [S2], and so on.
+      Say when evidence is insufficient. Never reveal private reasoning; provide concise explanations
+      of evidence, assumptions, and limitations. Never repeat redacted personal information. Follow
+      ACADEMIC INTEGRITY tutor-mode and EDUCATIONAL EQUITY instructions when present. Do not assign
+      grades, make high-stakes decisions about a learner, or infer sensitive traits.
+      Use teaching.build_study_plan whenever the learner supplies a topic, days, and daily minutes
+      for a study plan. Use teaching.get_case_evidence before analysing any of its three supported
+      real-world cases. Use teaching.lookup_learning_policy for graded-work, consent, privacy, or
+      acceptable-assistance questions. Treat tool results as bounded demo evidence, not universal fact.
+    default_model:
+      name: teaching-primary
+      provider: openai
+      model: gpt-5-mini
+      required_capabilities: [chat]
+      quality_tier: 2
+      extensions:
+        reasoning_effort: low
+    context_builder: retrieval.responsible-ai-course
+    planning_strategy: react
+    enabled_tools:
+      - teaching.build_study_plan
+      - teaching.get_case_evidence
+      - teaching.lookup_learning_policy
+    tool_permissions:
+      - learning.plan.read
+      - learning.case.read
+      - learning.policy.read
+    memory_policy:
+      enabled: true
+      retention_seconds: 3600
+      max_items: 30
+      store_tool_payloads: false
+      redact_pii: true
+    guardrail_policy:
+      policies:
+        - secrets
+        - pii
+        - prompt_injection
+        - output_validation
+        - authorization
+        - academic_integrity
+        - educational_equity
+      require_citations: true
+    verification_policy:
+      verifiers: [non_empty, citations]
+      minimum_confidence: 0.0
+      max_repairs: 1
+    budget:
+      max_tokens: 12000
+      max_output_tokens: 1800
+      max_cost_usd: 0.08
+      max_latency_seconds: 45
+    max_steps: 8
+    model_allowlist: [openai/gpt-5-mini]
+    metadata:
+      owner: responsible-ai-learning-lab
+      purpose: education-demo
+      risk_tier: limited
+    tags: [example, education, cerai, responsible-ai, openai]
+
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+
+telemetry:
+  enabled: true
+  service_name: algen-agent-virtual-teaching-assistant
+  include_content: true
+  include_conversation_content: true
+  max_content_chars: 8192
+  traccia:
+    enabled: true
+    api_key: env://TRACCIA_API_KEY
+    environment: development
+    project_id: cerai-responsible-ai-demo
+    enable_patching: false
+    enable_token_counting: true
+    enable_costs: true
+    enable_metrics: true
+    redact_pii: true
+    governance_enabled: false
+    governance_fail_open: false
+    governance_agent_id: virtual-teaching-assistant
+
+api:
+  host: 127.0.0.1
+  port: 8091
+  auth_mode: development_headers
+  cors_allowed_origins: []
+
+security:
+  max_request_bytes: 65536
+  max_artifact_bytes: 1048576
+  allow_private_networks: false
+  allow_subprocess_tools: false

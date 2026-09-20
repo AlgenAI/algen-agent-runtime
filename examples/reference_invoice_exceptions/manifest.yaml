@@ -1,0 +1,29 @@
+id: reference_invoice_exceptions
+display_name: "Accounts-Payable Invoice Exception Handling"
+tier: reference
+status: placeholder
+description: >
+  Document intake plus specialist agents for invoice extraction, PO matching, fraud signals,
+  policy routing, and human-approved payment recommendations.
+
+extras: []
+external_services:
+  - name: ERP system (synthetic)
+    required: false
+
+secrets:
+  - name: OPENAI_API_KEY
+    description: Generation provider
+    required: true
+
+entry_points:
+  cli: examples.reference_invoice_exceptions.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.reference_invoice_exceptions.app"
+  test: "python -m pytest examples/reference_invoice_exceptions/tests/ -q"
+  reset: "echo 'See README.md for reset instructions once implemented.'"
+
+expected_duration_seconds: 120
+deterministic_mock_support: false
