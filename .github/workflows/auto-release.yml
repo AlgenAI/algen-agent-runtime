@@ -9,6 +9,14 @@ name: Auto Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force release even if tag already exists (use to re-trigger after adding RELEASE_TOKEN)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: write   # needed to create tags and releases
@@ -42,7 +50,11 @@ jobs:
       - name: Check if tag already exists
         id: tag_check
         run: |
-          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+          force="${{ inputs.force || 'false' }}"
+          if [ "$force" = "true" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Force flag set — proceeding even if tag exists."
+          elif git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
           else
@@ -88,10 +100,13 @@ jobs:
           PY
 
       # ── 4. Create tag and GitHub Release ─────────────────────────────────
+      # IMPORTANT: Must use a PAT (RELEASE_TOKEN), not github.token.
+      # GitHub blocks event cascading from GITHUB_TOKEN, so release.yml
+      # (triggered by release:published) would never fire if we used github.token.
       - name: Create GitHub Release
         if: steps.tag_check.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           tag="${{ steps.version.outputs.tag }}"
           version="${{ steps.version.outputs.version }}"
@@ -110,3 +125,4 @@ jobs:
             --target main
 
           echo "GitHub Release ${tag} created successfully."
+          echo "release.yml will now be triggered by the release:published event."

@@ -3,6 +3,12 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0a1). The tag must already exist."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On workflow_dispatch use the provided tag; on release event use the release ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -20,7 +29,8 @@ jobs:
       - name: Verify release tag matches package version
         run: |
           version=$(python -c 'import pathlib, re; text = pathlib.Path("src/algen_agent_runtime/__init__.py").read_text(); print(re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE).group(1))')
-          test "v${version}" = "${GITHUB_REF_NAME}"
+          ref_name="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          test "v${version}" = "${ref_name}"
       - run: python -m pip install -e '.[dev]'
       - run: ruff format --check src tests examples
       - run: ruff check src tests examples
