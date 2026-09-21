@@ -83,6 +83,8 @@ python -m pip install -e '.[dev]'
 
 ## Five-minute offline quickstart
 
+### Single agent
+
 This example uses the built-in mock provider, so it requires no API key or external service:
 
 ```python
@@ -139,6 +141,49 @@ Expected output:
 Hello
 ```
 
+### Multi-agent DAG workflow
+
+Execute a multi-agent DAG with dynamic map-agent fan-out, evidence joining, and synthesis:
+
+```python
+import asyncio
+
+from algen_agent_runtime.config.settings import load_settings
+from algen_agent_runtime.orchestration.container import build_container
+from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
+from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor
+from examples.pattern_multi_agent_fanout.hooks import create_hooks
+
+
+async def main() -> None:
+    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    container = build_container(settings)
+    manifest = settings.workflows["multi-agent-fanout"]
+    hooks = create_hooks(container=container, manifest=manifest)
+    try:
+        executor = MultiAgentWorkflowExecutor(
+            AlgenAgentRuntimeClient(container.runtime), hooks
+        )
+        state = await executor.run(
+            manifest,
+            {"question": "Assess a migration to managed queues"},
+            tenant_id="quickstart",
+            user_id="local-user",
+        )
+        print(state.values["answer"]["summary"])
+    finally:
+        container.close()
+
+
+asyncio.run(main())
+```
+
+Expected output:
+
+```text
+Completed bounded parallel research for: Assess a migration to managed queues
+```
+
 For a real local model, follow the [Ollama quickstart](examples/quickstart_local_chat/README.md).
 
 ## Run the HTTP service
@@ -168,19 +213,48 @@ Production deployments should use verified JWT authentication, TLS termination, 
 ## Architecture
 
 ```mermaid
-flowchart LR
-  Client --> API[Python client or REST / SSE]
-  API --> Runtime[AgentRuntime state machine]
-  Runtime --> Policies[Policy middleware]
-  Runtime --> Context[Context builder]
-  Runtime --> Planner[Planner]
-  Runtime --> Router[Model router]
-  Router --> Providers[Provider adapters]
-  Runtime --> Executor[Tool executor]
-  Executor --> Tools[Tools and plugins]
-  Runtime --> Verifier[Verifier pipeline]
-  Runtime --> Stores[Run, memory, and artifact stores]
-  Runtime --> Events[Events, audit, and telemetry]
+flowchart TD
+  subgraph Interface["Interface Layer"]
+    Client["Application / Studio / REST / SSE"]
+  end
+
+  subgraph Workflows["Multi-Agent Workflow Orchestration"]
+    WorkflowExec["MultiAgentWorkflowExecutor"]
+    Manifest["WorkflowManifest (DAG)"]
+    Hooks["WorkflowHookRegistry"]
+    WorkflowExec --- Manifest
+    WorkflowExec --- Hooks
+  end
+
+  subgraph Core["AgentRuntime Execution State Machine"]
+    Runtime["AgentRuntime State Machine"]
+    Policies["Policy Middleware"]
+    Context["Context Builder"]
+    Planner["Planner"]
+    Router["Model Router"]
+    ToolExec["Tool Executor"]
+    Verifier["Verifier Pipeline"]
+  end
+
+  subgraph Adapters["Infrastructure & Adapters"]
+    Providers["Model Providers (Local / Cloud)"]
+    Tools["Tools & Resource Connectors"]
+    Stores["Run, Memory & Artifact Stores"]
+    Events["Events, Audit & Telemetry"]
+  end
+
+  Client -->|Execute workflow DAG| WorkflowExec
+  Client -->|Direct agent run| Runtime
+  WorkflowExec -->|agent / map_agent nodes| Runtime
+  WorkflowExec -->|handler hooks| Hooks
+  Runtime --> Policies
+  Runtime --> Context
+  Runtime --> Planner
+  Runtime --> Router --> Providers
+  Runtime --> ToolExec --> Tools
+  Runtime --> Verifier
+  Runtime --> Stores
+  Runtime --> Events
 ```
 
 The orchestration layer depends on typed contracts rather than provider SDKs. The composition root resolves configured adapters and registries, while applications retain ownership of domain prompts, metrics, tools, policies, and data access.
@@ -231,6 +305,24 @@ examples use deterministic mock providers; service-backed case studies retain ex
 The workflow examples cover human clarification checkpoints, bounded repair, dynamic fan-out,
 parallel branches, joins, framework adapters, evaluation gates, and secret-free links to tools,
 retrieval, memory, services, storage, and telemetry.
+
+### Running examples from the CLI
+
+Workflow examples can be executed directly from your terminal using deterministic mock providers without API keys:
+
+```bash
+# Multi-agent dynamic fan-out, evidence join, and synthesis
+python -m examples.pattern_multi_agent_fanout.app "Assess a migration to managed queues"
+
+# Deterministic handler and resource tool pattern
+python -m examples.quickstart_tool.app
+
+# Human approval checkpoint and state resumption
+python -m examples.pattern_approval_workflow.app
+
+# Governed research with retrieval and cited synthesis
+python -m examples.pattern_governed_research.app
+```
 
 ## Development
 
