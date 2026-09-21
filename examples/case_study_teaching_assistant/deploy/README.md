@@ -3,7 +3,7 @@
 Build from the repository root so the image can install the runtime and copy the example:
 
 ```bash
-docker build -f examples/virtual_teaching_assistant/Dockerfile \
+docker build -f examples/case_study_teaching_assistant/Dockerfile \
   -t algen-agent-teaching-assistant:latest .
 ```
 

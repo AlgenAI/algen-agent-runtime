@@ -60,7 +60,7 @@ app = build_dashboard_app()
 def main() -> None:
     settings = load_settings((CONFIG_PATH,))
     uvicorn.run(
-        "examples.virtual_teaching_assistant.dashboard:app",
+        "examples.case_study_teaching_assistant.dashboard:app",
         host=settings.api.host,
         port=int(os.getenv("PORT", str(settings.api.port))),
     )

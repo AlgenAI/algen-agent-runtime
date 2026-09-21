@@ -148,5 +148,5 @@ A production adapter should provide:
 - Tenant-scoped deletion and retention jobs
 - Retrieval latency, result count, and selected-source telemetry
 
-The complete runnable example is in `examples/rag_agent` and supports both OpenAI and Mistral for
+The complete runnable example is in `examples/quickstart_rag` and supports both OpenAI and Mistral for
 generation while using local deterministic embeddings by default.

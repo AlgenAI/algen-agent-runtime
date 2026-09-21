@@ -9,10 +9,10 @@ embedding API. Generation uses OpenAI or Mistral:
 
 ```bash
 export OPENAI_API_KEY=...
-python -m examples.rag_agent.app "How much annual leave is available?"
+python -m examples.quickstart_rag.app "How much annual leave is available?"
 
 export MISTRAL_API_KEY=...
-python -m examples.rag_agent.app --provider mistral "When is support available?"
+python -m examples.quickstart_rag.app --provider mistral "When is support available?"
 ```
 
 Documents without `metadata.tenant_id` are shared. Tenant-scoped documents are only visible to

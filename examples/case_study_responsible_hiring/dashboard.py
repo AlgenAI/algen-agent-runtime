@@ -184,7 +184,7 @@ app = create_hiring_app()
 
 def main() -> None:
     uvicorn.run(
-        "examples.hiring_agent.dashboard:app",
+        "examples.case_study_responsible_hiring.dashboard:app",
         host="0.0.0.0",
         port=int(os.getenv("HIRING_AGENT_PORT", "8092")),
         reload=False,

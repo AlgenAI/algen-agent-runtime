@@ -6,7 +6,14 @@ from collections.abc import Sequence
 from copy import deepcopy
 
 from algen_agent_runtime.exceptions.errors import ConflictError
-from algen_agent_runtime.types.contracts import Artifact, Message, RunState
+from algen_agent_runtime.types.contracts import (
+    Artifact,
+    ArtifactDescriptor,
+    ArtifactStatus,
+    Message,
+    RunState,
+    utc_now,
+)
 
 
 class InMemoryRunStore:
@@ -83,6 +90,75 @@ class InMemoryArtifactStore:
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None:
         async with self._lock:
             artifact = self._artifacts.get(artifact_id)
-            if artifact is None or artifact.tenant_id != tenant_id:
+            if (
+                artifact is None
+                or artifact.tenant_id != tenant_id
+                or (artifact.expires_at is not None and artifact.expires_at <= utc_now())
+            ):
                 return None
             return artifact.model_copy(deep=True)
+
+    async def describe(self, artifact_id: str, tenant_id: str) -> ArtifactDescriptor | None:
+        artifact = await self.get(artifact_id, tenant_id)
+        return artifact.descriptor() if artifact else None
+
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        run_id: str | None = None,
+        status: ArtifactStatus | None = None,
+        limit: int = 100,
+    ) -> Sequence[ArtifactDescriptor]:
+        async with self._lock:
+            artifacts = [
+                artifact
+                for artifact in self._artifacts.values()
+                if artifact.tenant_id == tenant_id
+                and (artifact.expires_at is None or artifact.expires_at > utc_now())
+                and (run_id is None or artifact.run_id == run_id)
+                and (status is None or artifact.status == status)
+            ]
+            artifacts.sort(key=lambda artifact: artifact.created_at, reverse=True)
+            return tuple(artifact.descriptor() for artifact in artifacts[:limit])
+
+    async def set_status(
+        self,
+        artifact_id: str,
+        tenant_id: str,
+        status: ArtifactStatus,
+        *,
+        expected_status: ArtifactStatus | None = None,
+    ) -> ArtifactDescriptor | None:
+        async with self._lock:
+            artifact = self._artifacts.get(artifact_id)
+            if (
+                artifact is None
+                or artifact.tenant_id != tenant_id
+                or (artifact.expires_at is not None and artifact.expires_at <= utc_now())
+                or (expected_status is not None and artifact.status is not expected_status)
+            ):
+                return None
+            updated = artifact.model_copy(update={"status": status}, deep=True)
+            self._artifacts[artifact_id] = updated
+            return updated.descriptor()
+
+    async def delete(self, artifact_id: str, tenant_id: str) -> bool:
+        async with self._lock:
+            artifact = self._artifacts.get(artifact_id)
+            if artifact is None or artifact.tenant_id != tenant_id:
+                return False
+            del self._artifacts[artifact_id]
+            return True
+
+    async def purge_expired(self, *, limit: int = 1000) -> int:
+        now = utc_now()
+        async with self._lock:
+            expired = [
+                artifact_id
+                for artifact_id, artifact in self._artifacts.items()
+                if artifact.expires_at is not None and artifact.expires_at <= now
+            ][:limit]
+            for artifact_id in expired:
+                del self._artifacts[artifact_id]
+            return len(expired)

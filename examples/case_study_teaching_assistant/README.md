@@ -33,7 +33,7 @@ Traccia Platform policy enforcement and Runtime guardrails are separate:
 ```bash
 pip install -e '.[dev,traccia]'
 export OPENAI_API_KEY='...'
-python -m examples.virtual_teaching_assistant.dashboard
+python -m examples.case_study_teaching_assistant.dashboard
 ```
 
 Open <http://localhost:8091>. Local mode uses in-memory persistence and development identity headers.
@@ -45,7 +45,7 @@ export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true
 export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__GOVERNANCE_ENABLED=true
 export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__GOVERNANCE_FAIL_OPEN=false
 export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__GOVERNANCE_AGENT_ID=virtual-teaching-assistant
-python -m examples.virtual_teaching_assistant.dashboard
+python -m examples.case_study_teaching_assistant.dashboard
 ```
 
 Create and activate the desired spend policy in Traccia Platform for the same agent ID before the
@@ -55,7 +55,7 @@ request that already completed.
 The CLI uses the same agent and tool contracts:
 
 ```bash
-python -m examples.virtual_teaching_assistant.app \
+python -m examples.case_study_teaching_assistant.app \
   'I missed probability class and have 7 days with 60 minutes daily to catch up. Make a plan.'
 ```
 
@@ -76,7 +76,7 @@ python -m examples.virtual_teaching_assistant.app \
 ## Structure
 
 ```text
-virtual_teaching_assistant/
+case_study_teaching_assistant/
 ├── application/          # Handler, education guardrails, and deterministic teaching tools
 ├── config/agent.yaml     # Local agent, RAG, safety, budget, and telemetry configuration
 ├── config/ecs.yaml       # Production persistence, JWT, Redis cache, and Traccia overlay

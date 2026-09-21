@@ -11,6 +11,8 @@ from algen_agent_runtime.retrieval.contracts import (
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
     Artifact,
+    ArtifactDescriptor,
+    ArtifactStatus,
     Message,
     ModelCapabilities,
     ModelRequest,
@@ -96,6 +98,25 @@ class MemoryStore(Protocol):
 class ArtifactStore(Protocol):
     async def put(self, artifact: Artifact) -> None: ...
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None: ...
+    async def describe(self, artifact_id: str, tenant_id: str) -> ArtifactDescriptor | None: ...
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        run_id: str | None = None,
+        status: ArtifactStatus | None = None,
+        limit: int = 100,
+    ) -> Sequence[ArtifactDescriptor]: ...
+    async def set_status(
+        self,
+        artifact_id: str,
+        tenant_id: str,
+        status: ArtifactStatus,
+        *,
+        expected_status: ArtifactStatus | None = None,
+    ) -> ArtifactDescriptor | None: ...
+    async def delete(self, artifact_id: str, tenant_id: str) -> bool: ...
+    async def purge_expired(self, *, limit: int = 1000) -> int: ...
 
 
 class AuditLog(Protocol):

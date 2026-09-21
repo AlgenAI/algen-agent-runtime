@@ -35,6 +35,30 @@ contracts are explicitly marked experimental during the `0.x` series.
   application hook-provider references.
 - Typed, secret-free workflow resource references for documenting node connections to tools, query
   sources, retrieval indexes, memory, caches, stores, telemetry, and application services.
+- Runtime-owned JSON Schema Draft 2020-12 workflow input and canonical-output contracts with
+  manifest-time schema checks and fail-closed execution validation.
+- Tenant-scoped staged artifacts with optional run association, SHA-256 and size metadata,
+  scan/available/quarantine states, expiry, metadata listing, deletion, bounded purge, HTTP lifecycle
+  endpoints, and a forward PostgreSQL migration.
+- Optional PostgreSQL-metadata/S3-blob artifact storage with server-side encryption, service-side
+  SHA-256 checks, tenant-hashed keys, conditional creation, compensating cleanup, health checks, and
+  an audited compare-and-set `ArtifactScanner` lifecycle service.
+- Runtime-owned in-memory and PostgreSQL multi-agent workflow checkpoint stores with tenant isolation,
+  optimistic versions, manifest fingerprints, pause/resume without completed-node replay, suspended
+  human-wait deadlines, and explicit fail-closed or retry crash recovery.
+- First-class Runtime workflow approval nodes with durable approve/modify/reject decisions,
+  authenticated reviewer attribution, schema-validated parameter modification, bounded expiry,
+  safe rejection propagation, and content-minimal lifecycle events.
+- Exact-version parent/child workflow composition with a trusted registry, typed child input and
+  canonical output, lineage, cycle/depth guards, nested clarification and approval propagation, and
+  checkpoint-first recovery without duplicate child dispatch.
+- Provider-neutral, validated email contracts and a TLS-first SMTP adapter exposed as an
+  idempotency-aware Runtime tool with artifact-only attachments and content-minimal receipts.
+- Shared workflow checkpoint-store conformance coverage plus corruption, ambiguous email delivery,
+  and parent/child crash-recovery failure-injection tests.
+- Updated the responsible-hiring, customer-support, incident-response, and invoice-exception
+  reference workflows to use first-class Runtime approvals and explicit recovery safety instead of
+  clarification-shaped action checkpoints.
 
 ## [0.1.0a1] - Unreleased
 

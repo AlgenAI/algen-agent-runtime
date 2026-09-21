@@ -34,6 +34,7 @@ from algen_agent_runtime.tools.contracts import (
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import RunRequest, RunState, RunStatus, utc_now
+from algen_agent_runtime.workflows import PostgresWorkflowCheckpointStore
 
 
 def test_safe_error_exposes_only_runtime_optional_dependency_guidance() -> None:
@@ -52,6 +53,27 @@ def test_postgres_backends_require_secret_reference() -> None:
         StorageSettings(run_store="postgres", postgres_dsn="postgresql://literal")
 
 
+def test_s3_artifact_store_requires_postgres_bucket_and_safe_endpoint() -> None:
+    with pytest.raises(ValidationError, match="postgres_dsn"):
+        StorageSettings(artifact_store="s3", artifact_s3_bucket="runtime-artifacts")
+    with pytest.raises(ValidationError, match="artifact_s3_bucket"):
+        StorageSettings(artifact_store="s3", postgres_dsn="env://TEST_POSTGRES_DSN")
+    with pytest.raises(ValidationError, match="HTTPS"):
+        StorageSettings(
+            artifact_store="s3",
+            postgres_dsn="env://TEST_POSTGRES_DSN",
+            artifact_s3_bucket="runtime-artifacts",
+            artifact_s3_endpoint_url="http://objects.example.com",
+        )
+    settings = StorageSettings(
+        artifact_store="s3",
+        postgres_dsn="env://TEST_POSTGRES_DSN",
+        artifact_s3_bucket="runtime-artifacts",
+        artifact_s3_endpoint_url="http://127.0.0.1:9000",
+    )
+    assert settings.artifact_s3_addressing_style == "auto"
+
+
 def test_initial_schema_uses_only_algen_agent_runtime_names() -> None:
     directory = Path(__file__).parents[2] / "src/algen_agent_runtime/persistence/migrations"
     initial = (directory / "001_initial.sql").read_text(encoding="utf-8")
@@ -59,6 +81,28 @@ def test_initial_schema_uses_only_algen_agent_runtime_names() -> None:
     assert "agent_core" not in initial + conversations
     assert "algen_agent_runtime_runs" in initial
     assert "algen_agent_runtime_conversation_messages" in conversations
+
+
+def test_artifact_lifecycle_migration_supports_staged_inputs() -> None:
+    directory = Path(__file__).parents[2] / "src/algen_agent_runtime/persistence/migrations"
+    migration = (directory / "006_artifact_lifecycle.sql").read_text(encoding="utf-8")
+    assert "ALTER COLUMN run_id DROP NOT NULL" in migration
+    assert "DROP CONSTRAINT IF EXISTS algen_agent_runtime_artifacts_run_id_fkey" in migration
+    assert "ON DELETE SET NULL" in migration
+    assert "sha256" in migration
+    assert "quarantined" in migration
+    assert "expires_at" in migration
+
+    object_storage = (directory / "007_s3_artifacts.sql").read_text(encoding="utf-8")
+    assert "storage_backend" in object_storage
+    assert "storage_key" in object_storage
+    assert "ALTER COLUMN data DROP NOT NULL" in object_storage
+
+    workflows = (directory / "008_workflow_checkpoints.sql").read_text(encoding="utf-8")
+    assert "algen_agent_runtime_workflow_checkpoints" in workflows
+    assert "version integer NOT NULL" in workflows
+    assert "tenant_id text NOT NULL" in workflows
+    assert "PRIMARY KEY (tenant_id, id)" in workflows
 
 
 def test_container_wires_selected_postgres_stores(
@@ -74,6 +118,7 @@ def test_container_wires_selected_postgres_stores(
                 "audit_store": "postgres",
                 "approval_store": "postgres",
                 "artifact_store": "postgres",
+                "workflow_store": "postgres",
                 "tool_execution_store": "postgres",
                 "postgres_dsn": "env://TEST_POSTGRES_DSN",
             }
@@ -83,6 +128,7 @@ def test_container_wires_selected_postgres_stores(
     assert isinstance(container.runtime.runs, PostgresRunStore)
     assert isinstance(container.events, PostgresEventBus)
     assert isinstance(container.artifacts, PostgresArtifactStore)
+    assert isinstance(container.workflow_checkpoints, PostgresWorkflowCheckpointStore)
     assert any(isinstance(resource, PostgresDatabase) for resource in container.resources)
     assert any(isinstance(resource, AsyncClient) for resource in container.resources)
 

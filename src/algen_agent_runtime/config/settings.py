@@ -6,6 +6,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -49,11 +50,19 @@ class StorageSettings(StrictSettings):
     event_store: Literal["memory", "postgres"] = "memory"
     audit_store: Literal["memory", "postgres"] = "memory"
     approval_store: Literal["memory", "postgres"] = "memory"
-    artifact_store: Literal["memory", "postgres"] = "memory"
+    artifact_store: Literal["memory", "postgres", "s3"] = "memory"
+    workflow_store: Literal["memory", "postgres"] = "memory"
     tool_execution_store: Literal["memory", "postgres"] = "memory"
     conversation_store: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str | None = None
     redis_url: str | None = None
+    artifact_s3_bucket: str | None = None
+    artifact_s3_prefix: str = "algen-agent-runtime/artifacts"
+    artifact_s3_region: str | None = None
+    artifact_s3_endpoint_url: str | None = None
+    artifact_s3_addressing_style: Literal["auto", "path", "virtual"] = "auto"
+    artifact_s3_server_side_encryption: Literal["AES256", "aws:kms"] = "AES256"
+    artifact_s3_kms_key_id: str | None = None
     initialize_schema: bool = True
     postgres_min_pool_size: int = Field(default=1, ge=1)
     postgres_max_pool_size: int = Field(default=10, ge=1)
@@ -68,10 +77,11 @@ class StorageSettings(StrictSettings):
             self.audit_store,
             self.approval_store,
             self.artifact_store,
+            self.workflow_store,
             self.tool_execution_store,
             self.conversation_store,
         }
-        if "postgres" in selected and not self.postgres_dsn:
+        if ("postgres" in selected or self.artifact_store == "s3") and not self.postgres_dsn:
             raise ValueError("postgres-backed stores require postgres_dsn")
         if "redis" in selected and not self.redis_url:
             raise ValueError("redis-backed stores require redis_url")
@@ -81,6 +91,20 @@ class StorageSettings(StrictSettings):
                 raise ValueError(f"{field_name} must be an env:// secret reference")
         if self.postgres_min_pool_size > self.postgres_max_pool_size:
             raise ValueError("postgres_min_pool_size cannot exceed postgres_max_pool_size")
+        if self.artifact_store == "s3" and not (self.artifact_s3_bucket or "").strip():
+            raise ValueError("s3 artifact store requires artifact_s3_bucket")
+        if self.artifact_store == "s3" and not self.artifact_s3_prefix.strip("/"):
+            raise ValueError("artifact_s3_prefix cannot be empty")
+        if self.artifact_store == "s3" and self.artifact_s3_endpoint_url:
+            endpoint = urlparse(self.artifact_s3_endpoint_url)
+            local_http = endpoint.scheme == "http" and endpoint.hostname in {
+                "127.0.0.1",
+                "localhost",
+            }
+            if endpoint.scheme != "https" and not local_http:
+                raise ValueError("artifact_s3_endpoint_url must use HTTPS (HTTP is local-only)")
+        if self.artifact_s3_kms_key_id and self.artifact_s3_server_side_encryption != "aws:kms":
+            raise ValueError("artifact_s3_kms_key_id requires aws:kms server-side encryption")
         return self
 
 
@@ -220,6 +244,7 @@ class ApiSettings(StrictSettings):
         "X-Tenant-ID",
         "X-User-ID",
         "X-Scopes",
+        "X-Artifact-Metadata",
     )
 
     @model_validator(mode="after")

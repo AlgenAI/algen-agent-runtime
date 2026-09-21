@@ -4,6 +4,7 @@ import json
 import re
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
+from copy import deepcopy
 from hashlib import sha256
 from typing import Any
 
@@ -86,6 +87,31 @@ def _tool_arguments(value: Any) -> dict[str, Any]:
     if not isinstance(decoded, Mapping):
         raise TypeError("tool arguments must decode to a JSON object")
     return dict(decoded)
+
+
+def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate ordinary JSON Schema into OpenAI's strict structured-output subset.
+
+    OpenAI requires every object property to be listed in ``required``, including fields that
+    application models normally give defaults. Nullable fields remain nullable through their
+    existing ``anyOf``/``type`` declaration, but must still be emitted by the model.
+    """
+    normalized = deepcopy(dict(schema))
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: visit(item) for key, item in value.items() if key != "default"}
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            result["properties"] = {key: visit(item) for key, item in properties.items()}
+            result["required"] = list(properties)
+            result["additionalProperties"] = False
+        return result
+
+    return visit(normalized)
 
 
 class OpenAICompatibleProvider:

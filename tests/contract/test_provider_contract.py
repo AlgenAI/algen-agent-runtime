@@ -125,6 +125,59 @@ async def test_openai_uses_modern_completion_token_parameter() -> None:
     assert response.message.text_content == "ok"
 
 
+async def test_openai_normalizes_nested_pydantic_schema_for_strict_outputs() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        schema = body["response_format"]["json_schema"]["schema"]
+        assert schema["required"] == ["evidence", "ambiguities", "safe"]
+        assert schema["additionalProperties"] is False
+        assert "default" not in schema["properties"]["ambiguities"]
+        item = schema["$defs"]["Evidence"]
+        assert item["required"] == ["claim", "confidence"]
+        assert item["additionalProperties"] is False
+        assert "default" not in item["properties"]["confidence"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-schema",
+                "model": "gpt-4o",
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            },
+        )
+
+    provider = OpenAIProvider(
+        "env://OPENAI_API_KEY",
+        "gpt-4o",
+        secret_provider=StaticSecrets(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    await provider.generate(
+        ModelRequest(
+            messages=(Message.text(Role.USER, "extract"),),
+            response_schema={
+                "$defs": {
+                    "Evidence": {
+                        "type": "object",
+                        "properties": {
+                            "claim": {"type": "string"},
+                            "confidence": {"type": "number", "default": 0.5},
+                        },
+                    }
+                },
+                "type": "object",
+                "properties": {
+                    "evidence": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/Evidence"},
+                    },
+                    "ambiguities": {"type": "array", "items": {"type": "string"}, "default": []},
+                    "safe": {"type": "boolean", "default": True},
+                },
+            },
+        )
+    )
+
+
 async def test_openai_preserves_legacy_token_parameter_for_older_models() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)

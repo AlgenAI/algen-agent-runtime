@@ -41,10 +41,16 @@ Key decisions:
 3. Plans are strict models with unique IDs and backward-only dependencies. The runtime executes only registered action kinds, enabled tools, and allowed models.
 4. Capability discovery happens before routing. Unhealthy, disallowed, or incapable models are excluded; the router then uses quality and observed latency.
 5. Paused states are durable. Active asyncio tasks are an optimization, not the durable source of
-   truth. Agent turns recover on startup; analytical graphs additionally support PostgreSQL
-   checkpoints and lease-based distributed work claims.
+   truth. Agent turns recover on startup. Multi-agent workflows checkpoint each lifecycle transition,
+   bind recovery to a manifest fingerprint, attribute first-class human approval decisions, and
+   replay only nodes explicitly declared retry-safe. Exact-version child workflows have independent
+   checkpoints linked by parent/root IDs; the parent records child identity before dispatch and
+   reconciles that checkpoint after failure instead of creating a duplicate;
+   analytical graphs additionally support PostgreSQL checkpoints and lease-based distributed claims.
 6. Core storage defaults to isolated in-memory adapters. PostgreSQL can persist every execution
-   record; Redis provides checkpoints and expiring session memory.
+   record; Redis provides checkpoints and expiring session memory. Production artifacts can keep
+   lifecycle metadata in PostgreSQL while encrypted bytes live in S3-compatible object storage;
+   scanners transition pending content through a provider-neutral, audited compare-and-set service.
 7. Diagnostic logs and immutable audit contracts are separate. Both pass through redaction before export.
 8. Observability uses OpenTelemetry contracts. Standard OTLP is built in; the optional Traccia adapter owns only SDK lifecycle and per-run agent identity, leaving runtime instrumentation vendor-neutral.
 9. RAG is a composition of `DocumentIndexer`, `Retriever`, `RetrievalContextBuilder`, and citation-verification contracts. Tenant filtering happens before ranking, retrieved content is marked as untrusted data, and vector-store adapters remain outside orchestration.

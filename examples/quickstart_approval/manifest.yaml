@@ -3,7 +3,7 @@ display_name: "Approval Quickstart"
 tier: quickstart
 status: runnable
 description: >
-  Shows one visible human-input checkpoint and an idempotent apply-or-abort path.
+  Shows one first-class Runtime approval checkpoint and an idempotent apply-or-abort path.
 
 extras: []
 external_services: []

@@ -1,0 +1,21 @@
+id: pattern_child_workflow
+display_name: "Parent/Child Workflow Pattern"
+tier: pattern
+status: runnable
+description: Version-pinned, durable parent/child Runtime workflow composition.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_child_workflow.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_child_workflow.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 10
+deterministic_mock_support: true

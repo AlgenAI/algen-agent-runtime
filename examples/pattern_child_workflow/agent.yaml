@@ -1,0 +1,69 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: composition-observer
+    version: 1.0.0
+    description: Keeps the project Studio-importable while deterministic handlers demonstrate composition
+    system_instructions: Observe the deterministic workflow composition.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    max_steps: 2
+workflows:
+  composed-parent:
+    name: composed-parent
+    version: 1.0.0
+    description: Parent dispatches one version-pinned child workflow
+    hook_provider: examples.pattern_child_workflow.hooks:create_hooks
+    output_schema:
+      type: object
+      required: [status, summary]
+      additionalProperties: false
+      properties:
+        status: {const: completed}
+        summary: {type: string}
+    output_key: child_result
+    nodes:
+      - id: dispatch-child
+        kind: workflow
+        workflow_name: composed-child
+        workflow_version: 1.0.0
+        input_builder: composition.child_input
+        output_key: child_result
+        recovery_policy: fail
+    metadata: {pattern: parent-child-workflow, studio_importable: "true"}
+  composed-child:
+    name: composed-child
+    version: 1.0.0
+    description: Deterministic version-pinned child workflow
+    hook_provider: examples.pattern_child_workflow.hooks:create_hooks
+    input_schema:
+      type: object
+      required: [request]
+      additionalProperties: false
+      properties: {request: {type: string, minLength: 1}}
+    output_schema:
+      type: object
+      required: [status, summary]
+      additionalProperties: false
+      properties:
+        status: {const: completed}
+        summary: {type: string}
+    output_key: result
+    nodes:
+      - id: perform
+        kind: handler
+        handler: composition.perform
+        output_key: result
+        recovery_policy: retry
+    metadata: {pattern: child-workflow, studio_importable: "true"}
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  workflow_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -308,14 +309,60 @@ class ExecutionSummary(StrictModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
+class ArtifactStatus(StrEnum):
+    """Lifecycle state for an uploaded or Runtime-produced artifact."""
+
+    PENDING_SCAN = "pending_scan"
+    AVAILABLE = "available"
+    QUARANTINED = "quarantined"
+
+
+class ArtifactDescriptor(StrictModel):
+    """Artifact metadata safe to return without loading the blob payload."""
+
+    id: str
+    tenant_id: str
+    run_id: str | None = None
+    name: str
+    media_type: str
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: ArtifactStatus = ArtifactStatus.AVAILABLE
+    metadata: dict[str, str] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class Artifact(StrictModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     tenant_id: str
-    run_id: str
+    run_id: str | None = None
     name: str
     media_type: str
     data: bytes
+    size_bytes: int | None = Field(default=None, ge=0)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    status: ArtifactStatus = ArtifactStatus.AVAILABLE
+    metadata: dict[str, str] = Field(default_factory=dict)
+    expires_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def verify_integrity(self) -> Artifact:
+        size = len(self.data)
+        checksum = hashlib.sha256(self.data).hexdigest()
+        if self.size_bytes is not None and self.size_bytes != size:
+            raise ValueError("artifact size_bytes does not match data")
+        if self.sha256 is not None and self.sha256 != checksum:
+            raise ValueError("artifact sha256 does not match data")
+        return self
+
+    def descriptor(self) -> ArtifactDescriptor:
+        return ArtifactDescriptor(
+            **self.model_dump(exclude={"data", "size_bytes", "sha256"}),
+            size_bytes=len(self.data),
+            sha256=hashlib.sha256(self.data).hexdigest(),
+        )
 
 
 class Citation(StrictModel):

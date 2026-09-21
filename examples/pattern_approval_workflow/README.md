@@ -1,10 +1,11 @@
 # Approval-gated workflow pattern
 
-This runnable Runtime DAG performs a synthetic CRM lookup, creates a structured proposal, pauses once
-for human input, and applies or rejects an idempotent synthetic update.
+This runnable Runtime DAG performs a synthetic CRM lookup, creates a structured proposal, pauses at a
+first-class approval node, and applies approved or modified parameters through an idempotent synthetic
+update. Rejection safely skips the update.
 
 ```text
-lookup -> propose -> human checkpoint -> update
+lookup -> propose -> approval -> update
 ```
 
 Run `python -m examples.pattern_approval_workflow.app` or import `agent.yaml` into Studio. The example

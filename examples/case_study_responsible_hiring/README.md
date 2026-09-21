@@ -23,8 +23,7 @@ and UI live in this example.
 
 ```text
 PDF/text -> deterministic inspection -> Gatekeeper -> integrity + screening (parallel)
-         -> bias observer -> deterministic recommendation gate -> communication draft
-         -> human decision
+         -> bias observer -> Runtime human approval -> communication draft
 ```
 
 The Screening agent retrieves the versioned job description from pgvector using the sanitized resume
@@ -32,17 +31,22 @@ as the semantic query. Raw resume text and candidate names are not embedded. The
 candidate name only in the restricted relational application record and sends identity-free text to
 screening agents.
 
+Workflow version `1.1.0` uses Runtime's first-class approval node before candidate communication and
+marks only side-effect-free model and join stages retry-safe. Rejecting the checkpoint blocks the
+communication descendant; the example still leaves the final employment decision in application
+domain state.
+
 ## Run locally
 
 Requirements: Python 3.12+, PostgreSQL with pgvector, an OpenAI API key, and Docker for the bundled
 database.
 
 ```bash
-pip install -e '.[dev,hiring]'
+pip3 install -e '.[dev,hiring]'
 docker compose up -d postgres
 export OPENAI_API_KEY='...'
 export PGVECTOR_DSN='postgresql://postgres:postgres@localhost:5433/algen_agent_runtime'
-python -m examples.hiring_agent.dashboard
+python3 -m examples.case_study_responsible_hiring.dashboard
 ```
 
 Open [http://localhost:8092](http://localhost:8092). The UI includes clean, prompt-injection,

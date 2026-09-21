@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,13 @@ from algen_agent_runtime.tools.contracts import (
     ToolExecutionStatus,
     ToolResult,
 )
-from algen_agent_runtime.types.contracts import Artifact, Message, RunState
+from algen_agent_runtime.types.contracts import (
+    Artifact,
+    ArtifactDescriptor,
+    ArtifactStatus,
+    Message,
+    RunState,
+)
 
 
 class PostgresDatabase:
@@ -208,27 +215,123 @@ class PostgresArtifactStore:
     async def put(self, artifact: Artifact) -> None:
         if len(artifact.data) > self._max_bytes:
             raise ValueError(f"artifact exceeds {self._max_bytes} byte limit")
+        descriptor = artifact.descriptor()
         await self._database.execute(
             "INSERT INTO algen_agent_runtime_artifacts "
-            "(id, tenant_id, run_id, name, media_type, data, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "(id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
+            "metadata, expires_at, created_at, storage_backend, storage_key) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, "
+            "'postgres', NULL)",
             artifact.id,
             artifact.tenant_id,
             artifact.run_id,
             artifact.name,
             artifact.media_type,
             artifact.data,
+            descriptor.size_bytes,
+            descriptor.sha256,
+            artifact.status.value,
+            json.dumps(artifact.metadata),
+            artifact.expires_at,
             artifact.created_at,
         )
 
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None:
         row = await self._database.fetchrow(
-            "SELECT id, tenant_id, run_id, name, media_type, data, created_at "
-            "FROM algen_agent_runtime_artifacts WHERE id=$1 AND tenant_id=$2",
+            "SELECT id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
+            "metadata, expires_at, created_at FROM algen_agent_runtime_artifacts "
+            "WHERE id=$1 AND tenant_id=$2 AND storage_backend='postgres' "
+            "AND (expires_at IS NULL OR expires_at > now())",
             artifact_id,
             tenant_id,
         )
-        return Artifact.model_validate(dict(row)) if row else None
+        if not row:
+            return None
+        payload = dict(row)
+        payload["metadata"] = dict(payload["metadata"] or {})
+        return Artifact.model_validate(payload)
+
+    async def describe(self, artifact_id: str, tenant_id: str) -> ArtifactDescriptor | None:
+        row = await self._database.fetchrow(
+            "SELECT id, tenant_id, run_id, name, media_type, size_bytes, sha256, status, "
+            "metadata, expires_at, created_at FROM algen_agent_runtime_artifacts "
+            "WHERE id=$1 AND tenant_id=$2 AND storage_backend='postgres' "
+            "AND (expires_at IS NULL OR expires_at > now())",
+            artifact_id,
+            tenant_id,
+        )
+        return self._descriptor(row) if row else None
+
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        run_id: str | None = None,
+        status: ArtifactStatus | None = None,
+        limit: int = 100,
+    ) -> Sequence[ArtifactDescriptor]:
+        rows = await self._database.fetch(
+            "SELECT id, tenant_id, run_id, name, media_type, size_bytes, sha256, status, "
+            "metadata, expires_at, created_at FROM algen_agent_runtime_artifacts "
+            "WHERE tenant_id=$1 AND storage_backend='postgres' "
+            "AND ($2::text IS NULL OR run_id=$2) "
+            "AND ($3::text IS NULL OR status=$3) "
+            "AND (expires_at IS NULL OR expires_at > now()) "
+            "ORDER BY created_at DESC LIMIT $4",
+            tenant_id,
+            run_id,
+            status.value if status else None,
+            limit,
+        )
+        return tuple(self._descriptor(row) for row in rows)
+
+    async def set_status(
+        self,
+        artifact_id: str,
+        tenant_id: str,
+        status: ArtifactStatus,
+        *,
+        expected_status: ArtifactStatus | None = None,
+    ) -> ArtifactDescriptor | None:
+        row = await self._database.fetchrow(
+            "UPDATE algen_agent_runtime_artifacts SET status=$3 "
+            "WHERE id=$1 AND tenant_id=$2 AND storage_backend='postgres' "
+            "AND ($4::text IS NULL OR status=$4) "
+            "AND (expires_at IS NULL OR expires_at > now()) "
+            "RETURNING id, tenant_id, run_id, name, media_type, size_bytes, sha256, status, "
+            "metadata, expires_at, created_at",
+            artifact_id,
+            tenant_id,
+            status.value,
+            expected_status.value if expected_status else None,
+        )
+        return self._descriptor(row) if row else None
+
+    async def delete(self, artifact_id: str, tenant_id: str) -> bool:
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_artifacts "
+            "WHERE id=$1 AND tenant_id=$2 AND storage_backend='postgres'",
+            artifact_id,
+            tenant_id,
+        )
+        return str(result) != "DELETE 0"
+
+    async def purge_expired(self, *, limit: int = 1000) -> int:
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_artifacts WHERE id IN "
+            "(SELECT id FROM algen_agent_runtime_artifacts "
+            "WHERE storage_backend='postgres' "
+            "AND expires_at IS NOT NULL AND expires_at <= now() "
+            "ORDER BY expires_at LIMIT $1)",
+            limit,
+        )
+        return int(result.rsplit(" ", 1)[-1])
+
+    @staticmethod
+    def _descriptor(row: Any) -> ArtifactDescriptor:
+        payload = dict(row)
+        payload["metadata"] = dict(payload["metadata"] or {})
+        return ArtifactDescriptor.model_validate(payload)
 
 
 class PostgresToolExecutionStore:

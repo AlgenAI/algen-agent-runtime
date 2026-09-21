@@ -20,11 +20,15 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
 
 - **Provider-neutral execution:** route across local and hosted model providers through typed contracts.
 - **Governance in the execution path:** enforce policies, approvals, budgets, verification, and tenant boundaries around every run.
-- **Durable and observable:** persist checkpoints, events, conversations, approvals, artifacts, and tool-execution records with optional PostgreSQL and Redis adapters.
+- **Durable and observable:** persist agent and multi-agent workflow checkpoints, events, conversations, approvals, artifacts, and tool-execution records with optional PostgreSQL and Redis adapters.
+- **Governed artifact inputs:** stage tenant-scoped files with checksums, scan/quarantine state,
+  expiry, metadata-only listing, and bounded retention before attaching them to a run.
 - **Application-friendly:** use the same runtime as an embedded Python library or through its FastAPI REST/SSE service.
-- **Runtime-owned multi-agent DAGs:** declare agent, dynamic map-agent, deterministic-handler,
+- **Runtime-owned multi-agent DAGs:** declare JSON-Schema inputs/outputs, agent, dynamic map-agent, deterministic-handler,
   predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
-  lifecycle events.
+  lifecycle events; compose exact-version child workflows without duplicating their topology.
+- **Governed communications:** send validated, idempotency-aware email through a provider-neutral
+  contract and TLS-first SMTP adapter while keeping attachments behind Runtime artifact references.
 - **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
 - **Offline-testable:** the deterministic mock provider supports tests without credentials, network access, or paid model calls.
 
@@ -44,6 +48,15 @@ environment-specific credentials. Marketplace consumers import that package into
 configuration and deployment. Secrets and live environment values never belong in a marketplace
 artifact.
 
+Typed workflows can reference staged file IDs rather than embedding bytes. See the
+[artifact lifecycle](docs/artifacts.md) for upload, checksum, quarantine, retention, and storage
+boundaries.
+
+Workflows can also call exact, trusted child workflow versions through a `WorkflowRegistry`; Runtime
+preserves correlation, lineage, checkpoints, pause/approval propagation, and recovery. See
+[multi-agent workflows](docs/multi-agent-workflows.md) and the importable
+`examples/pattern_child_workflow`. For governed outbound messages, see [email](docs/email.md).
+
 ## Status and support
 
 | Area | Status |
@@ -53,6 +66,7 @@ artifact.
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
+| Artifact storage | Memory, PostgreSQL, and encrypted S3-compatible object storage |
 | Distributed execution | Experimental; see the production-readiness roadmap |
 | Public API compatibility | Experimental during `0.x`; see the [API stability policy](docs/api-stability.md) |
 | Community support | Best effort; see [SUPPORT.md](SUPPORT.md) |
@@ -70,6 +84,8 @@ Optional integrations are installed as extras, for example:
 ```bash
 python -m pip install --pre 'algen-agent-runtime[postgres,redis,auth]'
 ```
+
+Use `algen-agent-runtime[object-storage]` for the PostgreSQL-metadata/S3-blob artifact adapter.
 
 For development from a checkout:
 
@@ -162,7 +178,9 @@ async def main() -> None:
     hooks = create_hooks(container=container, manifest=manifest)
     try:
         executor = MultiAgentWorkflowExecutor(
-            AlgenAgentRuntimeClient(container.runtime), hooks
+            AlgenAgentRuntimeClient(container.runtime),
+            hooks,
+            store=container.workflow_checkpoints,
         )
         state = await executor.run(
             manifest,
@@ -272,7 +290,8 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Governance | Policies, budgets, redaction, network controls, human-in-the-loop decisions |
 | Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |
 | Analytics | Typed analytical DAGs, application-registered nodes, secret-safe query sources, semantic layers, governance and evaluation gates |
-| Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, clarification pauses, typed resource references, handlers, correlation, and lifecycle events |
+| Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, exact-version child composition, durable clarification and approval pause/resume, explicit crash recovery, typed resources, correlation, and lifecycle events |
+| Communications | Validated email contracts, artifact references, idempotency-aware tool execution, and a TLS-first SMTP adapter |
 | Observability | Structured logs, OpenTelemetry, optional Traccia integration |
 | Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters |
 
@@ -302,7 +321,8 @@ providers remain importable by Algen Agent Studio. Import an example directoryâ€
 or `config/agent.yaml`â€”and Studio preserves the Runtime `WorkflowManifest` exactly. Credential-free
 examples use deterministic mock providers; service-backed case studies retain explicit prerequisites.
 
-The workflow examples cover human clarification checkpoints, bounded repair, dynamic fan-out,
+The workflow examples cover first-class approve/modify/reject checkpoints, human clarification,
+bounded repair, exact-version parent/child dispatch, dynamic fan-out,
 parallel branches, joins, framework adapters, evaluation gates, and secret-free links to tools,
 retrieval, memory, services, storage, and telemetry.
 

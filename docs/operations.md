@@ -1,6 +1,11 @@
 # Operations guide
 
-Run `algen-agent-runtime` with `ALGEN_AGENT_RUNTIME_CONFIG` set to one or more OS-path-separated YAML files. Put secrets in referenced environment variables. PostgreSQL can persist run checkpoints, conversation memory, events, audits, approvals, artifacts, analytical graphs, worker leases, and the tool-execution ledger. Redis can alternatively store run checkpoints, expiring conversation memory, and scoped cache entries. See the [production-readiness roadmap](production-readiness.md) for the remaining limits and [Analytical Runtime](analytical-runtime.md) for the graph, method, model-service, governance, evaluation, and worker contracts.
+Run `algen-agent-runtime` with `ALGEN_AGENT_RUNTIME_CONFIG` set to one or more OS-path-separated YAML files. Put secrets in referenced environment variables. PostgreSQL can persist run and multi-agent workflow checkpoints, conversation memory, events, audits, approvals, bounded artifact payloads, analytical graphs, worker leases, and the tool-execution ledger. Redis can alternatively store run checkpoints, expiring conversation memory, and scoped cache entries. See the [artifact lifecycle](artifacts.md), [production-readiness roadmap](production-readiness.md), and [Analytical Runtime](analytical-runtime.md) for their respective contracts and limits.
+
+For large or production artifact payloads, keep lifecycle metadata in PostgreSQL and configure the
+S3-compatible adapter documented in [Artifact lifecycle](artifacts.md). Use workload identity rather
+than static access keys, require bucket encryption, restrict the role to the configured bucket/prefix,
+and grant `artifacts:scan` only to scanner workers or audited operators.
 
 ## Durable single-node configuration
 
@@ -17,6 +22,7 @@ storage:
   artifact_store: postgres
   tool_execution_store: postgres
   conversation_store: postgres
+  workflow_store: postgres
   postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
   initialize_schema: true
   postgres_min_pool_size: 1
@@ -70,6 +76,31 @@ The schema runner records applied files transactionally. FastAPI startup initial
 recovers non-paused incomplete runs. Completed tool calls return their persisted result; an
 interrupted side-effecting call becomes `indeterminate` and requires reconciliation rather than
 automatic replay. Approval and clarification waits remain paused across restarts.
+
+Multi-agent workflows use a separate Runtime checkpoint store because their state spans several
+child agent runs. Runtime provides `list_recoverable()` and `executor.recover(...)`; the embedding
+host must reconstruct the trusted manifest and hook registry during startup. Recovery never guesses
+whether an interrupted node is safe: nodes default to `recovery_policy: fail` and must opt into
+`retry`. Do not enable retry for an external side effect without stable idempotency and a provider
+reconciliation path.
+
+Parent/child composition requires the host to rebuild a `WorkflowRegistry` containing the exact
+trusted manifest versions and hook registries before recovery. Each child has its own checkpoint and
+inherits tenant, user, conversation, turn, root, and correlation lineage. Runtime rejects recursive
+ancestry and excessive nesting. Alerts and support tooling should display both parent and child IDs.
+
+First-class workflow approval nodes persist the proposed secret-free review context and parameters,
+expiry, and final attributed decision in that checkpoint store. Configure `workflow_store: postgres`
+when approvals must survive process replacement. Runtime fails an expired approval closed when it is
+decided or recovered; schedule deployment-owned recovery/maintenance if expiry must take effect while
+there is no operator or startup traffic. Alert on approval age and never place secrets or expiring
+download URLs in approval state.
+
+For outbound email, use the contract and SMTP setup in [Email](email.md). Resolve SMTP credentials
+from the deployment secret manager, require TLS outside explicitly permitted loopback development,
+and persist the tool-execution ledger. A transport failure after submission is indeterminate; do not
+retry automatically. Reconcile with the provider using the stable Message-ID/idempotency key before
+an operator resolves or repeats the send.
 
 Conversation presentation is independent of telemetry. Use `business` for end-user deployments and
 `developer` for controlled diagnostic environments. `show_technical_details` governs typed SQL/raw
@@ -237,8 +268,10 @@ export TRACCIA_API_KEY='resolved-by-your-secret-manager'
 ```
 
 Library users should call `await container.astart()` before accepting traffic and
-`await container.aclose()` during shutdown. These initialize durable stores, recover runs, drain
-active work, close database clients, and flush pending telemetry.
+`await container.aclose()` during shutdown. These initialize durable stores, recover ordinary agent
+runs, drain active work, close database clients, and flush pending telemetry. Application hosts must
+add multi-agent workflow recovery after startup because only the application can safely construct
+its trusted workflow hooks.
 
 If runs succeed but do not appear at the ingestion endpoint, first confirm the process executes `container.close()` or FastAPI lifespan shutdown. Set `TRACCIA_DEBUG=true` temporarily to surface exporter diagnostics, verify that the workspace key matches the configured endpoint, and check outbound access to the endpoint. Keep the flush timeout above the deployment's expected exporter latency.
 

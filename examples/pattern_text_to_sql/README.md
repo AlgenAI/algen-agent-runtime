@@ -8,7 +8,7 @@ From the repository root:
 
 ```bash
 export OPENAI_API_KEY='your-key-from-a-secret-manager'
-python -m examples.text_to_sql_agent.app \
+python -m examples.pattern_text_to_sql.app \
   "Show completed revenue by customer, highest first"
 ```
 
@@ -16,7 +16,7 @@ To use Mistral AI instead:
 
 ```bash
 export MISTRAL_API_KEY='your-key-from-a-secret-manager'
-python -m examples.text_to_sql_agent.app \
+python -m examples.pattern_text_to_sql.app \
   --provider mistral \
   "Show completed revenue by customer, highest first"
 ```
@@ -36,7 +36,7 @@ Prompt, completion, and tool payload attributes are disabled by default. To incl
 The default question is used when no argument is supplied:
 
 ```bash
-python -m examples.text_to_sql_agent.app
+python -m examples.pattern_text_to_sql.app
 ```
 
 ## Safety properties

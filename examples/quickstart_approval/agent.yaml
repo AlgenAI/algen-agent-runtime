@@ -12,7 +12,7 @@ workflows:
   approval-quickstart:
     name: approval-quickstart
     version: 1.0.0
-    description: Proposal, human checkpoint, and deterministic apply-or-abort
+    description: Proposal, first-class approval node, and deterministic apply-or-abort
     hook_provider: examples.quickstart_approval.hooks:create_hooks
     nodes:
       - id: propose
@@ -21,20 +21,30 @@ workflows:
         input_builder: approval.propose
         output_schema_hook: approval.proposal_schema
         output_key: proposal
-        pause:
-          when: {source: proposal.status, operator: equals, value: needs_approval}
-          question_from: proposal.question
-          state_from: [proposal]
-          occurrences_from: clarifications
-          maximum_occurrences: 1
+      - id: approve
+        kind: approval
+        depends_on: [propose]
+        output_key: approval
+        approval:
+          prompt: Review this synthetic change before it is applied.
+          review_from: [proposal.change]
+          parameters_from: proposal.parameters
+          parameters_schema:
+            type: object
+            required: [change]
+            properties: {change: {type: string, minLength: 1}}
+            additionalProperties: false
+          allow_modification: true
+          rejection_policy: skip_dependents
+          expires_seconds: 1800
       - id: decide
         kind: handler
-        depends_on: [propose]
+        depends_on: [approve]
         handler: approval.apply
         output_key: result
         resources:
           - {kind: tool, name: synthetic.change, access: write, description: Idempotent synthetic write}
-    metadata: {pattern: human-checkpoint, studio_importable: "true"}
+    metadata: {pattern: first-class-approval, studio_importable: "true"}
 storage:
   run_store: memory
   memory_store: memory
@@ -44,5 +54,5 @@ storage:
   artifact_store: memory
   tool_execution_store: memory
   conversation_store: memory
+  workflow_store: memory
 telemetry: {enabled: false}
-

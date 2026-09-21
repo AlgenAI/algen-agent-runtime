@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +12,7 @@ from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.workflows import (
     MultiAgentWorkflowExecutor,
     WorkflowHookRegistry,
+    WorkflowRegistry,
     WorkflowStatus,
 )
 from examples.pattern_provider_fallback.app import deterministic_fallback
@@ -23,6 +25,7 @@ PORTABLE_EXAMPLES = (
     "examples/pattern_governed_research/agent.yaml",
     "examples/pattern_langgraph_governance/agent.yaml",
     "examples/pattern_multi_agent_fanout/agent.yaml",
+    "examples/pattern_child_workflow/agent.yaml",
     "examples/pattern_evaluation_gate/agent.yaml",
     "examples/reference_customer_support/config/agent.yaml",
     "examples/reference_incident_response/config/agent.yaml",
@@ -65,21 +68,56 @@ async def test_portable_example_workflow_runs_without_paid_services(relative_pat
     settings = load_settings((ROOT / relative_path,))
     container = build_container(settings)
     try:
+        registry = WorkflowRegistry()
+        for configured in settings.workflows.values():
+            assert configured.hook_provider
+            registry.register(configured, _hooks(configured.hook_provider))
         for workflow in settings.workflows.values():
             assert workflow.hook_provider
-            state = await MultiAgentWorkflowExecutor(
+            executor = MultiAgentWorkflowExecutor(
                 AlgenAgentRuntimeClient(container.runtime),
-                _hooks(workflow.hook_provider),
-            ).run(
+                registry.resolve(workflow.name, workflow.version)[1],
+                store=container.workflow_checkpoints,
+                workflow_registry=registry,
+            )
+            initial_values: dict[str, Any] = {
+                "input": "Review this synthetic request",
+                "question": "Review this synthetic request",
+                "clarifications": [("Approved?", "approve")],
+            }
+            if workflow.input_schema is not None:
+                initial_values = {
+                    "inputs": {
+                        key: "Review this synthetic request"
+                        for key in workflow.input_schema.get("required", [])
+                    },
+                    "clarifications": [],
+                }
+            state = await executor.run(
                 workflow,
-                {
-                    "input": "Review this synthetic request",
-                    "question": "Review this synthetic request",
-                    "clarifications": [("Approved?", "approve")],
-                },
+                initial_values,
                 tenant_id="example-tenant",
                 user_id="example-user",
             )
+            while state.status in {
+                WorkflowStatus.AWAITING_INPUT,
+                WorkflowStatus.AWAITING_APPROVAL,
+            }:
+                if state.status is WorkflowStatus.AWAITING_APPROVAL:
+                    state = await executor.decide_approval(
+                        workflow,
+                        state.id,
+                        tenant_id="example-tenant",
+                        user_id="example-reviewer",
+                        decision="approved",
+                    )
+                else:
+                    state = await executor.resume(
+                        workflow,
+                        state.id,
+                        tenant_id="example-tenant",
+                        values={"clarifications": [("Approved?", "approve")]},
+                    )
             assert state.status == WorkflowStatus.COMPLETED, state.error
             assert all(node.attempts >= 0 for node in state.nodes.values())
     finally:
@@ -115,7 +153,11 @@ async def test_human_checkpoint_examples_pause_without_a_decision(
             tenant_id="example-tenant",
             user_id="example-user",
         )
-        assert state.status == WorkflowStatus.AWAITING_INPUT
-        assert state.pause and state.pause["question"]
+        assert state.status in {
+            WorkflowStatus.AWAITING_INPUT,
+            WorkflowStatus.AWAITING_APPROVAL,
+        }
+        assert state.pause
+        assert state.pause.get("question") or state.pause.get("prompt")
     finally:
         container.close()

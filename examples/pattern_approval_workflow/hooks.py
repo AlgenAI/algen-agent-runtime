@@ -6,11 +6,17 @@ from algen_agent_runtime.workflows import WorkflowHookRegistry
 
 SCHEMA = {
     "type": "object",
-    "required": ["status", "question", "requested_change"],
+    "required": ["requested_change", "parameters"],
     "properties": {
-        "status": {"type": "string"},
-        "question": {"type": ["string", "null"]},
         "requested_change": {"type": "string"},
+        "parameters": {
+            "type": "object",
+            "required": ["customer_id", "credit_enabled"],
+            "properties": {
+                "customer_id": {"type": "string"},
+                "credit_enabled": {"type": "boolean"},
+            },
+        },
     },
 }
 
@@ -24,22 +30,22 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     )
 
     def proposal(context: Any) -> dict[str, Any]:
-        answered = bool(context.state.values.get("clarifications"))
         return {
-            "status": "ready" if answered else "needs_clarification",
-            "question": None if answered else "Approve enabling the synthetic account credit?",
             "requested_change": str(context.state.values["question"]),
+            "parameters": {
+                "customer_id": context.state.values["customer"]["customer_id"],
+                "credit_enabled": True,
+            },
         }
 
     hooks.register_builder("crm.propose", proposal)
 
     def update(context: Any) -> dict[str, Any]:
-        answers = context.state.values.get("clarifications", [])
-        decision = str(answers[-1][1]).strip().lower() if answers else "reject"
-        approved = decision in {"approve", "approved", "yes"}
+        parameters = context.state.values["approval"]["parameters"]
         return {
-            "customer_id": context.state.values["customer"]["customer_id"],
-            "status": "updated" if approved else "rejected",
+            "customer_id": parameters["customer_id"],
+            "credit_enabled": parameters["credit_enabled"],
+            "status": "updated",
             "idempotency_key": f"crm:{context.state.id}",
         }
 

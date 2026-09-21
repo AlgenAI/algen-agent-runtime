@@ -21,7 +21,7 @@ agents:
 workflows:
   incident-response:
     name: incident-response
-    version: 1.0.0
+    version: 1.1.0
     description: Classify, collect telemetry in parallel, analyze, plan, checkpoint, and report
     hook_provider: examples.reference_incident_response.application.workflow:create_hooks
     maximum_concurrency: 4
@@ -32,11 +32,13 @@ workflows:
         input_builder: incident.classify
         output_schema_hook: incident.classification_schema
         output_key: classification
+        recovery_policy: retry
       - id: logs
         kind: handler
         depends_on: [classify]
         handler: incident.logs
         output_key: logs
+        recovery_policy: retry
         resources:
           - {kind: service, name: synthetic-logs, access: read, description: Synthetic log API}
       - id: metrics
@@ -44,6 +46,7 @@ workflows:
         depends_on: [classify]
         handler: incident.metrics
         output_key: metrics
+        recovery_policy: retry
         resources:
           - {kind: service, name: synthetic-metrics, access: read, description: Synthetic metrics API}
       - id: evidence
@@ -51,6 +54,7 @@ workflows:
         depends_on: [logs, metrics]
         output_key: evidence
         join_strategy: json_array
+        recovery_policy: retry
       - id: analyze
         kind: agent
         depends_on: [evidence]
@@ -58,6 +62,7 @@ workflows:
         input_builder: incident.analyze
         output_schema_hook: incident.analysis_schema
         output_key: analysis
+        recovery_policy: retry
       - id: plan
         kind: agent
         depends_on: [analyze]
@@ -65,15 +70,20 @@ workflows:
         input_builder: incident.plan
         output_schema_hook: incident.plan_schema
         output_key: plan
-        pause:
-          when: {source: plan.status, operator: equals, value: awaiting_approval}
-          question_from: plan.question
-          state_from: [classification, analysis, plan]
-          occurrences_from: clarifications
-          maximum_occurrences: 1
+        recovery_policy: retry
+      - id: approve-remediation
+        kind: approval
+        depends_on: [plan]
+        output_key: remediation_approval
+        approval:
+          prompt: Approve the bounded synthetic remediation plan before execution.
+          review_from: [classification, analysis, plan]
+          allow_modification: false
+          rejection_policy: skip_dependents
+          expires_seconds: 3600
       - id: execute
         kind: handler
-        depends_on: [plan]
+        depends_on: [approve-remediation]
         handler: incident.execute
         output_key: execution
         resources:
@@ -85,6 +95,7 @@ workflows:
         input_builder: incident.report
         output_schema_hook: incident.report_schema
         output_key: report
+        recovery_policy: retry
     metadata: {domain: incident-response, studio_importable: "true", synthetic_only: "true"}
 storage:
   run_store: memory
@@ -96,4 +107,3 @@ storage:
   tool_execution_store: memory
   conversation_store: memory
 telemetry: {enabled: false}
-

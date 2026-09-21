@@ -15,7 +15,7 @@ agents:
 workflows:
   invoice-exception-review:
     name: invoice-exception-review
-    version: 1.0.0
+    version: 1.1.0
     description: Screen, extract, parallel reconcile, route, checkpoint, and recommend
     hook_provider: examples.reference_invoice_exceptions.application.workflow:create_hooks
     maximum_concurrency: 4
@@ -24,6 +24,7 @@ workflows:
         kind: handler
         handler: invoice.screen
         output_key: document_security
+        recovery_policy: retry
         resources:
           - {kind: service, name: document-security, access: invoke, description: Hostile-document screening}
       - id: extract
@@ -35,11 +36,13 @@ workflows:
         validator: invoice.extract_validator
         max_repairs: 1
         output_key: invoice
+        recovery_policy: retry
       - id: po-match
         kind: handler
         depends_on: [extract]
         handler: invoice.po_match
         output_key: po_match
+        recovery_policy: retry
         resources:
           - {kind: service, name: synthetic-erp, access: read, description: Synthetic purchase orders}
       - id: duplicate-check
@@ -47,6 +50,7 @@ workflows:
         depends_on: [extract]
         handler: invoice.duplicate
         output_key: duplicate_check
+        recovery_policy: retry
         resources:
           - {kind: storage, name: invoice-ledger, access: read, description: Synthetic invoice ledger}
       - id: evidence
@@ -54,6 +58,7 @@ workflows:
         depends_on: [po-match, duplicate-check]
         output_key: reconciliation
         join_strategy: json_array
+        recovery_policy: retry
       - id: route
         kind: agent
         depends_on: [evidence]
@@ -61,15 +66,20 @@ workflows:
         input_builder: invoice.route
         output_schema_hook: invoice.route_schema
         output_key: decision
-        pause:
-          when: {source: decision.status, operator: equals, value: needs_review}
-          question_from: decision.question
-          state_from: [invoice, reconciliation, decision]
-          occurrences_from: clarifications
-          maximum_occurrences: 1
+        recovery_policy: retry
+      - id: approve-recommendation
+        kind: approval
+        depends_on: [route]
+        output_key: recommendation_approval
+        approval:
+          prompt: Review the invoice evidence and exception route before recording a recommendation.
+          review_from: [invoice, reconciliation, decision]
+          allow_modification: false
+          rejection_policy: skip_dependents
+          expires_seconds: 86400
       - id: recommend
         kind: handler
-        depends_on: [route]
+        depends_on: [approve-recommendation]
         handler: invoice.recommend
         output_key: recommendation
         resources:
@@ -85,4 +95,3 @@ storage:
   tool_execution_store: memory
   conversation_store: memory
 telemetry: {enabled: false}
-

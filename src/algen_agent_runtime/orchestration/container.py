@@ -94,6 +94,7 @@ from algen_agent_runtime.persistence.postgres import (
     PostgresToolExecutionStore,
 )
 from algen_agent_runtime.persistence.redis import RedisMemoryStore, RedisRunStore
+from algen_agent_runtime.persistence.s3 import S3ArtifactStore
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
@@ -127,6 +128,11 @@ from algen_agent_runtime.types.interfaces import (
     VectorStore,
 )
 from algen_agent_runtime.verification.verifiers import VerificationService
+from algen_agent_runtime.workflows import (
+    InMemoryWorkflowCheckpointStore,
+    PostgresWorkflowCheckpointStore,
+    WorkflowCheckpointStore,
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,9 @@ class Container:
     artifacts: ArtifactStore
     events: EventPublisher
     conversations: ConversationService
+    workflow_checkpoints: WorkflowCheckpointStore = field(
+        default_factory=InMemoryWorkflowCheckpointStore
+    )
     cache: CacheService = field(default_factory=lambda: CacheService(NullCacheStore()))
     retrievers: RetrieverRegistry = field(default_factory=RetrieverRegistry)
     semantics: SemanticLayerRegistry = field(default_factory=SemanticLayerRegistry)
@@ -267,11 +276,14 @@ def build_container(
         storage.audit_store,
         storage.approval_store,
         storage.artifact_store,
+        storage.workflow_store,
         storage.tool_execution_store,
         storage.conversation_store,
         settings.analytical_execution.graph_store,
         settings.distributed_execution.queue_backend,
     }
+    if storage.artifact_store == "s3":
+        selected_backends.add("postgres")
     database = (
         PostgresDatabase(
             _resolve_environment_reference(storage.postgres_dsn, "postgres_dsn", environment),
@@ -372,10 +384,27 @@ def build_container(
         memory = RedisMemoryStore(redis_client, retention_seconds=storage.memory_retention_seconds)
     else:
         memory = InMemoryMemoryStore()
-    artifacts: ArtifactStore = (
-        PostgresArtifactStore(database, settings.security.max_artifact_bytes)
-        if storage.artifact_store == "postgres"
-        else InMemoryArtifactStore(settings.security.max_artifact_bytes)
+    artifacts: ArtifactStore
+    if storage.artifact_store == "postgres":
+        artifacts = PostgresArtifactStore(database, settings.security.max_artifact_bytes)
+    elif storage.artifact_store == "s3":
+        artifacts = S3ArtifactStore(
+            database,
+            bucket=storage.artifact_s3_bucket or "",
+            prefix=storage.artifact_s3_prefix,
+            region=storage.artifact_s3_region,
+            endpoint_url=storage.artifact_s3_endpoint_url,
+            addressing_style=storage.artifact_s3_addressing_style,
+            server_side_encryption=storage.artifact_s3_server_side_encryption,
+            kms_key_id=storage.artifact_s3_kms_key_id,
+            max_bytes=settings.security.max_artifact_bytes,
+        )
+    else:
+        artifacts = InMemoryArtifactStore(settings.security.max_artifact_bytes)
+    workflow_checkpoints: WorkflowCheckpointStore = (
+        PostgresWorkflowCheckpointStore(database)
+        if storage.workflow_store == "postgres"
+        else InMemoryWorkflowCheckpointStore()
     )
     events: EventPublisher = (
         PostgresEventBus(database) if storage.event_store == "postgres" else InMemoryEventBus()
@@ -640,6 +669,7 @@ def build_container(
         artifacts=artifacts,
         events=events,
         conversations=conversations,
+        workflow_checkpoints=workflow_checkpoints,
         cache=cache,
         retrievers=retrievers,
         observability=observability,
@@ -652,7 +682,13 @@ def build_container(
         resources=tuple(
             dict.fromkeys(
                 resource
-                for resource in (database, redis_client, cache_redis_client, http_client)
+                for resource in (
+                    database,
+                    redis_client,
+                    cache_redis_client,
+                    artifacts if storage.artifact_store == "s3" else None,
+                    http_client,
+                )
                 if resource is not None
             )
         ),

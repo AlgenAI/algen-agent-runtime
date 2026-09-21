@@ -3,6 +3,8 @@ from algen_agent_runtime.workflows.contracts import (
     OutputValidator,
     PayloadBuilder,
     WorkflowAgentRunner,
+    WorkflowApprovalDecision,
+    WorkflowApprovalRule,
     WorkflowEventSink,
     WorkflowExecutionState,
     WorkflowHookContext,
@@ -17,14 +19,28 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowResourceReference,
     WorkflowStatus,
 )
-from algen_agent_runtime.workflows.engine import MultiAgentWorkflowExecutor, WorkflowHookRegistry
+from algen_agent_runtime.workflows.engine import (
+    MultiAgentWorkflowExecutor,
+    WorkflowHookRegistry,
+    WorkflowRegistry,
+)
+from algen_agent_runtime.workflows.store import (
+    InMemoryWorkflowCheckpointStore,
+    PostgresWorkflowCheckpointStore,
+    WorkflowCheckpointStore,
+)
 
 __all__ = [
+    "InMemoryWorkflowCheckpointStore",
     "MultiAgentWorkflowExecutor",
     "NodeHandler",
     "OutputValidator",
     "PayloadBuilder",
+    "PostgresWorkflowCheckpointStore",
     "WorkflowAgentRunner",
+    "WorkflowApprovalDecision",
+    "WorkflowApprovalRule",
+    "WorkflowCheckpointStore",
     "WorkflowEventSink",
     "WorkflowExecutionState",
     "WorkflowHookContext",
@@ -36,6 +52,7 @@ __all__ = [
     "WorkflowNodeStatus",
     "WorkflowPauseRule",
     "WorkflowPredicate",
+    "WorkflowRegistry",
     "WorkflowResourceKind",
     "WorkflowResourceReference",
     "WorkflowStatus",

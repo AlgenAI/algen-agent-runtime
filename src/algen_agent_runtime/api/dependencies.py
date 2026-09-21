@@ -32,6 +32,11 @@ def require_scope(identity: Principal, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"missing scope {scope}")
 
 
+def require_any_scope(identity: Principal, *scopes: str) -> None:
+    if "*" not in identity.scopes and identity.scopes.isdisjoint(scopes):
+        raise HTTPException(status_code=403, detail=f"missing one of scopes: {', '.join(scopes)}")
+
+
 def principal_dependency(settings: ApiSettings) -> Any:
     if settings.auth_mode == "development_headers":
         return principal

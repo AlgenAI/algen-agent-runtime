@@ -48,6 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29,<1"]
+object-storage = ["asyncpg>=0.29,<1", "boto3>=1.43,<2"]
 pgvector = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1"]
 talk-to-data = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1", "traccia>=0.1.28,<0.2"]
 hiring = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1", "PyMuPDF>=1.24,<2", "python-multipart>=0.0.9,<1", "traccia>=0.1.28,<0.2"]
@@ -134,5 +135,5 @@ strict = true
 packages = ["algen_agent_runtime"]
 
 [[tool.mypy.overrides]]
-module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "fitz"]
+module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "fitz", "boto3", "botocore", "botocore.*"]
 ignore_missing_imports = true

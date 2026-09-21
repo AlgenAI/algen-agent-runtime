@@ -31,5 +31,10 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 - Disable raw provider metadata and content telemetry unless explicitly reviewed.
 - Treat Traccia and secondary OTLP destinations as data processors; review residency, retention, endpoint allowlists, SDK upgrades, and any automatic instrumentation before enabling them.
 - Set retention, deletion, artifact-size, request-size, and memory-size limits.
+- Treat uploaded artifacts as untrusted: keep them `pending_scan`, deny public download or workflow
+  consumption until a deployment-owned scanner marks them `available`, and isolate quarantined data.
+- Treat email as controlled data egress: validate addresses and headers against injection, cap
+  recipients and artifact attachments, keep BCC out of headers, require TLS, require policy/approval
+  where appropriate, and never replay an ambiguous send without provider reconciliation.
 - Run dependency, container, and plugin supply-chain scanning.
 - Test cancellation, restore, approval expiry, incident redaction, and audit delivery.

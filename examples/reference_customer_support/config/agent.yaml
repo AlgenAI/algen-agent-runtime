@@ -20,7 +20,7 @@ agents:
 workflows:
   customer-support-resolution:
     name: customer-support-resolution
-    version: 1.0.0
+    version: 1.1.0
     description: Triage, parallel evidence, response drafting, human checkpoint, and idempotent action
     hook_provider: examples.reference_customer_support.application.workflow:create_hooks
     maximum_concurrency: 4
@@ -37,11 +37,13 @@ workflows:
           state_from: [triage]
           occurrences_from: clarifications
           maximum_occurrences: 2
+        recovery_policy: retry
       - id: knowledge
         kind: handler
         depends_on: [triage]
         handler: support.knowledge
         output_key: knowledge
+        recovery_policy: retry
         resources:
           - {kind: retrieval, name: tenant-knowledge, access: read, description: Tenant-scoped policy evidence}
       - id: entitlement
@@ -49,6 +51,7 @@ workflows:
         depends_on: [triage]
         handler: support.entitlement
         output_key: entitlement
+        recovery_policy: retry
         resources:
           - {kind: service, name: synthetic-billing, access: read, description: Synthetic entitlement service}
       - id: draft
@@ -58,9 +61,20 @@ workflows:
         input_builder: support.draft
         output_schema_hook: support.response_schema
         output_key: response
+        recovery_policy: retry
+      - id: approve-action
+        kind: approval
+        depends_on: [draft]
+        output_key: action_approval
+        approval:
+          prompt: Approve the proposed customer response before recording the CRM action.
+          review_from: [triage, entitlement, response]
+          allow_modification: false
+          rejection_policy: skip_dependents
+          expires_seconds: 86400
       - id: action
         kind: handler
-        depends_on: [draft]
+        depends_on: [approve-action]
         handler: support.action
         output_key: action_result
         resources:
@@ -70,6 +84,7 @@ workflows:
         depends_on: [draft, action]
         output_key: resolution
         join_strategy: json_array
+        recovery_policy: retry
     metadata: {domain: customer-support, studio_importable: "true"}
 storage:
   run_store: memory

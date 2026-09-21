@@ -246,7 +246,7 @@ agents:
 workflows:
   responsible-hiring-review:
     name: responsible-hiring-review
-    version: 1.0.0
+    version: 1.1.0
     description: Security gate, parallel evidence reviews, bias verification, and human-reviewable communication
     hook_provider: examples.case_study_responsible_hiring.application.workflow_hooks:create_hooks
     maximum_concurrency: 4
@@ -258,6 +258,7 @@ workflows:
         input_builder: hiring.gate_input
         output_schema_hook: hiring.gate_schema
         output_key: gate
+        recovery_policy: retry
         resources:
           - {kind: service, name: document-security, access: read, description: Deterministic document findings}
       - id: fraud-review
@@ -267,6 +268,7 @@ workflows:
         input_builder: hiring.fraud_input
         output_schema_hook: hiring.fraud_schema
         output_key: fraud
+        recovery_policy: retry
         run_if: {source: gate.safe_to_continue, operator: truthy}
         resources:
           - {kind: retrieval, name: resume_templates, access: read, description: Synthetic similarity corpus}
@@ -277,6 +279,7 @@ workflows:
         input_builder: hiring.screen_input
         output_schema_hook: hiring.screen_schema
         output_key: screening
+        recovery_policy: retry
         run_if: {source: gate.safe_to_continue, operator: truthy}
         resources:
           - {kind: retrieval, name: job_requirements, access: read, description: Versioned job evidence}
@@ -287,16 +290,29 @@ workflows:
         input_builder: hiring.bias_input
         output_schema_hook: hiring.bias_schema
         output_key: bias
+        recovery_policy: retry
+      - id: human-review
+        kind: approval
+        depends_on: [bias-review]
+        output_key: human_review
+        approval:
+          prompt: Review the evidence, screening recommendation, and bias findings before candidate communication.
+          review_from: [gate, fraud, screening, bias]
+          allow_modification: false
+          rejection_policy: skip_dependents
+          expires_seconds: 86400
       - id: communication
         kind: agent
-        depends_on: [bias-review]
+        depends_on: [human-review]
         agent: hiring-communications
         input_builder: hiring.communication_input
         output_schema_hook: hiring.communication_schema
         output_key: communication
+        recovery_policy: retry
       - id: result
         kind: join
         depends_on: [gatekeeper, communication]
         output_key: assessment
         join_strategy: json_array
+        recovery_policy: retry
     metadata: {domain: responsible-hiring, human_decision_owner: "true", studio_importable: "true"}

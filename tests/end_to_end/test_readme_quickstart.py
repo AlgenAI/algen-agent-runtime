@@ -56,9 +56,7 @@ async def test_readme_multi_agent_workflow_quickstart() -> None:
     manifest = settings.workflows["multi-agent-fanout"]
     hooks = create_hooks(container=container, manifest=manifest)
     try:
-        executor = MultiAgentWorkflowExecutor(
-            AlgenAgentRuntimeClient(container.runtime), hooks
-        )
+        executor = MultiAgentWorkflowExecutor(AlgenAgentRuntimeClient(container.runtime), hooks)
         state = await executor.run(
             manifest,
             {"question": "Assess a migration to managed queues"},
@@ -70,4 +68,3 @@ async def test_readme_multi_agent_workflow_quickstart() -> None:
         )
     finally:
         container.close()
-

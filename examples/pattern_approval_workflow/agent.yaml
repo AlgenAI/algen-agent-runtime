@@ -16,7 +16,7 @@ workflows:
   approval-gated-crm:
     name: approval-gated-crm
     version: 1.0.0
-    description: Lookup, proposal, bounded human checkpoint, and idempotent synthetic CRM update
+    description: Lookup, proposal, first-class human approval, and idempotent synthetic CRM update
     hook_provider: examples.pattern_approval_workflow.hooks:create_hooks
     nodes:
       - id: lookup
@@ -32,15 +32,27 @@ workflows:
         input_builder: crm.propose
         output_schema_hook: crm.proposal_schema
         output_key: proposal
-        pause:
-          when: {source: proposal.status, operator: equals, value: needs_clarification}
-          question_from: proposal.question
-          state_from: [customer, proposal]
-          occurrences_from: clarifications
-          maximum_occurrences: 1
+      - id: approve
+        kind: approval
+        depends_on: [propose]
+        output_key: approval
+        approval:
+          prompt: Review the proposed synthetic CRM update.
+          review_from: [customer, proposal.requested_change]
+          parameters_from: proposal.parameters
+          parameters_schema:
+            type: object
+            required: [customer_id, credit_enabled]
+            properties:
+              customer_id: {type: string}
+              credit_enabled: {type: boolean}
+            additionalProperties: false
+          allow_modification: true
+          rejection_policy: skip_dependents
+          expires_seconds: 1800
       - id: update
         kind: handler
-        depends_on: [propose]
+        depends_on: [approve]
         handler: crm.update
         output_key: result
         resources:
@@ -55,4 +67,5 @@ storage:
   artifact_store: memory
   tool_execution_store: memory
   conversation_store: memory
+  workflow_store: memory
 telemetry: {enabled: false}

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 
+from jsonschema import Draft202012Validator, SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime.types.contracts import utc_now
@@ -15,12 +17,15 @@ class WorkflowNodeKind(StrEnum):
     HANDLER = "handler"
     PREDICATE = "predicate"
     JOIN = "join"
+    APPROVAL = "approval"
+    WORKFLOW = "workflow"
 
 
 class WorkflowStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     AWAITING_INPUT = "awaiting_input"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -33,6 +38,8 @@ class WorkflowNodeStatus(StrEnum):
     FAILED = "failed"
     SKIPPED = "skipped"
     CANCELLED = "cancelled"
+    AWAITING_APPROVAL = "awaiting_approval"
+    REJECTED = "rejected"
 
 
 class WorkflowResourceKind(StrEnum):
@@ -76,6 +83,43 @@ class WorkflowPauseRule(BaseModel):
     maximum_occurrences: int = Field(default=1, ge=0, le=20)
 
 
+class WorkflowApprovalRule(BaseModel):
+    """Human review contract for a first-class approval node."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    prompt: str = Field(min_length=1, max_length=2000)
+    review_from: tuple[str, ...] = ()
+    parameters_from: str | None = None
+    parameters_schema: dict[str, Any] | None = None
+    allow_modification: bool = False
+    rejection_policy: Literal["skip_dependents", "continue"] = "skip_dependents"
+    expires_seconds: int = Field(default=3600, ge=1, le=604_800)
+
+    @model_validator(mode="after")
+    def validate_parameters(self) -> WorkflowApprovalRule:
+        if self.parameters_schema is not None:
+            try:
+                Draft202012Validator.check_schema(self.parameters_schema)
+            except SchemaError as exc:
+                raise ValueError(
+                    f"approval parameters_schema is not a valid JSON Schema: {exc.message}"
+                ) from exc
+            if self.parameters_from is None:
+                raise ValueError("approval parameters_schema requires parameters_from")
+        return self
+
+
+class WorkflowApprovalDecision(BaseModel):
+    """Durable result produced by a workflow approval node."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approved", "modified", "rejected"]
+    parameters: dict[str, Any] | None = None
+    decided_by: str = Field(min_length=1, max_length=256)
+    comment: str | None = Field(default=None, max_length=4000)
+    decided_at: datetime = Field(default_factory=utc_now)
+
+
 class WorkflowNode(BaseModel):
     """One Runtime-owned workflow node; domain behavior is named, never embedded code."""
 
@@ -86,6 +130,8 @@ class WorkflowNode(BaseModel):
     output_key: str
     agent: str | None = None
     handler: str | None = None
+    workflow_name: str | None = None
+    workflow_version: str | None = None
     input_builder: str | None = None
     input_template: str | None = None
     metadata_builder: str | None = None
@@ -97,11 +143,13 @@ class WorkflowNode(BaseModel):
     max_fan_out: int = Field(default=1, ge=1, le=128)
     run_if: WorkflowPredicate | None = None
     pause: WorkflowPauseRule | None = None
+    approval: WorkflowApprovalRule | None = None
     condition: WorkflowPredicate | None = None
     join_strategy: Literal["concat", "json_array", "first"] = "concat"
     max_iterations: int = Field(default=1, ge=1, le=20)
     loop_until: WorkflowPredicate | None = None
     failure_policy: Literal["fail_workflow", "skip_dependents", "continue"] = "skip_dependents"
+    recovery_policy: Literal["fail", "retry"] = "fail"
     resources: tuple[WorkflowResourceReference, ...] = ()
     metadata: dict[str, str] = Field(default_factory=dict)
 
@@ -120,10 +168,27 @@ class WorkflowNode(BaseModel):
             raise ValueError("predicate workflow nodes require condition")
         elif self.kind == WorkflowNodeKind.JOIN and not self.depends_on:
             raise ValueError("join workflow nodes require dependencies")
+        elif self.kind == WorkflowNodeKind.APPROVAL and self.approval is None:
+            raise ValueError("approval workflow nodes require approval")
+        elif self.kind == WorkflowNodeKind.WORKFLOW:
+            if not self.workflow_name or not self.workflow_version:
+                raise ValueError("workflow nodes require workflow_name and workflow_version")
+            if not (self.input_builder or self.input_template):
+                raise ValueError("workflow nodes require input_builder or input_template")
         if self.kind == WorkflowNodeKind.MAP_AGENT and not self.map_from:
             raise ValueError("map_agent workflow nodes require map_from")
         if self.kind != WorkflowNodeKind.MAP_AGENT and self.map_from is not None:
             raise ValueError("map_from is supported only by map_agent nodes")
+        if self.kind != WorkflowNodeKind.APPROVAL and self.approval is not None:
+            raise ValueError("approval is supported only by approval nodes")
+        if self.kind == WorkflowNodeKind.APPROVAL and self.pause is not None:
+            raise ValueError("approval nodes cannot also declare a clarification pause")
+        if self.kind != WorkflowNodeKind.WORKFLOW and (
+            self.workflow_name is not None or self.workflow_version is not None
+        ):
+            raise ValueError(
+                "workflow_name and workflow_version are supported only by workflow nodes"
+            )
         return self
 
 
@@ -134,6 +199,20 @@ class WorkflowManifest(BaseModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     version: str
     description: str = ""
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema for the caller-supplied value stored at state.values['inputs']."
+        ),
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional JSON Schema for the declared workflow output_key.",
+    )
+    output_key: str | None = Field(
+        default=None,
+        description="State value validated and exposed as the canonical workflow output.",
+    )
     hook_provider: str | None = Field(
         default=None,
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$",
@@ -176,6 +255,25 @@ class WorkflowManifest(BaseModel):
 
         for node_id in ids:
             visit(node_id)
+        for field_name, schema in (
+            ("input_schema", self.input_schema),
+            ("output_schema", self.output_schema),
+        ):
+            if schema is None:
+                continue
+            try:
+                Draft202012Validator.check_schema(schema)
+            except SchemaError as exc:
+                raise ValueError(
+                    f"workflow {field_name} is not a valid JSON Schema: {exc.message}"
+                ) from exc
+        declared_outputs = {node.output_key for node in self.nodes}
+        if self.output_schema is not None and self.output_key is None:
+            raise ValueError("workflow output_schema requires output_key")
+        if self.output_key is not None and self.output_key not in declared_outputs:
+            raise ValueError(
+                f"workflow output_key {self.output_key!r} is not produced by any workflow node"
+            )
         return self
 
 
@@ -185,9 +283,11 @@ class WorkflowNodeExecution(BaseModel):
     status: WorkflowNodeStatus = WorkflowNodeStatus.PENDING
     attempts: int = 0
     run_ids: list[str] = Field(default_factory=list)
+    child_workflow_ids: list[str] = Field(default_factory=list)
+    child_workflow_inputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     error: str | None = None
-    started_at: Any | None = None
-    completed_at: Any | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class WorkflowExecutionState(BaseModel):
@@ -195,17 +295,26 @@ class WorkflowExecutionState(BaseModel):
     id: str
     manifest_name: str
     manifest_version: str
+    manifest_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     tenant_id: str
     user_id: str
     conversation_id: str | None = None
     turn_id: str | None = None
+    correlation_id: str | None = None
+    parent_workflow_id: str | None = None
+    parent_workflow_node_id: str | None = None
+    root_workflow_id: str | None = None
+    workflow_depth: int = Field(default=0, ge=0, le=32)
+    workflow_ancestry: tuple[str, ...] = ()
+    version: int = Field(default=0, ge=0)
     status: WorkflowStatus = WorkflowStatus.PENDING
     values: dict[str, Any] = Field(default_factory=dict)
     nodes: dict[str, WorkflowNodeExecution] = Field(default_factory=dict)
     pause: dict[str, Any] | None = None
     error: str | None = None
-    created_at: Any = Field(default_factory=utc_now)
-    updated_at: Any = Field(default_factory=utc_now)
+    deadline_at: datetime = Field(default_factory=lambda: utc_now() + timedelta(seconds=300))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class WorkflowHookContext(BaseModel):

@@ -24,6 +24,20 @@ Use `remote_tool` or an equivalent typed adapter. Configure a fixed endpoint or 
 deny private-network access by default, avoid redirects across trust boundaries, propagate the
 idempotency key, and bound response size and time.
 
+## Email
+
+Use `communications.email.EmailMessage` and `email_tool` rather than creating an application-local
+send contract. Addresses, headers, recipients, subject/body size, attachments, and provider receipts
+are validated and content-minimal. Attachments are tenant-authorized Runtime artifact references;
+never accept arbitrary filesystem paths. The first adapter, `SmtpEmailSender`, requires TLS by
+default, expects credentials resolved by the deployment secret boundary, keeps BCC out of message
+headers, and derives a stable Message-ID from the Runtime idempotency key.
+
+Email is an external keyed side effect. Keep Runtime's durable tool-execution ledger enabled in
+production. A provider timeout after submission is indeterminate and must be reconciled rather than
+automatically replayed. Delivery approval, suppression, bounce/complaint handling, reply ingestion,
+provider OAuth, and campaign policy remain application or connector responsibilities.
+
 ## Databases and query sources
 
 Use `database_tool` with a deployment-owned async handler. Prefer read-only, parameterized queries
@@ -44,6 +58,15 @@ approval, artifact, tool-execution, and conversation records; use Redis where su
 stores. Connection values remain `env://` references. Declare memory/cache/storage resources on the
 workflow nodes that consume them.
 
+For files and binary connector output, store bytes through `ArtifactStore` and pass only artifact IDs
+through messages or workflow values. Preserve tenant scope, checksum, lifecycle state, expiry, and
+size limits. User uploads begin `pending_scan`; a deployment-owned scanner marks them `available` or
+`quarantined`. PostgreSQL is suitable only for bounded payloads; use the optional S3 adapter for
+large blobs while retaining PostgreSQL lifecycle metadata. Configure bucket, prefix, region,
+server-side encryption, and optional KMS key—never static access keys. Implement scanners behind
+`ArtifactScanner` and invoke `ArtifactLifecycleService` so the pending transition is compare-and-set
+and audited; do not update status directly in application domain code.
+
 ## Telemetry
 
 Runtime supports OpenTelemetry and optional Traccia. Keep content capture off unless explicitly
@@ -56,4 +79,3 @@ required and authorized, redact PII, and declare telemetry resources with `acces
 - Data analyst: model provider + schema retrieval + read-only query source + SQL verifier.
 - Research DAG: planner + bounded retrieval fan-out + join + citation verifier.
 - Support workflow: tenant retrieval + CRM read + approval-gated ticket/billing write + durable runs.
-

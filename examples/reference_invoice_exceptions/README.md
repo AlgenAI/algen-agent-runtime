@@ -3,11 +3,12 @@
 A synthetic accounts-payable workflow:
 
 ```text
-document screen -> extraction -> [PO match || duplicate check] -> join -> policy route -> checkpoint -> recommendation
+document screen -> extraction -> [PO match || duplicate check] -> join -> policy route -> approval -> recommendation
 ```
 
-The extractor has a structured schema and bounded repair. A documented amount variance causes a human
-checkpoint. The terminal handler creates an idempotent recommendation and never executes payment.
+The extractor has a structured schema and bounded repair. Runtime always presents the evidence and
+exception route at a first-class approval checkpoint before recording a recommendation. The terminal
+handler creates an idempotent recommendation and never executes payment.
 Run `python -m examples.reference_invoice_exceptions.app` or import this folder into Studio.
 
 Production use requires reviewed document security, calibrated extraction confidence, immutable

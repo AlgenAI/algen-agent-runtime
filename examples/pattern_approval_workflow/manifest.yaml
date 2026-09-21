@@ -3,7 +3,7 @@ display_name: "Approval-Gated Workflow"
 tier: pattern
 status: runnable
 description: >
-  Demonstrates proposal, bounded human clarification, resume, and idempotent synthetic CRM update.
+  Demonstrates a first-class approval node and idempotent synthetic CRM update.
 
 extras: []
 external_services: []

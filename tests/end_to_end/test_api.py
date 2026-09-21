@@ -79,6 +79,63 @@ async def test_api_enforces_tenant_identity() -> None:
     assert response.status_code == 401
 
 
+async def test_artifact_lifecycle_api_is_tenant_scoped() -> None:
+    container = make_container()
+    transport = httpx.ASGITransport(app=create_app(AppSettings(), container))
+    headers = {
+        "x-tenant-id": "tenant",
+        "x-user-id": "user",
+        "x-scopes": "runs:read runs:write artifacts:scan",
+        "x-artifact-metadata": '{"purpose":"candidate_resume"}',
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/v1/artifacts?name=candidate.pdf&media_type=application%2Fpdf",
+            headers=headers,
+            content=b"resume",
+        )
+        assert created.status_code == 201
+        artifact = created.json()
+        assert artifact["status"] == "pending_scan"
+        assert artifact["size_bytes"] == 6
+        assert artifact["metadata"] == {"purpose": "candidate_resume"}
+
+        pending = await client.get(f"/v1/artifacts/{artifact['id']}", headers=headers)
+        assert pending.status_code == 409
+
+        listed = await client.get("/v1/artifacts", headers=headers)
+        assert [item["id"] for item in listed.json()] == [artifact["id"]]
+
+        run_writer = {**headers, "x-scopes": "runs:read runs:write"}
+        forbidden = await client.patch(
+            f"/v1/artifacts/{artifact['id']}/status",
+            headers=run_writer,
+            json={"status": "available"},
+        )
+        assert forbidden.status_code == 403
+
+        updated = await client.patch(
+            f"/v1/artifacts/{artifact['id']}/status",
+            headers=headers,
+            json={"status": "available"},
+        )
+        assert updated.json()["status"] == "available"
+        audit_events = await container.runtime.audits.list("tenant", artifact["id"])
+        assert audit_events[-1].action == "artifact.status.override"
+
+        downloaded = await client.get(f"/v1/artifacts/{artifact['id']}", headers=headers)
+        assert downloaded.content == b"resume"
+        assert downloaded.headers["x-artifact-status"] == "available"
+        assert len(downloaded.headers["x-artifact-sha256"]) == 64
+
+        other_tenant = {**headers, "x-tenant-id": "other"}
+        missing = await client.get(f"/v1/artifacts/{artifact['id']}", headers=other_tenant)
+        assert missing.status_code == 404
+
+        deleted = await client.delete(f"/v1/artifacts/{artifact['id']}", headers=headers)
+        assert deleted.status_code == 204
+
+
 async def test_cors_preflight_allows_dashboard_identity_headers() -> None:
     settings = AppSettings.model_validate(
         {
@@ -95,12 +152,15 @@ async def test_cors_preflight_allows_dashboard_identity_headers() -> None:
             headers={
                 "origin": "http://localhost:5173",
                 "access-control-request-method": "POST",
-                "access-control-request-headers": ("content-type,x-tenant-id,x-user-id,x-scopes"),
+                "access-control-request-headers": (
+                    "content-type,x-tenant-id,x-user-id,x-scopes,x-artifact-metadata"
+                ),
             },
         )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "x-artifact-metadata" in response.headers["access-control-allow-headers"].lower()
     allowed = response.headers["access-control-allow-headers"].lower()
     assert "x-tenant-id" in allowed
     assert "x-user-id" in allowed

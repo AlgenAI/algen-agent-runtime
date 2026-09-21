@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,11 +16,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime import __version__
-from algen_agent_runtime.api.dependencies import Principal, principal_dependency, require_scope
+from algen_agent_runtime.api.dependencies import (
+    Principal,
+    principal_dependency,
+    require_any_scope,
+    require_scope,
+)
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import ConversationEvent, ConversationStatus
 from algen_agent_runtime.conversations.feedback import FeedbackRating
-from algen_agent_runtime.events.contracts import RunEvent
+from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     ConflictError,
@@ -26,7 +33,14 @@ from algen_agent_runtime.exceptions.errors import (
 )
 from algen_agent_runtime.observability.setup import configure_logging, configure_telemetry
 from algen_agent_runtime.orchestration.container import Container, build_container
-from algen_agent_runtime.types.contracts import AgentDefinition, RequestOverrides, RunRequest
+from algen_agent_runtime.types.contracts import (
+    AgentDefinition,
+    Artifact,
+    ArtifactStatus,
+    RequestOverrides,
+    RunRequest,
+    utc_now,
+)
 
 
 class CreateRunBody(BaseModel):
@@ -50,6 +64,11 @@ class ApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: str
     modified_parameters: dict[str, Any] | None = None
+
+
+class ArtifactStatusBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: ArtifactStatus
 
 
 class CreateConversationBody(BaseModel):
@@ -132,7 +151,12 @@ def create_app(
     @app.middleware("http")
     async def payload_limit(request: Request, call_next: Any) -> Response:
         length = int(request.headers.get("content-length", "0") or 0)
-        if length > resolved.security.max_request_bytes:
+        maximum = (
+            resolved.security.max_artifact_bytes
+            if request.method == "POST" and request.url.path == "/v1/artifacts"
+            else resolved.security.max_request_bytes
+        )
+        if length > maximum:
             return JSONResponse(status_code=413, content={"detail": "request payload too large"})
         return cast(Response, await call_next(request))
 
@@ -194,7 +218,7 @@ def create_app(
         request: Request,
         identity: Principal = identity_dependency,
     ) -> StreamingResponse:
-        require_scope(identity, "runs:read")
+        require_any_scope(identity, "artifacts:read", "runs:read")
         await dependencies.runtime.status(run_id, identity.tenant_id)
         last_id = int(request.headers.get("last-event-id", "0") or 0)
 
@@ -212,18 +236,136 @@ def create_app(
             generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
         )
 
+    @app.post("/v1/artifacts", status_code=status.HTTP_201_CREATED)
+    async def create_artifact(
+        request: Request,
+        name: str,
+        media_type: str = "application/octet-stream",
+        run_id: str | None = None,
+        expires_in_seconds: int | None = None,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        require_any_scope(identity, "artifacts:write", "runs:write")
+        if not name.strip() or len(name) > 255 or any(char in name for char in "\r\n"):
+            raise HTTPException(status_code=422, detail="invalid artifact name")
+        if expires_in_seconds is not None and not 60 <= expires_in_seconds <= 31_536_000:
+            raise HTTPException(
+                status_code=422,
+                detail="expires_in_seconds must be between 60 and 31536000",
+            )
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > resolved.security.max_artifact_bytes:
+                raise HTTPException(status_code=413, detail="artifact payload too large")
+        metadata_header = request.headers.get("x-artifact-metadata", "{}")
+        try:
+            metadata = json.loads(metadata_header)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="invalid x-artifact-metadata JSON") from exc
+        if not isinstance(metadata, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
+        ):
+            raise HTTPException(
+                status_code=422, detail="artifact metadata must be a string-to-string object"
+            )
+        artifact = Artifact(
+            tenant_id=identity.tenant_id,
+            run_id=run_id,
+            name=name.strip(),
+            media_type=media_type,
+            data=bytes(data),
+            status=ArtifactStatus.PENDING_SCAN,
+            metadata=metadata,
+            expires_at=(
+                utc_now() + timedelta(seconds=expires_in_seconds)
+                if expires_in_seconds is not None
+                else None
+            ),
+        )
+        await dependencies.artifacts.put(artifact)
+        return artifact.descriptor().model_dump(mode="json")
+
+    @app.get("/v1/artifacts")
+    async def list_artifacts(
+        run_id: str | None = None,
+        artifact_status: ArtifactStatus | None = None,
+        limit: int = 100,
+        identity: Principal = identity_dependency,
+    ) -> list[dict[str, Any]]:
+        require_any_scope(identity, "artifacts:read", "runs:read")
+        if not 1 <= limit <= 1000:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+        artifacts = await dependencies.artifacts.list(
+            identity.tenant_id, run_id=run_id, status=artifact_status, limit=limit
+        )
+        return [artifact.model_dump(mode="json") for artifact in artifacts]
+
+    @app.get("/v1/artifacts/{artifact_id}/metadata")
+    async def read_artifact_metadata(
+        artifact_id: str, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_any_scope(identity, "artifacts:read", "runs:read")
+        artifact = await dependencies.artifacts.describe(artifact_id, identity.tenant_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        return artifact.model_dump(mode="json")
+
+    @app.patch("/v1/artifacts/{artifact_id}/status")
+    async def update_artifact_status(
+        artifact_id: str,
+        body: ArtifactStatusBody,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        require_scope(identity, "artifacts:scan")
+        artifact = await dependencies.artifacts.set_status(
+            artifact_id, identity.tenant_id, body.status
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        await dependencies.runtime.audits.append(
+            AuditEvent(
+                action="artifact.status.override",
+                outcome=body.status.value,
+                tenant_id=identity.tenant_id,
+                actor_id=identity.user_id,
+                resource_id=artifact_id,
+                metadata={"sha256": artifact.sha256, "size_bytes": artifact.size_bytes},
+            )
+        )
+        return artifact.model_dump(mode="json")
+
+    @app.delete("/v1/artifacts/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_artifact(
+        artifact_id: str, identity: Principal = identity_dependency
+    ) -> Response:
+        require_any_scope(identity, "artifacts:write", "runs:write")
+        if not await dependencies.artifacts.delete(artifact_id, identity.tenant_id):
+            raise HTTPException(status_code=404, detail="artifact not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.get("/v1/artifacts/{artifact_id}")
     async def read_artifact(
         artifact_id: str, identity: Principal = identity_dependency
     ) -> Response:
-        require_scope(identity, "runs:read")
+        require_any_scope(identity, "artifacts:read", "runs:read")
         artifact = await dependencies.artifacts.get(artifact_id, identity.tenant_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail="artifact not found")
+        if artifact.status is not ArtifactStatus.AVAILABLE:
+            raise HTTPException(
+                status_code=409,
+                detail=f"artifact is not available ({artifact.status.value})",
+            )
+        descriptor = artifact.descriptor()
         return Response(
             artifact.data,
             media_type=artifact.media_type,
-            headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{artifact.name}"',
+                "X-Artifact-Sha256": descriptor.sha256,
+                "X-Artifact-Status": artifact.status.value,
+            },
         )
 
     @app.post("/v1/conversations", status_code=status.HTTP_201_CREATED)

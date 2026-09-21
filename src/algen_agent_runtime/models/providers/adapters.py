@@ -8,7 +8,10 @@ from typing import Any
 import httpx
 
 from algen_agent_runtime.exceptions.errors import ProviderError
-from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
+from algen_agent_runtime.models.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    openai_strict_json_schema,
+)
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     FinishReason,
@@ -44,6 +47,10 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         payload = super()._payload(request)
+        if request.response_schema:
+            payload["response_format"]["json_schema"]["schema"] = openai_strict_json_schema(
+                request.response_schema
+            )
         model = str(payload.get("model", "")).lower()
         uses_completion_limit = model.startswith(("gpt-5", "o1", "o3", "o4"))
         if uses_completion_limit and "max_tokens" in payload:
@@ -83,6 +90,14 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
 
     async def _auth_headers(self) -> dict[str, str]:
         return {"api-key": await self._secrets.get(self._key_reference or "")}
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        if request.response_schema:
+            payload["response_format"]["json_schema"]["schema"] = openai_strict_json_schema(
+                request.response_schema
+            )
+        return payload
 
 
 class AnthropicProvider(OpenAICompatibleProvider):
