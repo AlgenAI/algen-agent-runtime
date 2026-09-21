@@ -136,6 +136,8 @@ async def test_openai_normalizes_nested_pydantic_schema_for_strict_outputs() -> 
         assert item["required"] == ["claim", "confidence"]
         assert item["additionalProperties"] is False
         assert "default" not in item["properties"]["confidence"]
+        assert "minLength" not in item["properties"]["claim"]
+        assert schema["properties"]["safe"]["enum"] == [True]
         return httpx.Response(
             200,
             json={
@@ -159,7 +161,7 @@ async def test_openai_normalizes_nested_pydantic_schema_for_strict_outputs() -> 
                     "Evidence": {
                         "type": "object",
                         "properties": {
-                            "claim": {"type": "string"},
+                            "claim": {"type": "string", "minLength": 1},
                             "confidence": {"type": "number", "default": 0.5},
                         },
                     }
@@ -171,7 +173,7 @@ async def test_openai_normalizes_nested_pydantic_schema_for_strict_outputs() -> 
                         "items": {"$ref": "#/$defs/Evidence"},
                     },
                     "ambiguities": {"type": "array", "items": {"type": "string"}, "default": []},
-                    "safe": {"type": "boolean", "default": True},
+                    "safe": {"type": "boolean", "const": True, "default": True},
                 },
             },
         )

@@ -7,6 +7,10 @@ tests. Normalize messages, tool calls, structured output, streaming, usage, retr
 capabilities. Provider credentials remain secret references. Document supported capabilities and
 known limitations in `docs/provider-compatibility.md`.
 
+Provider-specific strict JSON Schema subsets belong at the provider boundary. Preserve the original
+application schema for Runtime validation; translate only the wire copy and cover nested objects,
+optional/defaulted fields, constants, and unsupported constraint keywords in contract tests.
+
 ## Tool or connector adapter
 
 Inspect `tools/contracts.py`, `tools/adapters.py`, the executor, and policy engine. Every tool needs a

@@ -1,0 +1,112 @@
+name: Auto Release
+
+# Triggered on every push to main.
+# Reads __version__ from src/algen_agent_runtime/__init__.py.
+# If the corresponding tag already exists the job exits cleanly (idempotent).
+# Otherwise it extracts the matching section from CHANGELOG.md and creates a
+# GitHub Release, which triggers release.yml → PyPI publish.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # needed to create tags and releases
+
+jobs:
+  auto-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can push tags
+
+      # ── 1. Read the package version ────────────────────────────────────────
+      - name: Read version
+        id: version
+        run: |
+          version=$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("src/algen_agent_runtime/__init__.py").read_text()
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
+          if not match:
+              raise SystemExit("__version__ not found in __init__.py")
+          print(match.group(1))
+          PY
+          )
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${version}"
+
+      # ── 2. Skip if the tag already exists (idempotent) ───────────────────
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} does not exist — will create release."
+          fi
+
+      # ── 3. Extract changelog section for this version ────────────────────
+      # Looks for the first versioned section header (## [X.Y.Z]) in
+      # CHANGELOG.md and extracts its content as the release notes body.
+      - name: Extract changelog
+        id: changelog
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          python3 - "$version" <<'PY'
+          import sys, pathlib, re
+
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+
+          # Match the section for this exact version: ## [0.1.0a1] or ## [0.1.0a1] - date
+          pattern = rf"^##\s+\[{re.escape(version)}\].*?\n(.*?)(?=\n##\s+\[|\Z)"
+          match = re.search(pattern, text, re.DOTALL | re.MULTILINE)
+          if not match:
+              # Fall back: extract the first versioned section that is not [Unreleased]
+              pattern_any = r"^##\s+\[(?!Unreleased).*?\n(.*?)(?=\n##\s+\[|\Z)"
+              match = re.search(pattern_any, text, re.DOTALL | re.MULTILINE)
+
+          if match:
+              body = match.group(1).strip()
+          else:
+              body = f"Release {version}."
+
+          # Write to GITHUB_OUTPUT using multiline delimiter
+          import os
+          env_file = os.environ["GITHUB_OUTPUT"]
+          with open(env_file, "a") as f:
+              delimiter = "EOF_CHANGELOG"
+              f.write(f"body<<{delimiter}\n{body}\n{delimiter}\n")
+
+          print("Changelog body extracted successfully.")
+          PY
+
+      # ── 4. Create tag and GitHub Release ─────────────────────────────────
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          version="${{ steps.version.outputs.version }}"
+
+          # Determine pre-release flag: any version with a/b/rc suffix is pre-release
+          prerelease_flag=""
+          if echo "$version" | grep -qE '(a|b|rc)[0-9]+$'; then
+            prerelease_flag="--prerelease"
+            echo "Marking as pre-release (version contains alpha/beta/rc suffix)."
+          fi
+
+          gh release create "$tag" \
+            --title "algen-agent-runtime ${tag}" \
+            --notes "${{ steps.changelog.outputs.body }}" \
+            $prerelease_flag \
+            --target main
+
+          echo "GitHub Release ${tag} created successfully."

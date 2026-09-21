@@ -6,6 +6,16 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+---
+
+## [0.1.0a1] - 2026-09-22
+
+First public alpha. Intended for evaluation and contribution; not a
+production-readiness claim. Contracts labelled `experimental` may change
+without a deprecation window during the `0.x` series.
+
 ### Added
 
 - Repository-scoped contributor, extension, agent-building, and connector skills for coding agents.
@@ -21,7 +31,8 @@ contracts are explicitly marked experimental during the `0.x` series.
   for the example portfolio.
 - Initial open-source governance, security, contribution, and release policies.
 - PyPI metadata, deterministic build contents, and clean-install CI checks.
-- Public-ready README with an offline quickstart, support matrix, architecture overview, and security boundaries.
+- Public-ready README with an offline quickstart, support matrix, architecture overview, and
+  security boundaries.
 - API stability and release-process documentation.
 - Dedicated PyPI Trusted Publishing, CodeQL, and pull-request dependency-review workflows.
 - Separation of the private Algen Agent Studio application from the Runtime distribution.
@@ -59,13 +70,18 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Updated the responsible-hiring, customer-support, incident-response, and invoice-exception
   reference workflows to use first-class Runtime approvals and explicit recovery safety instead of
   clarification-shaped action checkpoints.
-
-## [0.1.0a1] - Unreleased
-
-Initial public alpha candidate. This version is intended for evaluation and
-contribution and is not a production-readiness claim. Publication requires the
-owner-controlled legal, history, repository-protection, and Trusted Publishing
-checks documented in the readiness plan.
+- DAG-based multi-agent workflow engine (`MultiAgentWorkflowExecutor`) with full topological
+  scheduling, fan-out/fan-in, conditional branching, and error recovery.
+- Durable execution via in-memory and PostgreSQL checkpoint persistence backends.
+- Extended `WorkflowManifest` and contracts with typed node, edge, and dependency schemas.
+- OpenAI-compatible model provider adapter and provider contract test suite.
+- Approval workflow patterns (`pattern_approval_workflow`, `quickstart_approval`) with
+  human-in-the-loop hooks.
+- Fixed stale module references and CLI run commands across all example packages.
+- Enhanced responsible-hiring case-study UI dashboard.
+- Normalize OpenAI and Azure OpenAI response schemas at the provider boundary for strict structured
+  outputs: all object fields are required, additional properties are forbidden, and defaults and
+  unsupported wire constraints are removed while Runtime retains full result validation.
 
 [Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a1...HEAD
 [0.1.0a1]: https://github.com/AlgenAI/algen-agent-runtime/releases/tag/v0.1.0a1

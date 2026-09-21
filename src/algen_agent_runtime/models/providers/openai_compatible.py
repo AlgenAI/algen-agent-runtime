@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -97,13 +97,34 @@ def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     existing ``anyOf``/``type`` declaration, but must still be emitted by the model.
     """
     normalized = deepcopy(dict(schema))
+    unsupported_constraints = {
+        "default",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "format",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "multipleOf",
+        "pattern",
+        "uniqueItems",
+    }
 
     def visit(value: Any) -> Any:
         if isinstance(value, list):
             return [visit(item) for item in value]
         if not isinstance(value, dict):
             return value
-        result = {key: visit(item) for key, item in value.items() if key != "default"}
+        result = {
+            key: visit(item) for key, item in value.items() if key not in unsupported_constraints
+        }
+        if "const" in result:
+            result["enum"] = [result.pop("const")]
         properties = result.get("properties")
         if isinstance(properties, dict):
             result["properties"] = {key: visit(item) for key, item in properties.items()}
@@ -111,7 +132,7 @@ def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
             result["additionalProperties"] = False
         return result
 
-    return visit(normalized)
+    return cast(dict[str, Any], visit(normalized))
 
 
 class OpenAICompatibleProvider:
