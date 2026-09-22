@@ -437,6 +437,37 @@ class AppSettings(StrictSettings):
                         )
         return self
 
+    @model_validator(mode="after")
+    def validate_provider_references(self) -> AppSettings:
+        invalid_references: list[str] = []
+        for agent in self.agents:
+            if (
+                agent.default_model.provider is None
+                or agent.default_model.provider not in self.providers
+            ):
+                invalid_references.append(
+                    f"agents[{agent.name}].default_model.provider ({agent.default_model.provider!r})"
+                )
+            for idx, fallback in enumerate(agent.fallback_models):
+                if fallback.provider is None or fallback.provider not in self.providers:
+                    invalid_references.append(
+                        f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
+                    )
+        for retrieval_name, retrieval_config in self.retrieval.items():
+            if (
+                retrieval_config.embedding_provider is not None
+                and retrieval_config.embedding_provider not in self.providers
+            ):
+                invalid_references.append(
+                    f"retrieval[{retrieval_name}].embedding_provider ({retrieval_config.embedding_provider!r})"
+                )
+        if invalid_references:
+            raise ValueError(
+                f"invalid provider references: {'; '.join(invalid_references)} "
+                f"(configured providers: {sorted(self.providers.keys())})"
+            )
+        return self
+
 
 def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(base)

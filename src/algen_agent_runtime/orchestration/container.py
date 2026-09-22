@@ -118,6 +118,7 @@ from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.types.contracts import ModelCapabilities
 from algen_agent_runtime.types.interfaces import (
     ArtifactStore,
     AuditLog,
@@ -497,12 +498,22 @@ def build_container(
             provider = MockModelProvider()
         else:
             raise ValueError(f"unsupported provider type {provider_config.type!r}")
+
+        # WP-02: compute a capability override when the operator explicitly configured
+        # the capabilities field.  Configuration may narrow True→False; it must never
+        # widen False→True.  An omitted capabilities field preserves adapter discovery.
+        capability_override: ModelCapabilities | None = None
+        if "capabilities" in provider_config.model_fields_set:
+            capability_override = provider_config.capabilities
+
         router.register_provider(
             provider,
             provider_config.requests_per_minute,
             provider_config.cost_per_1k_input,
             provider_config.cost_per_1k_output,
             is_local=provider_config.type in {"ollama", "local_transformers"},
+            registration_id=name,  # WP-01: YAML key is the stable routing identity
+            capability_override=capability_override,  # WP-02: None → adapter discovery
         )
     retrievers = RetrieverRegistry()
     for name, retrieval_config in settings.retrieval.items():

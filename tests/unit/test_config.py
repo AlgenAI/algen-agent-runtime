@@ -150,3 +150,148 @@ def test_mistral_provider_configuration_is_valid() -> None:
     assert settings.providers["mistral"].api_key == "env://MISTRAL_API_KEY"
     providers = build_container(settings).runtime.router.providers()
     assert tuple(provider.provider_id for provider in providers) == ("mistral",)
+
+
+def test_missing_default_provider_reference_fails(tmp_path: Path) -> None:
+    config = tmp_path / "missing_provider.yaml"
+    config.write_text(
+        """
+providers:
+  mock:
+    type: mock
+    default_model: deterministic
+agents:
+  - name: test-agent
+    version: "1.0.0"
+    description: test
+    system_instructions: test
+    default_model:
+      name: test-profile
+      provider: nonexistent-provider
+      model: m1
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        load_settings((config,))
+    assert "agents[test-agent].default_model.provider" in str(exc_info.value)
+    assert "'nonexistent-provider'" in str(exc_info.value)
+
+
+def test_missing_fallback_provider_identifies_index_path() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AppSettings.model_validate(
+            {
+                "providers": {"valid-provider": {"type": "mock", "default_model": "deterministic"}},
+                "agents": [
+                    {
+                        "name": "support-agent",
+                        "version": "1.0.0",
+                        "description": "test",
+                        "system_instructions": "test",
+                        "default_model": {
+                            "name": "primary",
+                            "provider": "valid-provider",
+                            "model": "m1",
+                        },
+                        "fallback_models": [
+                            {"name": "fb0", "provider": "valid-provider", "model": "m1"},
+                            {"name": "fb1", "provider": "bad-fallback", "model": "m2"},
+                        ],
+                    }
+                ],
+            }
+        )
+    assert "agents[support-agent].fallback_models[1].provider" in str(exc_info.value)
+    assert "'bad-fallback'" in str(exc_info.value)
+
+
+def test_missing_embedding_provider_fails() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AppSettings.model_validate(
+            {
+                "providers": {"mock": {"type": "mock", "default_model": "deterministic"}},
+                "retrieval": {
+                    "docs-index": {
+                        "type": "memory",
+                        "embedding_provider": "unknown-embedder",
+                        "embedding_model": "text-embedding-3-small",
+                    }
+                },
+            }
+        )
+    assert "retrieval[docs-index].embedding_provider" in str(exc_info.value)
+    assert "'unknown-embedder'" in str(exc_info.value)
+
+
+def test_multiple_bad_provider_references_produce_stable_diagnostic() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AppSettings.model_validate(
+            {
+                "providers": {"valid": {"type": "mock", "default_model": "deterministic"}},
+                "agents": [
+                    {
+                        "name": "agent-a",
+                        "version": "1.0.0",
+                        "description": "test",
+                        "system_instructions": "test",
+                        "default_model": {"name": "p1", "provider": "ghost-1", "model": "m1"},
+                        "fallback_models": [{"name": "fb", "provider": "ghost-2", "model": "m2"}],
+                    }
+                ],
+                "retrieval": {
+                    "kb": {
+                        "type": "memory",
+                        "embedding_provider": "ghost-3",
+                    }
+                },
+            }
+        )
+    msg = str(exc_info.value)
+    assert "agents[agent-a].default_model.provider" in msg
+    assert "agents[agent-a].fallback_models[0].provider" in msg
+    assert "retrieval[kb].embedding_provider" in msg
+
+
+def test_valid_same_type_provider_instances_load_successfully() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "providers": {
+                "local-ollama": {
+                    "type": "ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "default_model": "llama3.2",
+                },
+                "cloud-ollama": {
+                    "type": "ollama",
+                    "base_url": "https://remote-ollama.internal/v1",
+                    "default_model": "llama3.2",
+                },
+            },
+            "agents": [
+                {
+                    "name": "multi-ollama-agent",
+                    "version": "1.0.0",
+                    "description": "Uses both ollama instances",
+                    "system_instructions": "Respond concisely",
+                    "default_model": {
+                        "name": "local",
+                        "provider": "local-ollama",
+                        "model": "llama3.2",
+                    },
+                    "fallback_models": [
+                        {
+                            "name": "cloud",
+                            "provider": "cloud-ollama",
+                            "model": "llama3.2",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert "local-ollama" in settings.providers
+    assert "cloud-ollama" in settings.providers
+    container = build_container(settings)
+    assert container.runtime.router.provider("local-ollama") is not None
+    assert container.runtime.router.provider("cloud-ollama") is not None

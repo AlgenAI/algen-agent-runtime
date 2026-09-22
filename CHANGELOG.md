@@ -6,7 +6,24 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Provider Instance Identity (WP-01)**: Separated provider deployment identity (YAML mapping key)
+  from adapter native type. Supported `registration_id` in `ModelRouter.register_provider()`,
+  allowing multiple provider instances of the same adapter type (e.g. multiple Ollama or OpenAI-compatible
+  endpoints) with isolated health tracking, rate limiting, token cost accounting, and capability caching.
+- **Uniform Capability Narrowing (WP-02)**: Enforced consistent capability narrowing
+  ($C_{effective} = C_{adapter} \cap C_{configured}$) across all adapter types. Operators can restrict
+  features (such as streaming or tool calling), while configurations attempting to widen unsupported
+  capabilities fail-safe to false with diagnostic logging.
+- **Provider Reference Validation at Load Time (WP-03)**: Added cross-reference validation in
+  `AppSettings` ensuring agent default models, fallback models, and retrieval embedding providers
+  reference valid configured provider instances, failing fast with actionable paths during configuration loading.
+
+### Fixed
+
+- Fixed silent collision and overwrite when multiple providers of the same type were configured.
+- Prevented capability cache collisions across different instances of the same provider type.
 
 ---
 

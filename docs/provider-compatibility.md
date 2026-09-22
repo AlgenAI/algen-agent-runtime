@@ -16,3 +16,14 @@ Capabilities depend on the selected model and server. These adapter defaults are
 | Mock | yes | yes | yes | yes | yes | yes | deterministic in-process |
 
 An unsupported requested feature fails with `CapabilityError` before provider invocation.
+
+## Capability narrowing semantics
+
+Deployments configure provider instances under arbitrary mapping keys in `agent.yaml`. An optional `capabilities:` declaration in configuration applies uniform capability narrowing across all adapter types:
+
+$$C_{effective}(m) = C_{adapter}(m) \cap C_{configured}$$
+
+- **Narrowing:** If an adapter or model reports support (`true`), configuration can restrict it (`false`).
+- **No widening:** If an adapter or model reports unsupported (`false`), configuration `true` is ignored and remains `false`, emitting a diagnostic warning.
+- **Discovery preservation:** Omitting the `capabilities` block allows the adapter to discover or report its native capabilities per model.
+
