@@ -57,6 +57,14 @@ adapters return only `ArtifactScanResult`; lifecycle state and audit writes belo
 
 ## Framework or telemetry adapter
 
-Inspect `docs/framework-adapters.md` or `observability/`. Runtime remains the governance envelope;
-framework-native state must not bypass identity, policy, budgets, tool execution, or normalized
-events. Telemetry integrations must remain optional and must not include content by default.
+Inspect `docs/framework-adapters.md` or `observability/`. External frameworks (LangGraph, OpenAI
+Agents SDK, AutoGen, CrewAI) integrate via the **Application Registration** pattern:
+
+- Application code constructs pre-configured external framework objects and registers them into the
+  container using `build_container(framework_adapters=(adapter, ...))` or `container.frameworks.register(adapter)`.
+- Never import framework graphs, crews, or agents from an arbitrary YAML dotted path.
+- Framework dependencies remain optional and lazy.
+- Governance boundary: Runtime governs outer tenancy, identity propagation, budgets, deadlines, and
+  cancellation. Internal model or tool executions owned by foreign framework engines are not
+  transparently governed by Runtime policy and must be observed/enforced via Traccia or native hooks.
+- Telemetry integrations must remain optional and must not include content by default.

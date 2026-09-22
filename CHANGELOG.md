@@ -45,6 +45,11 @@ contracts are explicitly marked experimental during the `0.x` series.
   Disallowed arbitrary YAML dotted imports to eliminate code execution vectors. Added an honest governance
   and capability matrix in `docs/framework-adapters.md` distinguishing outer runtime boundaries from
   framework-internal model/tool calls. Added real LangGraph contract and streaming tests.
+- **Reproducible Installation & Release Artifacts (WP-09)**: Added SHA256 checksum generation (`SHA256SUMS`)
+  for build artifacts. Added clean-environment wheel installation and smoke validation in CI across Python 3.12
+  and 3.13 outside repository context, verifying package imports, CLI entrypoint, server title, starter tool exports,
+  and scaffolded project test/run execution. Documented reproducible distribution channels (PyPI, GitHub Releases,
+  pinned git tags) and step-by-step release rollback and PyPI yanking procedures in `docs/releasing.md`.
 
 ### Fixed
 

@@ -47,7 +47,7 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - End-to-end tests: public API or representative application path.
 - Paid or networked checks use the `live` marker and are never required for ordinary pull requests.
 
-## Quality gates
+## Quality gates and completion
 
 ```bash
 ruff format --check src tests examples
@@ -57,3 +57,4 @@ pytest -q -p no:cacheprovider
 ```
 
 Use `make lint`, `make typecheck`, and `make test` when the Makefile is the better local entry point.
+Provide a structured, conventional Git commit message summarizing the verified changes upon completion.

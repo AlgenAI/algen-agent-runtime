@@ -73,19 +73,32 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 
 ## Install
 
-Install the pre-release package from PyPI once published:
+Install the latest package from PyPI:
 
 ```bash
+python -m pip install algen-agent-runtime
+# Or for pre-release builds:
 python -m pip install --pre algen-agent-runtime
 ```
 
-Optional integrations are installed as extras, for example:
+Optional integrations are installed as extras:
 
 ```bash
+# Storage, cache, auth
 python -m pip install --pre 'algen-agent-runtime[postgres,redis,auth]'
+
+# Model Context Protocol (MCP) client
+python -m pip install --pre 'algen-agent-runtime[mcp]'
+
+# External framework adapters
+python -m pip install --pre 'algen-agent-runtime[langgraph]'
 ```
 
-Use `algen-agent-runtime[object-storage]` for the PostgreSQL-metadata/S3-blob artifact adapter.
+Direct install from a pinned GitHub release tag:
+
+```bash
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a1
+```
 
 For development from a checkout:
 
@@ -95,6 +108,20 @@ cd algen-agent-runtime
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
+```
+
+Verify your installation with the CLI:
+
+```bash
+algen-agent-runtime --help
+```
+
+Quickly scaffold a new agent project:
+
+```bash
+algen-agent-runtime new my-agent --template agent
+cd my-agent
+python app.py
 ```
 
 ## Five-minute offline quickstart
