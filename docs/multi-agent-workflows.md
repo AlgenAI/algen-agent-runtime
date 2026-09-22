@@ -232,9 +232,20 @@ not recreate scheduling, retry loops, fan-out, or run-correlation logic inside t
 
 A portable manifest may declare `hook_provider: package.module:create_hooks` so an embedding host can
 locate the application package that registers those names. Runtime validates and preserves this
-reference but never imports or executes it automatically; the host controls trust, loading,
-dependency injection, and cleanup. This keeps the workflow language in Runtime while domain code
-remains in the application package.
+reference and provides `WorkflowHookLoader` to safely load and audit it:
+
+- Explicit module allowlists: Dynamic imports require an explicit host allowlist (`allowed_modules`).
+  Empty allowlists reject all imports with `PolicyDeniedError`.
+- Prefix confusion defense: Allowlist matching enforces exact module or dot-separated subpackage names,
+  preventing prefix bypass attacks.
+- Import boundary: Allowlist checks execute strictly before `importlib.import_module()` is invoked.
+- Contract enforcement: The factory must be callable, declare a supported `__api_version__` (e.g. `"1.0"`,
+  `"v1"`), and return a `WorkflowHookRegistry` or container with a `.hooks` attribute.
+- Audit evidence: `WorkflowHookLoader.load()` returns `LoadedHookProvider` containing verified hooks,
+  package version information, and sanitized metadata without serializing code or secrets.
+
+The host controls trust, module allowlisting, dependency injection, and cleanup. This keeps the
+workflow language in Runtime while domain code remains securely governed in application packages.
 
 ## Events and state
 

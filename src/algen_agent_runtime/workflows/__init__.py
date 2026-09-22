@@ -24,6 +24,11 @@ from algen_agent_runtime.workflows.engine import (
     WorkflowHookRegistry,
     WorkflowRegistry,
 )
+from algen_agent_runtime.workflows.loader import (
+    LoadedHookProvider,
+    WorkflowHookLoader,
+    load_hook_provider,
+)
 from algen_agent_runtime.workflows.store import (
     InMemoryWorkflowCheckpointStore,
     PostgresWorkflowCheckpointStore,
@@ -32,6 +37,7 @@ from algen_agent_runtime.workflows.store import (
 
 __all__ = [
     "InMemoryWorkflowCheckpointStore",
+    "LoadedHookProvider",
     "MultiAgentWorkflowExecutor",
     "NodeHandler",
     "OutputValidator",
@@ -44,6 +50,7 @@ __all__ = [
     "WorkflowEventSink",
     "WorkflowExecutionState",
     "WorkflowHookContext",
+    "WorkflowHookLoader",
     "WorkflowHookRegistry",
     "WorkflowManifest",
     "WorkflowNode",
@@ -56,4 +63,5 @@ __all__ = [
     "WorkflowResourceKind",
     "WorkflowResourceReference",
     "WorkflowStatus",
+    "load_hook_provider",
 ]

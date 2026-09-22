@@ -77,3 +77,7 @@ result = await container.frameworks.get("langgraph").invoke(
 - **CrewAI**: Accepts a `Crew`; default input mapping is `{"input": request.input}`.
 
 For consuming external tools across standard language-agnostic boundaries (rather than embedding external agent graphs), see the [Model Context Protocol (MCP) Client guide](mcp.md).
+
+## Hook Providers and Framework Adapters
+
+When integrating external framework graphs within Algen workflows, register framework adapters during host initialization or inside a secure workflow hook provider. When loading hook providers dynamically from YAML manifests, use `WorkflowHookLoader` with explicit module allowlists to ensure foreign framework modules are loaded only from trusted packages.

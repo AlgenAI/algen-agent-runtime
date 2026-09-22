@@ -38,6 +38,15 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Avoid telemetry content by default; redact credentials and sensitive payloads.
 - Keep workflow approval review paths and parameters explicitly secret-free; approval events must not
   expose review values, parameters, or operator comments.
+- Dynamic hook loading: Enforce `WorkflowHookLoader` with explicit module allowlists (`allowed_modules`)
+  before import; verify callable shape, API version compatibility (`__api_version__`), and `WorkflowHookRegistry`
+  return type; never serialize code or secrets in audit metadata.
+- Outbound network requests: Enforce `NetworkSecurityPolicy` / `SafeHttpClient` against SSRF, DNS rebinding,
+  private/internal IP ranges (IPv4/IPv6 loopback, link-local, RFC 1918, carrier-grade NAT), and redirect chains.
+- Rate limiting and quotas: Apply tenant-scoped rate limiting (`RateLimiter`, sliding-window Redis/memory)
+  and propagate standard rate limit headers on 429 errors.
+- Filesystem safety: Ensure filesystem tools (`algen_agent_runtime.tools.starter.fs`) strictly validate sandbox
+  roots against traversal, symlink escapes, and directory breakouts.
 
 ## Evidence
 

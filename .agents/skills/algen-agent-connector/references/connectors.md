@@ -36,9 +36,11 @@ Runtime provides first-class client connectivity through `algen_agent_runtime.mc
 
 ## HTTP APIs
 
-Use `remote_tool` or an equivalent typed adapter. Configure a fixed endpoint or an allowlisted host,
-deny private-network access by default, avoid redirects across trust boundaries, propagate the
-idempotency key, and bound response size and time.
+Use `remote_tool` or an equivalent typed adapter backed by `SafeHttpClient` from
+`algen_agent_runtime.security.network`. Configure a fixed endpoint or an allowlisted host
+(`allowed_hosts`), deny private/internal networks by default (loopback, RFC 1918, link-local,
+carrier-grade NAT, multicast), protect against DNS rebinding via IP-pinned sockets, avoid unvalidated
+redirects across trust boundaries, propagate the idempotency key, and bound response size and time.
 
 ## Email
 

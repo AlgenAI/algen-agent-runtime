@@ -75,6 +75,16 @@ contracts are explicitly marked experimental during the `0.x` series.
   Integrated FastAPI admission middleware returning HTTP 429 Too Many Requests with `Retry-After` header and
   structured JSON error codes (`RATE_LIMIT_EXCEEDED`, `CONCURRENCY_LIMIT_EXCEEDED`). Exempted health and
   readiness endpoints (`/health/live`, `/health/ready`, `/healthz`, `/ready`) from admission quotas.
+- **Hardened Workflow Hook Provider Loading (WP-13)**: Added `WorkflowHookLoader` and `load_hook_provider`
+  to securely resolve, validate, and audit dynamic workflow hook providers referenced by YAML manifests.
+  Enforces host-configured module allowlists (`allowed_modules`) strictly *before* calling `importlib.import_module()`,
+  rejecting unauthorized dynamic imports with `PolicyDeniedError` and preventing untrusted top-level code execution.
+  Implements exact segment-based prefix protection preventing prefix confusion attacks (e.g. `examples.test` allows
+  `examples.test.child` but rejects `examples.test_bypass`). Validates callable factory shape, compatibility with
+  supported API versions (`__api_version__` in `{"1", "1.0", "v1"}`), and `WorkflowHookRegistry` return contracts.
+  Generates sanitized audit metadata records (`LoadedHookProvider.audit_metadata`) capturing reference, module, factory,
+  package, and package version without serializing code or environment secrets. Updated `examples/workflow_cli.py`
+  and test suites to load hook providers through `WorkflowHookLoader(allowed_modules=("examples",))`.
 
 ### Fixed
 

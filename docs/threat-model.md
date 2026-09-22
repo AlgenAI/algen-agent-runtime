@@ -14,7 +14,7 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
-| Malicious plugin | trusted namespace, entry-point-only discovery, API version validation, deployment signing policy |
+| Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`), prefix-confusion defense, callable shape & API version checks, secret-free audit metadata |
 | Resource exhaustion | payload/result/artifact limits, semaphores, API admission rate limits & in-flight run concurrency quotas, time/token/cost/step budgets |
 | Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
 | Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |
@@ -52,11 +52,27 @@ All outbound HTTP calls initiated by runtime components (`core.http`, `remote_to
    - `allow_private_networks=True` can be passed to selectively permit private/loopback networks for local development harnesses or internal VPC deployments.
    - In production environments, application-level IP binding should be paired with a deployment-level egress firewall or forward proxy as defense in depth.
 
+### Hook Provider Loading & Dynamic Import Controls
+
+Workflow manifests specify hook providers as dotted paths (`module:callable`). To prevent arbitrary code execution via untrusted YAML manifests or compromised configurations:
+
+1. **Authorization Before Import:**
+   - `WorkflowHookLoader` validates module authorization strictly *before* calling `importlib.import_module()`. This prevents top-level module code from executing during unauthorized imports.
+2. **Explicit Host Module Allowlists:**
+   - Hosts must explicitly declare trusted module prefixes (`allowed_modules`). An empty allowlist rejects all dynamic imports with `PolicyDeniedError`.
+3. **Prefix Confusion Defense:**
+   - Allowlist matching strictly compares exact module names and dot-separated package segments (`module == allowed or module.startswith(allowed + ".")`). Simple string prefixes that would allow `example.test_bypass` when `example.test` is allowed are explicitly rejected.
+4. **Callable Shape & Version Verification:**
+   - The loader verifies that the resolved factory is callable, adheres to supported API versions (`__api_version__` in `{"1", "1.0", "v1"}`), and returns an instance of `WorkflowHookRegistry`.
+5. **Secret-Free Audit Metadata:**
+   - Loaded providers produce structured audit metadata (`LoadedHookProvider.audit_metadata`) recording module, factory, and package version without serializing executable code or environment secrets.
+
 ## Deployment checklist
 
 - Replace header identity hook with verified JWT or mTLS and deny missing tenant claims.
 - Store secrets in a managed secret provider; never in YAML.
 - Set explicit egress and tool host allowlists.
+- Enforce `WorkflowHookLoader` with explicit module allowlists for dynamic workflow manifests.
 - Disable dynamic plugins unless packages are pinned, signed, scanned, and trusted.
 - Require approval for write, external, and destructive tools.
 - Configure encryption at rest/in transit and tenant-aware database row security.

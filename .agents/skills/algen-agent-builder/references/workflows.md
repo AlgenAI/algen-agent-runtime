@@ -69,6 +69,22 @@ The hook factory returns `WorkflowHookRegistry`. Register only names referenced 
 builders, validators, schemas, and deterministic handlers. Runtime owns scheduling, run state,
 events, repair, clarification, resume, failure propagation, and cancellation.
 
+## Hook provider loading and security
+
+A workflow declares `hook_provider: module:factory` to resolve its deterministic handlers,
+validators, and builders. Hosts loading hook providers dynamically must use `WorkflowHookLoader`
+from `algen_agent_runtime.workflows`:
+
+- Explicit allowlists: Hosts configure `WorkflowHookLoader(allowed_modules=("my_app", "trusted_pkg"))`.
+  Empty allowlists reject all dynamic imports with `PolicyDeniedError`.
+- Prefix protection: Allowlist checking validates exact module names and dot-separated subpackages,
+  preventing prefix confusion (`my_app.hooks` allows `my_app.hooks.child`, rejects `my_app.hooks_bypass`).
+- Contract validation: The resolved factory must be callable, declare a supported `__api_version__`
+  (e.g., `"1.0"`, `"v1"`), and return a `WorkflowHookRegistry`.
+- Audit metadata: `loader.load(reference)` or `await loader.aload(reference)` returns a
+  `LoadedHookProvider` containing verified hooks and sanitized audit metadata without serializing
+  code or secrets.
+
 Use `examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
 `pattern_child_workflow`, `pattern_governed_research`, and the reference applications as current
 examples.

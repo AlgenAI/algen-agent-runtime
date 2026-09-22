@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
-import inspect
 import json
 import sys
 from pathlib import Path
@@ -23,6 +21,7 @@ from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.workflows import (
     MultiAgentWorkflowExecutor,
+    WorkflowHookLoader,
     WorkflowRegistry,
     WorkflowStatus,
 )
@@ -259,13 +258,13 @@ async def run_example(
     manifest = settings.workflows[workflow_name]
     container = build_container(settings)
     try:
+        loader = WorkflowHookLoader(allowed_modules=("examples",))
         registry = WorkflowRegistry()
         for configured in settings.workflows.values():
             if configured.hook_provider is None:
                 raise RuntimeError(f"workflow {configured.name!r} does not declare a hook provider")
-            module_name, factory_name = configured.hook_provider.split(":", 1)
-            factory = getattr(importlib.import_module(module_name), factory_name)
-            provided = factory(
+            loaded = await loader.aload(
+                configured.hook_provider,
                 container=container,
                 manifest=configured,
                 environment={},
@@ -273,9 +272,7 @@ async def run_example(
                 user_id="example-user",
                 project_id=workflow_name,
             )
-            if inspect.isawaitable(provided):
-                provided = await provided
-            registry.register(configured, getattr(provided, "hooks", provided))
+            registry.register(configured, loaded.hooks)
         hooks = registry.resolve(manifest.name, manifest.version)[1]
         values: dict[str, Any] = {
             "input": question,
