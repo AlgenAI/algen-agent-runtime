@@ -289,4 +289,25 @@ can be disabled when an external schema-management process owns it.
 
 Cancellation is cooperative for provider/tool adapters. Keep adapter timeouts lower than run deadlines. Graceful shutdown should stop accepting runs, cancel active tasks, flush telemetry, and leave resumable checkpoints.
 
+## Outbound HTTP and Egress Network Controls
+
+Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model services (`HTTPModelService`) are guarded against Server-Side Request Forgery (SSRF) and DNS rebinding:
+
+1. **DNS Rebinding TOCTOU Elimination:**
+   - Outbound connections use `create_safe_http_client`, backed by `SafeNetworkBackend`.
+   - The runtime resolves destination hostnames once in worker threads, validates every resolved address against SSRF policies, and connects the TCP socket directly to the validated IP. No secondary DNS resolution occurs at the transport layer, eliminating time-of-check-to-time-of-use rebinding windows.
+   - For HTTPS destinations, TLS Server Name Indication (SNI) and certificate verification continue to validate against the original requested hostname.
+
+2. **Default Deny Policies:**
+   - Private networks (RFC 1918 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), and cloud metadata IP addresses (`169.254.169.254`, `169.254.170.2`, `[fd00:ec2::254]`, `100.100.100.200`) are blocked by default.
+   - If a host resolves to multiple IP records (e.g. dual-homed or round-robin), resolution **fails closed** if any record is private or forbidden.
+   - Schemes are restricted strictly to `http` and `https`, and URLs with embedded user credentials (`user:pass@`) are denied.
+
+3. **Allowlist Configuration & Overrides:**
+   - Configure explicit `allowed_hosts` tuples on tools and model services to restrict outbound destinations to known, approved domains or domain suffixes (e.g. `allowed_hosts=("api.partner.com", ".internal.example.com")`).
+   - `allow_private_networks=True` can be passed to tools or `create_safe_http_client` when operating in internal VPCs or running local test harnesses. Never enable this flag on tools exposed to untrusted tenant prompts.
+
+4. **Production Defense in Depth:**
+   - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
+
 Back up each durable store enabled by the application according to its retention policy. User deletion must remove tenant/session memory and authorized artifacts while preserving legally required, redacted audit records.

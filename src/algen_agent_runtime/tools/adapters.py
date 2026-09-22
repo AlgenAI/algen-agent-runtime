@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from algen_agent_runtime.security.network import validate_outbound_url
+from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -34,7 +34,11 @@ def remote_tool(
     allow_private_networks: bool = False,
     client: httpx.AsyncClient | None = None,
 ) -> Tool:
-    http_client = client or httpx.AsyncClient(follow_redirects=False)
+    http_client = client or create_safe_http_client(
+        allowed_hosts=allowed_hosts,
+        allow_private_networks=allow_private_networks,
+        follow_redirects=False,
+    )
 
     async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:
         await validate_outbound_url(endpoint, allowed_hosts, allow_private_networks)

@@ -56,6 +56,16 @@ contracts are explicitly marked experimental during the `0.x` series.
   `open-source-pypi-readiness.md`, `api-stability.md`, `why-algen-agent-runtime.md`). Reconciled capability and
   maturity claims across documentation with implemented features (WP-01 through WP-09), and verified that all
   relative documentation links resolve successfully.
+- **DNS Rebinding TOCTOU Elimination & Outbound Network Security (WP-11)**: Eliminated DNS rebinding
+  Time-of-Check-Time-of-Use (TOCTOU) windows across outbound HTTP requests in `core.http`, `remote_tool`,
+  and `HTTPModelService`. Introduced `SafeNetworkBackend` and `SafeAsyncTransport` resolving destination
+  hostnames once in worker threads, validating every candidate IPv4/IPv6 address against a comprehensive
+  SSRF and cloud metadata deny matrix (private RFC 1918, loopback, link-local, carrier-grade NAT, cloud IMDS,
+  unspecified, multicast, and IPv4-mapped IPv6), and pinning TCP socket connections directly to the
+  pre-validated IP address. Preserved TLS SNI and server certificate validation by forwarding requested hostnames
+  to `start_tls`. Implemented fail-closed multi-address checks, embedded user credential rejection, percent-encoded
+  hostname normalization, explicit `allowed_hosts` filtering, and optional `allow_private_networks` override for
+  internal VPC test harnesses. Added comprehensive security tests and operational threat modeling documentation.
 
 ### Fixed
 

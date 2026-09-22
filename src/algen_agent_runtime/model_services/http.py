@@ -8,7 +8,7 @@ from algen_agent_runtime.model_services.contracts import (
     ModelServiceRequest,
     ModelServiceResponse,
 )
-from algen_agent_runtime.security.network import validate_outbound_url
+from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
 
 
 class HTTPModelService:
@@ -22,25 +22,36 @@ class HTTPModelService:
         headers: dict[str, str] | None = None,
         allowed_hosts: tuple[str, ...] = (),
         health_endpoint: str | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.manifest = manifest
         self._endpoint = endpoint
         self._headers = dict(headers or {})
         self._allowed_hosts = allowed_hosts
         self._health_endpoint = health_endpoint
+        self._client = client
 
     async def predict(self, request: ModelServiceRequest) -> ModelServiceResponse:
         await validate_outbound_url(self._endpoint, allowed_hosts=self._allowed_hosts)
-        async with httpx.AsyncClient(
-            timeout=request.timeout_seconds or self.manifest.timeout_seconds
-        ) as client:
-            response = await client.post(
+        timeout = request.timeout_seconds or self.manifest.timeout_seconds
+        if self._client is not None:
+            response = await self._client.post(
                 self._endpoint,
                 headers=self._headers,
                 json=request.model_dump(mode="json"),
             )
-            response.raise_for_status()
-            return ModelServiceResponse.model_validate(response.json())
+        else:
+            async with create_safe_http_client(
+                allowed_hosts=self._allowed_hosts,
+                timeout=timeout,
+            ) as client:
+                response = await client.post(
+                    self._endpoint,
+                    headers=self._headers,
+                    json=request.model_dump(mode="json"),
+                )
+        response.raise_for_status()
+        return ModelServiceResponse.model_validate(response.json())
 
     async def health(self) -> ModelServiceHealth:
         if self._health_endpoint is None:
@@ -51,8 +62,14 @@ class HTTPModelService:
             )
         try:
             await validate_outbound_url(self._health_endpoint, allowed_hosts=self._allowed_hosts)
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(self._health_endpoint, headers=self._headers)
+            if self._client is not None:
+                response = await self._client.get(self._health_endpoint, headers=self._headers)
+            else:
+                async with create_safe_http_client(
+                    allowed_hosts=self._allowed_hosts,
+                    timeout=5.0,
+                ) as client:
+                    response = await client.get(self._health_endpoint, headers=self._headers)
             return ModelServiceHealth(
                 healthy=response.is_success,
                 drift_state=self.manifest.drift_state,

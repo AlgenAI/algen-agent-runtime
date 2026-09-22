@@ -38,6 +38,9 @@ service.
   deletion, including staged artifacts that exist before a run.
 - PostgreSQL-metadata/S3-blob artifact storage with encryption and checksum requests, tenant-hashed
   keys, compensating upload cleanup, bounded retention, and an audited compare-and-set scanner boundary.
+- Outbound HTTP security with DNS rebinding TOCTOU elimination: single-resolution address validation,
+  direct TCP socket pinning to pre-validated IPs, fail-closed multi-address checks, and TLS SNI
+  preservation across `core.http`, `remote_tool`, and `HTTPModelService`.
 
 ## P0 before a hardened single-node production claim
 
@@ -57,9 +60,10 @@ service.
 4. **Finish authentication options.** Add OIDC/JWKS rotation and caching, mTLS/service identity hooks,
    authorization policy mapping, token-revocation strategy, and authentication audit events. Header
    identity mode must remain explicitly development-only.
-5. **Harden network and plugins.** Bind HTTP connections to validated addresses to mitigate DNS
-   rebinding, revalidate redirects, add egress proxy hooks, sandbox subprocess tools, authenticate
-   remote tools, verify plugin signatures, and prevent untrusted in-process plugin loading.
+5. **Harden network and plugins.** Outbound HTTP connection binding to validated addresses is implemented
+   to eliminate DNS rebinding TOCTOU. Remaining work: revalidate redirects, add egress proxy hooks,
+   sandbox subprocess tools, authenticate remote tools, verify plugin signatures, and prevent
+   untrusted in-process plugin loading.
 6. **Strengthen readiness and lifecycle.** Probe every mandatory store, model and telemetry dependency;
    wire application-owned workflow recovery into each service lifecycle, expire paused runs without
    user traffic, add health degradation reasons, and test repeated start/drain cycles.

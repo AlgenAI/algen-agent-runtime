@@ -11,7 +11,7 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks |
 | Prompt injection | pre/post policy points, tool/model allowlists, model output never executes directly |
 | Secret/PII leakage | secret references, redaction middleware, content telemetry off, memory policy |
-| SSRF | scheme/host allowlist, DNS resolution checks, private/link-local denial, no redirects |
+| SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
 | Malicious plugin | trusted namespace, entry-point-only discovery, API version validation, deployment signing policy |
@@ -21,6 +21,36 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Provider compromise | isolated adapters, raw response opt-in, egress policy, fallback/circuit breaker |
 | Telemetry data exfiltration | content capture off, Traccia patching off by default, PII redaction, approved OTLP endpoints, sampling and retention policy |
 | Audit tampering | immutable audit contracts, append-only external sink, separate diagnostic logs |
+
+### Outbound Network Security and SSRF / DNS Rebinding Mitigation
+
+All outbound HTTP calls initiated by runtime components (`core.http`, `remote_tool`, and `HTTPModelService`) enforce strict transport-level protections against Server-Side Request Forgery (SSRF) and DNS rebinding Time-of-Check-Time-of-Use (TOCTOU) vulnerabilities:
+
+1. **Elimination of DNS Rebinding TOCTOU:**
+   - Standard URL validation resolves DNS, verifies that the resulting IP is public, and then passes the URL to an HTTP client. Vulnerable clients perform a *second* DNS resolution during TCP socket establishment, allowing malicious DNS servers (with 0-second TTLs) to return a private or metadata address on the second lookup.
+   - The runtime's `SafeNetworkBackend` and `SafeAsyncTransport` resolve DNS records **once** in worker threads and bind the underlying TCP socket directly to a pre-validated IP address. No secondary DNS resolution occurs at the transport or OS socket layer.
+2. **TLS SNI and Certificate Verification Preservation:**
+   - Connecting directly to an IP address typically causes TLS certificate validation to fail because the server certificate matches the domain name rather than the IP.
+   - The runtime overrides `start_tls` to pass the original requested hostname as `server_hostname`. This guarantees that TLS Server Name Indication (SNI) and X.509 certificate trust checks proceed normally while the underlying TCP socket remains pinned to the validated IP.
+3. **Comprehensive IP Deny Matrix:**
+   - By default, all outbound connections reject:
+     - **Private networks:** RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+     - **Loopback addresses:** `127.0.0.0/8`, `::1`
+     - **Link-local addresses:** RFC 3927 (`169.254.0.0/16`, `fe80::/10`)
+     - **Carrier-grade NAT:** RFC 6598 (`100.64.0.0/10`)
+     - **Cloud instance metadata services (IMDS):** AWS/GCP/Azure (`169.254.169.254`), AWS ECS task metadata (`169.254.170.2`), AWS IMDSv6 (`[fd00:ec2::254]`), Alibaba Cloud (`100.100.100.200`)
+     - **Unspecified / broadcast / multicast:** `0.0.0.0`, `::`, `224.0.0.0/4`, `ff00::/8`
+     - **IPv4-mapped IPv6:** `::ffff:0:0/96` mapping back to forbidden IPv4 ranges.
+4. **Fail-Closed Multi-Address Validation:**
+   - If a hostname resolves to multiple IPv4 or IPv6 records (e.g. dual-homed or round-robin DNS), **every** resolved candidate IP must be public and permitted. If any resolved IP is private or forbidden, the entire request is immediately rejected.
+5. **URL Normalization & Host Allowlists:**
+   - Schemes are strictly restricted to `http` and `https`.
+   - Embedded user credentials (`http://user:pass@host`) are explicitly forbidden.
+   - Percent-encoded host components (e.g. `%31%32%37...`) are decoded and evaluated.
+   - Host allowlists support exact hostnames and domain suffix wildcards (`example.com` matches `sub.example.com`).
+6. **Controlled Override & Defense in Depth:**
+   - `allow_private_networks=True` can be passed to selectively permit private/loopback networks for local development harnesses or internal VPC deployments.
+   - In production environments, application-level IP binding should be paired with a deployment-level egress firewall or forward proxy as defense in depth.
 
 ## Deployment checklist
 
