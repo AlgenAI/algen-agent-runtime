@@ -1,5 +1,9 @@
 # Production-readiness roadmap
 
+Owner: AlgenAI Architecture & Security  
+Status: Active tracking  
+Last reviewed: 2026-09-22  
+
 Algen Agent Runtime is a restart-aware development runtime. It now has configurable
 PostgreSQL persistence, Redis checkpoint/memory options, a tool side-effect ledger, startup recovery,
 graceful draining, bounded event fan-out, verified JWT authentication, analytical graph checkpoints,

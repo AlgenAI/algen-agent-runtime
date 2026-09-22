@@ -1,5 +1,9 @@
 # Operations guide
 
+Owner: AlgenAI Maintainers  
+Status: Active (0.1.x)  
+Last reviewed: 2026-09-22  
+
 Run `algen-agent-runtime` with `ALGEN_AGENT_RUNTIME_CONFIG` set to one or more OS-path-separated YAML files. Put secrets in referenced environment variables. PostgreSQL can persist run and multi-agent workflow checkpoints, conversation memory, events, audits, approvals, bounded artifact payloads, analytical graphs, worker leases, and the tool-execution ledger. Redis can alternatively store run checkpoints, expiring conversation memory, and scoped cache entries. See the [artifact lifecycle](artifacts.md), [production-readiness roadmap](production-readiness.md), and [Analytical Runtime](analytical-runtime.md) for their respective contracts and limits.
 
 For large or production artifact payloads, keep lifecycle metadata in PostgreSQL and configure the

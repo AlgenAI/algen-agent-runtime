@@ -50,6 +50,12 @@ contracts are explicitly marked experimental during the `0.x` series.
   and 3.13 outside repository context, verifying package imports, CLI entrypoint, server title, starter tool exports,
   and scaffolded project test/run execution. Documented reproducible distribution channels (PyPI, GitHub Releases,
   pinned git tags) and step-by-step release rollback and PyPI yanking procedures in `docs/releasing.md`.
+- **Documentation Cleanup & Alignment (WP-10)**: Audited documentation tree to ensure no raw assistant
+  transcripts, tool execution dumps, or dangling todo counts remain. Added owner, status, and last-reviewed date
+  metadata across operational planning documents (`operations.md`, `production-readiness.md`,
+  `open-source-pypi-readiness.md`, `api-stability.md`, `why-algen-agent-runtime.md`). Reconciled capability and
+  maturity claims across documentation with implemented features (WP-01 through WP-09), and verified that all
+  relative documentation links resolve successfully.
 
 ### Fixed
 
