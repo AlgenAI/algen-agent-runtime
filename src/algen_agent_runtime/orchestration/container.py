@@ -4,8 +4,13 @@ import inspect
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from algen_agent_runtime.mcp.client import MCPClientManager
+    from algen_agent_runtime.mcp.contracts import MCPServerConfigBase
 
 from algen_agent_runtime.analytics import (
     AnalyticalGraphEngine,
@@ -60,7 +65,7 @@ from algen_agent_runtime.events.bus import (
     PostgresAuditLog,
     PostgresEventBus,
 )
-from algen_agent_runtime.frameworks import FrameworkAdapterRegistry
+from algen_agent_runtime.frameworks import FrameworkAdapter, FrameworkAdapterRegistry
 from algen_agent_runtime.governance import QueryGovernanceEngine, QueryGovernancePolicy
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
 from algen_agent_runtime.model_services import ModelServiceRegistry
@@ -160,6 +165,7 @@ class Container:
     )
     evaluations: EvaluationRunner = field(default_factory=EvaluationRunner)
     work_queue: WorkQueue = field(default_factory=InMemoryWorkQueue)
+    mcp: MCPClientManager | None = None
     resources: tuple[object, ...] = ()
     recover_incomplete_runs: bool = True
     recovery_limit: int = 1000
@@ -248,6 +254,8 @@ def build_container(
     *,
     environment: Mapping[str, str] | None = None,
     additional_tools: Sequence[Tool] = (),
+    mcp_servers: Sequence[MCPServerConfigBase] = (),
+    framework_adapters: Sequence[FrameworkAdapter] = (),
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -272,6 +280,14 @@ def build_container(
     tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
     for tool in additional_tools:
         tools.register(tool)
+    mcp_manager: MCPClientManager | None = None
+    if mcp_servers:
+        from algen_agent_runtime.mcp.client import MCPClientManager
+
+        mcp_manager = MCPClientManager(mcp_servers, environment=environment)
+    frameworks = FrameworkAdapterRegistry()
+    for adapter in framework_adapters:
+        frameworks.register(adapter)
     storage = settings.storage
     selected_backends = {
         storage.run_store,
@@ -686,6 +702,7 @@ def build_container(
         workflow_checkpoints=workflow_checkpoints,
         cache=cache,
         retrievers=retrievers,
+        frameworks=frameworks,
         observability=observability,
         analytical_graphs=analytical_graphs,
         analytical_methods=analytical_methods,
@@ -702,10 +719,12 @@ def build_container(
                     cache_redis_client,
                     artifacts if storage.artifact_store == "s3" else None,
                     http_client,
+                    mcp_manager,
                 )
                 if resource is not None
             )
         ),
+        mcp=mcp_manager,
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,
         shutdown_grace_seconds=settings.runtime.shutdown_grace_seconds,

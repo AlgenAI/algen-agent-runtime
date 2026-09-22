@@ -34,6 +34,17 @@ contracts are explicitly marked experimental during the `0.x` series.
   `starter.file_read` and `starter.directory_list` (workspace-rooted with path traversal and symlink-escape
   protection), and `starter.clock` (timezone support and deterministic testing). Starter tools are disabled by
   default in `build_container`, requiring explicit opt-in to prevent expanding default runtime authority.
+- **Model Context Protocol (MCP) Client Connector (WP-07)**: Added `algen_agent_runtime.mcp` client integration
+  supporting external tool consumption over `stdio` and `sse` transports via the official `mcp` SDK.
+  Includes environment filtering for child processes, schema conversion to `ToolDefinition`, namespaced
+  tool registration (`mcp.<server>.<tool>`), per-server tool allowlists, timeout and byte limits, and
+  secret reference resolution (`env://...`) for remote authentication.
+- **Framework Interoperability & Application Registration (WP-08)**: Hardened external framework adapters
+  (`LangGraphAdapter`, `OpenAIAgentsAdapter`, `AutoGenAdapter`, `CrewAIAdapter`) with explicit application
+  registration via `build_container(framework_adapters=...)` and `container.frameworks.register()`.
+  Disallowed arbitrary YAML dotted imports to eliminate code execution vectors. Added an honest governance
+  and capability matrix in `docs/framework-adapters.md` distinguishing outer runtime boundaries from
+  framework-internal model/tool calls. Added real LangGraph contract and streaming tests.
 
 ### Fixed
 

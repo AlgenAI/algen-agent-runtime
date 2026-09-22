@@ -97,5 +97,11 @@ class FrameworkAdapterRegistry:
         except KeyError as exc:
             raise KeyError(f"framework adapter {framework_id!r} is not registered") from exc
 
+    def has(self, framework_id: str) -> bool:
+        return framework_id in self._adapters
+
+    def list(self) -> tuple[str, ...]:
+        return tuple(sorted(self._adapters))
+
     def capabilities(self) -> Mapping[str, FrameworkCapabilities]:
         return {name: adapter.capabilities for name, adapter in self._adapters.items()}
