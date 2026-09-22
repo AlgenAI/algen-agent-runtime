@@ -20,6 +20,11 @@ from algen_agent_runtime.analytics import (
     PostgresAnalyticalGraphStore,
     builtin_handlers,
 )
+from algen_agent_runtime.api.rate_limiting import (
+    ApiRateLimiter,
+    InMemoryApiRateLimiter,
+    RouteLimitPolicy,
+)
 from algen_agent_runtime.approvals.service import (
     ApprovalService,
     InMemoryApprovalService,
@@ -165,6 +170,7 @@ class Container:
     )
     evaluations: EvaluationRunner = field(default_factory=EvaluationRunner)
     work_queue: WorkQueue = field(default_factory=InMemoryWorkQueue)
+    rate_limiter: ApiRateLimiter | None = None
     mcp: MCPClientManager | None = None
     resources: tuple[object, ...] = ()
     recover_incomplete_runs: bool = True
@@ -692,6 +698,23 @@ def build_container(
         feedback_store=conversation_feedback,
         followup_provider=followup_provider,
     )
+    rate_limiter: ApiRateLimiter | None = None
+    if settings.api.rate_limiting.enabled:
+        route_policies = {
+            name: RouteLimitPolicy(
+                rate_per_minute=policy.rate_per_minute,
+                burst=policy.burst,
+                max_concurrent=policy.max_concurrent,
+            )
+            for name, policy in settings.api.rate_limiting.route_overrides.items()
+        }
+        rate_limiter = InMemoryApiRateLimiter(
+            default_rate_per_minute=settings.api.rate_limiting.default_rate_per_minute,
+            default_burst=settings.api.rate_limiting.default_burst,
+            max_concurrent_runs_per_tenant=settings.api.rate_limiting.max_concurrent_runs_per_tenant,
+            route_policies=route_policies,
+            fail_closed=settings.api.rate_limiting.fail_closed,
+        )
     return Container(
         runtime=runtime,
         agents=agents,
@@ -710,6 +733,7 @@ def build_container(
         query_governance=query_governance,
         evaluations=evaluations,
         work_queue=work_queue,
+        rate_limiter=rate_limiter,
         resources=tuple(
             dict.fromkeys(
                 resource

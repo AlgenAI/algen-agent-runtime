@@ -41,6 +41,8 @@ service.
 - Outbound HTTP security with DNS rebinding TOCTOU elimination: single-resolution address validation,
   direct TCP socket pinning to pre-validated IPs, fail-closed multi-address checks, and TLS SNI
   preservation across `core.http`, `remote_tool`, and `HTTPModelService`.
+- Tenant-aware API admission rate limiting and in-flight run creation concurrency quotas with
+  token-bucket refills, burst headroom, route-class thresholds, and HTTP 429 `Retry-After` handling.
 
 ## P0 before a hardened single-node production claim
 
@@ -67,8 +69,9 @@ service.
 6. **Strengthen readiness and lifecycle.** Probe every mandatory store, model and telemetry dependency;
    wire application-owned workflow recovery into each service lifecycle, expire paused runs without
    user traffic, add health degradation reasons, and test repeated start/drain cycles.
-7. **Bound every resource.** Enforce limits for context, responses, events, memory, audit metadata,
-   concurrent runs, tenant quotas, and database growth. Add cleanup jobs for expired memory and stale
+7. **Bound every resource.** API admission rate limits and in-flight run creation concurrency quotas are
+   implemented for single-node deployments. Enforce limits for context, responses, events, memory,
+   audit metadata, tenant quotas, and database growth. Add cleanup jobs for expired memory and stale
    operational records.
 
 ## Remaining for hardened multi-worker or horizontally scaled use

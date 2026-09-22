@@ -15,7 +15,7 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
 | Malicious plugin | trusted namespace, entry-point-only discovery, API version validation, deployment signing policy |
-| Resource exhaustion | payload/result/artifact limits, semaphores, rate limits, time/token/cost/step budgets |
+| Resource exhaustion | payload/result/artifact limits, semaphores, API admission rate limits & in-flight run concurrency quotas, time/token/cost/step budgets |
 | Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
 | Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |
 | Provider compromise | isolated adapters, raw response opt-in, egress policy, fallback/circuit breaker |
@@ -69,4 +69,5 @@ All outbound HTTP calls initiated by runtime components (`core.http`, `remote_to
   recipients and artifact attachments, keep BCC out of headers, require TLS, require policy/approval
   where appropriate, and never replay an ambiguous send without provider reconciliation.
 - Run dependency, container, and plugin supply-chain scanning.
+- Enable `api.rate_limiting` to guard against single-node run, approval, and conversation floods; use an API gateway or reverse proxy for cross-worker distributed rate limiting when running multi-worker clusters.
 - Test cancellation, restore, approval expiry, incident redaction, and audit delivery.

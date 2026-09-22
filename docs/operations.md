@@ -310,4 +310,56 @@ Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model 
 4. **Production Defense in Depth:**
    - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
 
+## API Admission Rate Limiting and Concurrency Quotas
+
+To prevent run, approval, artifact, and conversation floods, the runtime supports tenant-aware admission rate limiting and in-flight concurrency quotas:
+
+```yaml
+api:
+  rate_limiting:
+    enabled: true
+    default_rate_per_minute: 120
+    default_burst: 30
+    max_concurrent_runs_per_tenant: 10
+    fail_closed: true
+    route_overrides:
+      write:
+        rate_per_minute: 60
+        burst: 10
+      run_create:
+        rate_per_minute: 30
+        burst: 5
+        max_concurrent: 5
+```
+
+1. **Admission Architecture:**
+   - Evaluated by FastAPI admission middleware after client authentication so quotas are strictly keyed by authenticated `tenant_id` rather than spoofable client IPs or forward headers.
+   - Uses a token bucket algorithm to support smooth refill while permitting burst capacity up to the configured burst size.
+   - Separately enforces in-flight concurrency limits for expensive run creation (`POST /v1/runs`), tracking active invocations and releasing capacity upon run completion, failure, or client disconnection.
+
+2. **Route Classification:**
+   - `run_create`: Run creation endpoint (`POST /v1/runs`). Subject to rate limits and `max_concurrent_runs_per_tenant`.
+   - `write`: Mutation endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) such as approvals, clarifications, conversation updates, and artifact creation.
+   - `read`: Query and inspection endpoints (`GET`).
+   - **Exemptions:** Health and readiness endpoints (`/health/live`, `/health/ready`, `/healthz`, `/ready`) and CORS preflight (`OPTIONS`) are strictly exempt and never rate-limited.
+
+3. **HTTP 429 Response Contract:**
+   - Rejections return HTTP status code `429 Too Many Requests`.
+   - Includes a standard `Retry-After: <seconds>` HTTP response header.
+   - Returns a structured JSON payload:
+     ```json
+     {
+       "detail": "Rate limit exceeded for route class 'write'. Please retry after 3 seconds.",
+       "code": "RATE_LIMIT_EXCEEDED",
+       "retry_after": 3,
+       "tenant_id": "tenant-corp",
+       "route_class": "write"
+     }
+     ```
+     When in-flight concurrency is exceeded, `code` is `"CONCURRENCY_LIMIT_EXCEEDED"`.
+
+4. **Single-Node vs Multi-Worker Scope:**
+   - `InMemoryApiRateLimiter` enforces tenant admission quotas in-process for a single runtime instance.
+   - For horizontally scaled multi-worker clusters, configure an edge API gateway or reverse proxy (e.g., Envoy, Kong, Cloudflare, NGINX, AWS API Gateway) to provide cross-replica distributed rate limiting.
+
 Back up each durable store enabled by the application according to its retention policy. User deletion must remove tenant/session memory and authorized artifacts while preserving legally required, redacted audit records.

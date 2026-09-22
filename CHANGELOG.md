@@ -66,6 +66,15 @@ contracts are explicitly marked experimental during the `0.x` series.
   to `start_tls`. Implemented fail-closed multi-address checks, embedded user credential rejection, percent-encoded
   hostname normalization, explicit `allowed_hosts` filtering, and optional `allow_private_networks` override for
   internal VPC test harnesses. Added comprehensive security tests and operational threat modeling documentation.
+- **API Admission Rate Limiting & Concurrency Quotas (WP-12)**: Added single-node tenant-aware
+  admission rate limiting and in-flight run creation concurrency quotas to protect public API endpoints
+  against run, approval, conversation, and artifact floods. Defined `ApiRateLimiter` protocol and
+  `InMemoryApiRateLimiter` utilizing a token bucket algorithm for request rate and burst capacity alongside
+  in-flight concurrency counters with clock injection for deterministic testing. Added `RouteLimitSettings`
+  and `ApiRateLimitSettings` under `api.rate_limiting` supporting per-route overrides (`read`, `write`, `run_create`).
+  Integrated FastAPI admission middleware returning HTTP 429 Too Many Requests with `Retry-After` header and
+  structured JSON error codes (`RATE_LIMIT_EXCEEDED`, `CONCURRENCY_LIMIT_EXCEEDED`). Exempted health and
+  readiness endpoints (`/health/live`, `/health/ready`, `/healthz`, `/ready`) from admission quotas.
 
 ### Fixed
 

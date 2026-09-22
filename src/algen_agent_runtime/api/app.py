@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,6 +22,13 @@ from algen_agent_runtime.api.dependencies import (
     principal_dependency,
     require_any_scope,
     require_scope,
+)
+from algen_agent_runtime.api.rate_limiting import (
+    ROUTE_CLASS_READ,
+    ROUTE_CLASS_RUN_CREATE,
+    ROUTE_CLASS_WRITE,
+    InMemoryApiRateLimiter,
+    RouteLimitPolicy,
 )
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import ConversationEvent, ConversationStatus
@@ -147,6 +155,83 @@ def create_app(
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=list(resolved.api.cors_allowed_headers),
         )
+
+    rate_limiter = dependencies.rate_limiter
+    if rate_limiter is None and resolved.api.rate_limiting.enabled:
+        route_policies = {
+            name: RouteLimitPolicy(
+                rate_per_minute=policy.rate_per_minute,
+                burst=policy.burst,
+                max_concurrent=policy.max_concurrent,
+            )
+            for name, policy in resolved.api.rate_limiting.route_overrides.items()
+        }
+        rate_limiter = InMemoryApiRateLimiter(
+            default_rate_per_minute=resolved.api.rate_limiting.default_rate_per_minute,
+            default_burst=resolved.api.rate_limiting.default_burst,
+            max_concurrent_runs_per_tenant=resolved.api.rate_limiting.max_concurrent_runs_per_tenant,
+            route_policies=route_policies,
+            fail_closed=resolved.api.rate_limiting.fail_closed,
+        )
+
+    if rate_limiter is not None:
+
+        @app.middleware("http")
+        async def admission_rate_limit(request: Request, call_next: Any) -> Response:
+            path = request.url.path.rstrip("/")
+            if (
+                path in {"/health/live", "/health/ready", "/healthz", "/ready", "/health"}
+                or request.method == "OPTIONS"
+            ):
+                return cast(Response, await call_next(request))
+
+            if request.method == "POST" and path == "/v1/runs":
+                route_class = ROUTE_CLASS_RUN_CREATE
+            elif request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                route_class = ROUTE_CLASS_WRITE
+            else:
+                route_class = ROUTE_CLASS_READ
+
+            try:
+                identity = await authenticate(request)
+            except HTTPException:
+                return cast(Response, await call_next(request))
+
+            decision = await rate_limiter.acquire(
+                tenant_id=identity.tenant_id,
+                route_class=route_class,
+                principal_id=identity.user_id,
+            )
+            if not decision.allowed:
+                retry_seconds = max(1, math.ceil(decision.retry_after_seconds))
+                code = (
+                    "CONCURRENCY_LIMIT_EXCEEDED"
+                    if decision.reason == "concurrency_limit_exceeded"
+                    else "RATE_LIMIT_EXCEEDED"
+                )
+                return JSONResponse(
+                    status_code=429,
+                    headers={"Retry-After": str(retry_seconds)},
+                    content={
+                        "detail": (
+                            f"Rate limit exceeded for route class '{route_class}'. "
+                            f"Please retry after {retry_seconds} seconds."
+                        ),
+                        "code": code,
+                        "retry_after": retry_seconds,
+                        "tenant_id": identity.tenant_id,
+                        "route_class": route_class,
+                    },
+                )
+
+            try:
+                return cast(Response, await call_next(request))
+            finally:
+                await rate_limiter.release(
+                    tenant_id=identity.tenant_id,
+                    route_class=route_class,
+                    principal_id=identity.user_id,
+                )
 
     @app.middleware("http")
     async def payload_limit(request: Request, call_next: Any) -> Response:

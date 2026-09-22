@@ -224,6 +224,21 @@ class SecuritySettings(StrictSettings):
     trusted_plugin_prefixes: tuple[str, ...] = ()
 
 
+class RouteLimitSettings(StrictSettings):
+    rate_per_minute: int = Field(default=60, ge=1)
+    burst: int = Field(default=10, ge=1)
+    max_concurrent: int | None = Field(default=None, ge=1)
+
+
+class ApiRateLimitSettings(StrictSettings):
+    enabled: bool = False
+    default_rate_per_minute: int = Field(default=120, ge=1)
+    default_burst: int = Field(default=30, ge=1)
+    max_concurrent_runs_per_tenant: int = Field(default=10, ge=1)
+    fail_closed: bool = True
+    route_overrides: dict[str, RouteLimitSettings] = Field(default_factory=dict)
+
+
 class ApiSettings(StrictSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -246,6 +261,7 @@ class ApiSettings(StrictSettings):
         "X-Scopes",
         "X-Artifact-Metadata",
     )
+    rate_limiting: ApiRateLimitSettings = Field(default_factory=ApiRateLimitSettings)
 
     @model_validator(mode="after")
     def validate_authentication(self) -> ApiSettings:
