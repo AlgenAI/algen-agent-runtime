@@ -127,6 +127,12 @@ class MCPClientManager:
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
             elif config.transport == MCPTransportType.SSE:
+                assert isinstance(config, MCPSseServerConfig)
+                headers = dict(config.headers)
+                if config.auth_token_ref:
+                    token = _resolve_secret(config.auth_token_ref, self._environment)
+                    headers["Authorization"] = f"Bearer {token}"
+
                 try:
                     from mcp import ClientSession
                     from mcp.client.sse import sse_client
@@ -134,12 +140,6 @@ class MCPClientManager:
                     raise PolicyDeniedError(
                         "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
                     ) from exc
-
-                assert isinstance(config, MCPSseServerConfig)
-                headers = dict(config.headers)
-                if config.auth_token_ref:
-                    token = _resolve_secret(config.auth_token_ref, self._environment)
-                    headers["Authorization"] = f"Bearer {token}"
 
                 read_stream, write_stream = await stack.enter_async_context(
                     sse_client(config.url, headers=headers, timeout=config.timeout_seconds)
