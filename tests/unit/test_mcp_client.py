@@ -371,6 +371,7 @@ def test_mcp_container_wiring() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_real_stdio_fixture_server(tmp_path: Path) -> None:
+    pytest.importorskip("mcp")
     # Write a minimal FastMCP fixture server script
     server_script = tmp_path / "fixture_server.py"
     server_script.write_text(
