@@ -85,7 +85,7 @@ dev = [
   "ruff>=0.6,<1",
 ]
 [project.scripts]
-algen-agent-runtime = "algen_agent_runtime.api.app:main"
+algen-agent-runtime = "algen_agent_runtime.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/AlgenAI/algen-agent-runtime"

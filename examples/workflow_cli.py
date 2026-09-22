@@ -13,7 +13,6 @@ import importlib
 import inspect
 import json
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -171,9 +170,7 @@ class InteractiveDecisionProvider:
             )
         try:
             answer = (
-                (await asyncio.to_thread(input, f"{prompt}\nApprove or reject? "))
-                .strip()
-                .lower()
+                (await asyncio.to_thread(input, f"{prompt}\nApprove or reject? ")).strip().lower()
             )
             return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
         except EOFError as exc:

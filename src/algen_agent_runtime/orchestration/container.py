@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import httpx
@@ -115,7 +115,7 @@ from algen_agent_runtime.retrieval.vector_stores import (
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
-from algen_agent_runtime.tools.contracts import ToolExecutionStore
+from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import ModelCapabilities
@@ -247,6 +247,7 @@ def build_container(
     settings: AppSettings,
     *,
     environment: Mapping[str, str] | None = None,
+    additional_tools: Sequence[Tool] = (),
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -269,6 +270,8 @@ def build_container(
         )
     )
     tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
+    for tool in additional_tools:
+        tools.register(tool)
     storage = settings.storage
     selected_backends = {
         storage.run_store,

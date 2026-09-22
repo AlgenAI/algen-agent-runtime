@@ -204,14 +204,32 @@ Completed bounded parallel research for: Assess a migration to managed queues
 
 For a real local model, follow the [Ollama quickstart](examples/quickstart_local_chat/README.md).
 
+## CLI & Project Scaffolding
+
+Algen Agent Runtime provides a CLI for project scaffolding and serving runtime endpoints:
+
+```bash
+# Scaffold a new agent project (templates: agent, approval, workflow)
+algen-agent-runtime new my-agent
+algen-agent-runtime new my-approval-agent --template approval
+algen-agent-runtime new my-workflow-agent --template workflow
+
+# Test and run the scaffolded project offline
+cd my-agent
+python app.py
+pytest
+```
+
 ## Run the HTTP service
 
 From a source checkout with Ollama running and `llama3.2` installed:
 
 ```bash
 ALGEN_AGENT_RUNTIME_CONFIG=examples/quickstart_local_chat/agent.yaml \
-  algen-agent-runtime
+  algen-agent-runtime serve
 ```
+
+Alternatively, invoking `algen-agent-runtime` without subcommands defaults to `serve` for backward compatibility.
 
 The default bind is `127.0.0.1:8000`. Development-header authentication is intentionally limited to loopback unless the insecure-development override is explicitly enabled.
 
@@ -337,12 +355,18 @@ python -m examples.pattern_multi_agent_fanout.app "Assess a migration to managed
 # Deterministic handler and resource tool pattern
 python -m examples.quickstart_tool.app
 
-# Human approval checkpoint and state resumption
-python -m examples.pattern_approval_workflow.app
+# Human approval checkpoint (interactive prompt, or automated with --approve-all)
+python -m examples.pattern_approval_workflow.app --approve-all
 
 # Governed research with retrieval and cited synthesis
 python -m examples.pattern_governed_research.app
 ```
+
+All workflow examples support non-interactive execution in automated environments and CI pipelines:
+- `--approve-all`: automatically approve all approval checkpoints
+- `--reject-all`: automatically reject all approval checkpoints
+- `--answers-file PATH`: supply ordered approval/clarification decisions from a JSON file
+
 
 ## Development
 

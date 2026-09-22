@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 
 from examples.workflow_cli import (
-    AnswerItem,
     AnswersFileDecisionProvider,
     ApproveAllDecisionProvider,
     InteractiveDecisionProvider,
@@ -105,10 +104,14 @@ async def test_answers_file_type_mismatch(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_interactive_decision_provider_non_tty_fails_fast() -> None:
     provider = InteractiveDecisionProvider(is_tty=False)
-    with pytest.raises(RuntimeError, match="non-interactive environment without an automated decision policy"):
+    with pytest.raises(
+        RuntimeError, match="non-interactive environment without an automated decision policy"
+    ):
         await provider.decide_approval("Approve?", {})
 
-    with pytest.raises(RuntimeError, match="non-interactive environment without an automated decision policy"):
+    with pytest.raises(
+        RuntimeError, match="non-interactive environment without an automated decision policy"
+    ):
         await provider.provide_clarification("Clarify?", {})
 
 
@@ -116,11 +119,15 @@ async def test_interactive_decision_provider_non_tty_fails_fast() -> None:
 async def test_interactive_decision_provider_eof_error() -> None:
     provider = InteractiveDecisionProvider(is_tty=True)
     with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
-        with pytest.raises(RuntimeError, match="End of input reached on stdin while awaiting approval"):
+        with pytest.raises(
+            RuntimeError, match="End of input reached on stdin while awaiting approval"
+        ):
             await provider.decide_approval("Approve?", {})
 
     with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
-        with pytest.raises(RuntimeError, match="End of input reached on stdin while awaiting clarification"):
+        with pytest.raises(
+            RuntimeError, match="End of input reached on stdin while awaiting clarification"
+        ):
             await provider.provide_clarification("Clarify?", {})
 
 
@@ -161,7 +168,7 @@ async def test_run_example_with_approve_all() -> None:
         approve_all=True,
     )
     assert values["approval"]["decision"] == "approved"
-    assert values["action"]["status"] == "credit-enabled"
+    assert values["result"]["status"] == "applied"
 
 
 @pytest.mark.asyncio
@@ -173,7 +180,7 @@ async def test_run_example_with_reject_all() -> None:
         reject_all=True,
     )
     assert values["approval"]["decision"] == "rejected"
-    assert values["action"]["status"] == "skipped"
+    assert "result" not in values
 
 
 @pytest.mark.asyncio

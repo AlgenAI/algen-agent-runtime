@@ -19,6 +19,21 @@ contracts are explicitly marked experimental during the `0.x` series.
 - **Provider Reference Validation at Load Time (WP-03)**: Added cross-reference validation in
   `AppSettings` ensuring agent default models, fallback models, and retrieval embedding providers
   reference valid configured provider instances, failing fast with actionable paths during configuration loading.
+- **Non-Interactive Automation for Workflow Examples (WP-04)**: Introduced injectable `DecisionProvider`
+  abstractions (`ApproveAllDecisionProvider`, `RejectAllDecisionProvider`, `AnswersFileDecisionProvider`,
+  and `InteractiveDecisionProvider`) in `examples/workflow_cli.py`. All portable workflow examples now
+  support `--approve-all`, `--reject-all`, and `--answers-file PATH` CLI flags, converting `EOFError`
+  and non-interactive TTY detection into actionable non-zero diagnostic errors instead of hanging in automation.
+- **Project Scaffolding CLI (WP-05)**: Added `algen-agent-runtime new <name>` command supporting
+  `--template agent|approval|workflow` to generate production-ready agent projects with `agent.yaml`,
+  `app.py`, `hooks.py` (when needed), `test_agent.py`, `README.md`, and `.env.example`. Added `serve`
+  subcommand while preserving backward compatibility for invoking `algen-agent-runtime` without subcommands.
+- **Safe Starter Tool Pack (WP-06)**: Added an opt-in starter tool pack (`algen_agent_runtime.tools.starter`)
+  including `starter.calculator` (AST allowlist without `eval()`, resource and magnitude bounds),
+  `starter.json_query` (safe dot/bracket path queries and transforms with byte limits),
+  `starter.file_read` and `starter.directory_list` (workspace-rooted with path traversal and symlink-escape
+  protection), and `starter.clock` (timezone support and deterministic testing). Starter tools are disabled by
+  default in `build_container`, requiring explicit opt-in to prevent expanding default runtime authority.
 
 ### Fixed
 

@@ -16,6 +16,8 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
 | Malicious plugin | trusted namespace, entry-point-only discovery, API version validation, deployment signing policy |
 | Resource exhaustion | payload/result/artifact limits, semaphores, rate limits, time/token/cost/step budgets |
+| Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
+| Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |
 | Provider compromise | isolated adapters, raw response opt-in, egress policy, fallback/circuit breaker |
 | Telemetry data exfiltration | content capture off, Traccia patching off by default, PII redaction, approved OTLP endpoints, sampling and retention policy |
 | Audit tampering | immutable audit contracts, append-only external sink, separate diagnostic logs |
