@@ -8,6 +8,24 @@ update. Rejection safely skips the update.
 lookup -> propose -> approval -> update
 ```
 
-Run `python -m examples.pattern_approval_workflow.app` or import `agent.yaml` into Studio. The example
-uses only Runtime workflow primitives; scheduling and checkpoint limits are not implemented in the
-application. No real CRM mutation occurs.
+### Running interactively
+
+```bash
+python -m examples.pattern_approval_workflow.app
+```
+
+### Running non-interactively / automation
+
+```bash
+# Deterministically approve
+python -m examples.pattern_approval_workflow.app --approve-all
+
+# Deterministically reject
+python -m examples.pattern_approval_workflow.app --reject-all
+
+# Provide decisions via JSON answers file
+python -m examples.pattern_approval_workflow.app --answers-file path/to/answers.json
+```
+
+Or import `agent.yaml` into Studio. The example uses only Runtime workflow primitives; scheduling and
+checkpoint limits are not implemented in the application. No real CRM mutation occurs.

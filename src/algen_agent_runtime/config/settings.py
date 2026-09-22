@@ -224,6 +224,21 @@ class SecuritySettings(StrictSettings):
     trusted_plugin_prefixes: tuple[str, ...] = ()
 
 
+class RouteLimitSettings(StrictSettings):
+    rate_per_minute: int = Field(default=60, ge=1)
+    burst: int = Field(default=10, ge=1)
+    max_concurrent: int | None = Field(default=None, ge=1)
+
+
+class ApiRateLimitSettings(StrictSettings):
+    enabled: bool = False
+    default_rate_per_minute: int = Field(default=120, ge=1)
+    default_burst: int = Field(default=30, ge=1)
+    max_concurrent_runs_per_tenant: int = Field(default=10, ge=1)
+    fail_closed: bool = True
+    route_overrides: dict[str, RouteLimitSettings] = Field(default_factory=dict)
+
+
 class ApiSettings(StrictSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -246,6 +261,7 @@ class ApiSettings(StrictSettings):
         "X-Scopes",
         "X-Artifact-Metadata",
     )
+    rate_limiting: ApiRateLimitSettings = Field(default_factory=ApiRateLimitSettings)
 
     @model_validator(mode="after")
     def validate_authentication(self) -> ApiSettings:
@@ -435,6 +451,37 @@ class AppSettings(StrictSettings):
                             f"workflow node {node.id!r} references unknown cache policy "
                             f"{resource.name!r}"
                         )
+        return self
+
+    @model_validator(mode="after")
+    def validate_provider_references(self) -> AppSettings:
+        invalid_references: list[str] = []
+        for agent in self.agents:
+            if (
+                agent.default_model.provider is None
+                or agent.default_model.provider not in self.providers
+            ):
+                invalid_references.append(
+                    f"agents[{agent.name}].default_model.provider ({agent.default_model.provider!r})"
+                )
+            for idx, fallback in enumerate(agent.fallback_models):
+                if fallback.provider is None or fallback.provider not in self.providers:
+                    invalid_references.append(
+                        f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
+                    )
+        for retrieval_name, retrieval_config in self.retrieval.items():
+            if (
+                retrieval_config.embedding_provider is not None
+                and retrieval_config.embedding_provider not in self.providers
+            ):
+                invalid_references.append(
+                    f"retrieval[{retrieval_name}].embedding_provider ({retrieval_config.embedding_provider!r})"
+                )
+        if invalid_references:
+            raise ValueError(
+                f"invalid provider references: {'; '.join(invalid_references)} "
+                f"(configured providers: {sorted(self.providers.keys())})"
+            )
         return self
 
 

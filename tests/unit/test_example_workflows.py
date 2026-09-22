@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.workflows import (
     MultiAgentWorkflowExecutor,
+    WorkflowHookLoader,
     WorkflowHookRegistry,
     WorkflowRegistry,
     WorkflowStatus,
@@ -39,11 +39,12 @@ ALL_STUDIO_CONFIGS = (
 )
 
 
+LOADER = WorkflowHookLoader(allowed_modules=("examples",))
+
+
 def _hooks(reference: str) -> WorkflowHookRegistry:
-    module_name, factory_name = reference.split(":", 1)
-    result = getattr(importlib.import_module(module_name), factory_name)()
-    assert isinstance(result, WorkflowHookRegistry)
-    return result
+    loaded = LOADER.load(reference)
+    return loaded.hooks
 
 
 @pytest.mark.asyncio

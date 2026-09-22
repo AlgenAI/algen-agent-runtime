@@ -57,12 +57,24 @@ Tests requiring paid credentials or external services must use the `live` marker
 
 Add the narrowest test that proves the behavior at the appropriate level:
 
-- `tests/unit`: deterministic behavior with no external services.
+- `tests/unit`: deterministic behavior with no external services (e.g. Redis/in-memory queue behavioral doubles).
 - `tests/contract`: provider, tool, and adapter compatibility contracts.
-- `tests/integration`: multiple runtime components working together.
+- `tests/integration`: multiple runtime components working together (marked with `integration`, `postgres`, or `redis`).
 - `tests/end_to_end`: public API and representative application paths.
 
-Tests must be tenant-aware, deterministic by default, and safe to run without credentials. Add regression coverage for bug fixes and failure-path coverage for security-sensitive changes.
+### Running Integration & Container Tests
+Integration tests for PostgreSQL and Redis run against local doubles or live containers:
+```bash
+# Run tests targeting storage integration markers
+pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+
+# Run tests against live local container instances
+POSTGRES_DSN="postgresql://postgres:secret@localhost:5432/algen_test" \
+REDIS_URL="redis://localhost:6379/0" \
+pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+```
+
+Tests must be tenant-aware, deterministic by default, and safe to run without credentials. Add regression coverage for bug fixes and failure-path coverage for security-sensitive changes. Tests requiring paid or external credentials use the `live` marker.
 
 ## Documentation and compatibility
 

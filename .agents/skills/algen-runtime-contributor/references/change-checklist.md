@@ -38,16 +38,27 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Avoid telemetry content by default; redact credentials and sensitive payloads.
 - Keep workflow approval review paths and parameters explicitly secret-free; approval events must not
   expose review values, parameters, or operator comments.
+- Dynamic hook loading: Enforce `WorkflowHookLoader` with explicit module allowlists (`allowed_modules`)
+  before import; verify callable shape, API version compatibility (`__api_version__`), and `WorkflowHookRegistry`
+  return type; never serialize code or secrets in audit metadata.
+- Outbound network requests: Enforce `NetworkSecurityPolicy` / `SafeHttpClient` against SSRF, DNS rebinding,
+  private/internal IP ranges (IPv4/IPv6 loopback, link-local, RFC 1918, carrier-grade NAT), and redirect chains.
+- Rate limiting and quotas: Apply tenant-scoped rate limiting (`RateLimiter`, sliding-window Redis/memory)
+  and propagate standard rate limit headers on 429 errors.
+- Filesystem safety: Ensure filesystem tools (`algen_agent_runtime.tools.starter.fs`) strictly validate sandbox
+  roots against traversal, symlink escapes, and directory breakouts.
 
 ## Evidence
 
-- Unit tests: deterministic contracts and failure behavior.
+- Unit tests: deterministic contracts and failure behavior (e.g., Redis run/memory stores, in-memory queues).
 - Contract tests: provider, tool, store, retrieval, or framework compatibility.
-- Integration tests: several Runtime components working together.
+- Integration tests: several Runtime components working together, marked with `integration`, `postgres`, or `redis`.
+- Distributed worker tests: worker fencing, lease renewal, stale lease revocation (`ConflictError`), retry bounds, and cancellation.
+- Container integration: CI service containers (`postgres:16`, `redis:7`) running against live networked services with automated schema migrations.
 - End-to-end tests: public API or representative application path.
-- Paid or networked checks use the `live` marker and are never required for ordinary pull requests.
+- Paid or external networked checks use the `live` marker and are never required for ordinary pull requests.
 
-## Quality gates
+## Quality gates and completion
 
 ```bash
 ruff format --check src tests examples
@@ -57,3 +68,4 @@ pytest -q -p no:cacheprovider
 ```
 
 Use `make lint`, `make typecheck`, and `make test` when the Makefile is the better local entry point.
+Provide a structured, conventional Git commit message summarizing the verified changes upon completion.

@@ -62,6 +62,21 @@ jobs:
       - run: python -m pip install --upgrade pip build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Generate and verify artifact checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          dist = Path("dist")
+          sums = []
+          for p in sorted(dist.iterdir()):
+              if p.suffix in (".whl", ".gz"):
+                  digest = hashlib.sha256(p.read_bytes()).hexdigest()
+                  sums.append(f"{digest}  {p.name}\n")
+          Path("dist/SHA256SUMS").write_text("".join(sums))
+          PY
+          cd dist
+          sha256sum -c SHA256SUMS
       - name: Inspect artifact contents
         run: |
           python - <<'PY'
@@ -76,6 +91,8 @@ jobs:
               required = {
                   "algen_agent_runtime/py.typed",
                   "algen_agent_runtime/persistence/migrations/001_initial.sql",
+                  "algen_agent_runtime/tools/starter/__init__.py",
+                  "algen_agent_runtime/mcp/__init__.py",
               }
               missing = required - names
               if missing:
@@ -87,17 +104,97 @@ jobs:
               if not any(name.endswith("/LICENSE") for name in names):
                   raise SystemExit("sdist missing LICENSE")
           PY
-      - name: Install wheel outside the checkout
-        run: |
-          python -m venv /tmp/algen-wheel-smoke
-          /tmp/algen-wheel-smoke/bin/python -m pip install dist/*.whl
-          cd /tmp
-          /tmp/algen-wheel-smoke/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
-          test -x /tmp/algen-wheel-smoke/bin/algen-agent-runtime
-          /tmp/algen-wheel-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
-          /tmp/algen-wheel-smoke/bin/python -c "from importlib.resources import files; assert files('algen_agent_runtime').joinpath('persistence/migrations/001_initial.sql').is_file()"
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
           path: dist/
           if-no-files-found: error
+
+  clean-install:
+    name: Clean install (Python ${{ matrix.python-version }})
+    needs: package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Verify checksums
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+      - name: Install wheel and verify CLI and scaffolding outside checkout
+        run: |
+          python -m venv /tmp/algen-wheel-smoke-${{ matrix.python-version }}
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install --upgrade pip
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install dist/*.whl
+
+          # Verify import, version, and server app outside repository
+          cd /tmp
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
+          test -x /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime --help
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime serve --help
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from importlib.resources import files; assert files('algen_agent_runtime').joinpath('persistence/migrations/001_initial.sql').is_file()"
+
+          # Verify starter tools are importable from installed package
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
+
+          # Scaffold, test, and run offline project
+          rm -rf /tmp/smoke-scaffold-${{ matrix.python-version }}
+          mkdir -p /tmp/smoke-scaffold-${{ matrix.python-version }}
+          cd /tmp/smoke-scaffold-${{ matrix.python-version }}
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime new smoke_agent --template agent
+          cd smoke_agent
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install pytest pytest-asyncio
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pytest test_agent.py
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python app.py
+
+  container-integration:
+    name: Container Integration (PostgreSQL & Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: algen_test
+          POSTGRES_USER: algen
+          POSTGRES_PASSWORD: algen_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - name: Run Postgres and Redis integration tests
+        env:
+          POSTGRES_DSN: postgresql://algen:algen_password@localhost:5432/algen_test
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+

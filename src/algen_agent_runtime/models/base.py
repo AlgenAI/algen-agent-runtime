@@ -6,6 +6,8 @@ from collections import deque
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
+import structlog
+
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import CapabilityError, ProviderError
 from algen_agent_runtime.types.contracts import (
@@ -17,6 +19,40 @@ from algen_agent_runtime.types.contracts import (
     ModelStreamEvent,
 )
 from algen_agent_runtime.types.interfaces import ModelProvider
+
+logger = structlog.get_logger("algen_agent_runtime.models")
+
+
+def _narrow_capabilities(
+    adapter_caps: ModelCapabilities,
+    override: ModelCapabilities | None,
+    registration_id: str,
+    model: str,
+) -> ModelCapabilities:
+    """Apply capability narrowing: C_effective = C_adapter ∩ C_configured.
+
+    Configuration may narrow True→False; it must never widen False→True.
+    Attempts to widen an unsupported capability are logged and kept False.
+    """
+    if override is None:
+        return adapter_caps
+    effective: dict[str, bool] = {}
+    for field_name in ModelCapabilities.model_fields:
+        adapter_val = bool(getattr(adapter_caps, field_name, False))
+        configured_val = bool(getattr(override, field_name, False))
+        if field_name in override.model_fields_set and configured_val and not adapter_val:
+            logger.warning(
+                "cannot_widen_unsupported_capability",
+                provider=registration_id,
+                model=model,
+                capability=field_name,
+                message=(
+                    f"Configured capability {field_name}=True for provider {registration_id!r} "
+                    f"ignored because the adapter reports it as unsupported"
+                ),
+            )
+        effective[field_name] = adapter_val and configured_val
+    return ModelCapabilities(**effective)
 
 
 @dataclass
@@ -59,14 +95,29 @@ class ModelRouter:
         self._limits: dict[str, SlidingWindowRateLimiter] = {}
         self._costs: dict[str, tuple[float, float]] = {}
         self._local: dict[str, bool] = {}
+        # WP-02: per-registration capability overrides applied before cache / adapter call.
+        self._capability_overrides: dict[str, ModelCapabilities] = {}
+        # WP-01: maps registration_id → provider so the adapter's own provider_id is preserved
+        # for telemetry / protocol behavior while the router key is the deployment-chosen name.
+        self._registration_ids: dict[str, str] = {}  # registration_id → provider.provider_id
         self._threshold = circuit_failure_threshold
         self._reset_seconds = circuit_reset_seconds
         self._cache = cache
 
-    async def _capabilities(self, provider: ModelProvider, model: str) -> ModelCapabilities:
-        if self._cache is None:
-            return await provider.capabilities(model)
+    async def _capabilities(
+        self,
+        registration_id: str,
+        provider: ModelProvider,
+        model: str,
+    ) -> ModelCapabilities:
+        override = self._capability_overrides.get(registration_id)
+        override_payload = override.model_dump(mode="json") if override is not None else None
 
+        if self._cache is None:
+            raw_caps = await provider.capabilities(model)
+            return _narrow_capabilities(raw_caps, override, registration_id, model)
+
+        # WP-01 & WP-02: key capability cache by registration_id and capability override policy
         async def discover() -> dict[str, object]:
             value = await provider.capabilities(model)
             return value.model_dump(mode="json")
@@ -74,12 +125,17 @@ class ModelRouter:
         value, _ = await self._cache.get_or_set_json(
             "model_capabilities",
             "model.capabilities",
-            {"provider": provider.provider_id, "model": model},
+            {
+                "provider": registration_id,
+                "model": model,
+                "override": override_payload,
+            },
             CacheContext(),
             discover,
-            tags=(f"provider:{provider.provider_id}",),
+            tags=(f"provider:{registration_id}",),
         )
-        return ModelCapabilities.model_validate(value)
+        raw_caps = ModelCapabilities.model_validate(value)
+        return _narrow_capabilities(raw_caps, override, registration_id, model)
 
     def register_provider(
         self,
@@ -88,12 +144,39 @@ class ModelRouter:
         cost_per_1k_input: float = 0,
         cost_per_1k_output: float = 0,
         is_local: bool = False,
+        *,
+        registration_id: str | None = None,
+        capability_override: ModelCapabilities | None = None,
     ) -> None:
-        self._providers[provider.provider_id] = provider
-        self._health[provider.provider_id] = ProviderHealth()
-        self._limits[provider.provider_id] = SlidingWindowRateLimiter(requests_per_minute)
-        self._costs[provider.provider_id] = (cost_per_1k_input, cost_per_1k_output)
-        self._local[provider.provider_id] = is_local
+        """Register a provider instance.
+
+        ``registration_id`` sets the key used for routing, health tracking, rate
+        limiting, and cost accounting. It defaults to ``provider.provider_id`` for
+        backward compatibility.  Pass an explicit value (typically the YAML
+        configuration key) when registering multiple instances of the same
+        provider type so they remain independently addressable.
+
+        Registering the same ``registration_id`` twice raises ``ValueError``.
+
+        ``capability_override`` pins the effective capabilities returned for every
+        model served by this registration, applying the configured narrowing policy
+        (WP-02). When *None*, the adapter's ``capabilities()`` method is called
+        normally.
+        """
+        rid = registration_id if registration_id is not None else provider.provider_id
+        if rid in self._providers:
+            raise ValueError(
+                f"provider {rid!r} is already registered; use a unique registration_id "
+                "for multiple instances of the same adapter type"
+            )
+        self._providers[rid] = provider
+        self._health[rid] = ProviderHealth()
+        self._limits[rid] = SlidingWindowRateLimiter(requests_per_minute)
+        self._costs[rid] = (cost_per_1k_input, cost_per_1k_output)
+        self._local[rid] = is_local
+        self._registration_ids[rid] = provider.provider_id
+        if capability_override is not None:
+            self._capability_overrides[rid] = capability_override
 
     def register_profile(self, profile: ModelProfile) -> None:
         self._profiles[profile.name] = profile
@@ -103,6 +186,16 @@ class ModelRouter:
             return self._providers[provider_id]
         except KeyError as exc:
             raise CapabilityError(f"provider {provider_id!r} is not registered") from exc
+
+    def _registration_id_for(self, provider: ModelProvider) -> str:
+        """Return the registration key for a provider that has already been registered."""
+        # _providers is keyed by registration_id, so a reverse lookup is needed.
+        # Build it lazily from the existing dict: this is O(n) but n is tiny.
+        for rid, p in self._providers.items():
+            if p is provider:
+                return rid
+        # Fallback (should never occur for a registered provider).
+        return provider.provider_id
 
     async def candidates(
         self, profiles: Sequence[ModelProfile], allowlist: frozenset[str] = frozenset()
@@ -115,27 +208,29 @@ class ModelRouter:
             identity = f"{profile.provider}/{profile.model}"
             if allowlist and identity not in allowlist:
                 continue
-            provider = self._providers.get(profile.provider)
+            # profile.provider is the registration_id (YAML key).
+            rid = profile.provider
+            provider = self._providers.get(rid)
             if provider is None:
                 continue
-            health = self._health[profile.provider]
+            health = self._health[rid]
             if health.opened_at and now - health.opened_at < self._reset_seconds:
                 continue
             if profile.max_latency_ms is not None and health.latency_ms > profile.max_latency_ms:
                 continue
-            capabilities = await self._capabilities(provider, profile.model)
+            capabilities = await self._capabilities(rid, provider, profile.model)
             if not all(
                 bool(getattr(capabilities, item, False)) for item in profile.required_capabilities
             ):
                 continue
-            input_cost, output_cost = self._costs[provider.provider_id]
+            input_cost, output_cost = self._costs[rid]
             average_cost = (input_cost + output_cost) / 2
             if (
                 profile.max_cost_per_1k_tokens is not None
                 and average_cost > profile.max_cost_per_1k_tokens
             ):
                 continue
-            locality = self._local[provider.provider_id]
+            locality = self._local[rid]
             preference_score = 0
             if profile.routing_preference == "local_first":
                 preference_score = 10_000 if locality else 0
@@ -160,7 +255,9 @@ class ModelRouter:
         errors: list[str] = []
         failures: list[ProviderError] = []
         for provider, profile in candidates:
-            await self._limits[provider.provider_id].acquire()
+            # profile.provider is the registration_id.
+            rid = profile.provider or self._registration_id_for(provider)
+            await self._limits[rid].acquire()
             started = time.monotonic()
             try:
                 response = await provider.generate(
@@ -168,11 +265,11 @@ class ModelRouter:
                         update={"model": profile.model, "extensions": profile.extensions}
                     )
                 )
-                health = self._health[provider.provider_id]
+                health = self._health[rid]
                 health.consecutive_failures = 0
                 health.opened_at = None
                 health.latency_ms = (time.monotonic() - started) * 1000
-                input_cost, output_cost = self._costs[provider.provider_id]
+                input_cost, output_cost = self._costs[rid]
                 estimated_cost = (
                     response.usage.input_tokens * input_cost
                     + response.usage.output_tokens * output_cost
@@ -185,9 +282,9 @@ class ModelRouter:
                     }
                 )
             except ProviderError as exc:
-                errors.append(f"{provider.provider_id}: {exc}")
+                errors.append(f"{rid}: {exc}")
                 failures.append(exc)
-                health = self._health[provider.provider_id]
+                health = self._health[rid]
                 health.consecutive_failures += 1
                 if health.consecutive_failures >= self._threshold:
                     health.opened_at = time.monotonic()
@@ -211,19 +308,18 @@ class ModelRouter:
         if not candidates:
             raise CapabilityError("no healthy allowed streaming model is available")
         provider, profile = candidates[0]
-        capabilities = await self._capabilities(provider, profile.model or "")
+        rid = profile.provider or self._registration_id_for(provider)
+        capabilities = await self._capabilities(rid, provider, profile.model or "")
         if not capabilities.streaming:
-            raise CapabilityError(
-                f"{provider.provider_id}/{profile.model} does not support streaming"
-            )
-        await self._limits[provider.provider_id].acquire()
+            raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
+        await self._limits[rid].acquire()
         async for event in provider.stream(
             request.model_copy(
                 update={"model": profile.model, "stream": True, "extensions": profile.extensions}
             )
         ):
             if event.response:
-                input_cost, output_cost = self._costs[provider.provider_id]
+                input_cost, output_cost = self._costs[rid]
                 usage = event.response.usage
                 estimated_cost = (
                     usage.input_tokens * input_cost + usage.output_tokens * output_cost

@@ -24,6 +24,7 @@ Preserve these invariants:
 
 Add the narrowest meaningful test and cover the relevant failure path. Update public documentation,
 examples, and `CHANGELOG.md` for user-visible behavior. Run the repository quality gates before
-finishing; report any gate that could not run and why. Do not commit, push, publish, or open a pull
+finishing; report any gate that could not run and why. Provide a concise, well-structured Git commit
+message summarizing the verified changes. Do not commit, push, publish, or open a pull
 request unless the user explicitly requests it.
 

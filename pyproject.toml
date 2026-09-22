@@ -54,6 +54,7 @@ talk-to-data = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1", "traccia>=0.1.28,<0.2"]
 hiring = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1", "PyMuPDF>=1.24,<2", "python-multipart>=0.0.9,<1", "traccia>=0.1.28,<0.2"]
 redis = ["redis>=5,<6"]
 auth = ["PyJWT[crypto]>=2.9,<3"]
+mcp = ["mcp>=1.2.0,<2"]
 transformers = ["transformers>=4.44,<5", "torch>=2.4,<3"]
 traccia = ["traccia>=0.1.28,<0.2"]
 chroma = ["chromadb>=1.0,<2"]
@@ -85,7 +86,7 @@ dev = [
   "ruff>=0.6,<1",
 ]
 [project.scripts]
-algen-agent-runtime = "algen_agent_runtime.api.app:main"
+algen-agent-runtime = "algen_agent_runtime.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/AlgenAI/algen-agent-runtime"
@@ -119,7 +120,12 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["live: tests requiring external credentials"]
+markers = [
+  "live: tests requiring external credentials",
+  "integration: tests requiring external or behavioral storage/network integration",
+  "postgres: tests targeting PostgreSQL persistence stores",
+  "redis: tests targeting Redis cache/run stores",
+]
 
 [tool.ruff]
 target-version = "py312"

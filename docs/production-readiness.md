@@ -1,5 +1,9 @@
 # Production-readiness roadmap
 
+Owner: AlgenAI Architecture & Security  
+Status: Active tracking  
+Last reviewed: 2026-09-22  
+
 Algen Agent Runtime is a restart-aware development runtime. It now has configurable
 PostgreSQL persistence, Redis checkpoint/memory options, a tool side-effect ledger, startup recovery,
 graceful draining, bounded event fan-out, verified JWT authentication, analytical graph checkpoints,
@@ -34,16 +38,21 @@ service.
   deletion, including staged artifacts that exist before a run.
 - PostgreSQL-metadata/S3-blob artifact storage with encryption and checksum requests, tenant-hashed
   keys, compensating upload cleanup, bounded retention, and an audited compare-and-set scanner boundary.
+- Outbound HTTP security with DNS rebinding TOCTOU elimination: single-resolution address validation,
+  direct TCP socket pinning to pre-validated IPs, fail-closed multi-address checks, and TLS SNI
+  preservation across `core.http`, `remote_tool`, and `HTTPModelService`.
+- Tenant-aware API admission rate limiting and in-flight run creation concurrency quotas with
+  token-bucket refills, burst headroom, route-class thresholds, and HTTP 429 `Retry-After` handling.
 
 ## P0 before a hardened single-node production claim
 
-1. **Exercise real infrastructure.** Add containerized PostgreSQL and Redis integration tests covering
+1. **Validate PostgreSQL and Redis integrations with live services.** Run exhaustive drills for
    startup, schema initialization, restart recovery, concurrent approval decisions, artifact limits,
-   backup/restore, and database unavailability. Current offline tests validate behavior and wiring but
-   do not exercise a live database.
-   The offline workflow-store conformance suite now checks detached reads, tenant isolation,
-   optimistic conflicts, recoverable filtering, and corrupt-state failure for memory and PostgreSQL
-   implementations; live PostgreSQL fault injection is still required.
+   backup/restore, and database unavailability. Container-backed integration tests in CI now execute
+   against live PostgreSQL 16 and Redis 7 service containers (`tests/integration/test_storage_integration.py`
+   and `tests/unit/test_redis_store.py`), validating schema migrations, run state persistence, CAS conflict
+   detection, artifact lifecycle, tool execution deduplication, and workflow checkpoint persistence.
+   Live production multi-region failover and soak testing remain recommended before mission-critical scale.
 2. **Harden policy semantics.** Extend approval and clarification outcomes across every declared
    policy boundary, signed policy bundles, explicit fail-open/fail-closed behavior, and adversarial tests for
    prompt injection, data loss, PII, secrets, and cross-tenant access.
@@ -53,14 +62,16 @@ service.
 4. **Finish authentication options.** Add OIDC/JWKS rotation and caching, mTLS/service identity hooks,
    authorization policy mapping, token-revocation strategy, and authentication audit events. Header
    identity mode must remain explicitly development-only.
-5. **Harden network and plugins.** Bind HTTP connections to validated addresses to mitigate DNS
-   rebinding, revalidate redirects, add egress proxy hooks, sandbox subprocess tools, authenticate
-   remote tools, verify plugin signatures, and prevent untrusted in-process plugin loading.
+5. **Harden network and plugins.** Outbound HTTP connection binding to validated addresses is implemented
+   to eliminate DNS rebinding TOCTOU. Remaining work: revalidate redirects, add egress proxy hooks,
+   sandbox subprocess tools, authenticate remote tools, verify plugin signatures, and prevent
+   untrusted in-process plugin loading.
 6. **Strengthen readiness and lifecycle.** Probe every mandatory store, model and telemetry dependency;
    wire application-owned workflow recovery into each service lifecycle, expire paused runs without
    user traffic, add health degradation reasons, and test repeated start/drain cycles.
-7. **Bound every resource.** Enforce limits for context, responses, events, memory, audit metadata,
-   concurrent runs, tenant quotas, and database growth. Add cleanup jobs for expired memory and stale
+7. **Bound every resource.** API admission rate limits and in-flight run creation concurrency quotas are
+   implemented for single-node deployments. Enforce limits for context, responses, events, memory,
+   audit metadata, tenant quotas, and database growth. Add cleanup jobs for expired memory and stale
    operational records.
 
 ## Remaining for hardened multi-worker or horizontally scaled use

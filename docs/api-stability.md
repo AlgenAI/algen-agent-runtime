@@ -1,5 +1,9 @@
 # API stability policy
 
+Owner: AlgenAI Maintainers  
+Status: Active (0.1.x pre-release)  
+Last reviewed: 2026-09-22  
+
 Algen Agent Runtime follows Semantic Versioning. The current `0.x` line is pre-release software, so APIs may change as the contracts are validated in real applications. This policy makes those changes reviewable rather than silent.
 
 ## Public interfaces

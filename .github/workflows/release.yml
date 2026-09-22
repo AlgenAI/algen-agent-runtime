@@ -38,6 +38,21 @@ jobs:
       - run: pytest -q -p no:cacheprovider
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Generate and verify artifact checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          dist = Path("dist")
+          sums = []
+          for p in sorted(dist.iterdir()):
+              if p.suffix in (".whl", ".gz"):
+                  digest = hashlib.sha256(p.read_bytes()).hexdigest()
+                  sums.append(f"{digest}  {p.name}\n")
+          Path("dist/SHA256SUMS").write_text("".join(sums))
+          PY
+          cd dist
+          sha256sum -c SHA256SUMS
       - name: Inspect release artifacts
         run: |
           python - <<'PY'
@@ -52,6 +67,8 @@ jobs:
               required = {
                   "algen_agent_runtime/py.typed",
                   "algen_agent_runtime/persistence/migrations/001_initial.sql",
+                  "algen_agent_runtime/tools/starter/__init__.py",
+                  "algen_agent_runtime/mcp/__init__.py",
               }
               missing = required - names
               if missing:
@@ -66,6 +83,26 @@ jobs:
                   if not any(name.endswith(f"/{required}") for name in names):
                       raise SystemExit(f"sdist missing {required}")
           PY
+      - name: Install wheel and verify CLI and scaffolding outside checkout
+        run: |
+          python -m venv /tmp/algen-release-smoke
+          /tmp/algen-release-smoke/bin/pip install --upgrade pip
+          /tmp/algen-release-smoke/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/algen-release-smoke/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
+          test -x /tmp/algen-release-smoke/bin/algen-agent-runtime
+          /tmp/algen-release-smoke/bin/algen-agent-runtime --help
+          /tmp/algen-release-smoke/bin/algen-agent-runtime serve --help
+          /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
+          /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
+          rm -rf /tmp/smoke-scaffold-release
+          mkdir -p /tmp/smoke-scaffold-release
+          cd /tmp/smoke-scaffold-release
+          /tmp/algen-release-smoke/bin/algen-agent-runtime new smoke_agent --template agent
+          cd smoke_agent
+          /tmp/algen-release-smoke/bin/pip install pytest pytest-asyncio
+          /tmp/algen-release-smoke/bin/pytest test_agent.py
+          /tmp/algen-release-smoke/bin/python app.py
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
@@ -85,4 +122,7 @@ jobs:
         with:
           name: python-distributions
           path: dist/
+      - name: Remove non-distribution assets before PyPI publish
+        run: rm -f dist/SHA256SUMS
       - uses: pypa/gh-action-pypi-publish@release/v1
+

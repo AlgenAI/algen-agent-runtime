@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import inspect
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from algen_agent_runtime.mcp.client import MCPClientManager
+    from algen_agent_runtime.mcp.contracts import MCPServerConfigBase
 
 from algen_agent_runtime.analytics import (
     AnalyticalGraphEngine,
@@ -14,6 +19,11 @@ from algen_agent_runtime.analytics import (
     InMemoryAnalyticalGraphStore,
     PostgresAnalyticalGraphStore,
     builtin_handlers,
+)
+from algen_agent_runtime.api.rate_limiting import (
+    ApiRateLimiter,
+    InMemoryApiRateLimiter,
+    RouteLimitPolicy,
 )
 from algen_agent_runtime.approvals.service import (
     ApprovalService,
@@ -60,7 +70,7 @@ from algen_agent_runtime.events.bus import (
     PostgresAuditLog,
     PostgresEventBus,
 )
-from algen_agent_runtime.frameworks import FrameworkAdapterRegistry
+from algen_agent_runtime.frameworks import FrameworkAdapter, FrameworkAdapterRegistry
 from algen_agent_runtime.governance import QueryGovernanceEngine, QueryGovernancePolicy
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
 from algen_agent_runtime.model_services import ModelServiceRegistry
@@ -115,9 +125,10 @@ from algen_agent_runtime.retrieval.vector_stores import (
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
-from algen_agent_runtime.tools.contracts import ToolExecutionStore
+from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.types.contracts import ModelCapabilities
 from algen_agent_runtime.types.interfaces import (
     ArtifactStore,
     AuditLog,
@@ -159,6 +170,8 @@ class Container:
     )
     evaluations: EvaluationRunner = field(default_factory=EvaluationRunner)
     work_queue: WorkQueue = field(default_factory=InMemoryWorkQueue)
+    rate_limiter: ApiRateLimiter | None = None
+    mcp: MCPClientManager | None = None
     resources: tuple[object, ...] = ()
     recover_incomplete_runs: bool = True
     recovery_limit: int = 1000
@@ -246,6 +259,9 @@ def build_container(
     settings: AppSettings,
     *,
     environment: Mapping[str, str] | None = None,
+    additional_tools: Sequence[Tool] = (),
+    mcp_servers: Sequence[MCPServerConfigBase] = (),
+    framework_adapters: Sequence[FrameworkAdapter] = (),
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -268,6 +284,16 @@ def build_container(
         )
     )
     tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
+    for tool in additional_tools:
+        tools.register(tool)
+    mcp_manager: MCPClientManager | None = None
+    if mcp_servers:
+        from algen_agent_runtime.mcp.client import MCPClientManager
+
+        mcp_manager = MCPClientManager(mcp_servers, environment=environment)
+    frameworks = FrameworkAdapterRegistry()
+    for adapter in framework_adapters:
+        frameworks.register(adapter)
     storage = settings.storage
     selected_backends = {
         storage.run_store,
@@ -497,12 +523,22 @@ def build_container(
             provider = MockModelProvider()
         else:
             raise ValueError(f"unsupported provider type {provider_config.type!r}")
+
+        # WP-02: compute a capability override when the operator explicitly configured
+        # the capabilities field.  Configuration may narrow True→False; it must never
+        # widen False→True.  An omitted capabilities field preserves adapter discovery.
+        capability_override: ModelCapabilities | None = None
+        if "capabilities" in provider_config.model_fields_set:
+            capability_override = provider_config.capabilities
+
         router.register_provider(
             provider,
             provider_config.requests_per_minute,
             provider_config.cost_per_1k_input,
             provider_config.cost_per_1k_output,
             is_local=provider_config.type in {"ollama", "local_transformers"},
+            registration_id=name,  # WP-01: YAML key is the stable routing identity
+            capability_override=capability_override,  # WP-02: None → adapter discovery
         )
     retrievers = RetrieverRegistry()
     for name, retrieval_config in settings.retrieval.items():
@@ -662,6 +698,23 @@ def build_container(
         feedback_store=conversation_feedback,
         followup_provider=followup_provider,
     )
+    rate_limiter: ApiRateLimiter | None = None
+    if settings.api.rate_limiting.enabled:
+        route_policies = {
+            name: RouteLimitPolicy(
+                rate_per_minute=policy.rate_per_minute,
+                burst=policy.burst,
+                max_concurrent=policy.max_concurrent,
+            )
+            for name, policy in settings.api.rate_limiting.route_overrides.items()
+        }
+        rate_limiter = InMemoryApiRateLimiter(
+            default_rate_per_minute=settings.api.rate_limiting.default_rate_per_minute,
+            default_burst=settings.api.rate_limiting.default_burst,
+            max_concurrent_runs_per_tenant=settings.api.rate_limiting.max_concurrent_runs_per_tenant,
+            route_policies=route_policies,
+            fail_closed=settings.api.rate_limiting.fail_closed,
+        )
     return Container(
         runtime=runtime,
         agents=agents,
@@ -672,6 +725,7 @@ def build_container(
         workflow_checkpoints=workflow_checkpoints,
         cache=cache,
         retrievers=retrievers,
+        frameworks=frameworks,
         observability=observability,
         analytical_graphs=analytical_graphs,
         analytical_methods=analytical_methods,
@@ -679,6 +733,7 @@ def build_container(
         query_governance=query_governance,
         evaluations=evaluations,
         work_queue=work_queue,
+        rate_limiter=rate_limiter,
         resources=tuple(
             dict.fromkeys(
                 resource
@@ -688,10 +743,12 @@ def build_container(
                     cache_redis_client,
                     artifacts if storage.artifact_store == "s3" else None,
                     http_client,
+                    mcp_manager,
                 )
                 if resource is not None
             )
         ),
+        mcp=mcp_manager,
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,
         shutdown_grace_seconds=settings.runtime.shutdown_grace_seconds,

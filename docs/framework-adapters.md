@@ -1,21 +1,24 @@
 # Framework adapters
 
-Algen Agent Runtime can integrate agents implemented with another orchestration framework. Adapters normalize
-invocation, streaming, cancellation, usage, pause state, and metadata without replacing the external
-framework's execution model.
+Algen Agent Runtime integrates agents and workflows implemented in external orchestration frameworks. Adapters normalize invocation, streaming, cancellation, token usage, pause state, and telemetry identifiers without replacing the external framework's execution model.
 
-| Framework | Invocation | Streaming | Cancellation | Pause state | Multi-agent |
-|---|---:|---:|---:|---:|---:|
-| LangGraph | Yes | Yes | Task cancellation | Interrupt metadata | Graph-defined |
-| OpenAI Agents SDK | Yes | Token and semantic events | Task cancellation | SDK run state | Yes |
-| AutoGen AgentChat | Yes | Messages and token chunks | Task cancellation | Team-defined | Yes |
-| CrewAI | Yes | Completion lifecycle | Task cancellation | No generic mapping | Yes |
+## Honest Capability & Governance Matrix
 
-The capability object is deliberately honest: CrewAI does not expose a portable token stream through
-this boundary, so its `stream()` produces lifecycle events rather than pretending completion text is
-a token stream.
+Algen Agent Runtime explicitly delineates the governance boundaries between Runtime-managed execution and foreign framework execution:
+
+| Framework | Invocation | Trace / Span Propagation | Runtime Governance of Outer Call | Governance of Internal Model / Tool Calls | Durable Pause & Resume |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **LangGraph** | Supported | Propagates `run_id`, `tenant_id`, `user_id`, `thread_id` | Enforced (timeout, tenancy, cancellation) | Foreign (LangGraph-owned nodes/tools) | Interrupt metadata |
+| **OpenAI Agents SDK** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (OpenAI client/tool-owned) | SDK run state |
+| **AutoGen AgentChat** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (AutoGen team-owned) | Team-defined |
+| **CrewAI** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (Crew task/tool-owned) | Not supported |
+
+> [!IMPORTANT]
+> **Governance Boundary**: Algen Agent Runtime governs the outer adapter boundary (request normalization, tenant isolation, request deadlines, and cancellation). Internal model calls and tool calls initiated inside the foreign framework are managed by that framework's native engine. To govern internal calls, configure framework-native hooks or observe them using shared tracing (e.g. Traccia).
 
 ## Installation
+
+Framework dependencies are optional and kept strictly lazy:
 
 ```bash
 pip install 'algen-agent-runtime[langgraph]'
@@ -24,20 +27,40 @@ pip install 'algen-agent-runtime[autogen]'
 pip install 'algen-agent-runtime[crewai]'
 ```
 
-`algen-agent-runtime[frameworks]` installs all four. Core imports work when none are installed.
+Install all four with:
+```bash
+pip install 'algen-agent-runtime[frameworks]'
+```
 
-## Usage
+Core Runtime modules remain fully functional when none of these are installed.
 
-Construct and validate the external agent in trusted application code, then register its adapter:
+## Trusted Application Registration
+
+To prevent arbitrary code execution vulnerabilities, **Runtime never imports external framework code or graphs from YAML dotted path strings**. All external framework objects must be constructed in trusted application code and registered explicitly.
+
+### Option 1: Pass to `build_container`
 
 ```python
-from algen_agent_runtime.frameworks import FrameworkAdapterRegistry, FrameworkRunRequest, LangGraphAdapter
+from algen_agent_runtime.orchestration.container import build_container
+from algen_agent_runtime.frameworks import LangGraphAdapter
 
-registry = FrameworkAdapterRegistry()
-registry.register(LangGraphAdapter(compiled_graph))
-result = await registry.get("langgraph").invoke(
+# Compiled LangGraph graph constructed in application code
+adapter = LangGraphAdapter(compiled_graph)
+
+container = build_container(settings, framework_adapters=(adapter,))
+```
+
+### Option 2: Register directly with `container.frameworks`
+
+```python
+from algen_agent_runtime.frameworks import LangGraphAdapter, FrameworkRunRequest
+
+container.frameworks.register(LangGraphAdapter(compiled_graph))
+
+# Invoke through runtime registry
+result = await container.frameworks.get("langgraph").invoke(
     FrameworkRunRequest(
-        input="Investigate the failed order",
+        input="Investigate failed order",
         run_id="run-123",
         session_id="session-456",
         tenant_id="tenant-a",
@@ -46,17 +69,15 @@ result = await registry.get("langgraph").invoke(
 )
 ```
 
-Use `input_factory` and `output_selector` for application-specific LangGraph state. The default input
-uses a `messages` list and the session ID becomes `configurable.thread_id`. OpenAI Agents SDK accepts
-an SDK `Agent` plus an optional `Runner` and `RunConfig`. AutoGen accepts an agent or team implementing
-`run` and `run_stream`. CrewAI accepts a `Crew`; its default template variable is `input`.
+## Adapter Details
 
-## Security boundary
+- **LangGraph**: Uses `input_factory` (defaults to `{"messages": [{"role": "user", "content": request.input}]}`) and `output_selector`. The `session_id` is mapped to `configurable.thread_id` and metadata contains `run_id`, `tenant_id`, and `user_id`.
+- **OpenAI Agents SDK**: Accepts an SDK `Agent` plus an optional `Runner` and `RunConfig`.
+- **AutoGen**: Accepts an agent or team implementing `run` and `run_stream`.
+- **CrewAI**: Accepts a `Crew`; default input mapping is `{"input": request.input}`.
 
-Adapters never import an agent, graph, or crew by a dotted path from YAML. Loading untrusted Python is
-arbitrary code execution. Deployment code constructs trusted objects and explicitly registers them.
-Algen Agent Runtime propagates run, session, tenant, and user identifiers, but an external framework remains
-responsible for honoring them inside its own persistence and tools.
+For consuming external tools across standard language-agnostic boundaries (rather than embedding external agent graphs), see the [Model Context Protocol (MCP) Client guide](mcp.md).
 
-These are orchestration-framework adapters, not model-provider adapters. Native Algen Agent Runtime agents use
-the built-in state machine when uniform policy checkpoints and durable state semantics are required.
+## Hook Providers and Framework Adapters
+
+When integrating external framework graphs within Algen workflows, register framework adapters during host initialization or inside a secure workflow hook provider. When loading hook providers dynamically from YAML manifests, use `WorkflowHookLoader` with explicit module allowlists to ensure foreign framework modules are loaded only from trusted packages.

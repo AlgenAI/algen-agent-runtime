@@ -1,5 +1,9 @@
 # Who should use Algen Agent Runtime—and why
 
+Owner: AlgenAI Maintainers  
+Status: Informational  
+Last reviewed: 2026-09-22  
+
 ## Short answer
 
 Use Algen Agent Runtime when an organization needs the same security, audit, approval, routing, and
@@ -34,9 +38,10 @@ applies authorization and policy checks; creates redacted approvals; and records
 ### Traccia integrations
 
 Algen Agent Runtime provides a consistent execution and telemetry vocabulary for Traccia-managed
-solutions and acts as the reference implementation for Traccia instrumentation. Existing LangGraph,
-OpenAI Agents SDK, AutoGen, and CrewAI agents can use
-framework adapters instead of being rewritten.
+solutions and acts as the reference implementation for Traccia instrumentation. External LangGraph,
+OpenAI Agents SDK, AutoGen, and CrewAI graphs/agents can be registered via the trusted
+Application Registration pattern (`build_container(framework_adapters=(...))`), wrapping the outer
+execution in standard tenant, timeout, and trace envelopes (see [Framework adapters](framework-adapters.md)).
 
 ### Reusable agent products
 

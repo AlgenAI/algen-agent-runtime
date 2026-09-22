@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any, Protocol
@@ -102,3 +103,9 @@ class Tool:
         self.definition = definition
         self.handler = handler
         self.compensation = compensation
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
+        result = self.handler(arguments, context)
+        if inspect.isawaitable(result):
+            return await result
+        return result

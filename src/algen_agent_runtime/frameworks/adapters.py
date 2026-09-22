@@ -27,6 +27,11 @@ def _text(value: Any) -> str:
         for key in ("output", "answer", "result", "content", "messages"):
             if key in value:
                 return _text(value[key])
+        for nested in value.values():
+            if isinstance(nested, Mapping):
+                for key in ("output", "answer", "result", "content", "messages"):
+                    if key in nested:
+                        return _text(nested[key])
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return _text(value[-1]) if value else ""
     return str(value)

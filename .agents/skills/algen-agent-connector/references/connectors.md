@@ -12,17 +12,35 @@ Create a `ToolDefinition` with strict JSON input/output schemas, permissions, `S
 `Idempotency`, timeout, concurrency, cost, and size bounds. Register the `Tool` in the deployment's
 registry. Require approval for writes, external effects, or destructive actions as appropriate.
 
-## MCP
+For common bounded utilities, prefer the safe starter tool pack (`algen_agent_runtime.tools.starter`)
+which includes `starter.calculator` (AST allowlist), `starter.json_query` (JSON path extraction),
+`starter.file_read` and `starter.directory_list` (workspace containment and symlink-escape denial),
+and `starter.clock` (timezone-aware with deterministic testing hook).
 
-Wrap a deployment-owned MCP client with `mcp_tool`; retain a Runtime `ToolDefinition` as the local
-governance contract. Treat MCP server output as untrusted and do not let remote metadata grant local
-permissions.
+## MCP (Model Context Protocol)
+
+Runtime provides first-class client connectivity through `algen_agent_runtime.mcp` (optional extra
+`algen-agent-runtime[mcp]`):
+
+- Supported transports: `stdio` (subprocess execution) and `sse` (remote HTTP stream).
+- Server configuration: `MCPStdioServerConfig` and `MCPSseServerConfig`.
+- Automated discovery and schema conversion from MCP tool descriptors into Runtime `ToolDefinition`.
+- Namespaced registration: `mcp.<server_name>.<tool_name>`.
+- Security boundaries:
+  - Child environment sanitization (`SAFE_ENV_PASSTHROUGH` allowlist; secrets are never inherited).
+  - Explicit tool allowlists per server (`allowed_tools`).
+  - Secret reference resolution (`env://`) for remote HTTP/SSE authorization headers.
+  - Enforced per-call timeouts (`timeout_seconds`), byte caps (`max_result_bytes`), and redacted error outputs.
+- Integration: Pass `mcp_servers` to `build_container(mcp_servers=...)` for automated discovery and
+  managed session lifecycle (`MCPClientManager` registered in container resources for clean exit).
 
 ## HTTP APIs
 
-Use `remote_tool` or an equivalent typed adapter. Configure a fixed endpoint or an allowlisted host,
-deny private-network access by default, avoid redirects across trust boundaries, propagate the
-idempotency key, and bound response size and time.
+Use `remote_tool` or an equivalent typed adapter backed by `SafeHttpClient` from
+`algen_agent_runtime.security.network`. Configure a fixed endpoint or an allowlisted host
+(`allowed_hosts`), deny private/internal networks by default (loopback, RFC 1918, link-local,
+carrier-grade NAT, multicast), protect against DNS rebinding via IP-pinned sockets, avoid unvalidated
+redirects across trust boundaries, propagate the idempotency key, and bound response size and time.
 
 ## Email
 
