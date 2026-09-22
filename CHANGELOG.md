@@ -84,7 +84,19 @@ contracts are explicitly marked experimental during the `0.x` series.
   supported API versions (`__api_version__` in `{"1", "1.0", "v1"}`), and `WorkflowHookRegistry` return contracts.
   Generates sanitized audit metadata records (`LoadedHookProvider.audit_metadata`) capturing reference, module, factory,
   package, and package version without serializing code or environment secrets. Updated `examples/workflow_cli.py`
-  and test suites to load hook providers through `WorkflowHookLoader(allowed_modules=("examples",))`.
+- **Risk-Weighted Storage Integration & Distributed Worker Verification (WP-14)**: Added comprehensive
+  unit and integration test suites for Redis and PostgreSQL persistence stores alongside distributed worker
+  fencing. Added `tests/unit/test_redis_store.py` verifying `RedisRunStore` and `RedisMemoryStore` tenant isolation,
+  key scoping, optimistic concurrency control (CAS conflict detection via Redis transactions), TTL expiration,
+  and active run status filtering. Added `tests/unit/test_distributed_workers.py` validating `InMemoryWorkQueue`
+  and `DistributedWorker` task claims, lease renewals, worker fencing (stale lease actions fail closed with
+  `ConflictError`), bounded retries up to `maximum_attempts`, and graceful cancellation handling. Added
+  `tests/integration/test_storage_integration.py` validating PostgreSQL runs, expiring memory, artifacts,
+  tool execution deduplication, and workflow checkpoint persistence against both an asyncpg behavioral double
+  and live PostgreSQL instances via `POSTGRES_DSN`. Registered `integration`, `postgres`, `redis`, and `live`
+  pytest markers in `pyproject.toml`. Added `container-integration` CI job in `.github/workflows/quality.yml`
+  running PostgreSQL 16 and Redis 7 service containers. Documented Studio and Runtime alignment requirements
+  in `docs/studio-runtime-alignment.md`.
 
 ### Fixed
 

@@ -120,7 +120,12 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["live: tests requiring external credentials"]
+markers = [
+  "live: tests requiring external credentials",
+  "integration: tests requiring external or behavioral storage/network integration",
+  "postgres: tests targeting PostgreSQL persistence stores",
+  "redis: tests targeting Redis cache/run stores",
+]
 
 [tool.ruff]
 target-version = "py312"

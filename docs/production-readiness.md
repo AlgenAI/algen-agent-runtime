@@ -46,13 +46,13 @@ service.
 
 ## P0 before a hardened single-node production claim
 
-1. **Exercise real infrastructure.** Add containerized PostgreSQL and Redis integration tests covering
+1. **Validate PostgreSQL and Redis integrations with live services.** Run exhaustive drills for
    startup, schema initialization, restart recovery, concurrent approval decisions, artifact limits,
-   backup/restore, and database unavailability. Current offline tests validate behavior and wiring but
-   do not exercise a live database.
-   The offline workflow-store conformance suite now checks detached reads, tenant isolation,
-   optimistic conflicts, recoverable filtering, and corrupt-state failure for memory and PostgreSQL
-   implementations; live PostgreSQL fault injection is still required.
+   backup/restore, and database unavailability. Container-backed integration tests in CI now execute
+   against live PostgreSQL 16 and Redis 7 service containers (`tests/integration/test_storage_integration.py`
+   and `tests/unit/test_redis_store.py`), validating schema migrations, run state persistence, CAS conflict
+   detection, artifact lifecycle, tool execution deduplication, and workflow checkpoint persistence.
+   Live production multi-region failover and soak testing remain recommended before mission-critical scale.
 2. **Harden policy semantics.** Extend approval and clarification outcomes across every declared
    policy boundary, signed policy bundles, explicit fail-open/fail-closed behavior, and adversarial tests for
    prompt injection, data loss, PII, secrets, and cross-tenant access.

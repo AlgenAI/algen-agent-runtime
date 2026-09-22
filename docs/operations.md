@@ -362,4 +362,31 @@ api:
    - `InMemoryApiRateLimiter` enforces tenant admission quotas in-process for a single runtime instance.
    - For horizontally scaled multi-worker clusters, configure an edge API gateway or reverse proxy (e.g., Envoy, Kong, Cloudflare, NGINX, AWS API Gateway) to provide cross-replica distributed rate limiting.
 
+## Distributed Worker Operations and Storage Validation
+
+Distributed execution allows scaling background analytical graphs and long-running agent tasks across worker pools:
+
+1. **Worker Fencing & Lease Management:**
+   - Background tasks are claimed using exclusive time-bounded leases (`lease_seconds`, default 30s).
+   - `DistributedWorker` periodically renews leases during task processing.
+   - If a lease expires due to process freeze or network partition, worker fencing ensures subsequent actions fail closed with `ConflictError`, preventing split-brain state mutations.
+
+2. **Retry Policies & Dead-Letter Handling:**
+   - Failed tasks undergo bounded retries up to `maximum_attempts` (default 3).
+   - If maximum attempts are exhausted, tasks transition to a terminal failed/dead-letter state without further automated execution.
+   - Unhandled cancellations immediately release or revoke task claims to ensure prompt rebalancing.
+
+3. **Storage Integration Test Verification:**
+   - Local and CI test suites validate PostgreSQL 16 and Redis 7 persistence:
+     ```bash
+     # Run storage integration tests locally with Docker service containers
+     docker run -d --name test-postgres -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=algen_test -p 5432:5432 postgres:16
+     docker run -d --name test-redis -p 6379:6379 redis:7
+
+     POSTGRES_DSN="postgresql://postgres:secret@localhost:5432/algen_test" \
+     REDIS_URL="redis://localhost:6379/0" \
+     pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+     ```
+   - Automated CI runs verify schema initialization (`001_initial.sql`), optimistic locking on run checkpoints, artifact lifecycle, tool ledger idempotency, and workflow checkpoint persistence.
+
 Back up each durable store enabled by the application according to its retention policy. User deletion must remove tenant/session memory and authorized artifacts while preserving legally required, redacted audit records.
