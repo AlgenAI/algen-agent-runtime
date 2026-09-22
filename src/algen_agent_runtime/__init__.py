@@ -47,4 +47,4 @@ __all__ = [
     "RunResult",
     "SourceDocument",
 ]
-__version__ = "0.1.0a1"
+__version__ = "0.1.0a2"

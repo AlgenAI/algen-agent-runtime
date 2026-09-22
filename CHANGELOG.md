@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-09-22
+
 ### Added
 
 - **Provider Instance Identity (WP-01)**: Separated provider deployment identity (YAML mapping key)
