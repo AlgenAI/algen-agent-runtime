@@ -281,7 +281,7 @@ def storage_db() -> Any:
 async def test_postgres_run_store_lifecycle_and_tenant_isolation(storage_db: Any) -> None:
     store = PostgresRunStore(storage_db)
     run_a = _make_run("run-1", "tenant-a")
-    run_b = _make_run("run-1", "tenant-b")
+    run_b = _make_run("run-2", "tenant-b")
 
     await store.create(run_a)
     await store.create(run_b)
@@ -290,10 +290,16 @@ async def test_postgres_run_store_lifecycle_and_tenant_isolation(storage_db: Any
     fetched_a = await store.get("run-1", "tenant-a")
     assert fetched_a is not None
     assert fetched_a.request.tenant_id == "tenant-a"
+    assert await store.get("run-1", "tenant-b") is None
 
-    fetched_b = await store.get("run-1", "tenant-b")
+    fetched_b = await store.get("run-2", "tenant-b")
     assert fetched_b is not None
     assert fetched_b.request.tenant_id == "tenant-b"
+    assert await store.get("run-2", "tenant-a") is None
+
+    # Duplicate creation raises ConflictError
+    with pytest.raises(ConflictError, match="already exists"):
+        await store.create(run_a)
 
     # Optimistic concurrency control
     await store.save(fetched_a, expected_version=0)
@@ -365,6 +371,13 @@ async def test_postgres_artifact_store_lifecycle(storage_db: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_tool_execution_ledger_deduplication(storage_db: Any) -> None:
+    # Ensure referenced runs exist so foreign keys pass in real Postgres
+    run_store = PostgresRunStore(storage_db)
+    if await run_store.get("run-1", "tenant-a") is None:
+        await run_store.create(_make_run("run-1", "tenant-a"))
+    if await run_store.get("run-2", "tenant-b") is None:
+        await run_store.create(_make_run("run-2", "tenant-b"))
+
     store = PostgresToolExecutionStore(storage_db)
     context = ToolContext(
         run_id="run-1",

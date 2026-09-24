@@ -320,7 +320,7 @@ api:
     enabled: true
     default_rate_per_minute: 120
     default_burst: 30
-    max_concurrent_runs_per_tenant: 10
+    max_concurrent_run_requests_per_tenant: 10
     fail_closed: true
     route_overrides:
       write:
@@ -335,10 +335,10 @@ api:
 1. **Admission Architecture:**
    - Evaluated by FastAPI admission middleware after client authentication so quotas are strictly keyed by authenticated `tenant_id` rather than spoofable client IPs or forward headers.
    - Uses a token bucket algorithm to support smooth refill while permitting burst capacity up to the configured burst size.
-   - Separately enforces in-flight concurrency limits for expensive run creation (`POST /v1/runs`), tracking active invocations and releasing capacity upon run completion, failure, or client disconnection.
+   - Separately bounds in-flight request concurrency for run creation (`POST /v1/runs`), tracking in-flight HTTP requests and releasing capacity upon request completion (HTTP 202 response), failure, or client disconnection. This limits concurrent run-creation requests, not the lifetime of background executing runs.
 
 2. **Route Classification:**
-   - `run_create`: Run creation endpoint (`POST /v1/runs`). Subject to rate limits and `max_concurrent_runs_per_tenant`.
+   - `run_create`: Run creation endpoint (`POST /v1/runs`). Subject to rate limits and `max_concurrent_run_requests_per_tenant` (aliased as deprecated `max_concurrent_runs_per_tenant` for `0.1.x`).
    - `write`: Mutation endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) such as approvals, clarifications, conversation updates, and artifact creation.
    - `read`: Query and inspection endpoints (`GET`).
    - **Exemptions:** Health and readiness endpoints (`/health/live`, `/health/ready`, `/healthz`, `/ready`) and CORS preflight (`OPTIONS`) are strictly exempt and never rate-limited.
@@ -361,6 +361,27 @@ api:
 4. **Single-Node vs Multi-Worker Scope:**
    - `InMemoryApiRateLimiter` enforces tenant admission quotas in-process for a single runtime instance.
    - For horizontally scaled multi-worker clusters, configure an edge API gateway or reverse proxy (e.g., Envoy, Kong, Cloudflare, NGINX, AWS API Gateway) to provide cross-replica distributed rate limiting.
+
+## Request Payload Wire-Size Limits
+
+To prevent memory exhaustion and denial-of-service via oversized request bodies, the runtime enforces wire-size limits via pure ASGI middleware (`RequestBodyLimitMiddleware`):
+
+- **General endpoints:** Bounded by `security.max_request_bytes` (default 1 MiB / 1,048,576 bytes).
+- **Artifact uploads (`POST /v1/artifacts`):** Bounded by `security.max_artifact_bytes` (default 10 MiB / 10,485,760 bytes).
+
+Semantics:
+1. **Header validation:** If `Content-Length` is present, it must be a valid non-negative integer; invalid values return HTTP 400 with code `INVALID_CONTENT_LENGTH`.
+2. **Pre-read rejection:** If `Content-Length` exceeds the route limit, the request is immediately rejected with HTTP 413 before reading or buffering any body chunks.
+3. **Stream counting:** Regardless of headers (including chunked requests with omitted or inaccurate `Content-Length`), incoming wire bytes are counted as chunks arrive. If accumulated bytes exceed the limit, execution aborts immediately with HTTP 413.
+4. **Stable error response:**
+   ```json
+   {
+     "detail": "request payload too large",
+     "code": "REQUEST_PAYLOAD_TOO_LARGE",
+     "limit_bytes": 1048576
+   }
+   ```
+5. **Decompression:** Wire limits apply to raw incoming bytes. If decompression middleware is introduced in the future, it must enforce separate post-decompression size limits.
 
 ## Distributed Worker Operations and Storage Validation
 

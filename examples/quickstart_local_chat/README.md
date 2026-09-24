@@ -56,12 +56,12 @@ This example holds no persistent state. Nothing to reset.
 app.py  →  AlgenAgentRuntimeClient  →  OllamaProvider  →  local Ollama server
 ```
 
-| Mode | Agent | Model |
-|---|---|---|
-| `ollama` (default) | `minimal` | `llama3.2` |
-| `ollama-private` | `local-private` | `qwen3:8b` |
+| Mode | Agent | Model | Provider Instance |
+|---|---|---|---|
+| `ollama` (default) | `minimal` | `llama3.2` | `local` |
+| `ollama-private` | `local-private` | `qwen3:8b` | `local-private` |
 
-`ollama-private` uses a `model_allowlist` to prevent the runtime from routing requests to any cloud provider.
+`ollama-private` uses a `model_allowlist` (`local-private/qwen3:8b`) to prevent the runtime from routing requests to any other provider or unapproved model.
 
 ## Production gaps
 

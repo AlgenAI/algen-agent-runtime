@@ -62,10 +62,11 @@ service.
 4. **Finish authentication options.** Add OIDC/JWKS rotation and caching, mTLS/service identity hooks,
    authorization policy mapping, token-revocation strategy, and authentication audit events. Header
    identity mode must remain explicitly development-only.
-5. **Harden network and plugins.** Outbound HTTP connection binding to validated addresses is implemented
-   to eliminate DNS rebinding TOCTOU. Remaining work: revalidate redirects, add egress proxy hooks,
-   sandbox subprocess tools, authenticate remote tools, verify plugin signatures, and prevent
-   untrusted in-process plugin loading.
+5. **Harden network, plugins, and MCP.** Outbound HTTP connection binding to validated addresses is implemented
+   to eliminate DNS rebinding TOCTOU across HTTP tools and remote MCP transports (`streamable_http` and `sse`).
+   Remaining work: revalidate redirects, add egress proxy hooks, sandbox subprocess and MCP stdio tools
+   (which currently execute as trusted, unsandboxed host code under minimal environment filtering),
+   authenticate remote tools, verify plugin signatures, and prevent untrusted in-process plugin loading.
 6. **Strengthen readiness and lifecycle.** Probe every mandatory store, model and telemetry dependency;
    wire application-owned workflow recovery into each service lifecycle, expire paused runs without
    user traffic, add health degradation reasons, and test repeated start/drain cycles.

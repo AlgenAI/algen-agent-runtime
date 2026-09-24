@@ -6,6 +6,8 @@ from algen_agent_runtime.mcp.contracts import (
     MCPServerConfigBase,
     MCPSseServerConfig,
     MCPStdioServerConfig,
+    MCPStreamableHttpServerConfig,
+    MCPToolPolicyOverride,
     MCPTransportType,
 )
 
@@ -16,5 +18,7 @@ __all__ = [
     "MCPServerConfigBase",
     "MCPSseServerConfig",
     "MCPStdioServerConfig",
+    "MCPStreamableHttpServerConfig",
+    "MCPToolPolicyOverride",
     "MCPTransportType",
 ]

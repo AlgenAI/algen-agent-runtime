@@ -1,7 +1,7 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/banner-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/brand/banner-light.svg">
-  <img alt="Algen Agent Runtime — Build governed agents. Own the runtime." src="docs/assets/brand/banner-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AlgenAI/algen-agent-runtime/refs/heads/main/docs/assets/brand/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/AlgenAI/algen-agent-runtime/refs/heads/main/docs/assets/brand/banner-light.svg">
+  <img alt="Algen Agent Runtime — Build governed agents. Own the runtime." src="https://raw.githubusercontent.com/AlgenAI/algen-agent-runtime/refs/heads/main/docs/assets/brand/banner-light.svg">
 </picture>
 
 # Algen Agent Runtime
@@ -14,7 +14,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.1.0a1` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.1.0a3` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 ## Why Algen Agent Runtime?
 
@@ -62,7 +62,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Pre-alpha (`0.1.0a1`) |
+| Package maturity | Pre-alpha (`0.1.0a3`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -97,7 +97,7 @@ python -m pip install --pre 'algen-agent-runtime[langgraph]'
 Direct install from a pinned GitHub release tag:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a1
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a3
 ```
 
 For development from a checkout:
@@ -331,6 +331,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Execution | Checkpointed state machine, retries, cancellation, timeouts, resumability |
 | Models | Capability-aware routing, fallback, local and OpenAI-compatible adapters |
 | Tools | Typed schemas, permissions, idempotency, approvals, execution ledger |
+| MCP | Managed client connector for external tools across stdio and streamable HTTP with DNS-pinned egress, secret references, and governance mapping |
 | Retrieval | Keyword, vector, and hybrid retrieval with citation verification |
 | Governance | Policies, budgets, redaction, network controls, human-in-the-loop decisions |
 | Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |
@@ -340,7 +341,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Observability | Structured logs, OpenTelemetry, optional Traccia integration |
 | Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters |
 
-Provider and integration dependencies remain optional. See the [provider compatibility matrix](docs/provider-compatibility.md) and [framework adapter guide](docs/framework-adapters.md).
+Provider and integration dependencies remain optional. See the [provider compatibility matrix](docs/provider-compatibility.md), [MCP guide](docs/mcp.md), and [framework adapter guide](docs/framework-adapters.md).
 
 ## Documentation
 
@@ -350,6 +351,8 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Architecture | [Architecture](docs/architecture.md) |
 | Deployment and configuration | [Operations](docs/operations.md) |
 | Providers | [Provider extension](docs/providers.md) and [compatibility](docs/provider-compatibility.md) |
+| MCP tools | [Model Context Protocol (MCP)](docs/mcp.md) |
+| Framework adapters | [Framework adapters](docs/framework-adapters.md) |
 | Retrieval | [RAG](docs/rag.md) |
 | Analytical agents | [Analytical runtime](docs/analytical-runtime.md) and [semantic layer](docs/semantic-layer.md) |
 | Multi-agent workflows | [Workflow manifests and executor](docs/multi-agent-workflows.md) |

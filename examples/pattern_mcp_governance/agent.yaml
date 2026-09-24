@@ -1,0 +1,31 @@
+providers:
+  mock:
+    type: mock
+    default_model: deterministic
+
+agents:
+  - name: mcp-governed-agent
+    version: 1.0.0
+    description: Agent backed by MCP tools under runtime policy governance
+    system_instructions: Use the account service tools under governance.
+    default_model:
+      name: deterministic
+      provider: mock
+      model: deterministic
+    planning_strategy: direct
+    max_steps: 5
+
+mcp_servers:
+  - name: account-service
+    transport: stdio
+    command: python
+    args: ["-m", "examples.pattern_mcp_governance.server"]
+    allowed_tools: [read_account, delete_account]
+    required: true
+    tool_policies:
+      read_account:
+        side_effect: read
+        idempotency: idempotent
+      delete_account:
+        side_effect: destructive
+        idempotency: non_idempotent

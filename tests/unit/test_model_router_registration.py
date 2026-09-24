@@ -253,3 +253,199 @@ async def test_capability_widening_is_prevented(caplog: pytest.LogCaptureFixture
         )
     )
     assert len(cand) == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_capability_override_preserves_unspecified_adapter_capabilities() -> None:
+    router = ModelRouter()
+    provider = CustomCapabilityMockProvider(
+        caps=ModelCapabilities(
+            chat=True,
+            streaming=True,
+            tools=True,
+            structured_output=True,
+            json_schema=True,
+            files=True,
+        )
+    )
+    router.register_provider(
+        provider,
+        registration_id="partial-test",
+        capability_override=ModelCapabilities(tools=False),
+    )
+
+    # Required: streaming, structured_output, json_schema, files remain True
+    for cap in ("chat", "streaming", "structured_output", "json_schema", "files"):
+        cands = await router.candidates(
+            (
+                ModelProfile(
+                    name=f"prof-{cap}",
+                    provider="partial-test",
+                    model="m",
+                    required_capabilities=frozenset({cap}),
+                ),
+            )
+        )
+        assert len(cands) == 1, f"Expected {cap} to remain available"
+
+    # Required: tools is False
+    cands_tools = await router.candidates(
+        (
+            ModelProfile(
+                name="prof-tools",
+                provider="partial-test",
+                model="m",
+                required_capabilities=frozenset({"tools"}),
+            ),
+        )
+    )
+    assert len(cands_tools) == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_capability_override_preserves_adapter_capabilities() -> None:
+    router = ModelRouter()
+    provider = CustomCapabilityMockProvider(
+        caps=ModelCapabilities(
+            chat=True,
+            streaming=True,
+            tools=True,
+            structured_output=True,
+            json_schema=True,
+            files=True,
+        )
+    )
+    router.register_provider(
+        provider,
+        registration_id="empty-test",
+        capability_override=ModelCapabilities(),
+    )
+
+    for cap in ("chat", "streaming", "tools", "structured_output", "json_schema", "files"):
+        cands = await router.candidates(
+            (
+                ModelProfile(
+                    name=f"prof-{cap}",
+                    provider="empty-test",
+                    model="m",
+                    required_capabilities=frozenset({cap}),
+                ),
+            )
+        )
+        assert len(cands) == 1, f"Expected {cap} to be preserved with empty ModelCapabilities()"
+
+
+@pytest.mark.asyncio
+async def test_partial_capability_widening_does_not_disable_other_fields() -> None:
+    router = ModelRouter()
+    provider = CustomCapabilityMockProvider(
+        caps=ModelCapabilities(chat=True, streaming=True, images=False)
+    )
+    # Attempt widening images=True
+    router.register_provider(
+        provider,
+        registration_id="widen-test",
+        capability_override=ModelCapabilities(images=True),
+    )
+
+    # images remains False
+    cands_img = await router.candidates(
+        (
+            ModelProfile(
+                name="prof-img",
+                provider="widen-test",
+                model="m",
+                required_capabilities=frozenset({"images"}),
+            ),
+        )
+    )
+    assert len(cands_img) == 0
+
+    # chat and streaming remain True
+    for cap in ("chat", "streaming"):
+        cands = await router.candidates(
+            (
+                ModelProfile(
+                    name=f"prof-{cap}",
+                    provider="widen-test",
+                    model="m",
+                    required_capabilities=frozenset({cap}),
+                ),
+            )
+        )
+        assert len(cands) == 1, f"Expected {cap} to remain True when images widening is attempted"
+
+
+@pytest.mark.asyncio
+async def test_partial_capability_override_isolated_in_cache() -> None:
+    cache = CacheService("memory")
+    router = ModelRouter(cache=cache)
+
+    provider_a = CustomCapabilityMockProvider(
+        caps=ModelCapabilities(chat=True, streaming=True, tools=True, files=True)
+    )
+    provider_b = CustomCapabilityMockProvider(
+        caps=ModelCapabilities(chat=True, streaming=True, tools=True, files=True)
+    )
+
+    # inst-a narrows tools=False, preserves streaming & files
+    router.register_provider(
+        provider_a,
+        registration_id="inst-a",
+        capability_override=ModelCapabilities(tools=False),
+    )
+    # inst-b narrows files=False, preserves streaming & tools
+    router.register_provider(
+        provider_b,
+        registration_id="inst-b",
+        capability_override=ModelCapabilities(files=False),
+    )
+
+    # First call primes cache
+    cands_a_tools = await router.candidates(
+        (
+            ModelProfile(
+                name="a-tools",
+                provider="inst-a",
+                model="m",
+                required_capabilities=frozenset({"tools"}),
+            ),
+        )
+    )
+    assert len(cands_a_tools) == 0
+
+    cands_b_tools = await router.candidates(
+        (
+            ModelProfile(
+                name="b-tools",
+                provider="inst-b",
+                model="m",
+                required_capabilities=frozenset({"tools"}),
+            ),
+        )
+    )
+    assert len(cands_b_tools) == 1
+
+    cands_a_files = await router.candidates(
+        (
+            ModelProfile(
+                name="a-files",
+                provider="inst-a",
+                model="m",
+                required_capabilities=frozenset({"files"}),
+            ),
+        )
+    )
+    assert len(cands_a_files) == 1
+
+    cands_b_files = await router.candidates(
+        (
+            ModelProfile(
+                name="b-files",
+                provider="inst-b",
+                model="m",
+                required_capabilities=frozenset({"files"}),
+            ),
+        )
+    )
+    assert len(cands_b_files) == 0

@@ -128,14 +128,19 @@ class PostgresRunStore:
         self._database = database
 
     async def create(self, state: RunState) -> None:
-        await self._database.execute(
-            "INSERT INTO algen_agent_runtime_runs (id, tenant_id, version, state) "
-            "VALUES ($1, $2, $3, $4::jsonb)",
-            state.id,
-            state.request.tenant_id,
-            state.version,
-            state.model_dump_json(),
-        )
+        try:
+            await self._database.execute(
+                "INSERT INTO algen_agent_runtime_runs (id, tenant_id, version, state) "
+                "VALUES ($1, $2, $3, $4::jsonb)",
+                state.id,
+                state.request.tenant_id,
+                state.version,
+                state.model_dump_json(),
+            )
+        except Exception as exc:
+            if "UniqueViolationError" in type(exc).__name__:
+                raise ConflictError(f"run {state.id!r} already exists") from exc
+            raise
 
     async def get(self, run_id: str, tenant_id: str) -> RunState | None:
         row = await self._database.fetchrow(
@@ -248,7 +253,10 @@ class PostgresArtifactStore:
         if not row:
             return None
         payload = dict(row)
-        payload["metadata"] = dict(payload["metadata"] or {})
+        meta = payload.get("metadata")
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        payload["metadata"] = dict(meta or {})
         return Artifact.model_validate(payload)
 
     async def describe(self, artifact_id: str, tenant_id: str) -> ArtifactDescriptor | None:
@@ -330,7 +338,10 @@ class PostgresArtifactStore:
     @staticmethod
     def _descriptor(row: Any) -> ArtifactDescriptor:
         payload = dict(row)
-        payload["metadata"] = dict(payload["metadata"] or {})
+        meta = payload.get("metadata")
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        payload["metadata"] = dict(meta or {})
         return ArtifactDescriptor.model_validate(payload)
 
 

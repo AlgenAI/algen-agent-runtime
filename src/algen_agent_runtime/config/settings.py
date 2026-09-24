@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from algen_agent_runtime.cache.contracts import CacheScope
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
@@ -234,9 +236,35 @@ class ApiRateLimitSettings(StrictSettings):
     enabled: bool = False
     default_rate_per_minute: int = Field(default=120, ge=1)
     default_burst: int = Field(default=30, ge=1)
-    max_concurrent_runs_per_tenant: int = Field(default=10, ge=1)
+    max_concurrent_run_requests_per_tenant: int = Field(default=10, ge=1)
     fail_closed: bool = True
     route_overrides: dict[str, RouteLimitSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_concurrency_key(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "max_concurrent_runs_per_tenant" in data:
+            old_val = data["max_concurrent_runs_per_tenant"]
+            new_val = data.get("max_concurrent_run_requests_per_tenant")
+            if "max_concurrent_run_requests_per_tenant" in data and old_val != new_val:
+                raise ValueError(
+                    f"Conflicting configuration: both 'max_concurrent_runs_per_tenant' ({old_val}) "
+                    f"and 'max_concurrent_run_requests_per_tenant' ({new_val}) are specified with different values. "
+                    "Please use only 'max_concurrent_run_requests_per_tenant'."
+                )
+            warnings.warn(
+                "'api.rate_limiting.max_concurrent_runs_per_tenant' is deprecated; "
+                "use 'api.rate_limiting.max_concurrent_run_requests_per_tenant' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            data = dict(data)
+            data.pop("max_concurrent_runs_per_tenant")
+            if "max_concurrent_run_requests_per_tenant" not in data:
+                data["max_concurrent_run_requests_per_tenant"] = old_val
+        return data
 
 
 class ApiSettings(StrictSettings):
@@ -388,6 +416,7 @@ class AppSettings(StrictSettings):
     distributed_execution: DistributedExecutionSettings = Field(
         default_factory=DistributedExecutionSettings
     )
+    mcp_servers: tuple[MCPServerConfig, ...] = ()
     feature_flags: dict[str, bool] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -482,6 +511,11 @@ class AppSettings(StrictSettings):
                 f"invalid provider references: {'; '.join(invalid_references)} "
                 f"(configured providers: {sorted(self.providers.keys())})"
             )
+        mcp_names: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in mcp_names:
+                raise ValueError(f"duplicate MCP server name {server.name!r}")
+            mcp_names.add(server.name)
         return self
 
 

@@ -139,6 +139,20 @@ node. Read-only model calls and deterministic calculations are common candidates
 write, and other externally visible handlers must remain fail-closed unless their adapter provides a
 stable idempotency key and reconciliation contract.
 
+## Input Template Grammar
+
+When configuring an `input_template` on an `agent`, `map_agent`, or `workflow` node, Algen Agent Runtime enforces a strict, deterministic placeholder grammar:
+
+- `{{item}}`: Supported only for `map_agent` nodes, representing the current item in the mapped sequence.
+- `{{<key>}}`: Substitutes the value of `<key>` from workflow state, where `<key>` must be an initial workflow input key (such as `input`, `inputs`, `question`, or a property declared in `input_schema`) or an `output_key` produced by an upstream dependency node.
+- `{{<key>.output}}`: Equivalent to `{{<key>}}`, explicitly denoting the node's output.
+
+Arbitrary expressions, nested dotted paths into object properties (such as `{{node.property}}`), and undefined keys are not supported. If an unsupported placeholder syntax or unresolvable key is present in `input_template`:
+- **Static Validation**: `WorkflowManifest` validation rejects invalid keys and unsupported nested syntax at load time with an actionable error naming the node and placeholder.
+- **Runtime Guard**: `MultiAgentWorkflowExecutor` rejects any remaining `{{...}}` tokens prior to model prompt dispatch, raising a typed `ConfigurationError`.
+
+To transform structured outputs or access nested fields from upstream nodes, use an `input_builder` hook instead of `input_template`.
+
 ## Parent/child workflow composition
 
 Use a `workflow` node when one durable business process needs a bounded, independently inspectable

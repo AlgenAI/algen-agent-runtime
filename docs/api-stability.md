@@ -31,4 +31,10 @@ Imports from undocumented modules may be needed for advanced integrations during
 
 A deprecation should include a runtime warning where practical, a changelog entry, replacement guidance, and tests for both the old and new path during the compatibility window. Security fixes may require faster removal when retaining behavior would expose users to material risk.
 
+### Active deprecations
+
+| Deprecated field | Replacement | Deprecated since | Planned removal |
+|---|---|---|---|
+| `api.rate_limiting.max_concurrent_runs_per_tenant` | `api.rate_limiting.max_concurrent_run_requests_per_tenant` | `0.1.0a3` | `0.2.0` |
+
 The project will publish a stricter long-term support and deprecation window before `1.0.0`.

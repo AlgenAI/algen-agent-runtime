@@ -16,16 +16,16 @@ agents:
     version: 1.0.0
     description: General-purpose local assistant using the default Ollama model
     system_instructions: Answer accurately and concisely. State uncertainty.
-    default_model: {name: local-default, provider: ollama, model: llama3.2, required_capabilities: [chat]}
+    default_model: {name: local-default, provider: local, model: llama3.2, required_capabilities: [chat]}
     planning_strategy: direct
     max_steps: 4
 
-  # Provider: ollama-private — cloud-free, restricted to the local allowlist
+  # Provider: local-private — cloud-free, restricted to the local allowlist
   - name: local-private
     version: 1.0.0
     description: Cloud-free local knowledge assistant with an explicit model allowlist
     system_instructions: Use only locally supplied context.
-    default_model: {name: local, provider: ollama, model: "qwen3:8b", required_capabilities: [chat]}
-    model_allowlist: ["ollama/qwen3:8b"]
+    default_model: {name: local, provider: local-private, model: "qwen3:8b", required_capabilities: [chat]}
+    model_allowlist: ["local-private/qwen3:8b"]
     planning_strategy: direct
     max_steps: 4

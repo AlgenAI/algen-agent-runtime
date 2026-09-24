@@ -24,7 +24,10 @@ ROOT = Path(__file__).parents[2]
         ("examples.pattern_evaluation_gate.app", []),
         (
             "examples.reference_customer_support.app",
-            ["How do I update my profile?", "--approve-all"],
+            [
+                "--answers-file",
+                "examples/reference_customer_support/fixtures/automation-answers.json",
+            ],
         ),
         ("examples.reference_incident_response.app", ["--approve-all"]),
         ("examples.reference_invoice_exceptions.app", ["--approve-all"]),

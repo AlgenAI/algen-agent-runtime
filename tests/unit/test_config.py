@@ -295,3 +295,138 @@ def test_valid_same_type_provider_instances_load_successfully() -> None:
     container = build_container(settings)
     assert container.runtime.router.provider("local-ollama") is not None
     assert container.runtime.router.provider("cloud-ollama") is not None
+
+
+def test_api_rate_limit_settings_new_key_only() -> None:
+    from algen_agent_runtime.config.settings import ApiRateLimitSettings
+
+    settings = ApiRateLimitSettings.model_validate({"max_concurrent_run_requests_per_tenant": 15})
+    assert settings.max_concurrent_run_requests_per_tenant == 15
+
+
+def test_api_rate_limit_settings_old_key_deprecated_alias() -> None:
+    from algen_agent_runtime.config.settings import ApiRateLimitSettings
+
+    with pytest.deprecated_call(match="max_concurrent_runs_per_tenant"):
+        settings = ApiRateLimitSettings.model_validate({"max_concurrent_runs_per_tenant": 20})
+    assert settings.max_concurrent_run_requests_per_tenant == 20
+
+
+def test_api_rate_limit_settings_both_keys_equal_accepted_with_warning() -> None:
+    from algen_agent_runtime.config.settings import ApiRateLimitSettings
+
+    with pytest.deprecated_call(match="max_concurrent_runs_per_tenant"):
+        settings = ApiRateLimitSettings.model_validate(
+            {
+                "max_concurrent_runs_per_tenant": 25,
+                "max_concurrent_run_requests_per_tenant": 25,
+            }
+        )
+    assert settings.max_concurrent_run_requests_per_tenant == 25
+
+
+def test_api_rate_limit_settings_both_keys_conflicting_raises() -> None:
+    from algen_agent_runtime.config.settings import ApiRateLimitSettings
+
+    with pytest.raises(
+        ValueError,
+        match=r"max_concurrent_runs_per_tenant.*max_concurrent_run_requests_per_tenant",
+    ):
+        ApiRateLimitSettings.model_validate(
+            {
+                "max_concurrent_runs_per_tenant": 10,
+                "max_concurrent_run_requests_per_tenant": 20,
+            }
+        )
+
+
+def test_mcp_servers_configuration_parsing_and_duplicate_rejection() -> None:
+    from algen_agent_runtime.config.settings import AppSettings
+    from algen_agent_runtime.mcp.contracts import (
+        MCPStdioServerConfig,
+        MCPStreamableHttpServerConfig,
+    )
+
+    # Valid configuration with stdio and streamable_http
+    settings = AppSettings.model_validate(
+        {
+            "mcp_servers": [
+                {
+                    "name": "srv1",
+                    "transport": "stdio",
+                    "command": "echo",
+                },
+                {
+                    "name": "srv2",
+                    "transport": "streamable_http",
+                    "url": "https://example.com/mcp",
+                    "auth_token_ref": "env://MY_TOKEN",
+                },
+            ]
+        }
+    )
+    assert len(settings.mcp_servers) == 2
+    assert isinstance(settings.mcp_servers[0], MCPStdioServerConfig)
+    assert isinstance(settings.mcp_servers[1], MCPStreamableHttpServerConfig)
+
+    # Duplicate server names fail validation
+    with pytest.raises(ValueError, match="duplicate MCP server name"):
+        AppSettings.model_validate(
+            {
+                "mcp_servers": [
+                    {"name": "srv1", "transport": "stdio", "command": "echo"},
+                    {"name": "srv1", "transport": "stdio", "command": "echo"},
+                ]
+            }
+        )
+
+
+def test_mcp_server_unsupported_transport_rejected() -> None:
+    from algen_agent_runtime.config.settings import AppSettings
+
+    with pytest.raises(ValidationError, match=r"transport"):
+        AppSettings.model_validate(
+            {
+                "mcp_servers": [
+                    {"name": "srv1", "transport": "websocket", "url": "wss://example.com"},
+                ]
+            }
+        )
+
+
+def test_mcp_server_sensitive_headers_rejected() -> None:
+    from algen_agent_runtime.mcp.contracts import MCPStreamableHttpServerConfig
+
+    # Literal Authorization header rejected
+    with pytest.raises(ValueError, match="sensitive header"):
+        MCPStreamableHttpServerConfig(
+            name="remote",
+            url="https://example.com",
+            headers={"Authorization": "Bearer 12345"},
+        )
+
+    # Literal X-API-Key rejected
+    with pytest.raises(ValueError, match="sensitive header"):
+        MCPStreamableHttpServerConfig(
+            name="remote",
+            url="https://example.com",
+            headers={"X-API-Key": "my-secret-key"},
+        )
+
+    # Secret headers requires env:// reference
+    with pytest.raises(ValueError, match="env://"):
+        MCPStreamableHttpServerConfig(
+            name="remote",
+            url="https://example.com",
+            secret_headers={"X-Custom-Auth": "literal-secret"},
+        )
+
+    # Valid secret_headers and auth_token_ref accepted
+    cfg = MCPStreamableHttpServerConfig(
+        name="remote",
+        url="https://example.com",
+        auth_token_ref="env://AUTH_TOKEN",
+        secret_headers={"X-Custom-Auth": "env://CUSTOM_TOKEN"},
+        headers={"X-Client-Version": "1.0.0"},
+    )
+    assert cfg.auth_token_ref == "env://AUTH_TOKEN"

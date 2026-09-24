@@ -67,19 +67,24 @@ class PostgresWorkflowCheckpointStore:
         self._database = database
 
     async def create(self, state: WorkflowExecutionState) -> None:
-        await self._database.execute(
-            "INSERT INTO algen_agent_runtime_workflow_checkpoints "
-            "(id, tenant_id, manifest_name, manifest_version, status, version, state, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)",
-            state.id,
-            state.tenant_id,
-            state.manifest_name,
-            state.manifest_version,
-            state.status.value,
-            state.version,
-            state.model_dump_json(),
-            state.updated_at,
-        )
+        try:
+            await self._database.execute(
+                "INSERT INTO algen_agent_runtime_workflow_checkpoints "
+                "(id, tenant_id, manifest_name, manifest_version, status, version, state, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)",
+                state.id,
+                state.tenant_id,
+                state.manifest_name,
+                state.manifest_version,
+                state.status.value,
+                state.version,
+                state.model_dump_json(),
+                state.updated_at,
+            )
+        except Exception as exc:
+            if "UniqueViolationError" in type(exc).__name__:
+                raise ConflictError(f"workflow {state.id!r} already exists") from exc
+            raise
 
     async def get(self, workflow_id: str, tenant_id: str) -> WorkflowExecutionState | None:
         row = await self._database.fetchrow(
