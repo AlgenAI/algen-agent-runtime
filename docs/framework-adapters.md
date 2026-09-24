@@ -9,7 +9,7 @@ Algen Agent Runtime explicitly delineates the governance boundaries between Runt
 | Framework | Invocation | Trace / Span Propagation | Runtime Governance of Outer Call | Governance of Internal Model / Tool Calls | Durable Pause & Resume |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **LangGraph** | Supported | Propagates `run_id`, `tenant_id`, `user_id`, `thread_id` | Enforced (timeout, tenancy, cancellation) | Foreign (LangGraph-owned nodes/tools) | Interrupt metadata |
-| **OpenAI Agents SDK** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (OpenAI client/tool-owned) | SDK run state |
+| **OpenAI Agents SDK** | Supported | Propagates `run_id`, `tenant_id`, `user_id`, `session_id` | Enforced (timeout, tenancy, cancellation) | Foreign (OpenAI client/tool-owned) | Interrupt metadata (no durable resume) |
 | **AutoGen AgentChat** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (AutoGen team-owned) | Team-defined |
 | **CrewAI** | Supported | Propagates `run_id`, `tenant_id`, `user_id` | Enforced (timeout, tenancy, cancellation) | Foreign (Crew task/tool-owned) | Not supported |
 
@@ -72,12 +72,22 @@ result = await container.frameworks.get("langgraph").invoke(
 ## Adapter Details
 
 - **LangGraph**: Uses `input_factory` (defaults to `{"messages": [{"role": "user", "content": request.input}]}`) and `output_selector`. The `session_id` is mapped to `configurable.thread_id` and metadata contains `run_id`, `tenant_id`, and `user_id`.
-- **OpenAI Agents SDK**: Accepts an SDK `Agent` plus an optional `Runner` and `RunConfig`.
+- **OpenAI Agents SDK**: Accepts an application-owned SDK `Agent` plus optional `Runner` and `RunConfig`. Automatically propagates `run_id`, `tenant_id`, `user_id`, and `session_id` into context and trace metadata. Defaults to `RunConfig(tracing_disabled=True)` to ensure tracing does not leak or upload unexpectedly. Interruptions are surfaced as `FrameworkRunStatus.AWAITING_INPUT` with bounded metadata without claiming durable resume (`capabilities.persistence=False`). A runnable offline example is provided in `examples/pattern_openai_agents_integration`.
 - **AutoGen**: Accepts an agent or team implementing `run` and `run_stream`.
 - **CrewAI**: Accepts a `Crew`; default input mapping is `{"input": request.input}`.
 
-For consuming external tools across standard language-agnostic boundaries (rather than embedding external agent graphs), see the [Model Context Protocol (MCP) Client guide](mcp.md).
+For consuming external tools across standard language-agnostic boundaries (rather than embedding external agent graphs), see the [Model Context Protocol (MCP) Integration guide](mcp.md).
+
+## Evidence & Maturity Matrix
+
+| Framework | Status | Test Evidence | Real SDK Execution | CI Validation |
+|---|:---:|---|:---:|---|
+| **LangGraph** | Supported | Unit tests, contract cancellation/streaming, surface test | Yes (`test_real_langgraph_execution_and_streaming`) | Matrix test |
+| **OpenAI Agents SDK** | Supported | Real SDK `ScriptedModel` suite (invoke, tool loop, stream, cancel, metadata), missing-dependency contract | Yes (credential-free `ScriptedModel` suite) | Optional integration (`frameworks`) |
+| **AutoGen AgentChat** | Experimental | Unit tests with mock agents/teams, SDK surface test | No (network-dependent / no hermetic runner) | Optional integration (`frameworks`) |
+| **CrewAI** | Experimental | Unit tests with mock crews, SDK surface test | No (network-dependent / no hermetic runner) | Optional integration (`frameworks`) |
 
 ## Hook Providers and Framework Adapters
 
 When integrating external framework graphs within Algen workflows, register framework adapters during host initialization or inside a secure workflow hook provider. When loading hook providers dynamically from YAML manifests, use `WorkflowHookLoader` with explicit module allowlists to ensure foreign framework modules are loaded only from trusted packages.
+

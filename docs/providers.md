@@ -68,6 +68,18 @@ providers:
       tools: false      # disable tool calling for this deployment
 ```
 
+Partial capability narrowing is supported: specifying a subset of capability fields narrows only those explicitly declared fields. Omitted fields inherit adapter discovery:
+
+```yaml
+providers:
+  internal-openai:
+    type: openai_compatible
+    base_url: http://vllm.internal:8000/v1
+    default_model: mistral-7b-instruct
+    capabilities:
+      tools: false  # disables only tools; chat, streaming, and other supported capabilities remain enabled
+```
+
 > [!WARNING]
 > An omitted `capabilities` block preserves adapter discovery and model-specific defaults. Only specify `capabilities` when intentionally constraining features for governance, compliance, or backend compatibility.
 

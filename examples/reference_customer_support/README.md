@@ -19,15 +19,15 @@ python -m examples.reference_customer_support.app "Please refund my order"
 
 ### Running non-interactively / automation
 
-```bash
-# Non-refund case with automated approval
-python -m examples.reference_customer_support.app "How do I update my profile?" --approve-all
+For guaranteed non-interactive automation, pass `--answers-file` with pre-recorded clarification and approval answers. Note that `--approve-all` resolves approval checkpoints only and fails if a workflow requests clarification.
 
-# Refund case with ordered clarification and approval answers
-python -m examples.reference_customer_support.app --answers-file path/to/answers.json
+```bash
+# Non-interactive execution using the committed synthetic answers fixture:
+python -m examples.reference_customer_support.app \
+  --answers-file examples/reference_customer_support/fixtures/automation-answers.json
 ```
 
-Where `answers.json` contains:
+Where `automation-answers.json` contains:
 ```json
 [
   {"type": "clarification", "answer": "ORD-1234"},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -57,9 +58,9 @@ class _BucketState:
 
 
 class InMemoryApiRateLimiter:
-    """In-memory single-node admission rate limiter using token bucket and concurrency tracking.
+    """In-memory single-node admission rate limiter using token bucket and run-creation request concurrency tracking.
 
-    Supports per-tenant quotas, route-class thresholds, in-flight concurrency bounding,
+    Supports per-tenant quotas, route-class thresholds, in-flight request concurrency bounding,
     and injectable clock for deterministic testing.
     """
 
@@ -67,14 +68,27 @@ class InMemoryApiRateLimiter:
         self,
         default_rate_per_minute: int = 120,
         default_burst: int = 30,
-        max_concurrent_runs_per_tenant: int = 10,
+        max_concurrent_run_requests_per_tenant: int = 10,
         route_policies: dict[str, RouteLimitPolicy] | None = None,
         clock: Callable[[], float] = time.monotonic,
         fail_closed: bool = True,
+        *,
+        max_concurrent_runs_per_tenant: int | None = None,
     ) -> None:
+        if max_concurrent_runs_per_tenant is not None:
+            warnings.warn(
+                "'max_concurrent_runs_per_tenant' is deprecated; "
+                "use 'max_concurrent_run_requests_per_tenant' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            max_concurrent_run_requests_per_tenant = max_concurrent_runs_per_tenant
         self.default_rate_per_minute = max(1, default_rate_per_minute)
         self.default_burst = max(1, default_burst)
-        self.max_concurrent_runs_per_tenant = max(1, max_concurrent_runs_per_tenant)
+        self.max_concurrent_run_requests_per_tenant = max(1, max_concurrent_run_requests_per_tenant)
+        self.max_concurrent_runs_per_tenant = (
+            self.max_concurrent_run_requests_per_tenant  # deprecated alias
+        )
         self.clock = clock
         self.fail_closed = fail_closed
         self._lock = asyncio.Lock()
@@ -94,7 +108,7 @@ class InMemoryApiRateLimiter:
             ROUTE_CLASS_RUN_CREATE: RouteLimitPolicy(
                 rate_per_minute=self.default_rate_per_minute,
                 burst=self.default_burst,
-                max_concurrent=self.max_concurrent_runs_per_tenant,
+                max_concurrent=self.max_concurrent_run_requests_per_tenant,
             ),
         }
         if route_policies:

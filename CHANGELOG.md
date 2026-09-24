@@ -4,7 +4,47 @@ All notable changes to Algen Agent Runtime will be documented in this file.
 The project follows [Semantic Versioning](https://semver.org/) while public
 contracts are explicitly marked experimental during the `0.x` series.
 
-## [Unreleased]
+## [0.1.0a3] - Unreleased
+
+### Fixed
+
+- **Preserve Unspecified Capabilities in Partial Narrowing (A3-01)**: Fixed `_narrow_capabilities()` in `ModelRouter` to check `override.model_fields_set` before evaluating effective capabilities. Omitted fields in partial `capabilities` configuration blocks now inherit adapter-reported capabilities rather than erroneously defaulting to `false`. Empty overrides (`{}`) preserve all adapter capabilities, and partial override policies remain isolated in capability cache keys.
+- **Repair Shipped Example Configurations and Enable Automatic Discovery (A3-02)**: Repaired provider references in `examples/pattern_provider_fallback/agent.yaml` (`primary`, `fallback`, `local`) and `examples/quickstart_local_chat/agent.yaml` (`local`, `local-private`, allowlist `local-private/qwen3:8b`) to use configured provider instance keys rather than adapter type names. Replaced manual configuration lists in `tests/unit/test_example_workflows.py` with automatic discovery across all shipped `agent.yaml` files, guaranteeing that every example configuration parses and validates against `AppSettings`.
+- **Enforce Streamed Request-Body Wire Limits (A3-03)**: Added pure ASGI `RequestBodyLimitMiddleware` to validate and enforce request body limits before and during streaming body reads. Rejects invalid non-integer or negative `Content-Length` headers with HTTP 400 (`INVALID_CONTENT_LENGTH`), rejects declared lengths exceeding limits with HTTP 413 (`REQUEST_PAYLOAD_TOO_LARGE`) prior to body consumption, and enforces limits on actual received wire bytes regardless of missing or misleading headers (including chunked requests). Returned error payloads contain stable error codes and limit byte fields without echoing request contents.
+- **Deterministic Customer-Support Example Automation (A3-05)**: Added committed synthetic answers fixture (`examples/reference_customer_support/fixtures/automation-answers.json`) providing ordered clarification and approval answers for non-interactive execution. Updated customer-support README documentation and `tests/integration/test_portable_examples_cli.py` to use `--answers-file` for guaranteed zero-input automation. Improved `ApproveAllDecisionProvider` and `RejectAllDecisionProvider` clarification error messages to provide valid command syntax patterns.
+- **Environment-Independent Optional Dependency Testing (A3-06)**: Made optional dependency tests independent of the developer environment by isolating package imports with `monkeypatch.setitem(sys.modules, ...)` instead of assuming missing packages. Added forced-missing tests for `OpenAIAgentsAdapter` and `MCPClientManager` (stdio and SSE transports), introduced an `optional-integration` CI workflow job testing `[dev,frameworks,mcp,traccia]`, and documented framework adapter evidence and maturity levels.
+- **Scaffolded Project Correctness & Unresolved Template Rejection (A3-09)**: Enforced strict validation and rejection of unresolved placeholders in multi-agent workflow `input_template`. Added static DAG validation in `WorkflowManifest` rejecting unsupported nested syntax (e.g. `{{step_one_data.input}}`) and undeclared keys with errors naming the node and placeholder. Enhanced `MultiAgentWorkflowExecutor._render_template()` with runtime guards raising typed `ConfigurationError` if any unresolved placeholder remains. Fixed the `workflow` template in `algen-agent-runtime new` to use valid `{{step_one_data}}` syntax, strengthened generated test assertions to verify rendered values and reject placeholder leakage, and enabled `api.rate_limiting.enabled: true` in all scaffolded configurations.
+
+
+
+### Added
+
+- **Functional MCP Integration with Transports, Governance, and Safe Egress (A3-10)**:
+  - Added declarative `mcp_servers` configuration in `AppSettings` supporting `stdio`, `streamable_http`, and legacy `sse` transports with unique name enforcement.
+  - Built on official `mcp>=1.30.0,<2` SDK using `streamablehttp_client` and `stdio_client`.
+  - Hardened remote MCP transports via `_make_http_client_factory` backed by `create_safe_http_client` and `SafeAsyncTransport` with DNS pinning, host allowlists, and private IP blocking.
+  - Implemented secret hygiene rejecting literal sensitive headers (`Authorization`, `X-API-Key`, `Cookie`, etc.) in configuration, requiring `env://` secret references for `auth_token_ref` and `secret_headers`.
+  - Added governance mapping precedence: operator `tool_policies` override > trusted server annotations (`trust_tool_annotations: true`) > secure defaults (`SideEffect.EXTERNAL`, `Idempotency.NON_IDEMPOTENT`).
+  - Handled tool discovery with cursor pagination, container lifecycle integration with graceful degraded dependencies for optional servers and clean shutdown cleanup, and cancellation-safe execution.
+- **Promote OpenAI Agents SDK to Supported Adapter Surface (A3-11)**:
+  - Supported real, credential-free execution using official `agents.testing.ScriptedModel`.
+  - Added comprehensive real SDK integration contract tests covering invoke, two-turn function tool loops, streaming event normalization (`STARTED`, `DELTA`/`STEP`, `COMPLETED`), cancellation safety, and runtime metadata propagation (`run_id`, `tenant_id`, `user_id`, `session_id`).
+  - Strengthened `_BaseAdapter.cancel` to await cancelled task completion and reliably clear active task tracking.
+  - Forwarded `RunConfig(tracing_disabled=True)` by default to isolate testing from external telemetry servers.
+  - Aligned adapter capabilities and documentation to honestly reflect unsupported durable resume (`persistence=False`), while surfacing interruptions as `AWAITING_INPUT` with bounded serializable metadata.
+  - Added runnable offline pattern example `examples/pattern_openai_agents_integration` demonstrating application registration and container framework registry execution.
+
+### Changed
+
+- **Run-Creation Request Concurrency Naming (A3-04)**: Clarified API rate limiting terminology by renaming `max_concurrent_runs_per_tenant` to `max_concurrent_run_requests_per_tenant`. The quota bounds in-flight HTTP request concurrency during `POST /v1/runs` rather than active executing run lifetimes.
+- **Corrected Security, Interoperability, and Maturity Claims (A3-07)**:
+  - Updated `docs/mcp.md`, `docs/threat-model.md`, and `docs/production-readiness.md` to explicitly document MCP stdio execution as unsandboxed operator code running on the host system without process isolation, while clarifying that remote transports enforce DNS-pinned safe egress and header secret references.
+  - Documented conservative server annotation trust model (`trust_tool_annotations: false` by default).
+  - Clarified framework adapter boundaries in `docs/framework-adapters.md`, `docs/why-algen-agent-runtime.md`, and `README.md`, emphasizing that `AgentRuntime` does not automatically dispatch configured agents through foreign adapters and that foreign adapters are made available to application code via explicit trusted registration.
+
+### Deprecated
+
+- **Deprecated `api.rate_limiting.max_concurrent_runs_per_tenant` (A3-04)**: Deprecated `max_concurrent_runs_per_tenant` in favor of `max_concurrent_run_requests_per_tenant`. Existing configurations continue to load with a `DeprecationWarning` in `0.1.x`, and will be removed in `0.2.0`.
 
 ## [0.1.0a2] - 2026-09-22
 
@@ -180,5 +220,7 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...HEAD
+[0.1.0a3]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a2...v0.1.0a3
+[0.1.0a2]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/AlgenAI/algen-agent-runtime/releases/tag/v0.1.0a1

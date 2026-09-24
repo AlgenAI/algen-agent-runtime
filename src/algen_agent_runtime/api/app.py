@@ -17,6 +17,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime import __version__
+from algen_agent_runtime.api.body_limit import (
+    RequestBodyLimitMiddleware,
+    RequestPayloadTooLarge,
+)
 from algen_agent_runtime.api.dependencies import (
     Principal,
     principal_dependency,
@@ -156,6 +160,12 @@ def create_app(
             allow_headers=list(resolved.api.cors_allowed_headers),
         )
 
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_request_bytes=resolved.security.max_request_bytes,
+        max_artifact_bytes=resolved.security.max_artifact_bytes,
+    )
+
     rate_limiter = dependencies.rate_limiter
     if rate_limiter is None and resolved.api.rate_limiting.enabled:
         route_policies = {
@@ -169,7 +179,7 @@ def create_app(
         rate_limiter = InMemoryApiRateLimiter(
             default_rate_per_minute=resolved.api.rate_limiting.default_rate_per_minute,
             default_burst=resolved.api.rate_limiting.default_burst,
-            max_concurrent_runs_per_tenant=resolved.api.rate_limiting.max_concurrent_runs_per_tenant,
+            max_concurrent_run_requests_per_tenant=resolved.api.rate_limiting.max_concurrent_run_requests_per_tenant,
             route_policies=route_policies,
             fail_closed=resolved.api.rate_limiting.fail_closed,
         )
@@ -233,17 +243,16 @@ def create_app(
                     principal_id=identity.user_id,
                 )
 
-    @app.middleware("http")
-    async def payload_limit(request: Request, call_next: Any) -> Response:
-        length = int(request.headers.get("content-length", "0") or 0)
-        maximum = (
-            resolved.security.max_artifact_bytes
-            if request.method == "POST" and request.url.path == "/v1/artifacts"
-            else resolved.security.max_request_bytes
+    @app.exception_handler(RequestPayloadTooLarge)
+    async def payload_too_large(request: Request, exc: RequestPayloadTooLarge) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": "request payload too large",
+                "code": "REQUEST_PAYLOAD_TOO_LARGE",
+                "limit_bytes": exc.limit,
+            },
         )
-        if length > maximum:
-            return JSONResponse(status_code=413, content={"detail": "request payload too large"})
-        return cast(Response, await call_next(request))
 
     @app.exception_handler(NotFoundError)
     async def not_found(request: Request, exc: NotFoundError) -> JSONResponse:
@@ -342,7 +351,7 @@ def create_app(
         async for chunk in request.stream():
             data.extend(chunk)
             if len(data) > resolved.security.max_artifact_bytes:
-                raise HTTPException(status_code=413, detail="artifact payload too large")
+                raise RequestPayloadTooLarge(resolved.security.max_artifact_bytes)
         metadata_header = request.headers.get("x-artifact-metadata", "{}")
         try:
             metadata = json.loads(metadata_header)

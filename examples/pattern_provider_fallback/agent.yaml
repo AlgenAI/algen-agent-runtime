@@ -16,10 +16,10 @@ agents:
     version: 1.0.0
     description: Multi-provider assistant with cloud and local fallbacks
     system_instructions: Produce a concise, verified response.
-    default_model: {name: quality, provider: anthropic, model: claude-sonnet-4-5, quality_tier: 3}
+    default_model: {name: quality, provider: primary, model: claude-sonnet-4-5, quality_tier: 3}
     fallback_models:
-      - {name: cloud-fallback, provider: openai, model: gpt-5, quality_tier: 2}
-      - {name: local-fallback, provider: ollama, model: "qwen3:8b", quality_tier: 1}
+      - {name: cloud-fallback, provider: fallback, model: gpt-5, quality_tier: 2}
+      - {name: local-fallback, provider: local, model: "qwen3:8b", quality_tier: 1}
     planning_strategy: direct
     max_steps: 5
 

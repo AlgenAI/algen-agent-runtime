@@ -1,0 +1,10 @@
+[
+  {
+    "type": "clarification",
+    "answer": "ORD-1234"
+  },
+  {
+    "type": "approval",
+    "decision": "approved"
+  }
+]

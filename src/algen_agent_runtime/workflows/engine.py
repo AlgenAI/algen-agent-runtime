@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -1015,7 +1016,9 @@ class MultiAgentWorkflowExecutor:
         payload = (
             await self._call(self._hooks.builder(node.input_builder), hook_context)
             if node.input_builder
-            else self._render_template(node.input_template or "{{input}}", state.values, None)
+            else self._render_template(
+                node.input_template or "{{input}}", state.values, None, node=node
+            )
         )
         child_values = self._child_values(child_manifest, payload)
         child_id = str(uuid4())
@@ -1255,7 +1258,9 @@ class MultiAgentWorkflowExecutor:
             payload = (
                 await self._call(self._hooks.builder(node.input_builder), hook_context)
                 if node.input_builder
-                else self._render_template(node.input_template or "{{input}}", state.values, item)
+                else self._render_template(
+                    node.input_template or "{{input}}", state.values, item, node=node
+                )
             )
             request_metadata: dict[str, Any] = {}
             if node.metadata_builder:
@@ -1396,11 +1401,23 @@ class MultiAgentWorkflowExecutor:
         return bool(actual) if predicate.operator == "truthy" else not bool(actual)
 
     @staticmethod
-    def _render_template(template: str, values: dict[str, Any], item: Any) -> str:
+    def _render_template(
+        template: str,
+        values: dict[str, Any],
+        item: Any,
+        *,
+        node: WorkflowNode | str | None = None,
+    ) -> str:
         rendered = template.replace("{{item}}", str(item) if item is not None else "")
         for key, value in values.items():
             rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
             rendered = rendered.replace(f"{{{{{key}.output}}}}", str(value))
+        remaining = re.findall(r"\{\{[^{}]+\}\}", rendered)
+        if remaining:
+            node_id = node.id if isinstance(node, WorkflowNode) else (node or "unknown")
+            raise ConfigurationError(
+                f"workflow node {node_id!r} has unresolved placeholder {remaining[0]!r} in template {template!r}"
+            )
         return rendered
 
     @staticmethod

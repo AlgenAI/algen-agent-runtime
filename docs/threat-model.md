@@ -20,6 +20,8 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |
 | Provider compromise | isolated adapters, raw response opt-in, egress policy, fallback/circuit breaker |
 | Telemetry data exfiltration | content capture off, Traccia patching off by default, PII redaction, approved OTLP endpoints, sampling and retention policy |
+| Untrusted MCP server / tool | operator tool allowlists, strict header/secret reference validation, DNS-pinned safe egress for remote transports (streamable_http/sse), untrusted annotations by default, operator policy precedence |
+| MCP stdio subprocess execution | trusted operator configuration assumption (SR-12), minimal system environment filtering, process isolation deferred |
 | Audit tampering | immutable audit contracts, append-only external sink, separate diagnostic logs |
 
 ### Outbound Network Security and SSRF / DNS Rebinding Mitigation
@@ -67,11 +69,31 @@ Workflow manifests specify hook providers as dotted paths (`module:callable`). T
 5. **Secret-Free Audit Metadata:**
    - Loaded providers produce structured audit metadata (`LoadedHookProvider.audit_metadata`) recording module, factory, and package version without serializing executable code or environment secrets.
 
+### Request Payload Wire Limits
+
+To prevent memory exhaustion and denial of service through unconstrained request bodies (whether sent with accurate headers, omitted headers, or chunked transfer encoding), incoming HTTP requests pass through pure ASGI `RequestBodyLimitMiddleware`:
+
+1. **Header validation:** Invalid `Content-Length` headers (negative, non-integer, or duplicate) are rejected immediately with HTTP 400 (`INVALID_CONTENT_LENGTH`).
+2. **Pre-read bounds:** Declared sizes exceeding `security.max_request_bytes` (or `max_artifact_bytes` for artifact uploads) are rejected immediately with HTTP 413 (`REQUEST_PAYLOAD_TOO_LARGE`) before reading body content.
+3. **Stream counting:** Regardless of headers, chunks are counted as they arrive from ASGI `receive`. If accumulated wire bytes exceed the limit, execution aborts with HTTP 413, guaranteeing the server never buffers beyond configured bounds.
+4. **Information leakage prevention:** 413 and 400 error responses never echo request content and provide stable error codes.
+
+### Model Context Protocol (MCP) Security & Trust Boundaries
+
+External MCP servers integrate into Runtime under explicit security boundaries:
+
+1. **Client-Only Architecture**: Runtime functions exclusively as an MCP client consuming tools from external servers; it does not host an MCP server.
+2. **Stdio Transport (Trusted Local Execution)**: Stdio servers execute operator-configured binaries as unsandboxed local host processes with no kernel sandbox, resource cgroups, or signature verification. Ambient process environment variables are filtered to a minimal safe set (`PATH`, `SYSTEMROOT`, `TEMP`, `USER`, `HOME`) to reduce accidental secret leakage, but stdio commands must only execute trusted operator-declared executables.
+3. **Remote Transports & Outbound Egress**: Streamable HTTP and SSE transports use `_make_http_client_factory` backed by `SafeAsyncTransport` and `SafeNetworkBackend`, enforcing DNS-pinned single-resolution IP validation, host allowlists (`security.allowed_http_hosts`), and private IP blocking (`security.allow_private_networks`).
+4. **Secret Hygiene**: Literal sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`, etc.) are rejected at configuration validation time. Authentication must use `auth_token_ref` or `secret_headers` with `env://` references.
+5. **Server Annotation Trust Model**: Server-provided annotations (`ToolAnnotations`) are treated as untrusted hints by default (`trust_tool_annotations: false`). Runtime defaults tools to `SideEffect.EXTERNAL` and `Idempotency.NON_IDEMPOTENT` unless the operator explicitly trusts annotations or provides authoritative `tool_policies` overrides.
+
 ## Deployment checklist
 
 - Replace header identity hook with verified JWT or mTLS and deny missing tenant claims.
 - Store secrets in a managed secret provider; never in YAML.
 - Set explicit egress and tool host allowlists.
+- Verify all declared `mcp_servers` stdio commands and args are strictly trusted operator-authored code; review remote MCP server URLs against egress host allowlists.
 - Enforce `WorkflowHookLoader` with explicit module allowlists for dynamic workflow manifests.
 - Disable dynamic plugins unless packages are pinned, signed, scanned, and trusted.
 - Require approval for write, external, and destructive tools.

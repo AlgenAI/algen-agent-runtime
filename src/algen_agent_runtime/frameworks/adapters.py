@@ -60,6 +60,11 @@ class _BaseAdapter:
         if not task or task.done():
             return False
         task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self._active.pop(run_id, None)
         return True
 
     async def _tracked(self, run_id: str, awaitable: Any) -> Any:
@@ -137,7 +142,7 @@ class OpenAIAgentsAdapter(_BaseAdapter):
     capabilities = FrameworkCapabilities(
         streaming=True,
         cancellation=True,
-        persistence=True,
+        persistence=False,
         human_in_the_loop=True,
         multi_agent=True,
     )
@@ -155,44 +160,94 @@ class OpenAIAgentsAdapter(_BaseAdapter):
         self._run_config = run_config
 
     def _kwargs(self, request: FrameworkRunRequest) -> dict[str, Any]:
-        kwargs = dict(request.context.get("openai_agents_options", {}))
-        if self._run_config is not None:
-            kwargs.setdefault("run_config", self._run_config)
-        return kwargs
+        options = dict(request.context.get("openai_agents_options", {}))
+
+        # Propagate identity and tenancy to documented context and session boundary
+        ctx = dict(request.context)
+        ctx.pop("openai_agents_options", None)
+        ctx.setdefault("run_id", request.run_id)
+        ctx.setdefault("tenant_id", request.tenant_id)
+        ctx.setdefault("user_id", request.user_id)
+        ctx.setdefault("session_id", request.session_id)
+        options.setdefault("context", ctx)
+        options.setdefault("conversation_id", request.session_id)
+
+        # Forward RunConfig with tracing_disabled=True and trace metadata
+        if "run_config" not in options:
+            if self._run_config is not None:
+                options["run_config"] = self._run_config
+            else:
+                try:
+                    from agents import RunConfig
+
+                    options["run_config"] = RunConfig(
+                        tracing_disabled=True,
+                        trace_id=request.run_id,
+                        trace_metadata={
+                            "run_id": request.run_id,
+                            "tenant_id": request.tenant_id,
+                            "user_id": request.user_id,
+                            "session_id": request.session_id,
+                        },
+                    )
+                except ImportError:
+                    pass
+        return options
 
     async def invoke(self, request: FrameworkRunRequest) -> FrameworkRunResult:
         result = await self._tracked(
             request.run_id,
             self._runner.run(self._agent, request.input, **self._kwargs(request)),
         )
-        interruptions = tuple(getattr(result, "interruptions", ()))
+        raw_interruptions = tuple(getattr(result, "interruptions", ()))
+        interruption_summary = [
+            {
+                "type": str(getattr(i, "type", "interruption")),
+                "tool_name": str(getattr(i, "tool_name", "")),
+            }
+            for i in raw_interruptions
+        ]
         return FrameworkRunResult(
             output=_text(getattr(result, "final_output", result)),
             status=(
-                FrameworkRunStatus.AWAITING_INPUT if interruptions else FrameworkRunStatus.COMPLETED
+                FrameworkRunStatus.AWAITING_INPUT
+                if raw_interruptions
+                else FrameworkRunStatus.COMPLETED
             ),
             usage=_usage(getattr(getattr(result, "context_wrapper", None), "usage", None)),
-            metadata={"interruption_count": len(interruptions)},
-            resume_state=result.to_state()
-            if interruptions and hasattr(result, "to_state")
-            else None,
+            metadata={
+                "interruption_count": len(raw_interruptions),
+                "interruptions": interruption_summary,
+            },
+            resume_state=None,
         )
 
     async def stream(self, request: FrameworkRunRequest) -> AsyncIterator[FrameworkStreamEvent]:
-        yield FrameworkStreamEvent(type=FrameworkEventType.STARTED)
-        streamed = self._runner.run_streamed(self._agent, request.input, **self._kwargs(request))
-        async for event in streamed.stream_events():
-            data = getattr(event, "data", None)
-            delta = getattr(data, "delta", None)
-            if isinstance(delta, str):
-                yield FrameworkStreamEvent(type=FrameworkEventType.DELTA, delta=delta)
-            else:
-                yield FrameworkStreamEvent(
-                    type=FrameworkEventType.STEP,
-                    data={"event_type": str(getattr(event, "type", "event"))},
-                )
-        result = FrameworkRunResult(output=_text(getattr(streamed, "final_output", "")))
-        yield FrameworkStreamEvent(type=FrameworkEventType.COMPLETED, result=result)
+        current = asyncio.current_task()
+        if current is not None:
+            self._active[request.run_id] = current
+        try:
+            yield FrameworkStreamEvent(type=FrameworkEventType.STARTED)
+            streamed = self._runner.run_streamed(
+                self._agent, request.input, **self._kwargs(request)
+            )
+            async for event in streamed.stream_events():
+                data = getattr(event, "data", None)
+                delta = getattr(data, "delta", None)
+                if isinstance(delta, str):
+                    yield FrameworkStreamEvent(type=FrameworkEventType.DELTA, delta=delta)
+                else:
+                    yield FrameworkStreamEvent(
+                        type=FrameworkEventType.STEP,
+                        data={"event_type": str(getattr(event, "type", "event"))},
+                    )
+            result = FrameworkRunResult(
+                output=_text(getattr(streamed, "final_output", "")),
+                usage=_usage(getattr(getattr(streamed, "context_wrapper", None), "usage", None)),
+            )
+            yield FrameworkStreamEvent(type=FrameworkEventType.COMPLETED, result=result)
+        finally:
+            self._active.pop(request.run_id, None)
 
     async def cancel(self, run_id: str) -> bool:
         return await super().cancel(run_id)

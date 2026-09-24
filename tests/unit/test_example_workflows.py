@@ -15,6 +15,8 @@ from algen_agent_runtime.workflows import (
     WorkflowRegistry,
     WorkflowStatus,
 )
+from examples.pattern_mcp_governance.app import run_mcp_governance_demonstration
+from examples.pattern_openai_agents_integration.app import run_openai_agents_demonstration
 from examples.pattern_provider_fallback.app import deterministic_fallback
 
 ROOT = Path(__file__).parents[2]
@@ -31,11 +33,8 @@ PORTABLE_EXAMPLES = (
     "examples/reference_incident_response/config/agent.yaml",
     "examples/reference_invoice_exceptions/config/agent.yaml",
 )
-ALL_STUDIO_CONFIGS = (
-    "examples/quickstart_cloud_chat/agent.yaml",
-    *PORTABLE_EXAMPLES,
-    "examples/case_study_responsible_hiring/config/agent.yaml",
-    "examples/case_study_teaching_assistant/config/agent.yaml",
+ALL_AGENT_CONFIGS = tuple(
+    sorted(str(path.relative_to(ROOT)) for path in (ROOT / "examples").glob("**/agent.yaml"))
 )
 
 
@@ -47,6 +46,12 @@ def _hooks(reference: str) -> WorkflowHookRegistry:
     return loaded.hooks
 
 
+def test_all_agent_configs_discovered() -> None:
+    assert len(ALL_AGENT_CONFIGS) >= 19
+    assert "examples/pattern_provider_fallback/agent.yaml" in ALL_AGENT_CONFIGS
+    assert "examples/quickstart_local_chat/agent.yaml" in ALL_AGENT_CONFIGS
+
+
 @pytest.mark.asyncio
 async def test_provider_fallback_example_has_a_deterministic_failure_path() -> None:
     route, output = await deterministic_fallback("test")
@@ -54,7 +59,33 @@ async def test_provider_fallback_example_has_a_deterministic_failure_path() -> N
     assert output == "deterministic fallback response"
 
 
-@pytest.mark.parametrize("relative_path", ALL_STUDIO_CONFIGS)
+@pytest.mark.asyncio
+async def test_mcp_governance_example_has_correct_policy_boundaries() -> None:
+    pytest.importorskip("mcp")
+    results = await run_mcp_governance_demonstration()
+    assert results["read_tool"]["name"] == "mcp.account_service.read_account"
+    assert results["read_tool"]["side_effect"] == "read"
+    assert results["read_tool"]["decision"] == "allow"
+    assert results["read_tool"]["requires_approval"] is False
+
+    assert results["delete_tool"]["name"] == "mcp.account_service.delete_account"
+    assert results["delete_tool"]["side_effect"] == "destructive"
+    assert results["delete_tool"]["decision"] == "require_approval"
+    assert results["delete_tool"]["requires_approval"] is True
+
+
+@pytest.mark.asyncio
+async def test_openai_agents_integration_example_executes_offline() -> None:
+    pytest.importorskip("agents")
+    result = await run_openai_agents_demonstration()
+    assert result["framework_id"] == "openai_agents"
+    assert result["status"] == "completed"
+    assert "Log analysis completed" in result["output"]
+    assert "started" in result["stream_events"]
+    assert "completed" in result["stream_events"]
+
+
+@pytest.mark.parametrize("relative_path", ALL_AGENT_CONFIGS)
 def test_example_configuration_is_studio_importable(relative_path: str) -> None:
     settings = load_settings((ROOT / relative_path,))
     assert settings.agents

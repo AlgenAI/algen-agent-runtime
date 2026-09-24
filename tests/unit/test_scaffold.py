@@ -155,3 +155,26 @@ def test_cli_parser_options() -> None:
     assert args_new.name == "my-app"
     assert args_new.template == "approval"
     assert args_new.force is True
+
+
+def test_workflow_scaffold_renders_real_values(tmp_path: Path) -> None:
+    dest = tmp_path / "test-workflow-render"
+    scaffold_project("test-workflow-render", dest, template="workflow")
+
+    result = subprocess.run(
+        [sys.executable, str(dest / "app.py"), "Analyze performance"],
+        cwd=str(dest),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert "{{" not in result.stdout
+
+
+def test_scaffolded_configs_enable_admission_control(tmp_path: Path) -> None:
+    for template in AVAILABLE_TEMPLATES:
+        dest = tmp_path / f"test-{template}"
+        scaffold_project(f"test-{template}", dest, template=template)
+        settings = load_settings((dest / "agent.yaml",))
+        assert settings.api.rate_limiting.enabled is True

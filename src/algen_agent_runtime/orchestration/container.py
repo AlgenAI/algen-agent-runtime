@@ -70,6 +70,7 @@ from algen_agent_runtime.events.bus import (
     PostgresAuditLog,
     PostgresEventBus,
 )
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
 from algen_agent_runtime.frameworks import FrameworkAdapter, FrameworkAdapterRegistry
 from algen_agent_runtime.governance import QueryGovernanceEngine, QueryGovernancePolicy
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
@@ -172,6 +173,7 @@ class Container:
     work_queue: WorkQueue = field(default_factory=InMemoryWorkQueue)
     rate_limiter: ApiRateLimiter | None = None
     mcp: MCPClientManager | None = None
+    degraded_dependencies: dict[str, str] = field(default_factory=dict)
     resources: tuple[object, ...] = ()
     recover_incomplete_runs: bool = True
     recovery_limit: int = 1000
@@ -185,6 +187,19 @@ class Container:
                 result = start()
                 if inspect.isawaitable(result):
                     await result
+        if self.mcp is not None:
+            for server_name in self.mcp.server_names:
+                config = self.mcp.get_server(server_name)
+                try:
+                    tools = await self.mcp.discover_tools(server_name)
+                    for tool in tools:
+                        self.tools.register(tool)
+                except Exception as exc:
+                    if config.required:
+                        raise ConfigurationError(
+                            f"failed to discover required MCP server {server_name!r}: {exc}"
+                        ) from exc
+                    self.degraded_dependencies[f"mcp.{server_name}"] = str(exc)
         if self.recover_incomplete_runs:
             await self.runtime.recover(self.recovery_limit)
             await self.conversations.recover(self.recovery_limit)
@@ -286,11 +301,23 @@ def build_container(
     tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
     for tool in additional_tools:
         tools.register(tool)
+    combined_mcp_servers: list[MCPServerConfigBase] = list(settings.mcp_servers)
+    existing_mcp_names = {s.name for s in combined_mcp_servers}
+    for s in mcp_servers:
+        if s.name in existing_mcp_names:
+            raise ConflictError(f"MCP server {s.name!r} already declared in settings")
+        combined_mcp_servers.append(s)
+        existing_mcp_names.add(s.name)
+
     mcp_manager: MCPClientManager | None = None
-    if mcp_servers:
+    if combined_mcp_servers:
         from algen_agent_runtime.mcp.client import MCPClientManager
 
-        mcp_manager = MCPClientManager(mcp_servers, environment=environment)
+        mcp_manager = MCPClientManager(
+            combined_mcp_servers,
+            environment=environment,
+            security=settings.security,
+        )
     frameworks = FrameworkAdapterRegistry()
     for adapter in framework_adapters:
         frameworks.register(adapter)
@@ -711,7 +738,7 @@ def build_container(
         rate_limiter = InMemoryApiRateLimiter(
             default_rate_per_minute=settings.api.rate_limiting.default_rate_per_minute,
             default_burst=settings.api.rate_limiting.default_burst,
-            max_concurrent_runs_per_tenant=settings.api.rate_limiting.max_concurrent_runs_per_tenant,
+            max_concurrent_run_requests_per_tenant=settings.api.rate_limiting.max_concurrent_run_requests_per_tenant,
             route_policies=route_policies,
             fail_closed=settings.api.rate_limiting.fail_closed,
         )

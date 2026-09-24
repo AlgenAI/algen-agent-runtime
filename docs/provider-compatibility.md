@@ -25,5 +25,5 @@ $$C_{effective}(m) = C_{adapter}(m) \cap C_{configured}$$
 
 - **Narrowing:** If an adapter or model reports support (`true`), configuration can restrict it (`false`).
 - **No widening:** If an adapter or model reports unsupported (`false`), configuration `true` is ignored and remains `false`, emitting a diagnostic warning.
-- **Discovery preservation:** Omitting the `capabilities` block allows the adapter to discover or report its native capabilities per model.
+- **Discovery preservation:** Omitting the `capabilities` block, or omitting individual fields in a partial `capabilities` block, preserves adapter discovery: omitted fields inherit adapter-reported capabilities rather than being set to false.
 

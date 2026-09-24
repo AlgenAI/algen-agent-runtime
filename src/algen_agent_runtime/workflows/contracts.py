@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -274,6 +275,47 @@ class WorkflowManifest(BaseModel):
             raise ValueError(
                 f"workflow output_key {self.output_key!r} is not produced by any workflow node"
             )
+
+        # Validate node template placeholders against upstream outputs and declared initial inputs
+        initial_keys = {"input", "inputs", "question"}
+        if self.input_schema and isinstance(self.input_schema.get("properties"), dict):
+            initial_keys.update(self.input_schema["properties"].keys())
+
+        for node in self.nodes:
+            if not node.input_template:
+                continue
+            upstream_ids: set[str] = set()
+            stack = list(node.depends_on)
+            while stack:
+                dep = stack.pop()
+                if dep not in upstream_ids:
+                    upstream_ids.add(dep)
+                    stack.extend(dependencies.get(dep, ()))
+            upstream_output_keys = {n.output_key for n in self.nodes if n.id in upstream_ids}
+
+            placeholders = re.findall(r"\{\{([^{}]+)\}\}", node.input_template)
+            for placeholder in placeholders:
+                raw_token = placeholder.strip()
+                if raw_token == "item":
+                    if node.kind != WorkflowNodeKind.MAP_AGENT:
+                        raise ValueError(
+                            f"node {node.id!r} contains '{{item}}' placeholder in template {node.input_template!r} but node kind is not 'map_agent'"
+                        )
+                    continue
+                if raw_token.endswith(".output"):
+                    key = raw_token[:-7]
+                elif "." in raw_token:
+                    raise ValueError(
+                        f"node {node.id!r} has unsupported template placeholder '{{{{{raw_token}}}}}' in template {node.input_template!r}"
+                    )
+                else:
+                    key = raw_token
+
+                if key not in upstream_output_keys and key not in initial_keys:
+                    raise ValueError(
+                        f"node {node.id!r} has unknown template placeholder key '{{{{{raw_token}}}}}' in template {node.input_template!r}; "
+                        f"key {key!r} is neither declared in initial inputs nor produced by an upstream dependency"
+                    )
         return self
 
 

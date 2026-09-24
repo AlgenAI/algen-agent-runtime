@@ -39,8 +39,11 @@ def _narrow_capabilities(
     effective: dict[str, bool] = {}
     for field_name in ModelCapabilities.model_fields:
         adapter_val = bool(getattr(adapter_caps, field_name, False))
+        if field_name not in override.model_fields_set:
+            effective[field_name] = adapter_val
+            continue
         configured_val = bool(getattr(override, field_name, False))
-        if field_name in override.model_fields_set and configured_val and not adapter_val:
+        if configured_val and not adapter_val:
             logger.warning(
                 "cannot_widen_unsupported_capability",
                 provider=registration_id,
@@ -52,7 +55,7 @@ def _narrow_capabilities(
                 ),
             )
         effective[field_name] = adapter_val and configured_val
-    return ModelCapabilities(**effective)
+    return ModelCapabilities.model_validate(effective)
 
 
 @dataclass
@@ -111,7 +114,9 @@ class ModelRouter:
         model: str,
     ) -> ModelCapabilities:
         override = self._capability_overrides.get(registration_id)
-        override_payload = override.model_dump(mode="json") if override is not None else None
+        override_payload = (
+            override.model_dump(mode="json", exclude_unset=True) if override is not None else None
+        )
 
         if self._cache is None:
             raw_caps = await provider.capabilities(model)

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 
 import httpx
 from conftest import make_runtime
@@ -306,3 +307,56 @@ async def test_api_exposes_registered_semantic_layers() -> None:
     assert listed.json()[0]["model_count"] == 1
     assert detail.status_code == 200
     assert detail.json()["definition"]["models"][0]["metrics"][0]["name"] == "revenue"
+
+
+async def test_api_rejects_oversized_payload_stream() -> None:
+    settings = AppSettings()
+    # Configure 1024 byte limit for test
+    from algen_agent_runtime.config.settings import SecuritySettings
+
+    settings = settings.model_copy(
+        update={"security": SecuritySettings(max_request_bytes=1024, max_artifact_bytes=2048)}
+    )
+    container = make_container()
+    app = create_app(settings, container)
+    transport = httpx.ASGITransport(app=app)
+    headers = {
+        "x-tenant-id": "tenant",
+        "x-user-id": "user",
+        "x-scopes": "runs:write",
+    }
+
+    # Stream generator yielding chunks that exceed 1024 bytes
+    async def chunk_gen() -> AsyncIterator[bytes]:
+        for _ in range(5):
+            yield b'{"agent": "test-agent", "input": "' + (b"x" * 300) + b'"}'
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Chunked stream without Content-Length
+        resp = await client.post(
+            "/v1/runs",
+            headers=headers,
+            content=chunk_gen(),
+        )
+        assert resp.status_code == 413
+        data = resp.json()
+        assert data["code"] == "REQUEST_PAYLOAD_TOO_LARGE"
+        assert data["limit_bytes"] == 1024
+
+        # 2. Declared Content-Length exceeding limit
+        resp_declared = await client.post(
+            "/v1/runs",
+            headers={**headers, "content-length": "2000"},
+            content=b"x" * 2000,
+        )
+        assert resp_declared.status_code == 413
+        assert resp_declared.json()["code"] == "REQUEST_PAYLOAD_TOO_LARGE"
+
+        # 3. Invalid Content-Length
+        resp_invalid = await client.post(
+            "/v1/runs",
+            headers={**headers, "content-length": "-1"},
+            content=b"x",
+        )
+        assert resp_invalid.status_code == 400
+        assert resp_invalid.json()["code"] == "INVALID_CONTENT_LENGTH"

@@ -1,0 +1,16 @@
+providers:
+  mock:
+    type: mock
+    default_model: deterministic
+
+agents:
+  - name: host-agent
+    version: 1.0.0
+    description: Host agent configuring container environment
+    system_instructions: Host agent for foreign framework integration.
+    default_model:
+      name: deterministic
+      provider: mock
+      model: deterministic
+    planning_strategy: direct
+    max_steps: 3

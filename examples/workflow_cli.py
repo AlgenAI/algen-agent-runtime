@@ -48,7 +48,7 @@ class ApproveAllDecisionProvider:
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         raise RuntimeError(
             f"Workflow paused for clarification ({prompt!r}) but --approve-all only resolves approvals. "
-            "Pass --answers-file PATH to provide clarification responses."
+            "Pass '--answers-file <path/to/answers.json>' to provide clarification responses."
         )
 
 
@@ -61,7 +61,7 @@ class RejectAllDecisionProvider:
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         raise RuntimeError(
             f"Workflow paused for clarification ({prompt!r}) but --reject-all only resolves approvals. "
-            "Pass --answers-file PATH to provide clarification responses."
+            "Pass '--answers-file <path/to/answers.json>' to provide clarification responses."
         )
 
 

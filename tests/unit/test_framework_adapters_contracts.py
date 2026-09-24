@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any, TypedDict
 
 import pytest
@@ -101,8 +102,10 @@ async def test_langgraph_adapter_cancellation() -> None:
         await task
 
 
-def test_openai_agents_missing_dependency_error() -> None:
+def test_openai_agents_missing_dependency_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # When runner is None and agents is not importable, should raise informative ImportError
+    # Force import of 'agents' to fail even if the extra is installed in the test environment
+    monkeypatch.setitem(sys.modules, "agents", None)
     with pytest.raises(ImportError, match=r"install algen-agent-runtime\[openai-agents\]"):
         OpenAIAgentsAdapter(object(), runner=None)
 
@@ -154,3 +157,183 @@ async def test_real_langgraph_execution_and_streaming() -> None:
     assert events[-1].type == FrameworkEventType.COMPLETED
     assert events[-1].result is not None
     assert events[-1].result.output == "LangGraph executed: Analyze security logs"
+
+
+# ---------------------------------------------------------------------------
+# Real OpenAI Agents SDK Integration Contract Test Suite (A3-11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_invoke_and_metadata_propagation() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent
+    from agents.testing import ScriptedModel, assistant_message
+
+    model = ScriptedModel([[assistant_message("Log analysis completed successfully")]])
+    agent = Agent(name="security-agent", model=model)
+    adapter = OpenAIAgentsAdapter(agent)
+
+    req = _sample_request()
+    result = await adapter.invoke(req)
+
+    assert result.status.value == "completed"
+    assert result.output == "Log analysis completed successfully"
+    assert result.usage is not None
+    assert result.resume_state is None
+    assert adapter.capabilities.persistence is False
+    assert adapter.capabilities.cancellation is True
+    assert adapter.capabilities.streaming is True
+    model.assert_complete()
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_two_turn_tool_loop() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent, function_tool
+    from agents.testing import ScriptedModel, assistant_message, function_call
+
+    @function_tool
+    def query_audit_log(service: str) -> str:
+        return f"audit-record-for-{service}"
+
+    model = ScriptedModel(
+        [
+            [
+                function_call(
+                    name="query_audit_log", arguments={"service": "auth"}, call_id="call-42"
+                )
+            ],
+            [assistant_message("Audit record found for auth service.")],
+        ]
+    )
+    agent = Agent(name="tool-agent", model=model, tools=[query_audit_log])
+    adapter = OpenAIAgentsAdapter(agent)
+
+    req = _sample_request()
+    result = await adapter.invoke(req)
+
+    assert result.status.value == "completed"
+    assert result.output == "Audit record found for auth service."
+    model.assert_complete()
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_streaming() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent
+    from agents.testing import ScriptedModel, assistant_message
+
+    model = ScriptedModel([[assistant_message("streaming log response")]])
+    agent = Agent(name="stream-agent", model=model)
+    adapter = OpenAIAgentsAdapter(agent)
+
+    req = _sample_request()
+    events = [e async for e in adapter.stream(req)]
+
+    assert len(events) >= 3
+    assert events[0].type == FrameworkEventType.STARTED
+    types = {e.type for e in events}
+    assert FrameworkEventType.DELTA in types or FrameworkEventType.STEP in types
+    assert events[-1].type == FrameworkEventType.COMPLETED
+    assert events[-1].result is not None
+    assert events[-1].result.output == "streaming log response"
+    model.assert_complete()
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_cancellation_clears_active() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent
+    from agents.testing import ScriptedModel, assistant_message
+
+    model = ScriptedModel([[assistant_message("done")]])
+    agent = Agent(name="cancel-agent", model=model)
+    adapter = OpenAIAgentsAdapter(agent)
+
+    orig_run = adapter._runner.run
+
+    async def slow_run(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(5.0)
+        return await orig_run(*args, **kwargs)
+
+    adapter._runner.run = slow_run
+
+    req = _sample_request()
+    task = asyncio.create_task(adapter.invoke(req))
+    await asyncio.sleep(0.05)
+
+    assert req.run_id in adapter._active
+    cancelled = await adapter.cancel(req.run_id)
+    assert cancelled is True
+    assert req.run_id not in adapter._active
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_interruption_normalization() -> None:
+    pytest.importorskip("agents")
+    from types import SimpleNamespace
+
+    from agents import Agent
+
+    class InterruptedRunner:
+        @staticmethod
+        async def run(agent: Any, value: str, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                final_output="",
+                interruptions=[
+                    SimpleNamespace(type="tool_approval_item", tool_name="sensitive_action")
+                ],
+                context_wrapper=SimpleNamespace(usage=None),
+            )
+
+    agent = Agent(name="interrupted-agent", model="mock-model")
+    adapter = OpenAIAgentsAdapter(agent, runner=InterruptedRunner)
+
+    req = _sample_request()
+    result = await adapter.invoke(req)
+
+    assert result.status.value == "awaiting_input"
+    assert result.resume_state is None
+    assert result.metadata["interruption_count"] == 1
+    assert result.metadata["interruptions"] == [
+        {"type": "tool_approval_item", "tool_name": "sensitive_action"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_runtime_metadata_boundary() -> None:
+    pytest.importorskip("agents")
+    from types import SimpleNamespace
+
+    from agents import Agent
+    from agents.testing import ScriptedModel, assistant_message
+
+    captured_kwargs: dict[str, Any] = {}
+
+    class InspectingRunner:
+        @staticmethod
+        async def run(agent: Any, value: str, **kwargs: Any) -> Any:
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(
+                final_output="ok",
+                interruptions=(),
+                context_wrapper=SimpleNamespace(usage=None),
+            )
+
+    agent = Agent(name="meta-agent", model=ScriptedModel([[assistant_message("ok")]]))
+    adapter = OpenAIAgentsAdapter(agent, runner=InspectingRunner)
+
+    req = _sample_request()
+    await adapter.invoke(req)
+
+    assert captured_kwargs["context"]["run_id"] == "run-framework-1"
+    assert captured_kwargs["context"]["tenant_id"] == "tenant-prod"
+    assert captured_kwargs["context"]["user_id"] == "analyst-42"
+    assert captured_kwargs["context"]["session_id"] == "session-99"
+    assert captured_kwargs["conversation_id"] == "session-99"
+    assert captured_kwargs["run_config"].tracing_disabled is True
+    assert captured_kwargs["run_config"].trace_id == "run-framework-1"

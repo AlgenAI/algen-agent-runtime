@@ -34,7 +34,7 @@ python -m examples.pattern_provider_fallback.app "What year did the first moon l
 **Expected output** (example with Anthropic as primary):
 
 ```
-[Route: anthropic/claude-sonnet-4-5]
+[Route: primary/claude-sonnet-4-5]
 The first moon landing occurred in 1969, when Apollo 11 landed on the lunar surface on July 20th.
 ```
 
@@ -47,7 +47,7 @@ python -m examples.pattern_provider_fallback.app --deterministic
 ```
 
 This uses the real `ModelRouter` and prints `mock/deterministic` as the selected route. The default
-mode continues to demonstrate the configured Anthropic → OpenAI → Ollama chain.
+mode continues to demonstrate the configured primary (Anthropic) → fallback (OpenAI) → local (Ollama) chain.
 
 ## Test
 

@@ -1321,3 +1321,74 @@ async def test_parent_recovery_creates_missing_recorded_child_with_same_identity
     recovered_child = await store.get(child_id, "tenant")
     assert recovered_child is not None
     assert recovered_child.status is WorkflowStatus.COMPLETED
+
+
+def test_unresolved_template_placeholder_is_rejected() -> None:
+    # 1. Manifest with nested placeholder syntax fails validation with node & placeholder
+    with pytest.raises(ValueError, match=r"node 'worker'.*step_one_data\.input"):
+        WorkflowManifest(
+            name="test-manifest",
+            version="1.0.0",
+            nodes=(
+                WorkflowNode(
+                    id="step-one",
+                    kind=WorkflowNodeKind.HANDLER,
+                    handler="hooks.step_one",
+                    output_key="step_one_data",
+                ),
+                WorkflowNode(
+                    id="worker",
+                    kind=WorkflowNodeKind.AGENT,
+                    depends_on=("step-one",),
+                    agent="analyst",
+                    input_template="{{step_one_data.input}}",
+                    output_key="analysis",
+                ),
+            ),
+        )
+
+    # 2. Manifest with unknown placeholder key fails validation with node & placeholder
+    with pytest.raises(ValueError, match=r"node 'worker'.*unknown_key"):
+        WorkflowManifest(
+            name="test-manifest",
+            version="1.0.0",
+            nodes=(
+                WorkflowNode(
+                    id="worker",
+                    kind=WorkflowNodeKind.AGENT,
+                    agent="analyst",
+                    input_template="{{unknown_key}}",
+                    output_key="analysis",
+                ),
+            ),
+        )
+
+    # 3. Direct render_template raises typed ConfigurationError when unresolved placeholder remains
+    with pytest.raises(ConfigurationError, match=r"node 'worker'.*\{\{missing\}\}"):
+        MultiAgentWorkflowExecutor._render_template("Prompt: {{missing}}", {}, None, node="worker")
+
+
+def test_supported_placeholder_forms_render() -> None:
+    # {{item}}, {{key}}, {{key.output}}
+    rendered_item = MultiAgentWorkflowExecutor._render_template(
+        "Process {{item}}", {}, "batch-42", node="mapper"
+    )
+    assert rendered_item == "Process batch-42"
+
+    rendered_key = MultiAgentWorkflowExecutor._render_template(
+        "Analyze {{task}} and {{result.output}}",
+        {"task": "logs", "result": "clean"},
+        None,
+        node="worker",
+    )
+    assert rendered_key == "Analyze logs and clean"
+
+
+def test_default_input_template_still_renders() -> None:
+    rendered_default = MultiAgentWorkflowExecutor._render_template(
+        "{{input}}",
+        {"input": "standard query"},
+        None,
+        node="worker",
+    )
+    assert rendered_default == "standard query"

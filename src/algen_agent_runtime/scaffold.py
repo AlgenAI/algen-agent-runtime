@@ -61,7 +61,11 @@ endpoint = "http://127.0.0.1:4318/v1/traces"
 
 
 def _agent_template(slug: str, ident: str) -> dict[str, str]:
-    agent_yaml = f"""providers:
+    agent_yaml = f"""api:
+  rate_limiting:
+    enabled: true
+
+providers:
   mock:
     type: mock
     default_model: deterministic
@@ -179,7 +183,11 @@ providers:
 
 def _approval_template(slug: str, ident: str) -> dict[str, str]:
     workflow_name = f"{slug}-workflow"
-    agent_yaml = f"""providers:
+    agent_yaml = f"""api:
+  rate_limiting:
+    enabled: true
+
+providers:
   mock:
     type: mock
     default_model: deterministic
@@ -406,7 +414,11 @@ pytest
 
 def _workflow_template(slug: str, ident: str) -> dict[str, str]:
     workflow_name = f"{slug}-dag"
-    agent_yaml = f"""providers:
+    agent_yaml = f"""api:
+  rate_limiting:
+    enabled: true
+
+providers:
   mock:
     type: mock
     default_model: deterministic
@@ -438,7 +450,7 @@ workflows:
         kind: agent
         depends_on: [step-one]
         agent: {slug}-worker
-        input_template: "{{{{step_one_data.input}}}}"
+        input_template: "{{{{step_one_data}}}}"
         output_key: worker_analysis
       - id: step-three
         kind: handler
@@ -456,14 +468,15 @@ from algen_agent_runtime.workflows import WorkflowHookRegistry
 def create_hooks(**_: Any) -> WorkflowHookRegistry:
     hooks = WorkflowHookRegistry()
 
-    def step_one(context: Any) -> dict[str, Any]:
-        return {"prepared": True, "input": context.state.values.get("question", "")}
+    def step_one(context: Any) -> str:
+        question = context.state.values.get("question", "")
+        return f"Prepared input: {question}"
 
     def step_three(context: Any) -> dict[str, Any]:
         return {
             "status": "completed",
             "summary": "Workflow completed successfully",
-            "analysis": context.state.values.get("worker_analysis", {}),
+            "analysis": context.state.values.get("worker_analysis", ""),
         }
 
     hooks.register_handler("workflow.step_one", step_one)
@@ -540,6 +553,8 @@ from app import run
 async def test_workflow_runs_end_to_end() -> None:
     values = await run("Test question")
     assert values["final_summary"]["status"] == "completed"
+    assert "Test question" in str(values["final_summary"]["analysis"])
+    assert "{{" not in str(values)
 """
 
     readme_md = f"""# {slug} (DAG Workflow)

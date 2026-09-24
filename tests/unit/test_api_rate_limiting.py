@@ -137,7 +137,7 @@ class TestInMemoryApiRateLimiter:
         limiter = InMemoryApiRateLimiter(
             default_rate_per_minute=600,
             default_burst=100,
-            max_concurrent_runs_per_tenant=2,
+            max_concurrent_run_requests_per_tenant=2,
             clock=clock,
         )
 
@@ -191,7 +191,7 @@ class TestFastAPIAdmissionRateLimiting:
                     enabled=True,
                     default_rate_per_minute=60,
                     default_burst=2,
-                    max_concurrent_runs_per_tenant=1,
+                    max_concurrent_run_requests_per_tenant=1,
                 )
             )
         )
@@ -255,7 +255,8 @@ class TestFastAPIAdmissionRateLimiting:
             assert ready_res.status_code in {200, 503}
 
     @pytest.mark.anyio
-    async def test_concurrency_quota_on_run_create(self, test_settings: AppSettings) -> None:
+    async def test_run_creation_request_concurrency_quota(self, test_settings: AppSettings) -> None:
+        """Tests that concurrent in-flight run-creation HTTP requests are bounded."""
         # Create a container where runtime.start waits on an event
         container = MagicMock(spec=Container)
         container.observability = MagicMock()
@@ -295,21 +296,65 @@ class TestFastAPIAdmissionRateLimiting:
         async with httpx.AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            # Launch first run in background
+            # Launch first run-creation request in background
             task1 = asyncio.create_task(client.post("/v1/runs", json=body, headers=headers))
             await started_event.wait()
 
-            # Second concurrent run for same tenant exceeds max_concurrent_runs_per_tenant=1
+            # Second concurrent request for same tenant exceeds max_concurrent_run_requests_per_tenant=1
             r2 = await client.post("/v1/runs", json=body, headers=headers)
             assert r2.status_code == 429
             body2 = r2.json()
             assert body2["code"] == "CONCURRENCY_LIMIT_EXCEEDED"
             assert body2["route_class"] == "run_create"
 
-            # Finish first run
+            # Finish first run request
             finish_event.set()
             r1 = await task1
             assert r1.status_code == 202
+
+    @pytest.mark.anyio
+    async def test_subsequent_run_request_allowed_after_http_response_while_execution_pending(
+        self, test_settings: AppSettings
+    ) -> None:
+        """Confirms limiter permit is released upon HTTP 202 response, even while execution is pending."""
+        container = MagicMock(spec=Container)
+        container.observability = MagicMock()
+        container.observability.start = MagicMock()
+        container.astart = AsyncMock()
+        container.aclose = AsyncMock()
+        container.resource_health = AsyncMock(return_value={})
+        container.rate_limiter = None
+
+        fake_run_state = MagicMock()
+        fake_run_state.id = "run-pending"
+        fake_run_state.session_id = "session-1"
+        fake_run_state.status = RunStatus.RECEIVED
+
+        mock_runtime = MagicMock()
+        mock_runtime.start = AsyncMock(return_value=fake_run_state)
+        mock_runtime.router = MagicMock()
+        mock_runtime.router.providers = MagicMock(return_value=[])
+        container.runtime = mock_runtime
+
+        app = create_app(test_settings, container=container)
+        headers = {
+            "x-tenant-id": "tenant-req-window",
+            "x-user-id": "user-req-window",
+            "x-scopes": "runs:write",
+        }
+        body = {"agent": "test-agent", "input": "hello"}
+
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # 1. First run-creation request completes with HTTP 202 RECEIVED
+            r1 = await client.post("/v1/runs", json=body, headers=headers)
+            assert r1.status_code == 202
+
+            # 2. Second request for same tenant is immediately allowed because the HTTP permit was released,
+            # proving max_concurrent_run_requests_per_tenant limits request concurrency, not active runs.
+            r2 = await client.post("/v1/runs", json=body, headers=headers)
+            assert r2.status_code == 202
 
     @pytest.mark.anyio
     async def test_spoofed_headers_cannot_bypass_tenant_limit(
