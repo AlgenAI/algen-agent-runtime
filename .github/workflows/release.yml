@@ -21,7 +21,7 @@ jobs:
         with:
           # On workflow_dispatch use the provided tag; on release event use the release ref.
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
