@@ -168,14 +168,6 @@ class MCPClientManager:
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
             elif config.transport == MCPTransportType.STREAMABLE_HTTP:
-                try:
-                    from mcp import ClientSession
-                    from mcp.client.streamable_http import streamablehttp_client
-                except ImportError as exc:
-                    raise PolicyDeniedError(
-                        "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
-                    ) from exc
-
                 assert isinstance(config, MCPStreamableHttpServerConfig)
                 headers = dict(config.headers)
                 if config.auth_token_ref:
@@ -183,6 +175,14 @@ class MCPClientManager:
                     headers["Authorization"] = f"Bearer {token}"
                 for h_name, h_ref in config.secret_headers.items():
                     headers[h_name] = _resolve_secret(h_ref, self._environment)
+
+                try:
+                    from mcp import ClientSession
+                    from mcp.client.streamable_http import streamablehttp_client
+                except ImportError as exc:
+                    raise PolicyDeniedError(
+                        "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
+                    ) from exc
 
                 http_factory = self._http_client_factory or _make_http_client_factory(
                     self._security, self._dns_resolver
