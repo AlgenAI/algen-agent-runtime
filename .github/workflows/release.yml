@@ -17,7 +17,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # On workflow_dispatch use the provided tag; on release event use the release ref.
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
