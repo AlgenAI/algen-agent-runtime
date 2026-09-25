@@ -65,7 +65,10 @@ Add the narrowest test that proves the behavior at the appropriate level:
 ### Running Integration & Container Tests
 Integration tests for PostgreSQL and Redis run against local doubles or live containers:
 ```bash
-# Run tests targeting storage integration markers
+# Install development dependencies along with postgres and redis drivers
+python -m pip install -e '.[dev,postgres,redis]'
+
+# Run tests targeting storage integration markers against in-memory doubles
 pytest -q -p no:cacheprovider -m "integration or postgres or redis"
 
 # Run tests against live local container instances
@@ -74,13 +77,30 @@ REDIS_URL="redis://localhost:6379/0" \
 pytest -q -p no:cacheprovider -m "integration or postgres or redis"
 ```
 
-Tests must be tenant-aware, deterministic by default, and safe to run without credentials. Add regression coverage for bug fixes and failure-path coverage for security-sensitive changes. Tests requiring paid or external credentials use the `live` marker.
+When implementing or testing persistence stores:
+- **Relational Integrity**: Respect primary key constraints (`id text PRIMARY KEY` for runs is globally unique across tenants) and foreign keys (`algen_agent_runtime_tool_executions` references `algen_agent_runtime_runs(id)`). Mocks must not violate schema constraints.
+- **Type Decoding**: Note that database drivers such as `asyncpg` return raw JSON strings for `jsonb` columns; always deserialize them (e.g. `json.loads`) before dictionary casting.
+- **Exception Normalization**: Normalize database-specific exceptions (such as `asyncpg.exceptions.UniqueViolationError`) into runtime errors (such as `ConflictError`).
+
+### Optional Dependencies & Test Isolation
+Algen Agent Runtime maintains strict isolation of optional extras (`mcp`, `postgres`, `redis`, `frameworks`, etc.):
+- **Secret Resolution Order**: In adapters and clients (e.g. MCP transports), always validate and resolve secret references (`env://...`) **before** importing optional packages.
+- **Graceful Skipping in Base Tests**: Core test runs install only `.[dev]`. Tests requiring optional packages must guard execution with `pytest.importorskip("<package>")` or conditional skips, never failing test collection.
+- **Missing Dependency Testing**: Test missing-extra error messages deterministically using `monkeypatch.setitem(sys.modules, "<package>", None)` rather than assuming the package is missing from the environment.
 
 ## Documentation and compatibility
 
 Update documentation and examples when configuration, commands, behavior, or public imports change. Update [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
 
 During the `0.x` series, public contracts are experimental, but breaking changes still require an upgrade note, tests, and a documented rationale. See the [API stability policy](docs/api-stability.md).
+
+## Secret Scanning & Security Checks
+
+Automated CI runs secret detection on all commits using open-source Gitleaks:
+```bash
+gitleaks detect --verbose --redact
+```
+Never commit API tokens, keys, passwords, or credentials. Use `env://` secret references in configurations and tests.
 
 ## Pull requests
 
@@ -102,7 +122,12 @@ The project uses the [Developer Certificate of Origin 1.1](https://developercert
 git commit -s
 ```
 
-CI rejects unsigned pull-request commits.
+CI rejects unsigned pull-request commits. If you authored commits without `-s`, rebase and sign them before submitting or updating a pull request:
+
+```bash
+git rebase --signoff <base-branch-or-sha>
+git push --force-with-lease origin <branch-name>
+```
 
 ## Conduct and support
 

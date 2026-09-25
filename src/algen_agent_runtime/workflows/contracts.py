@@ -294,6 +294,12 @@ class WorkflowManifest(BaseModel):
             upstream_output_keys = {n.output_key for n in self.nodes if n.id in upstream_ids}
 
             placeholders = re.findall(r"\{\{([^{}]+)\}\}", node.input_template)
+            without_placeholders = re.sub(r"\{\{[^{}]+\}\}", "", node.input_template)
+            if "{{" in without_placeholders or "}}" in without_placeholders:
+                raise ValueError(
+                    f"node {node.id!r} has malformed template placeholder delimiters "
+                    f"in template {node.input_template!r}"
+                )
             for placeholder in placeholders:
                 raw_token = placeholder.strip()
                 if raw_token == "item":

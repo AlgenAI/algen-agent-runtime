@@ -338,7 +338,7 @@ api:
    - Separately bounds in-flight request concurrency for run creation (`POST /v1/runs`), tracking in-flight HTTP requests and releasing capacity upon request completion (HTTP 202 response), failure, or client disconnection. This limits concurrent run-creation requests, not the lifetime of background executing runs.
 
 2. **Route Classification:**
-   - `run_create`: Run creation endpoint (`POST /v1/runs`). Subject to rate limits and `max_concurrent_run_requests_per_tenant` (aliased as deprecated `max_concurrent_runs_per_tenant` for `0.1.x`).
+   - `run_create`: Run creation endpoint (`POST /v1/runs`). Subject to rate limits and `max_concurrent_run_requests_per_tenant`.
    - `write`: Mutation endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) such as approvals, clarifications, conversation updates, and artifact creation.
    - `read`: Query and inspection endpoints (`GET`).
    - **Exemptions:** Health and readiness endpoints (`/health/live`, `/health/ready`, `/healthz`, `/ready`) and CORS preflight (`OPTIONS`) are strictly exempt and never rate-limited.

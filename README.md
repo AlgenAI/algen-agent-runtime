@@ -14,7 +14,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.1.0a3` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.1.0a4` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 ## Why Algen Agent Runtime?
 
@@ -62,7 +62,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Pre-alpha (`0.1.0a3`) |
+| Package maturity | Pre-alpha (`0.1.0a4`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -97,7 +97,7 @@ python -m pip install --pre 'algen-agent-runtime[langgraph]'
 Direct install from a pinned GitHub release tag:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a3
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a4
 ```
 
 For development from a checkout:
@@ -142,9 +142,7 @@ from algen_agent_runtime.types.contracts import RunRequest
 async def main() -> None:
     settings = AppSettings.model_validate(
         {
-            "providers": {
-                "mock": {"type": "mock", "default_model": "deterministic"}
-            },
+            "providers": {"mock": {"type": "mock", "default_model": "deterministic"}},
             "agents": [
                 {
                     "name": "hello",
@@ -272,6 +270,30 @@ curl --fail-with-body -X POST http://127.0.0.1:8000/v1/runs \
 ```
 
 Production deployments should use verified JWT authentication, TLS termination, durable stores, explicit CORS rules, secret references, and infrastructure-level resource controls. See the [operations guide](docs/operations.md).
+
+### Agent Manifest UI (Swagger-Style Visualizer)
+
+Similar to Swagger UI for OpenAPI specifications, Algen Agent Runtime provides an in-built interactive UI for inspecting, visualizing, and testing `agent.yaml` specifications and multi-agent workflows.
+
+**Access via running server:**
+Start the server with the `--ui` flag:
+```bash
+ALGEN_AGENT_RUNTIME_CONFIG=agent.yaml algen-agent-runtime serve --ui
+```
+Then navigate to `http://127.0.0.1:8000/agent-ui` (or `/ui`) in your browser to explore the interactive DAG workflow graph, agent configurations, model provider matrices, tools/MCP servers, and test runs via the built-in playground. You can also enable it permanently in `agent.yaml`:
+```yaml
+api:
+  agent_ui_enabled: true
+```
+
+**Generate standalone static HTML from CLI:**
+Generate a completely self-contained, offline-compatible static HTML documentation file:
+```bash
+algen-agent-runtime ui --config agent.yaml --output agent-ui.html
+
+# Or open directly in your browser:
+algen-agent-runtime ui --config agent.yaml --open
+```
 
 ## Architecture
 

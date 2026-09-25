@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.frameworks import (
     AutoGenAdapter,
     CrewAIAdapter,
@@ -12,6 +13,7 @@ from algen_agent_runtime.frameworks import (
     LangGraphAdapter,
     OpenAIAgentsAdapter,
 )
+from algen_agent_runtime.orchestration.container import build_container
 
 
 def request() -> FrameworkRunRequest:
@@ -126,3 +128,24 @@ async def test_crewai_adapter_and_registry() -> None:
     assert result.output == "crew"
     assert result.usage.total_tokens == 6
     assert registry.capabilities()["crewai"].multi_agent
+
+
+async def test_container_owns_registered_framework_adapter_lifecycle() -> None:
+    adapter = LangGraphAdapter(FakeGraph())
+    lifecycle: list[str] = []
+
+    async def start() -> None:
+        lifecycle.append("start")
+
+    async def close() -> None:
+        lifecycle.append("close")
+
+    adapter.start = start  # type: ignore[attr-defined]
+    adapter.aclose = close  # type: ignore[attr-defined]
+    container = build_container(AppSettings(), framework_adapters=(adapter,))
+
+    await container.astart()
+    assert container.frameworks.get("langgraph") is adapter
+    assert lifecycle == ["start"]
+    await container.aclose()
+    assert lifecycle == ["start", "close"]
