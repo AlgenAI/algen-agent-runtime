@@ -45,6 +45,17 @@ def mock_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     def container_factory(**kwargs: Any) -> HookContainer:
         return HookContainer()
 
+    close_state = {"closed": False}
+
+    class ClosableHookContainer:
+        hooks = WorkflowHookRegistry()
+
+        async def aclose(self) -> None:
+            close_state["closed"] = True
+
+    def closable_factory(**kwargs: Any) -> ClosableHookContainer:
+        return ClosableHookContainer()
+
     def invalid_return_factory(**kwargs: Any) -> str:
         return "not-a-registry"
 
@@ -56,6 +67,8 @@ def mock_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     submod.valid_factory = valid_factory  # type: ignore[attr-defined]
     submod.async_valid_factory = async_valid_factory  # type: ignore[attr-defined]
     submod.container_factory = container_factory  # type: ignore[attr-defined]
+    submod.closable_factory = closable_factory  # type: ignore[attr-defined]
+    submod.close_state = close_state  # type: ignore[attr-defined]
     submod.invalid_return_factory = invalid_return_factory  # type: ignore[attr-defined]
     submod.bad_version_factory = bad_version_factory  # type: ignore[attr-defined]
     submod.not_a_callable = "just_a_string"  # type: ignore[attr-defined]
@@ -170,6 +183,15 @@ async def test_successful_async_load(mock_modules: None) -> None:
 
     assert isinstance(loaded.hooks, WorkflowHookRegistry)
     assert loaded.api_version == "v1"
+
+
+@pytest.mark.asyncio
+async def test_loaded_hook_provider_preserves_factory_teardown(mock_modules: None) -> None:
+    loader = WorkflowHookLoader(allowed_modules=("trusted_pkg",))
+    loaded = await loader.aload("trusted_pkg.hooks:closable_factory")
+
+    await loaded.aclose()
+    assert sys.modules["trusted_pkg.hooks"].close_state["closed"] is True
 
 
 def test_load_hook_provider_convenience_function(mock_modules: None) -> None:

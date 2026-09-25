@@ -1367,6 +1367,22 @@ def test_unresolved_template_placeholder_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match=r"node 'worker'.*\{\{missing\}\}"):
         MultiAgentWorkflowExecutor._render_template("Prompt: {{missing}}", {}, None, node="worker")
 
+    # 4. Unmatched placeholder delimiters cannot leak through manifest validation.
+    with pytest.raises(ValueError, match=r"node 'worker'.*malformed template placeholder"):
+        WorkflowManifest(
+            name="test-manifest",
+            version="1.0.0",
+            nodes=(
+                WorkflowNode(
+                    id="worker",
+                    kind=WorkflowNodeKind.AGENT,
+                    agent="analyst",
+                    input_template="Analyze {{input",
+                    output_key="analysis",
+                ),
+            ),
+        )
+
 
 def test_supported_placeholder_forms_render() -> None:
     # {{item}}, {{key}}, {{key.output}}

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -72,23 +71,10 @@ class InMemoryApiRateLimiter:
         route_policies: dict[str, RouteLimitPolicy] | None = None,
         clock: Callable[[], float] = time.monotonic,
         fail_closed: bool = True,
-        *,
-        max_concurrent_runs_per_tenant: int | None = None,
     ) -> None:
-        if max_concurrent_runs_per_tenant is not None:
-            warnings.warn(
-                "'max_concurrent_runs_per_tenant' is deprecated; "
-                "use 'max_concurrent_run_requests_per_tenant' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            max_concurrent_run_requests_per_tenant = max_concurrent_runs_per_tenant
         self.default_rate_per_minute = max(1, default_rate_per_minute)
         self.default_burst = max(1, default_burst)
         self.max_concurrent_run_requests_per_tenant = max(1, max_concurrent_run_requests_per_tenant)
-        self.max_concurrent_runs_per_tenant = (
-            self.max_concurrent_run_requests_per_tenant  # deprecated alias
-        )
         self.clock = clock
         self.fail_closed = fail_closed
         self._lock = asyncio.Lock()

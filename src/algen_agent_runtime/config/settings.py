@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -240,32 +239,6 @@ class ApiRateLimitSettings(StrictSettings):
     fail_closed: bool = True
     route_overrides: dict[str, RouteLimitSettings] = Field(default_factory=dict)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_deprecated_concurrency_key(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        if "max_concurrent_runs_per_tenant" in data:
-            old_val = data["max_concurrent_runs_per_tenant"]
-            new_val = data.get("max_concurrent_run_requests_per_tenant")
-            if "max_concurrent_run_requests_per_tenant" in data and old_val != new_val:
-                raise ValueError(
-                    f"Conflicting configuration: both 'max_concurrent_runs_per_tenant' ({old_val}) "
-                    f"and 'max_concurrent_run_requests_per_tenant' ({new_val}) are specified with different values. "
-                    "Please use only 'max_concurrent_run_requests_per_tenant'."
-                )
-            warnings.warn(
-                "'api.rate_limiting.max_concurrent_runs_per_tenant' is deprecated; "
-                "use 'api.rate_limiting.max_concurrent_run_requests_per_tenant' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            data = dict(data)
-            data.pop("max_concurrent_runs_per_tenant")
-            if "max_concurrent_run_requests_per_tenant" not in data:
-                data["max_concurrent_run_requests_per_tenant"] = old_val
-        return data
-
 
 class ApiSettings(StrictSettings):
     host: str = "127.0.0.1"
@@ -290,6 +263,8 @@ class ApiSettings(StrictSettings):
         "X-Artifact-Metadata",
     )
     rate_limiting: ApiRateLimitSettings = Field(default_factory=ApiRateLimitSettings)
+    agent_ui_enabled: bool = False
+    agent_ui_path: str = Field(default="/agent-ui", pattern=r"^/[a-zA-Z0-9_\-\./]*$")
 
     @model_validator(mode="after")
     def validate_authentication(self) -> ApiSettings:

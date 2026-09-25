@@ -34,6 +34,13 @@ class FakeClock:
 class TestInMemoryApiRateLimiter:
     """Unit tests for single-node token bucket and concurrency quota limiter."""
 
+    def test_removed_concurrency_argument_and_property_are_absent(self) -> None:
+        with pytest.raises(TypeError, match="max_concurrent_runs_per_tenant"):
+            InMemoryApiRateLimiter(**{"max_concurrent_runs_per_tenant": 2})
+
+        limiter = InMemoryApiRateLimiter(max_concurrent_run_requests_per_tenant=2)
+        assert not hasattr(limiter, "max_concurrent_runs_per_tenant")
+
     @pytest.mark.anyio
     async def test_under_and_at_limit_consumption(self) -> None:
         clock = FakeClock()

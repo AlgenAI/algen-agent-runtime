@@ -304,40 +304,11 @@ def test_api_rate_limit_settings_new_key_only() -> None:
     assert settings.max_concurrent_run_requests_per_tenant == 15
 
 
-def test_api_rate_limit_settings_old_key_deprecated_alias() -> None:
+def test_api_rate_limit_settings_rejects_removed_old_key() -> None:
     from algen_agent_runtime.config.settings import ApiRateLimitSettings
 
-    with pytest.deprecated_call(match="max_concurrent_runs_per_tenant"):
-        settings = ApiRateLimitSettings.model_validate({"max_concurrent_runs_per_tenant": 20})
-    assert settings.max_concurrent_run_requests_per_tenant == 20
-
-
-def test_api_rate_limit_settings_both_keys_equal_accepted_with_warning() -> None:
-    from algen_agent_runtime.config.settings import ApiRateLimitSettings
-
-    with pytest.deprecated_call(match="max_concurrent_runs_per_tenant"):
-        settings = ApiRateLimitSettings.model_validate(
-            {
-                "max_concurrent_runs_per_tenant": 25,
-                "max_concurrent_run_requests_per_tenant": 25,
-            }
-        )
-    assert settings.max_concurrent_run_requests_per_tenant == 25
-
-
-def test_api_rate_limit_settings_both_keys_conflicting_raises() -> None:
-    from algen_agent_runtime.config.settings import ApiRateLimitSettings
-
-    with pytest.raises(
-        ValueError,
-        match=r"max_concurrent_runs_per_tenant.*max_concurrent_run_requests_per_tenant",
-    ):
-        ApiRateLimitSettings.model_validate(
-            {
-                "max_concurrent_runs_per_tenant": 10,
-                "max_concurrent_run_requests_per_tenant": 20,
-            }
-        )
+    with pytest.raises(ValidationError, match="max_concurrent_runs_per_tenant"):
+        ApiRateLimitSettings.model_validate({"max_concurrent_runs_per_tenant": 20})
 
 
 def test_mcp_servers_configuration_parsing_and_duplicate_rejection() -> None:

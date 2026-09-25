@@ -13,7 +13,7 @@ from typing import Any, cast
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime import __version__
@@ -189,8 +189,20 @@ def create_app(
         @app.middleware("http")
         async def admission_rate_limit(request: Request, call_next: Any) -> Response:
             path = request.url.path.rstrip("/")
+            ui_path_clean = resolved.api.agent_ui_path.rstrip("/")
             if (
-                path in {"/health/live", "/health/ready", "/healthz", "/ready", "/health"}
+                path
+                in {
+                    "/health/live",
+                    "/health/ready",
+                    "/healthz",
+                    "/ready",
+                    "/health",
+                    "/ui",
+                    ui_path_clean,
+                }
+                or path.startswith(f"{ui_path_clean}/")
+                or path.startswith("/ui/")
                 or request.method == "OPTIONS"
             ):
                 return cast(Response, await call_next(request))
@@ -709,6 +721,58 @@ def create_app(
             "providers": providers,
             "stores": stores,
         }
+
+    ui_path = resolved.api.agent_ui_path.rstrip("/")
+    if not ui_path.startswith("/"):
+        ui_path = f"/{ui_path}"
+
+    if resolved.api.agent_ui_enabled:
+        from algen_agent_runtime.ui.generator import generate_agent_ui_html
+        from algen_agent_runtime.ui.spec import extract_agent_manifest_spec
+
+        @app.get(ui_path, response_class=HTMLResponse, include_in_schema=False)
+        @app.get(f"{ui_path}/", response_class=HTMLResponse, include_in_schema=False)
+        async def agent_ui_page(request: Request) -> HTMLResponse:
+            base_url = str(request.base_url).rstrip("/")
+            content = generate_agent_ui_html(
+                settings=resolved,
+                container=dependencies,
+                live_server=True,
+                api_base_url=base_url,
+            )
+            return HTMLResponse(content=content)
+
+        @app.get(f"{ui_path}/spec", response_class=JSONResponse, include_in_schema=False)
+        async def agent_ui_spec(request: Request) -> JSONResponse:
+            base_url = str(request.base_url).rstrip("/")
+            spec_data = extract_agent_manifest_spec(
+                settings=resolved,
+                container=dependencies,
+                live_server=True,
+                api_base_url=base_url,
+            )
+            return JSONResponse(content=spec_data)
+
+        if ui_path != "/ui":
+
+            @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+            @app.get("/ui/", response_class=HTMLResponse, include_in_schema=False)
+            async def agent_ui_alias(request: Request) -> HTMLResponse:
+                return await agent_ui_page(request)
+    else:
+
+        @app.get(ui_path, response_class=JSONResponse, include_in_schema=False)
+        @app.get(f"{ui_path}/", response_class=JSONResponse, include_in_schema=False)
+        async def agent_ui_disabled() -> JSONResponse:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": (
+                        "Agent UI is disabled. Set api.agent_ui_enabled=true in agent.yaml "
+                        "or start the server with --ui flag."
+                    )
+                },
+            )
 
     return app
 

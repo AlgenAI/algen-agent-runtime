@@ -742,6 +742,23 @@ def build_container(
             route_policies=route_policies,
             fail_closed=settings.api.rate_limiting.fail_closed,
         )
+    lifecycle_resources = list(
+        dict.fromkeys(
+            resource
+            for resource in (
+                database,
+                redis_client,
+                cache_redis_client,
+                artifacts if storage.artifact_store == "s3" else None,
+                http_client,
+                mcp_manager,
+            )
+            if resource is not None
+        )
+    )
+    for adapter in framework_adapters:
+        if all(adapter is not resource for resource in lifecycle_resources):
+            lifecycle_resources.append(adapter)
     return Container(
         runtime=runtime,
         agents=agents,
@@ -761,20 +778,7 @@ def build_container(
         evaluations=evaluations,
         work_queue=work_queue,
         rate_limiter=rate_limiter,
-        resources=tuple(
-            dict.fromkeys(
-                resource
-                for resource in (
-                    database,
-                    redis_client,
-                    cache_redis_client,
-                    artifacts if storage.artifact_store == "s3" else None,
-                    http_client,
-                    mcp_manager,
-                )
-                if resource is not None
-            )
-        ),
+        resources=tuple(lifecycle_resources),
         mcp=mcp_manager,
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,

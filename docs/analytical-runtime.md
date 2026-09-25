@@ -21,7 +21,10 @@ bounds even when an application submits a looser graph. Use `InMemoryAnalyticalG
 
 ```python
 from algen_agent_runtime.analytics import (
-    AnalyticalGraph, AnalyticalNode, GraphExecutionContext, ResultReference,
+    AnalyticalGraph,
+    AnalyticalNode,
+    GraphExecutionContext,
+    ResultReference,
 )
 
 graph = AnalyticalGraph(

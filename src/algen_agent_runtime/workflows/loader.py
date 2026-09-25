@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import inspect
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,11 +23,20 @@ class LoadedHookProvider:
     package_version: str | None = None
     api_version: str | None = None
     audit_metadata: dict[str, str] = field(default_factory=dict)
+    close: Callable[[], Awaitable[None] | None] | None = None
 
     @property
     def reference(self) -> str:
         """Alias for the provider reference string."""
         return self.provider
+
+    async def aclose(self) -> None:
+        """Close application-owned hook resources when the factory supplied one."""
+        if self.close is None:
+            return
+        result = self.close()
+        if inspect.isawaitable(result):
+            await result
 
 
 class WorkflowHookLoader:
@@ -124,14 +133,21 @@ class WorkflowHookLoader:
 
         return factory, module, str(api_version) if api_version is not None else None
 
-    def _extract_hooks(self, result: Any, reference: str) -> WorkflowHookRegistry:
+    def _extract_hooks(
+        self, result: Any, reference: str
+    ) -> tuple[WorkflowHookRegistry, Callable[[], Awaitable[None] | None] | None]:
         hooks = getattr(result, "hooks", result)
         if not isinstance(hooks, WorkflowHookRegistry):
             raise ConfigurationError(
                 f"hook provider {reference!r} returned {type(result).__name__}, "
                 "expected WorkflowHookRegistry or object with .hooks attribute"
             )
-        return hooks
+        close = getattr(result, "aclose", None)
+        if close is not None and not callable(close):
+            raise ConfigurationError(
+                f"hook provider {reference!r} has a non-callable aclose attribute"
+            )
+        return hooks, close
 
     def _discover_package_info(self, module: Any) -> tuple[str | None, str | None]:
         pkg_name = getattr(module, "__package__", None) or module.__name__.split(".")[0]
@@ -166,7 +182,7 @@ class WorkflowHookLoader:
                 f"hook provider {reference!r} returned an awaitable; use aload() instead"
             )
 
-        hooks = self._extract_hooks(result, reference)
+        hooks, close = self._extract_hooks(result, reference)
         pkg_name, pkg_version = self._discover_package_info(module)
         audit_metadata = {
             "hook_provider": reference,
@@ -186,6 +202,7 @@ class WorkflowHookLoader:
             package_version=pkg_version,
             api_version=api_version,
             audit_metadata=audit_metadata,
+            close=close,
         )
 
     async def aload(self, reference: str, **factory_kwargs: Any) -> LoadedHookProvider:
@@ -208,7 +225,7 @@ class WorkflowHookLoader:
         if inspect.isawaitable(result):
             result = await result
 
-        hooks = self._extract_hooks(result, reference)
+        hooks, close = self._extract_hooks(result, reference)
         pkg_name, pkg_version = self._discover_package_info(module)
         audit_metadata = {
             "hook_provider": reference,
@@ -228,6 +245,7 @@ class WorkflowHookLoader:
             package_version=pkg_version,
             api_version=api_version,
             audit_metadata=audit_metadata,
+            close=close,
         )
 
 

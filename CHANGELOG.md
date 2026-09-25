@@ -4,7 +4,30 @@ All notable changes to Algen Agent Runtime will be documented in this file.
 The project follows [Semantic Versioning](https://semver.org/) while public
 contracts are explicitly marked experimental during the `0.x` series.
 
-## [0.1.0a3] - Unreleased
+## [0.1.0a4] - 2026-09-24
+
+### Added
+
+- **Agent Manifest UI (Swagger-Style Visualizer)**:
+  - Interactive browser UI and DAG canvas for inspecting, visualizing, and testing `agent.yaml` specifications and multi-agent workflows.
+  - Generates self-contained static HTML via `algen-agent-runtime ui` and `export-ui` CLI commands with zero external dependencies and zero CDN reliance.
+  - Built-in runtime server endpoint at `/agent-ui` (or `/ui`) and structured JSON manifest endpoint at `/agent-ui/spec` via `api.agent_ui_enabled: true` or `algen-agent-runtime serve --ui`.
+  - Comprehensive visualization tabs for agent catalog, DAG workflow topology, provider model matrix, tools/MCP servers, retrieval stores, and live test run playground.
+- **Container Lifecycle Management for Framework Adapters**:
+  - Registered `framework_adapters` are now managed as container lifecycle resources, automatically invoking `start()` and `aclose()` during `container.astart()` and `container.aclose()`.
+- **Workflow Hook Provider Teardown Protocol**:
+  - Added async `aclose()` lifecycle hook to `LoadedHookProvider` and `WorkflowHookLoader`, cleanly closing factory-managed resources upon shutdown.
+- **Workflow Manifest Delimiter Validation**:
+  - Validated template placeholder syntax during manifest loading, rejecting unmatched `{{` or `}}` placeholder delimiters.
+- **Contribution Guidelines & DCO Signoff Policy**:
+  - Added root `AGENTS.md` and updated `CONTRIBUTING.md` enforcing DCO signoff (`git commit -s`), optional dependency test isolation (`pytest.importorskip` / `sys.modules` masking), PostgreSQL/Redis persistence constraints, and automated Gitleaks secret scanning.
+
+### Removed
+
+- **Clean Removal of Obsolete Rate Limiting Alias (A3-04)**:
+  - Removed deprecated `max_concurrent_runs_per_tenant` configuration alias, limiter argument, and property in favor of `max_concurrent_run_requests_per_tenant`. Configurations specifying the obsolete alias are strictly rejected with `ValidationError`.
+
+## [0.1.0a3] - 2026-09-24
 
 ### Fixed
 
@@ -36,15 +59,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Changed
 
-- **Run-Creation Request Concurrency Naming (A3-04)**: Clarified API rate limiting terminology by renaming `max_concurrent_runs_per_tenant` to `max_concurrent_run_requests_per_tenant`. The quota bounds in-flight HTTP request concurrency during `POST /v1/runs` rather than active executing run lifetimes.
+- **Run-Creation Request Concurrency Naming (A3-04)**: Clarified API rate limiting terminology with `max_concurrent_run_requests_per_tenant`. The quota bounds in-flight HTTP request concurrency during `POST /v1/runs` rather than active executing run lifetimes. Removed the misleading pre-release configuration alias, limiter constructor argument, and property instead of carrying compatibility shims into the public surface.
 - **Corrected Security, Interoperability, and Maturity Claims (A3-07)**:
   - Updated `docs/mcp.md`, `docs/threat-model.md`, and `docs/production-readiness.md` to explicitly document MCP stdio execution as unsandboxed operator code running on the host system without process isolation, while clarifying that remote transports enforce DNS-pinned safe egress and header secret references.
   - Documented conservative server annotation trust model (`trust_tool_annotations: false` by default).
   - Clarified framework adapter boundaries in `docs/framework-adapters.md`, `docs/why-algen-agent-runtime.md`, and `README.md`, emphasizing that `AgentRuntime` does not automatically dispatch configured agents through foreign adapters and that foreign adapters are made available to application code via explicit trusted registration.
-
-### Deprecated
-
-- **Deprecated `api.rate_limiting.max_concurrent_runs_per_tenant` (A3-04)**: Deprecated `max_concurrent_runs_per_tenant` in favor of `max_concurrent_run_requests_per_tenant`. Existing configurations continue to load with a `DeprecationWarning` in `0.1.x`, and will be removed in `0.2.0`.
 
 ## [0.1.0a2] - 2026-09-22
 
@@ -220,7 +239,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a4...HEAD
+[0.1.0a4]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...v0.1.0a4
 [0.1.0a3]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/AlgenAI/algen-agent-runtime/releases/tag/v0.1.0a1
