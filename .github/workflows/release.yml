@@ -103,7 +103,7 @@ jobs:
           /tmp/algen-release-smoke/bin/pip install pytest pytest-asyncio
           /tmp/algen-release-smoke/bin/pytest test_agent.py
           /tmp/algen-release-smoke/bin/python app.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: python-distributions
           path: dist/
