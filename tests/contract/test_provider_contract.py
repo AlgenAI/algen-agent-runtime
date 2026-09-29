@@ -125,6 +125,38 @@ async def test_openai_uses_modern_completion_token_parameter() -> None:
     assert response.message.text_content == "ok"
 
 
+async def test_openai_uses_modern_completion_token_parameter_for_gpt_6() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        assert body["max_completion_tokens"] == 192
+        assert "max_tokens" not in body
+        assert body["reasoning_effort"] == "none"
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-gpt-6",
+                "model": "gpt-6-luna",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            },
+        )
+
+    provider = OpenAIProvider(
+        "env://OPENAI_API_KEY",
+        "gpt-6-luna",
+        secret_provider=StaticSecrets(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    response = await provider.generate(
+        ModelRequest(
+            messages=(Message.text(Role.USER, "hi"),),
+            max_output_tokens=192,
+            extensions={"reasoning_effort": "none"},
+        )
+    )
+    assert response.message.text_content == "ok"
+
+
 async def test_openai_normalizes_nested_pydantic_schema_for_strict_outputs() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)

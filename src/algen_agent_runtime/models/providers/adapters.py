@@ -52,7 +52,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
                 request.response_schema
             )
         model = str(payload.get("model", "")).lower()
-        uses_completion_limit = model.startswith(("gpt-5", "o1", "o3", "o4"))
+        uses_completion_limit = model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
         if uses_completion_limit and "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
         return payload
