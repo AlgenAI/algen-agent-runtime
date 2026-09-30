@@ -120,6 +120,16 @@ class PIIRedactionPolicy:
     ) -> PolicyDecision:
         transformed, labels = self._redact(payload)
         if labels:
+            if point == PolicyPoint.BEFORE_TOOL.value:
+                return PolicyDecision(
+                    action=PolicyAction.ALLOW,
+                    reason_code="pii.authorized_tool_input",
+                    reason=(
+                        "PII was detected in an authorized tool input and preserved for deterministic "
+                        "tool validation and execution."
+                    ),
+                    audit_metadata={"categories": sorted(labels), "count": len(labels)},
+                )
             return PolicyDecision(
                 action=PolicyAction.REDACT,
                 reason_code="pii.redacted",

@@ -1,5 +1,5 @@
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyPoint
-from algen_agent_runtime.policies.engine import CompositePolicyEngine
+from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedactionPolicy
 from algen_agent_runtime.types.contracts import Message, Role
 
 
@@ -32,6 +32,20 @@ async def test_pii_redaction_preserves_role_enum_in_model_messages() -> None:
     assert decision.action in {PolicyAction.REDACT, PolicyAction.TRANSFORM}
     assert isinstance(decision.value[0].role, Role)
     assert decision.value[0].role is Role.SYSTEM
+
+
+async def test_pii_is_preserved_for_authorized_tool_execution() -> None:
+    payload = {"recipient": "nutan@algen.ai", "from_address": "info@algen.ai"}
+    decision = await PIIRedactionPolicy().evaluate(
+        PolicyPoint.BEFORE_TOOL.value,
+        payload,
+        {},
+    )
+
+    assert decision.action == PolicyAction.ALLOW
+    assert decision.value is None
+    assert payload["recipient"] == "nutan@algen.ai"
+    assert decision.audit_metadata["categories"] == ["email"]
 
 
 async def test_prompt_injection_is_blocked_when_enabled_for_agent() -> None:
