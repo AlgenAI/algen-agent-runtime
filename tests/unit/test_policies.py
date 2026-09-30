@@ -18,7 +18,20 @@ async def test_secret_is_redacted_inside_retrieved_context_messages() -> None:
 
     assert decision.action == PolicyAction.TRANSFORM
     assert decision.value[0].role == Role.SYSTEM
+    assert isinstance(decision.value[0].role, Role)
     assert "supersecretvalue" not in decision.value[0].text_content
+
+
+async def test_pii_redaction_preserves_role_enum_in_model_messages() -> None:
+    decision = await CompositePolicyEngine().evaluate(
+        "before_model",
+        [Message.text(Role.SYSTEM, "Prefer info@algen.ai for HR email")],
+        {},
+    )
+
+    assert decision.action in {PolicyAction.REDACT, PolicyAction.TRANSFORM}
+    assert isinstance(decision.value[0].role, Role)
+    assert decision.value[0].role is Role.SYSTEM
 
 
 async def test_prompt_injection_is_blocked_when_enabled_for_agent() -> None:

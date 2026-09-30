@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
+from enum import Enum
 from typing import Any, Protocol
 
 from opentelemetry import trace
@@ -54,6 +55,8 @@ class SecretRedactionPolicy:
         )
 
     def _redact(self, value: Any) -> tuple[Any, bool]:
+        if isinstance(value, Enum):
+            return value, False
         if isinstance(value, str):
             transformed, count = self._pattern.subn(
                 lambda match: match.group(0).replace(match.group(1), "[REDACTED]"),
@@ -129,6 +132,8 @@ class PIIRedactionPolicy:
         )
 
     def _redact(self, value: Any) -> tuple[Any, set[str]]:
+        if isinstance(value, Enum):
+            return value, set()
         if isinstance(value, str):
             transformed = value
             labels: set[str] = set()
