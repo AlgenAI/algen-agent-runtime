@@ -175,6 +175,8 @@ class InteractiveDecisionProvider:
         except EOFError as exc:
             raise RuntimeError(
                 f"End of input reached on stdin while awaiting approval ({prompt!r}). "
+                "Workflow paused for approval in a non-interactive environment without "
+                "an automated decision policy. "
                 "Pass --approve-all, --reject-all, or --answers-file PATH in non-interactive environments."
             ) from exc
 
@@ -189,6 +191,8 @@ class InteractiveDecisionProvider:
         except EOFError as exc:
             raise RuntimeError(
                 f"End of input reached on stdin while awaiting clarification ({prompt!r}). "
+                "Workflow paused for clarification in a non-interactive environment without "
+                "an automated decision policy. "
                 "Pass --answers-file PATH in non-interactive environments."
             ) from exc
 

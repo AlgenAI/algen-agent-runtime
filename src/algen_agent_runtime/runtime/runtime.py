@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -172,10 +172,12 @@ class AgentRuntime:
             if not clarification:
                 raise ValueError("clarification is required")
             state.messages.append(Message.text(Role.USER, clarification))
+            self._restore_deadline_after_pause(state)
             state.pause_payload = None
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
         elif state.status == RunStatus.AWAITING_APPROVAL:
-            approval_id = str((state.pause_payload or {}).get("approval_id", ""))
+            pause_payload = state.pause_payload or {}
+            approval_id = str(pause_payload.get("approval_id", ""))
             raw_decision = str(payload.get("decision", ""))
             try:
                 decision = ApprovalStatus(raw_decision)
@@ -190,6 +192,24 @@ class AgentRuntime:
                 await self._transition(state, RunStatus.FAILED)
                 await self._emit(state, "run.failed", {"reason": "approval_rejected"})
                 return state
+            if pause_payload.get("kind") == "execution_continuation":
+                state.continuation_count += 1
+                self._restore_deadline_after_pause(state)
+                resume_status = RunStatus(
+                    str(pause_payload.get("resume_status", RunStatus.PLANNING.value))
+                )
+                state.pause_payload = None
+                await self._transition(state, resume_status)
+                await self._emit(
+                    state,
+                    "run.continued",
+                    {
+                        "mode": "approved",
+                        "reason": str(pause_payload.get("reason", "execution_budget")),
+                    },
+                )
+                await self._schedule(run_id, tenant_id)
+                return state
             state.approved_tool_call_ids.add(call_id)
             if approval.status == ApprovalStatus.MODIFIED:
                 for index, call in enumerate(state.pending_tool_calls):
@@ -197,6 +217,7 @@ class AgentRuntime:
                         state.pending_tool_calls[index] = call.model_copy(
                             update={"arguments": approval.modified_parameters or {}}
                         )
+            self._restore_deadline_after_pause(state)
             state.pause_payload = None
             await self._transition(state, RunStatus.PLANNING)
         else:
@@ -354,9 +375,11 @@ class AgentRuntime:
             RunStatus.AWAITING_APPROVAL,
             RunStatus.AWAITING_CLARIFICATION,
         }:
-            if state.step_count >= agent.max_steps:
-                raise BudgetExceededError(f"maximum step limit {agent.max_steps} reached")
-            self._enforce_budget(state, agent)
+            limit_reason = self._limit_reason(state, agent)
+            if limit_reason:
+                if await self._continue_or_pause(state, agent, limit_reason):
+                    continue
+                return
             if state.status == RunStatus.BUILDING_CONTEXT:
                 checked_input = await self._policy_value(
                     "before_retrieval", state.request.input, state, {"agent": agent}
@@ -449,7 +472,10 @@ class AgentRuntime:
     ) -> None:
         state.step_count += 1
         if action.type == ActionType.CLARIFY:
-            state.pause_payload = {"question": action.description}
+            state.pause_payload = {
+                "question": action.description,
+                "paused_at": utc_now().isoformat(),
+            }
             await self._transition(state, RunStatus.AWAITING_CLARIFICATION)
             await self._emit(state, "clarification.required", state.pause_payload, action.id)
         elif action.type == ActionType.TOOL:
@@ -495,7 +521,7 @@ class AgentRuntime:
             temperature=state.request.overrides.temperature,
             max_output_tokens=min(
                 state.request.overrides.max_output_tokens or agent.budget.max_output_tokens,
-                max(1, agent.budget.max_tokens - state.summary.usage.total_tokens),
+                max(1, self._token_limit(state, agent) - state.summary.usage.total_tokens),
             ),
             timeout_seconds=max(0.001, (state.deadline - utc_now()).total_seconds())
             if state.deadline
@@ -712,7 +738,7 @@ class AgentRuntime:
                 ):
                     current_limit = request.max_output_tokens or agent.budget.max_output_tokens
                     remaining_tokens = max(
-                        1, agent.budget.max_tokens - state.summary.usage.total_tokens
+                        1, self._token_limit(state, agent) - state.summary.usage.total_tokens
                     )
                     next_limit = min(max(current_limit + 256, current_limit * 2), remaining_tokens)
                     if next_limit <= current_limit:
@@ -789,13 +815,122 @@ class AgentRuntime:
         )
 
     @staticmethod
-    def _enforce_budget(state: RunState, agent: AgentDefinition) -> None:
+    def _token_limit(state: RunState, agent: AgentDefinition) -> int:
+        return (
+            agent.budget.max_tokens
+            + state.continuation_count * agent.continuation_policy.token_increment
+        )
+
+    @staticmethod
+    def _cost_limit(state: RunState, agent: AgentDefinition) -> float:
+        return (
+            agent.budget.max_cost_usd
+            + state.continuation_count * agent.continuation_policy.cost_increment_usd
+        )
+
+    @staticmethod
+    def _step_limit(state: RunState, agent: AgentDefinition) -> int:
+        return (
+            agent.max_steps
+            + state.continuation_count * agent.continuation_policy.step_increment
+        )
+
+    @classmethod
+    def _limit_reason(cls, state: RunState, agent: AgentDefinition) -> str | None:
+        if state.step_count >= cls._step_limit(state, agent):
+            return "execution_steps"
+        usage = state.summary.usage
+        if usage.total_tokens >= cls._token_limit(state, agent):
+            return "model_tokens"
+        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+            return "estimated_cost"
+        return None
+
+    @classmethod
+    def _enforce_budget(cls, state: RunState, agent: AgentDefinition) -> None:
         """Enforce local termination ceilings; platform governance remains external."""
         usage = state.summary.usage
-        if usage.total_tokens >= agent.budget.max_tokens:
-            raise BudgetExceededError("token budget exhausted")
-        if usage.estimated_cost_usd >= agent.budget.max_cost_usd:
-            raise BudgetExceededError("cost budget exhausted")
+        if usage.total_tokens >= cls._token_limit(state, agent):
+            raise BudgetExceededError("model_tokens budget exhausted")
+        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+            raise BudgetExceededError("estimated_cost budget exhausted")
+
+    async def _continue_or_pause(
+        self, state: RunState, agent: AgentDefinition, reason: str
+    ) -> bool:
+        policy = agent.continuation_policy
+        if not policy.enabled:
+            raise BudgetExceededError(f"{reason} budget exhausted")
+        if state.continuation_count < policy.automatic_extensions:
+            expected = state.version
+            state.continuation_count += 1
+            state.updated_at = utc_now()
+            await self.runs.save(state, expected)
+            await self._emit(
+                state,
+                "run.continued",
+                {"mode": "automatic", "reason": reason},
+            )
+            await self._audit(
+                state,
+                "run.continuation",
+                "automatic",
+                state.id,
+                {"reason": reason, "continuation_count": state.continuation_count},
+            )
+            return True
+
+        step_id = f"execution-continuation-{state.continuation_count + 1}"
+        approval = await self.approvals.create(
+            state.id,
+            step_id,
+            state.request.tenant_id,
+            "Continue and finish this task from its verified checkpoint",
+            {
+                "next_action": "Resume the current plan and verify the requested end state",
+            },
+            "additional governed execution",
+            policy.approval_expires_seconds,
+        )
+        state.pause_payload = {
+            "kind": "execution_continuation",
+            "approval_id": approval.id,
+            "proposed_action": approval.proposed_action,
+            "side_effect_summary": (
+                "The completed work is saved. Approval adds one small execution budget "
+                "and resumes from the current checkpoint."
+            ),
+            "redacted_parameters": approval.redacted_parameters,
+            "risk": approval.risk,
+            "expires_at": approval.expires_at.isoformat(),
+            "options": ["approved", "rejected"],
+            "reason": reason,
+            "resume_status": state.status.value,
+            "paused_at": utc_now().isoformat(),
+        }
+        await self._transition(state, RunStatus.AWAITING_APPROVAL)
+        await self._emit(state, "approval.required", state.pause_payload, step_id)
+        await self._audit(
+            state,
+            "run.continuation",
+            "approval_required",
+            state.id,
+            {"reason": reason, "continuation_count": state.continuation_count},
+        )
+        return False
+
+    @staticmethod
+    def _restore_deadline_after_pause(state: RunState) -> None:
+        payload = state.pause_payload or {}
+        paused_at = payload.get("paused_at")
+        if state.deadline is None or not isinstance(paused_at, str):
+            return
+        try:
+            paused_duration = utc_now() - datetime.fromisoformat(paused_at)
+        except ValueError:
+            return
+        if paused_duration.total_seconds() > 0:
+            state.deadline += paused_duration
 
     async def _execute_tool(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
@@ -824,6 +959,7 @@ class AgentRuntime:
                 agent.approval_policy.expires_seconds,
             )
             state.pause_payload = {
+                "kind": "tool_approval",
                 "approval_id": approval.id,
                 "tool_call_id": call_id,
                 "proposed_action": approval.proposed_action,
@@ -832,6 +968,7 @@ class AgentRuntime:
                 "risk": approval.risk,
                 "expires_at": approval.expires_at.isoformat(),
                 "options": ["approved", "rejected", "modified"],
+                "paused_at": utc_now().isoformat(),
             }
             await self._transition(state, RunStatus.AWAITING_APPROVAL)
             await self._emit(state, "approval.required", state.pause_payload, action.id)

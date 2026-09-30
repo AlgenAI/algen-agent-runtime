@@ -34,7 +34,7 @@ PORTABLE_EXAMPLES = (
     "examples/reference_invoice_exceptions/config/agent.yaml",
 )
 ALL_AGENT_CONFIGS = tuple(
-    sorted(str(path.relative_to(ROOT)) for path in (ROOT / "examples").glob("**/agent.yaml"))
+    sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "examples").glob("**/agent.yaml"))
 )
 
 

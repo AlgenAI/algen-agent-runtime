@@ -81,6 +81,39 @@ recovers non-paused incomplete runs. Completed tool calls return their persisted
 interrupted side-effecting call becomes `indeterminate` and requires reconciliation rather than
 automatic replay. Approval and clarification waits remain paused across restarts.
 
+## Resumable execution budgets
+
+`max_steps`, token, cost, and latency budgets remain important loop and spend controls. For
+long-running user goals, enable progressive continuation so a budget boundary becomes a durable
+checkpoint instead of a terminal failure:
+
+```yaml
+agents:
+  - name: operations-agent
+    # ...
+    max_steps: 24
+    budget: {max_tokens: 24000, max_output_tokens: 3000, max_cost_usd: 0.40, max_latency_seconds: 90}
+    continuation_policy:
+      enabled: true
+      automatic_extensions: 1
+      step_increment: 24
+      token_increment: 8000
+      cost_increment_usd: 0.10
+      approval_expires_seconds: 1800
+```
+
+Runtime grants only the configured automatic extensions. Later boundaries emit the normal
+`approval.required` event with `kind: execution_continuation`; approval adds one increment and
+resumes the same run, messages, tool receipts, and verification state. This can repeat without an
+arbitrary total extension count, but every additional increment remains human-attributed. Rejection
+closes the run. Approval and clarification wait time is excluded from the run deadline.
+
+Keep automatic increments small and evaluated. They do not bypass tool policies: email, payroll,
+access, destructive, and other consequential tools still pause at their own approval boundaries.
+Clients should describe saved progress and the next action, not expose internal step counters as the
+user-facing answer. Monitor `run.continued`, approval age, total usage, repeated tools, and final
+verification outcomes.
+
 Multi-agent workflows use a separate Runtime checkpoint store because their state spans several
 child agent runs. Runtime provides `list_recoverable()` and `executor.recover(...)`; the embedding
 host must reconstruct the trusted manifest and hook registry during startup. Recovery never guesses

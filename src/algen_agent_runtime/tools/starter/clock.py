@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import zoneinfo
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from algen_agent_runtime.tools.contracts import (
@@ -23,10 +23,15 @@ def clock_tool(now_fn: Callable[[], datetime] | None = None) -> Tool:
 
     async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         tz_name = arguments.get("timezone", "UTC")
-        try:
-            tz = zoneinfo.ZoneInfo(tz_name)
-        except zoneinfo.ZoneInfoNotFoundError as exc:
-            raise ValueError(f"unknown timezone: {tz_name!r}") from exc
+        tz: tzinfo
+        if tz_name in {"UTC", "Etc/UTC", "Etc/GMT"}:
+            # UTC must work even on minimal Windows/container images without tzdata.
+            tz = UTC
+        else:
+            try:
+                tz = zoneinfo.ZoneInfo(tz_name)
+            except zoneinfo.ZoneInfoNotFoundError as exc:
+                raise ValueError(f"unknown timezone: {tz_name!r}") from exc
 
         if now_fn is not None:
             current = now_fn()

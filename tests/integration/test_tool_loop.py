@@ -5,6 +5,7 @@ from conftest import make_agent, make_runtime
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.types.contracts import (
+    ContinuationPolicy,
     FinishReason,
     Message,
     ModelResponse,
@@ -166,4 +167,171 @@ async def test_side_effect_approval_pause_resume() -> None:
             break
         await asyncio.sleep(0.001)
     assert state.status == RunStatus.COMPLETED
+    assert calls == 1
+
+
+async def test_execution_budget_continues_automatically_without_losing_progress() -> None:
+    runtime = make_runtime(
+        MockModelProvider([tool_call_response("records.read", {"id": 7}), "ready"]),
+        make_agent(
+            enabled_tools=frozenset({"records.read"}),
+            max_steps=3,
+            continuation_policy=ContinuationPolicy(
+                enabled=True,
+                automatic_extensions=1,
+                step_increment=2,
+            ),
+        ),
+    )
+    calls = 0
+
+    async def handler(args, ctx):
+        nonlocal calls
+        calls += 1
+        return {"id": args["id"], "found": True}
+
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="records.read",
+                version="1",
+                description="read",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "found": {"type": "boolean"},
+                    },
+                    "required": ["id", "found"],
+                },
+            ),
+            handler,
+        )
+    )
+
+    result = await runtime.run(
+        RunRequest(agent="test-agent", input="read it", tenant_id="t", user_id="u")
+    )
+    state = await runtime.status(result.run_id, "t")
+    history = await runtime.events.history(result.run_id)
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.output == "ready"
+    assert calls == 1
+    assert state.continuation_count == 1
+    assert any(
+        event.type == "run.continued" and event.data["mode"] == "automatic"
+        for event in history
+    )
+
+
+async def test_execution_budget_pauses_then_resumes_after_approval() -> None:
+    runtime = make_runtime(
+        MockModelProvider([tool_call_response("records.read", {"id": 9}), "finished"]),
+        make_agent(
+            enabled_tools=frozenset({"records.read"}),
+            max_steps=2,
+            continuation_policy=ContinuationPolicy(
+                enabled=True,
+                automatic_extensions=0,
+                step_increment=2,
+            ),
+        ),
+    )
+
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="records.read",
+                version="1",
+                description="read",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "found": {"type": "boolean"},
+                    },
+                    "required": ["id", "found"],
+                },
+            ),
+            lambda args, ctx: {"id": args["id"], "found": True},
+        )
+    )
+
+    paused = await runtime.run(
+        RunRequest(agent="test-agent", input="read it", tenant_id="t", user_id="u")
+    )
+    assert paused.status == RunStatus.AWAITING_APPROVAL
+    state = await runtime.status(paused.run_id, "t")
+    assert state.pause_payload is not None
+    assert state.pause_payload["kind"] == "execution_continuation"
+    assert state.pause_payload["reason"] == "execution_steps"
+
+    await runtime.resume(paused.run_id, "t", {"decision": "approved"})
+    result = await runtime.wait(paused.run_id, "t")
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.output == "finished"
+    assert (await runtime.status(paused.run_id, "t")).continuation_count == 1
+
+
+async def test_execution_budget_rejection_stops_without_replaying_work() -> None:
+    runtime = make_runtime(
+        MockModelProvider([tool_call_response("records.read", {"id": 11})]),
+        make_agent(
+            enabled_tools=frozenset({"records.read"}),
+            max_steps=2,
+            continuation_policy=ContinuationPolicy(enabled=True, step_increment=2),
+        ),
+    )
+    calls = 0
+
+    async def handler(args, ctx):
+        nonlocal calls
+        calls += 1
+        return {"id": args["id"], "found": True}
+
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="records.read",
+                version="1",
+                description="read",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "found": {"type": "boolean"},
+                    },
+                    "required": ["id", "found"],
+                },
+            ),
+            handler,
+        )
+    )
+
+    paused = await runtime.run(
+        RunRequest(agent="test-agent", input="read it", tenant_id="t", user_id="u")
+    )
+    assert paused.status == RunStatus.AWAITING_APPROVAL
+    assert calls == 1
+
+    rejected = await runtime.resume(paused.run_id, "t", {"decision": "rejected"})
+
+    assert rejected.status == RunStatus.FAILED
     assert calls == 1

@@ -23,6 +23,7 @@ EventType = Literal[
     "memory.written",
     "clarification.required",
     "approval.required",
+    "run.continued",
     "run.completed",
     "run.failed",
     "run.cancelled",
