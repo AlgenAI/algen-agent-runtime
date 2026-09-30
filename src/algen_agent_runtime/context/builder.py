@@ -31,11 +31,19 @@ class DefaultContextBuilder:
             state.session_id,
             agent.memory_policy.max_items,
         )
+        transcript = [
+            message
+            for message in state.messages
+            if not (
+                message.role == Role.SYSTEM
+                and message.text_content == agent.system_instructions
+            )
+        ]
         items = [Message.text(Role.SYSTEM, agent.system_instructions), *history]
-        if not state.messages:
+        if not transcript:
             items.append(Message.text(Role.USER, state.request.input))
         else:
-            items.extend(state.messages)
+            items.extend(transcript)
         return self.pack(items)
 
     def pack(self, messages: Sequence[Message]) -> tuple[Message, ...]:

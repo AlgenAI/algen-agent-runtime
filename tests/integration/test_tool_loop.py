@@ -4,7 +4,15 @@ from conftest import make_agent, make_runtime
 
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
-from algen_agent_runtime.types.contracts import RunRequest, RunStatus
+from algen_agent_runtime.types.contracts import (
+    FinishReason,
+    Message,
+    ModelResponse,
+    Role,
+    RunRequest,
+    RunStatus,
+    ToolCall,
+)
 
 
 async def test_model_tool_model_loop() -> None:
@@ -38,6 +46,76 @@ async def test_model_tool_model_loop() -> None:
     assert result.status == RunStatus.COMPLETED
     assert result.output == "five"
     assert result.execution_summary.tool_calls == 1
+
+
+async def test_direct_planner_completes_every_parallel_tool_call_before_model_continues() -> None:
+    calls = tuple(
+        ToolCall(id=f"call-{index}", name="records.read", arguments={"id": index})
+        for index in range(1, 4)
+    )
+    provider = MockModelProvider(
+        [
+            ModelResponse(
+                message=Message.text(Role.ASSISTANT, ""),
+                tool_calls=calls,
+                finish_reason=FinishReason.TOOL_CALLS,
+                model="deterministic",
+                provider="mock",
+            ),
+            "summary ready",
+        ]
+    )
+    runtime = make_runtime(
+        provider,
+        make_agent(
+            planning_strategy="direct",
+            enabled_tools=frozenset({"records.read"}),
+        ),
+    )
+    executed: list[int] = []
+
+    async def handler(args, ctx):
+        executed.append(args["id"])
+        return {"id": args["id"], "found": True}
+
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="records.read",
+                version="1",
+                description="read a record",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "found": {"type": "boolean"},
+                    },
+                    "required": ["id", "found"],
+                },
+            ),
+            handler,
+        )
+    )
+
+    result = await runtime.run(
+        RunRequest(agent="test-agent", input="summarize", tenant_id="t", user_id="u")
+    )
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.output == "summary ready"
+    assert executed == [1, 2, 3]
+    assert result.execution_summary.tool_calls == 3
+    assert len(provider.requests) == 2
+    follow_up = provider.requests[1]
+    assert sum(message.role == Role.SYSTEM for message in follow_up.messages) == 1
+    assert {message.tool_call_id for message in follow_up.messages if message.role == Role.TOOL} == {
+        call.id for call in calls
+    }
 
 
 async def test_side_effect_approval_pause_resume() -> None:
