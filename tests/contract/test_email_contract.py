@@ -4,8 +4,9 @@ import smtplib
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from algen_agent_runtime.communications import (
     EmailAttachmentReference,
@@ -13,6 +14,8 @@ from algen_agent_runtime.communications import (
     EmailDeliveryReceipt,
     EmailDeliveryStatus,
     EmailMessage,
+    GmailMailboxClient,
+    GmailOAuthSettings,
     SmtpEmailSender,
     SmtpSettings,
     email_tool,
@@ -217,3 +220,62 @@ async def test_smtp_attachment_requires_loader() -> None:
 
     with pytest.raises(EmailDeliveryError, match="artifact loader"):
         await sender.send(value, idempotency_key="key")
+
+
+@pytest.mark.asyncio
+async def test_gmail_oauth_sender_and_inbox_reader_use_bounded_api_contracts() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/token":
+            assert b"refresh_token=refresh-secret" in request.content
+            return httpx.Response(200, json={"access_token": "access-token", "expires_in": 3600})
+        assert request.headers["Authorization"] == "Bearer access-token"
+        if request.url.path.endswith("/messages/send"):
+            assert "raw" in request.read().decode()
+            return httpx.Response(200, json={"id": "gmail-sent-1"})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(
+                200,
+                json={"messages": [{"id": "gmail-in-1"}], "resultSizeEstimate": 1},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "gmail-in-1",
+                "threadId": "thread-1",
+                "internalDate": "1720000000000",
+                "snippet": "Please review my documents",
+                "labelIds": ["UNREAD", "INBOX"],
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Nutan <nutan@algen.ai>"},
+                        {"name": "To", "value": "info@algen.ai"},
+                        {"name": "Subject", "value": "Documents"},
+                    ]
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gmail = GmailMailboxClient(
+        GmailOAuthSettings(
+            client_id="client-id",
+            client_secret=SecretStr("client-secret"),
+            refresh_token=SecretStr("refresh-secret"),
+            token_uri="https://oauth.example/token",
+            api_base_url="https://gmail.example/gmail/v1",
+            message_id_domain="algen.ai",
+        ),
+        client=client,
+    )
+
+    receipt = await gmail.send(message(), idempotency_key="candidate:1:reminder")
+    inbox = await gmail.list_messages(query="is:unread", max_results=10)
+
+    assert receipt.provider == "gmail"
+    assert receipt.provider_message_id == "gmail-sent-1"
+    assert inbox.messages[0].subject == "Documents"
+    assert calls.count("/token") == 1
+    await client.aclose()

@@ -4,6 +4,14 @@ All notable changes to Algen Agent Runtime will be documented in this file.
 The project follows [Semantic Versioning](https://semver.org/) while public
 contracts are explicitly marked experimental during the `0.x` series.
 
+## [Unreleased]
+
+### Added
+
+- OAuth refresh-token Gmail adapter supporting governed outbound delivery and bounded inbox metadata
+  reads without placing mailbox secrets in manifests or model context.
+- Typed TypeSafe Jev System One client for confidence-aware Choice, Score, and Noul decisions.
+
 ## [0.1.0a4] - 2026-09-24
 
 ### Added

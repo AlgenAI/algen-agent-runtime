@@ -28,7 +28,10 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
   predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
   lifecycle events; compose exact-version child workflows without duplicating their topology.
 - **Governed communications:** send validated, idempotency-aware email through a provider-neutral
-  contract and TLS-first SMTP adapter while keeping attachments behind Runtime artifact references.
+  contract, TLS-first SMTP, or OAuth Gmail adapter; read bounded Gmail metadata while keeping
+  attachments behind Runtime artifact references.
+- **Typed System One decisions:** use the optional TypeSafe Jev client for fast Choice, Score, and
+  Noul routing gates while keeping generative work in model providers and deterministic work in code.
 - **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
 - **Offline-testable:** the deterministic mock provider supports tests without credentials, network access, or paid model calls.
 
