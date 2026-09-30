@@ -6,9 +6,14 @@ from algen_agent_runtime.communications.email import (
     EmailDeliveryStatus,
     EmailMessage,
     EmailSender,
+    GmailMailboxClient,
+    GmailMailboxPage,
+    GmailOAuthSettings,
+    InboundEmailSummary,
     SmtpEmailSender,
     SmtpSettings,
     email_tool,
+    gmail_inbox_tool,
 )
 
 __all__ = [
@@ -19,7 +24,12 @@ __all__ = [
     "EmailDeliveryStatus",
     "EmailMessage",
     "EmailSender",
+    "GmailMailboxClient",
+    "GmailMailboxPage",
+    "GmailOAuthSettings",
+    "InboundEmailSummary",
     "SmtpEmailSender",
     "SmtpSettings",
     "email_tool",
+    "gmail_inbox_tool",
 ]

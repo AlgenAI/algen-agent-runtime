@@ -6,6 +6,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- OAuth refresh-token Gmail adapter supporting governed outbound delivery and bounded inbox metadata
+  reads without placing mailbox secrets in manifests or model context.
+- Typed TypeSafe Jev System One client for confidence-aware Choice, Score, and Noul decisions.
+
 ## [0.1.0a8] - 2026-10-22
 
 ### Added
