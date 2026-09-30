@@ -28,6 +28,7 @@ EventType = Literal[
     "memory.learned.updated",
     "clarification.required",
     "approval.required",
+    "run.continued",
     "run.completed",
     "run.failed",
     "run.cancelled",
