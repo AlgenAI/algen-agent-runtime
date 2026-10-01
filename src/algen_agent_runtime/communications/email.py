@@ -330,6 +330,16 @@ class GmailOAuthSettings(BaseModel):
         return self
 
 
+class InboundEmailAttachment(BaseModel):
+    """Bounded Gmail attachment descriptor; bytes are fetched only on explicit demand."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    provider_attachment_id: str = Field(min_length=1, max_length=2_000)
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(default="application/octet-stream", min_length=3, max_length=255)
+    size: int = Field(default=0, ge=0)
+
+
 class InboundEmailSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider_message_id: str
@@ -340,6 +350,31 @@ class InboundEmailSummary(BaseModel):
     received_at_ms: int = Field(default=0, ge=0)
     snippet: str = Field(default="", max_length=2_000)
     labels: tuple[str, ...] = ()
+    attachments: tuple[InboundEmailAttachment, ...] = ()
+
+
+def _gmail_attachments(payload: Mapping[str, Any]) -> tuple[InboundEmailAttachment, ...]:
+    attachments: list[InboundEmailAttachment] = []
+    pending: list[Mapping[str, Any]] = [payload]
+    while pending:
+        part = pending.pop()
+        pending.extend(
+            child for child in part.get("parts", ()) if isinstance(child, Mapping)
+        )
+        body = part.get("body") or {}
+        attachment_id = str(body.get("attachmentId") or "")
+        filename = re.split(r"[/\\]", str(part.get("filename") or ""))[-1]
+        if not attachment_id or not filename:
+            continue
+        attachments.append(
+            InboundEmailAttachment(
+                provider_attachment_id=attachment_id,
+                filename=filename,
+                media_type=str(part.get("mimeType") or "application/octet-stream"),
+                size=max(0, int(body.get("size") or 0)),
+            )
+        )
+    return tuple(attachments[:20])
 
 
 class GmailMailboxPage(BaseModel):
@@ -464,7 +499,7 @@ class GmailMailboxClient:
                     f"{self._settings.api_base_url.rstrip('/')}/users/me/messages/{reference['id']}",
                     headers=headers,
                     params={
-                        "format": "metadata",
+                        "format": "full",
                         "metadataHeaders": ["From", "To", "Cc", "Subject", "Date"],
                     },
                 )
@@ -484,6 +519,7 @@ class GmailMailboxClient:
                         received_at_ms=max(0, int(payload.get("internalDate", 0))),
                         snippet=str(payload.get("snippet", ""))[:2_000],
                         labels=tuple(str(item) for item in payload.get("labelIds", [])),
+                        attachments=_gmail_attachments(payload.get("payload", {})),
                     )
                 )
             return GmailMailboxPage(
@@ -494,6 +530,33 @@ class GmailMailboxClient:
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             raise EmailDeliveryError(
                 f"Gmail inbox read failed ({type(exc).__name__})"
+            ) from exc
+
+    async def download_attachment(
+        self, provider_message_id: str, provider_attachment_id: str
+    ) -> bytes:
+        if not provider_message_id or len(provider_message_id) > 2_000:
+            raise ValueError("provider_message_id is invalid")
+        if not provider_attachment_id or len(provider_attachment_id) > 2_000:
+            raise ValueError("provider_attachment_id is invalid")
+        token = await self._token()
+        try:
+            response = await self._client.get(
+                f"{self._settings.api_base_url.rstrip('/')}/users/me/messages/"
+                f"{provider_message_id}/attachments/{provider_attachment_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            encoded = str(response.json()["data"])
+            payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            if len(payload) > self._settings.max_attachment_bytes:
+                raise EmailDeliveryError("Gmail attachment exceeds the configured size limit")
+            return payload
+        except EmailDeliveryError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise EmailDeliveryError(
+                f"Gmail attachment download failed ({type(exc).__name__})"
             ) from exc
 
     async def aclose(self) -> None:

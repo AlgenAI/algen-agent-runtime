@@ -142,6 +142,22 @@ async def test_conversation_access_is_tenant_and_user_isolated() -> None:
         await conversations.submit(conversation.id, "tenant-a", "user-b", "no")
 
 
+async def test_conversation_delete_removes_history_and_enforces_owner() -> None:
+    conversations = service()
+    conversation = await conversations.create(
+        tenant_id="tenant-a", user_id="user-a", agent="agent", handler="test"
+    )
+    await conversations.submit(conversation.id, "tenant-a", "user-a", "hello")
+    with pytest.raises(NotFoundError):
+        await conversations.delete(conversation.id, "tenant-a", "user-b")
+
+    await conversations.delete(conversation.id, "tenant-a", "user-a")
+
+    with pytest.raises(NotFoundError):
+        await conversations.get(conversation.id, "tenant-a")
+    assert not await conversations.store.messages(conversation.id, "tenant-a", limit=100)
+
+
 async def test_recovery_does_not_replay_interrupted_handler_side_effects() -> None:
     conversations = service()
     conversation = await conversations.create(

@@ -240,6 +240,8 @@ async def test_gmail_oauth_sender_and_inbox_reader_use_bounded_api_contracts() -
                 200,
                 json={"messages": [{"id": "gmail-in-1"}], "resultSizeEstimate": 1},
             )
+        if request.url.path.endswith("/attachments/attachment-1"):
+            return httpx.Response(200, json={"data": "emlwLWJ5dGVz", "size": 9})
         return httpx.Response(
             200,
             json={
@@ -253,7 +255,14 @@ async def test_gmail_oauth_sender_and_inbox_reader_use_bounded_api_contracts() -
                         {"name": "From", "value": "Nutan <nutan@algen.ai>"},
                         {"name": "To", "value": "info@algen.ai"},
                         {"name": "Subject", "value": "Documents"},
-                    ]
+                    ],
+                    "parts": [
+                        {
+                            "filename": "candidate-documents.zip",
+                            "mimeType": "application/zip",
+                            "body": {"attachmentId": "attachment-1", "size": 9},
+                        }
+                    ],
                 },
             },
         )
@@ -277,5 +286,10 @@ async def test_gmail_oauth_sender_and_inbox_reader_use_bounded_api_contracts() -
     assert receipt.provider == "gmail"
     assert receipt.provider_message_id == "gmail-sent-1"
     assert inbox.messages[0].subject == "Documents"
+    assert inbox.messages[0].attachments[0].filename == "candidate-documents.zip"
+    assert (
+        await gmail.download_attachment("gmail-in-1", "attachment-1")
+        == b"zip-bytes"
+    )
     assert calls.count("/token") == 1
     await client.aclose()

@@ -538,6 +538,16 @@ def create_app(
         )
         return conversation.model_dump(mode="json")
 
+    @app.delete("/v1/conversations/{conversation_id}", status_code=204)
+    async def delete_conversation(
+        conversation_id: str, identity: Principal = identity_dependency
+    ) -> Response:
+        require_scope(identity, "conversations:write")
+        await dependencies.conversations.delete(
+            conversation_id, identity.tenant_id, identity.user_id
+        )
+        return Response(status_code=204)
+
     @app.get("/v1/conversations/{conversation_id}/messages")
     async def read_conversation_messages(
         conversation_id: str,
