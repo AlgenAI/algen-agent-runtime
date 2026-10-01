@@ -35,6 +35,15 @@ class InMemoryConversationStore:
                 return None
             return item.model_copy(deep=True)
 
+    async def delete(self, conversation_id: str, tenant_id: str) -> bool:
+        async with self._lock:
+            item = self._conversations.get(conversation_id)
+            if item is None or item.tenant_id != tenant_id:
+                return False
+            del self._conversations[conversation_id]
+            self._messages.pop(conversation_id, None)
+            return True
+
     async def list(
         self, tenant_id: str, user_id: str, limit: int, before: datetime | None = None
     ) -> Sequence[Conversation]:
@@ -186,6 +195,29 @@ class PostgresConversationStore:
             tenant_id,
         )
         return Conversation.model_validate_json(row["conversation"]) if row else None
+
+    async def delete(self, conversation_id: str, tenant_id: str) -> bool:
+        row = await self._database.fetchrow(
+            "WITH deleted_feedback AS ("
+            "DELETE FROM algen_agent_runtime_conversation_feedback "
+            "WHERE conversation_id=$1 AND tenant_id=$2 RETURNING id), "
+            "deleted_events AS ("
+            "DELETE FROM algen_agent_runtime_conversation_events "
+            "WHERE conversation_id=$1 AND tenant_id=$2 RETURNING id), "
+            "deleted_messages AS ("
+            "DELETE FROM algen_agent_runtime_conversation_messages "
+            "WHERE conversation_id=$1 AND tenant_id=$2 "
+            "AND (SELECT count(*) FROM deleted_feedback)>=0 RETURNING id), "
+            "deleted_conversation AS ("
+            "DELETE FROM algen_agent_runtime_conversations "
+            "WHERE id=$1 AND tenant_id=$2 "
+            "AND (SELECT count(*) FROM deleted_events)>=0 "
+            "AND (SELECT count(*) FROM deleted_messages)>=0 RETURNING id) "
+            "SELECT id FROM deleted_conversation",
+            conversation_id,
+            tenant_id,
+        )
+        return row is not None
 
     async def list(
         self, tenant_id: str, user_id: str, limit: int, before: datetime | None = None

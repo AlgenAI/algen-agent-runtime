@@ -193,6 +193,31 @@ class ConversationService:
     ) -> Sequence[Conversation]:
         return await self.store.list(tenant_id, user_id, limit, before)
 
+    async def delete(self, conversation_id: str, tenant_id: str, user_id: str) -> None:
+        conversation = await self.get(conversation_id, tenant_id)
+        if conversation.user_id != user_id:
+            raise NotFoundError(f"conversation {conversation_id!r} not found")
+        task = self._tasks.get(conversation_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if not await self.store.delete(conversation_id, tenant_id):
+            raise NotFoundError(f"conversation {conversation_id!r} not found")
+        if self._audits is not None:
+            await self._audits.append(
+                AuditEvent(
+                    action="conversation.deleted",
+                    outcome="ok",
+                    tenant_id=tenant_id,
+                    actor_id=user_id,
+                    resource_id=conversation_id,
+                    metadata={"title": conversation.title},
+                )
+            )
+
     async def update(
         self,
         conversation_id: str,

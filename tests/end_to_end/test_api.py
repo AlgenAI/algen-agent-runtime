@@ -205,6 +205,14 @@ async def test_conversation_api_supports_dashboard_message_flow() -> None:
             await asyncio.sleep(0.001)
         assert messages.json()[-1]["content"] == [{"type": "text", "text": "answer"}]
         assert messages.json()[-1]["run_ids"]
+        deleted = await client.delete(
+            f"/v1/conversations/{conversation_id}", headers=headers
+        )
+        assert deleted.status_code == 204
+        missing = await client.get(
+            f"/v1/conversations/{conversation_id}", headers=headers
+        )
+        assert missing.status_code == 404
 
 
 async def test_conversation_api_records_and_updates_feedback() -> None:
