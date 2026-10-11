@@ -131,7 +131,7 @@ class PostgresRunStore:
         try:
             await self._database.execute(
                 "INSERT INTO algen_agent_runtime_runs (id, tenant_id, version, state) "
-                "VALUES ($1, $2, $3, $4::jsonb)",
+                "VALUES ($1, $2, $3, $4::json)",
                 state.id,
                 state.request.tenant_id,
                 state.version,
@@ -154,7 +154,7 @@ class PostgresRunStore:
         next_version = expected_version + 1
         saved = state.model_copy(update={"version": next_version})
         result = await self._database.execute(
-            "UPDATE algen_agent_runtime_runs SET version=$1, state=$2::jsonb, updated_at=now() "
+            "UPDATE algen_agent_runtime_runs SET version=$1, state=$2::json, updated_at=now() "
             "WHERE id=$3 AND tenant_id=$4 AND version=$5",
             next_version,
             saved.model_dump_json(),

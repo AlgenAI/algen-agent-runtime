@@ -105,6 +105,12 @@ def test_artifact_lifecycle_migration_supports_staged_inputs() -> None:
     assert "PRIMARY KEY (tenant_id, id)" in workflows
 
 
+def test_run_state_migration_preserves_json_object_order() -> None:
+    directory = Path(__file__).parents[2] / "src/algen_agent_runtime/persistence/migrations"
+    migration = (directory / "009_preserve_run_state_json_order.sql").read_text(encoding="utf-8")
+    assert "ALTER COLUMN state TYPE json USING state::json" in migration
+
+
 def test_container_wires_selected_postgres_stores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

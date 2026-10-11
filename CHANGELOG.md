@@ -4,6 +4,18 @@ All notable changes to Algen Agent Runtime will be documented in this file.
 The project follows [Semantic Versioning](https://semver.org/) while public
 contracts are explicitly marked experimental during the `0.x` series.
 
+## [Unreleased]
+
+### Changed
+
+- **Agent Manifest UI visual refresh**: Aligned the built-in manifest explorer with the Runtime documentation's warm gold, parchment, and charcoal design system. The UI now uses a responsive manifest sidebar, refined cards and DAG canvas, persistent light/dark theme preference, and a compact validation status bar while remaining fully self-contained.
+- **Runtime brand palette alignment**: Recolored the existing Runtime logos and banners to the warm gold, ivory, and charcoal Algen palette used by `algen.ai` and Agent Studio, without changing their geometry, typography, wording, or composition.
+- **Production-readiness status audit**: Reconciled the roadmap with current implementation and CI evidence, separating completed single-node, persistence, readiness, distributed-worker, and release controls from the remaining production gates. Corrected the previous claim that Redis was exercised against the live CI container; the current Redis tests use a behavioral double.
+
+### Fixed
+
+- **Preserve PostgreSQL run-request object order**: Store serialized run state as PostgreSQL `json` instead of `jsonb`, with a forward migration for existing installations, so order-sensitive JSON Schema properties and request metadata reach model providers in caller-defined order across create and save cycles.
+
 ## [0.1.0a4] - 2026-09-24
 
 ### Added
