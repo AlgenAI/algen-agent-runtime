@@ -59,8 +59,8 @@ status and unreleased changes are tracked separately in `CHANGELOG.md`.
 
 1. **Close persistence validation gaps.** CI runs storage integration tests against live PostgreSQL 16,
    including schema migrations, run state, optimistic conflicts, artifacts, tool deduplication, and
-   workflow checkpoints. CI also starts Redis 7, but the current Redis suite uses an in-memory
-   behavioral double and does not connect through `REDIS_URL`; add a real Redis integration suite.
+   workflow checkpoints. CI also runs the Redis run, memory, and cache stores against live Redis 7
+   through `REDIS_URL`, including WATCH-conflict handling.
    Complete startup, restart recovery, concurrent approval, backup/restore, database-unavailability,
    failover, and soak drills against supported deployment topologies.
 2. **Harden policy distribution and coverage.** Workflow approval and clarification outcomes are

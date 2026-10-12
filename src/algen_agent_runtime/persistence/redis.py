@@ -29,21 +29,22 @@ class RedisRunStore:
     async def save(self, state: RunState, expected_version: int) -> None:
         key = self._key(state.request.tenant_id, state.id)
         async with self._redis.pipeline(transaction=True) as pipe:
-            while True:
-                try:
-                    await pipe.watch(key)
-                    value = await pipe.get(key)
-                    current = RunState.model_validate_json(value) if value else None
-                    if current is None or current.version != expected_version:
-                        raise ConflictError(f"run {state.id!r} was concurrently modified")
-                    saved = state.model_copy(update={"version": expected_version + 1})
-                    pipe.multi()
-                    pipe.set(key, saved.model_dump_json())
-                    await pipe.execute()
-                    state.version = saved.version
-                    return
-                except ConflictError:
-                    raise
+            await pipe.watch(key)
+            value = await pipe.get(key)
+            current = RunState.model_validate_json(value) if value else None
+            if current is None or current.version != expected_version:
+                raise ConflictError(f"run {state.id!r} was concurrently modified")
+            saved = state.model_copy(update={"version": expected_version + 1})
+            pipe.multi()
+            pipe.set(key, saved.model_dump_json())
+            try:
+                await pipe.execute()
+            except Exception as exc:
+                # redis-py raises WatchError when another writer touched the key after WATCH.
+                if type(exc).__name__ == "WatchError":
+                    raise ConflictError(f"run {state.id!r} was concurrently modified") from exc
+                raise
+            state.version = saved.version
 
     async def list_active(self, limit: int = 1000) -> Sequence[RunState]:
         from algen_agent_runtime.types.contracts import TERMINAL_STATUSES
