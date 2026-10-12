@@ -1,7 +1,7 @@
 """HTML, CSS, and JS template generator for Agent Manifest UI.
 
-Adheres strictly to the Algen Agent Studio platform design system with zero emojis
-and exclusively uses precision vector SVG icons.
+Uses the Algen Runtime documentation design system with zero emojis and inline
+vector SVG icons so exported pages remain self-contained.
 """
 
 from __future__ import annotations
@@ -17,105 +17,127 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <title>__PAGE_TITLE__ - Algen Agent Runtime</title>
   <style>
     :root {
-      --ink: #111827;
-      --page: #f8fafc;
-      --muted: #64748b;
-      --divider: #e2e8f0;
-      --surface-2: #f1f5f9;
-      --paper: #ffffff;
-      --brand: #7c3aed;
-      --brand-dark: #6d28d9;
-      --brand-pale: #f5f3ff;
-      --brand-cyan: #06b6d4;
-      --brand-pink: #ec4899;
+      color-scheme: light;
+      --ink: #1e1f19;
+      --ink-2: #3d3f35;
+      --page: #f8f6f2;
+      --muted: #5f6255;
+      --divider: #e3e1d7;
+      --border-strong: #d2d3c5;
+      --surface-2: #f2f0e9;
+      --surface-3: #e7e6de;
+      --paper: #fdfcf9;
+      --brand: #755c0a;
+      --brand-dark: #5d4908;
+      --brand-pale: #f3ecd8;
+      --brand-ring: rgba(210, 157, 25, 0.32);
+      --brand-cyan: #325886;
+      --brand-pink: #6b5590;
+      --gold: #d29d19;
+      --gold-light: #e9c86d;
+      --gold-dark: #956e18;
+      --brand-gradient: linear-gradient(135deg, #e9c86d 0%, #d29d19 50%, #956e18 100%);
       --rust: var(--brand);
       --rust-dark: var(--brand-dark);
       --rust-pale: var(--brand-pale);
-      --success: #247451;
-      --success-pale: #eaf5f0;
-      --warning: #9a6208;
-      --warning-pale: #fef8eb;
-      --error: #c53030;
-      --error-pale: #fef2f2;
+      --success: #2e7a4f;
+      --success-pale: #e6f1ea;
+      --warning: #b35a14;
+      --warning-pale: #fbeede;
+      --error: #c14933;
+      --error-pale: #fae9e5;
+      --info: #325886;
+      --info-pale: #e8eef6;
       
-      --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      --font-mono: 'IBM Plex Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+      --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-display: Sora, Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
-      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+      --shadow-sm: 0 1px 2px rgba(30, 31, 25, 0.05);
+      --shadow-md: 0 4px 16px rgba(30, 31, 25, 0.1);
+      --shadow-lg: 0 12px 30px rgba(30, 31, 25, 0.14);
+      --shadow-gold: 0 0 80px -18px rgba(210, 157, 25, 0.25);
 
-      --badge-agent-bg: #f5f3ff;
-      --badge-agent-text: #6d28d9;
-      --badge-agent-border: #ddd6fe;
+      --badge-agent-bg: #f3ecd8;
+      --badge-agent-text: #755c0a;
+      --badge-agent-border: #e9c86d;
 
-      --badge-wf-bg: #ecfeff;
-      --badge-wf-text: #0e7490;
-      --badge-wf-border: #a5f3fc;
+      --badge-wf-bg: #e8eef6;
+      --badge-wf-text: #325886;
+      --badge-wf-border: #b8c8dc;
 
-      --badge-handler-bg: #ecfdf5;
-      --badge-handler-text: #047857;
-      --badge-handler-border: #a7f3d0;
+      --badge-handler-bg: #e6f1ea;
+      --badge-handler-text: #2e7a4f;
+      --badge-handler-border: #b8d7c5;
 
-      --badge-approval-bg: #fffbeb;
-      --badge-approval-text: #b45309;
-      --badge-approval-border: #fde68a;
+      --badge-approval-bg: #fbeede;
+      --badge-approval-text: #b35a14;
+      --badge-approval-border: #edc29d;
 
-      --badge-join-bg: #fdf4ff;
-      --badge-join-text: #a21caf;
-      --badge-join-border: #f5d0fe;
+      --badge-join-bg: #eee9f3;
+      --badge-join-text: #6b5590;
+      --badge-join-border: #cfc4dc;
 
-      --code-bg: #0f172a;
-      --code-text: #e2e8f0;
+      --code-bg: #17160f;
+      --code-text: #ebe6d9;
     }
 
     [data-theme="dark"] {
-      --ink: #f8fafc;
-      --page: #0b0f19;
-      --muted: #94a3b8;
-      --divider: #1e293b;
-      --surface-2: #161f33;
-      --paper: #111827;
-      --brand: #8b5cf6;
-      --brand-dark: #7c3aed;
-      --brand-pale: rgba(139, 92, 246, 0.12);
-      --brand-cyan: #22d3ee;
+      color-scheme: dark;
+      --ink: #f1ede4;
+      --ink-2: #d2ccbf;
+      --page: #0b0b09;
+      --muted: #a29c90;
+      --divider: #272521;
+      --border-strong: #36332d;
+      --surface-2: #1a1916;
+      --surface-3: #23221f;
+      --paper: #131210;
+      --brand: #d29d19;
+      --brand-dark: #e9c86d;
+      --brand-pale: rgba(210, 157, 25, 0.13);
+      --brand-ring: rgba(210, 157, 25, 0.4);
+      --brand-cyan: #7190b7;
+      --brand-pink: #a893c9;
       --rust: var(--brand);
       --rust-dark: var(--brand-dark);
       --rust-pale: var(--brand-pale);
-      --success: #34d399;
-      --success-pale: rgba(52, 211, 153, 0.12);
-      --warning: #fbbf24;
-      --warning-pale: rgba(251, 191, 36, 0.12);
-      --error: #f87171;
-      --error-pale: rgba(248, 113, 113, 0.12);
+      --success: #5dbe8a;
+      --success-pale: rgba(93, 190, 138, 0.12);
+      --warning: #e08a3c;
+      --warning-pale: rgba(224, 138, 60, 0.12);
+      --error: #e0705b;
+      --error-pale: rgba(224, 112, 91, 0.12);
+      --info: #7190b7;
+      --info-pale: rgba(113, 144, 183, 0.14);
 
-      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
-      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
-      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.6);
+      --shadow-lg: 0 12px 30px rgba(0, 0, 0, 0.68);
+      --shadow-gold: 0 0 80px -18px rgba(210, 157, 25, 0.2);
 
-      --badge-agent-bg: rgba(139, 92, 246, 0.15);
-      --badge-agent-text: #c4b5fd;
-      --badge-agent-border: rgba(139, 92, 246, 0.3);
+      --badge-agent-bg: rgba(210, 157, 25, 0.15);
+      --badge-agent-text: #e9c86d;
+      --badge-agent-border: rgba(210, 157, 25, 0.34);
 
-      --badge-wf-bg: rgba(6, 182, 212, 0.15);
-      --badge-wf-text: #67e8f9;
-      --badge-wf-border: rgba(6, 182, 212, 0.3);
+      --badge-wf-bg: rgba(113, 144, 183, 0.15);
+      --badge-wf-text: #9db4cf;
+      --badge-wf-border: rgba(113, 144, 183, 0.34);
 
-      --badge-handler-bg: rgba(16, 185, 129, 0.15);
-      --badge-handler-text: #6ee7b7;
-      --badge-handler-border: rgba(16, 185, 129, 0.3);
+      --badge-handler-bg: rgba(93, 190, 138, 0.15);
+      --badge-handler-text: #7dcca1;
+      --badge-handler-border: rgba(93, 190, 138, 0.34);
 
-      --badge-approval-bg: rgba(245, 158, 11, 0.15);
-      --badge-approval-text: #fcd34d;
-      --badge-approval-border: rgba(245, 158, 11, 0.3);
+      --badge-approval-bg: rgba(224, 138, 60, 0.15);
+      --badge-approval-text: #e9a568;
+      --badge-approval-border: rgba(224, 138, 60, 0.34);
 
-      --badge-join-bg: rgba(168, 85, 247, 0.15);
-      --badge-join-text: #d8b4fe;
-      --badge-join-border: rgba(168, 85, 247, 0.3);
+      --badge-join-bg: rgba(168, 147, 201, 0.15);
+      --badge-join-text: #c1afd9;
+      --badge-join-border: rgba(168, 147, 201, 0.34);
 
-      --code-bg: #070a12;
-      --code-text: #f1f5f9;
+      --code-bg: #080807;
+      --code-text: #ebe6d9;
     }
 
     * {
@@ -136,7 +158,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     /* Top Navigation Bar - Algen Studio Shell */
     header.top-bar {
       height: 54px;
-      background-color: #111827;
+      background-color: var(--ink);
       color: #ffffff;
       display: flex;
       align-items: center;
@@ -159,13 +181,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       width: 28px;
       height: 28px;
       border-radius: 6px;
-      background: linear-gradient(135deg, #7c3aed, #06b6d4);
+      background: var(--brand-gradient);
       color: #ffffff;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+      box-shadow: 0 2px 8px rgba(210, 157, 25, 0.25);
     }
 
     .studio-brand-text {
@@ -192,7 +214,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .studio-brand-tagline {
       padding-left: 10px;
       border-left: 1px solid rgba(196, 181, 253, 0.25);
-      color: #94a3b8;
+      color: var(--muted);
       font: 500 0.6875rem var(--font-mono);
       letter-spacing: 0.02em;
       white-space: nowrap;
@@ -226,8 +248,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .search-box input:focus {
       outline: none;
       background: rgba(255, 255, 255, 0.12);
-      border-color: #8b5cf6;
-      box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px var(--brand-ring);
       width: 280px;
     }
 
@@ -238,7 +260,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .search-icon {
       position: absolute;
       left: 10px;
-      color: #94a3b8;
+      color: var(--muted);
       display: flex;
       align-items: center;
       pointer-events: none;
@@ -831,7 +853,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     .dag-node-card:hover {
       border-color: var(--brand);
-      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.15);
+      box-shadow: 0 2px 8px var(--brand-ring);
     }
 
     .dag-node-header {
@@ -973,7 +995,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
 
     .form-control:focus {
-      outline: 2px solid rgba(124, 58, 237, 0.4);
+      outline: 2px solid var(--brand-ring);
       border-color: var(--brand);
     }
 
@@ -989,7 +1011,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       position: fixed;
       bottom: 24px;
       right: 24px;
-      background-color: #111827;
+      background-color: var(--ink);
       color: #ffffff;
       border: 1px solid rgba(255, 255, 255, 0.15);
       padding: 9px 16px;
@@ -1010,25 +1032,472 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       transform: translateY(0);
       opacity: 1;
     }
+
+    /* Algen Runtime documentation visual language */
+    :focus-visible {
+      outline: 2px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    body {
+      background: var(--page);
+      color: var(--ink);
+      padding-bottom: 0;
+    }
+
+    header.top-bar {
+      height: 60px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--divider);
+      background: rgba(253, 252, 249, 0.92);
+      color: var(--ink);
+      box-shadow: none;
+      backdrop-filter: blur(12px);
+    }
+
+    [data-theme="dark"] header.top-bar {
+      background: rgba(19, 18, 16, 0.92);
+    }
+
+    .studio-brand-logo-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: var(--brand-pale);
+      color: var(--brand);
+      box-shadow: none;
+    }
+
+    .studio-brand-title {
+      color: var(--ink);
+      font: 700 0.9375rem/1.15 var(--font-display);
+      letter-spacing: -0.01em;
+      text-transform: none;
+    }
+
+    .studio-brand-subtitle {
+      color: var(--brand);
+      font: 650 0.625rem/1.2 var(--font-sans);
+      letter-spacing: 0.09em;
+    }
+
+    .studio-brand-tagline {
+      border-left-color: var(--divider);
+      color: var(--muted);
+    }
+
+    .search-box input {
+      width: min(300px, 28vw);
+      border-color: var(--divider);
+      background: var(--surface-2);
+      color: var(--ink);
+    }
+
+    .search-box input:focus {
+      width: min(340px, 31vw);
+      border-color: var(--gold);
+      background: var(--paper);
+      box-shadow: 0 0 0 3px var(--brand-ring);
+    }
+
+    .search-box input::placeholder,
+    .search-icon {
+      color: var(--muted);
+    }
+
+    .btn {
+      border-radius: 6px;
+    }
+
+    .btn-topbar,
+    .btn-secondary {
+      border-color: var(--divider);
+      background: var(--paper);
+      color: var(--ink-2);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .btn-topbar:hover,
+    .btn-secondary:hover:not(:disabled) {
+      border-color: var(--gold-light);
+      background: var(--brand-pale);
+      color: var(--brand);
+    }
+
+    .btn-primary {
+      background: var(--brand);
+      border-color: var(--brand);
+      color: #f8f6f2;
+    }
+
+    [data-theme="dark"] .btn-primary {
+      color: #0b0b09;
+    }
+
+    .workspace-header {
+      min-height: 74px;
+      padding: 13px 24px;
+      background: linear-gradient(180deg, var(--paper), var(--surface-2));
+    }
+
+    .workspace-title {
+      font: 600 1.1875rem/1.25 var(--font-display);
+    }
+
+    .status-badge {
+      border-radius: 999px;
+    }
+
+    .studio-shell {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      min-height: calc(100vh - 134px);
+    }
+
+    .product-tabs-bar {
+      position: sticky;
+      top: 60px;
+      align-self: start;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 3px;
+      width: 100%;
+      height: calc(100vh - 60px);
+      padding: 18px 12px;
+      overflow: auto;
+      border-right: 1px solid var(--divider);
+      border-bottom: 0;
+      background: var(--surface-2);
+    }
+
+    .product-tabs-bar::before {
+      content: "Manifest views";
+      padding: 0 9px 7px;
+      color: var(--muted);
+      font: 650 0.625rem var(--font-sans);
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .tab-btn {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 9px;
+      min-height: 40px;
+      padding: 5px 9px;
+      border: 0;
+      border-radius: 7px;
+      color: var(--ink-2);
+      text-align: left;
+    }
+
+    .tab-btn:hover {
+      background: rgba(30, 31, 25, 0.05);
+    }
+
+    [data-theme="dark"] .tab-btn:hover {
+      background: rgba(241, 237, 228, 0.05);
+    }
+
+    .tab-btn.active {
+      border: 0;
+      background: #ebe1c1;
+      color: var(--ink);
+      font-weight: 650;
+    }
+
+    [data-theme="dark"] .tab-btn.active {
+      background: rgba(210, 157, 25, 0.14);
+    }
+
+    .tab-step {
+      display: inline-grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid var(--divider);
+      border-radius: 7px;
+      background: var(--paper);
+      color: var(--muted);
+    }
+
+    .tab-btn.active .tab-step {
+      border-color: var(--gold-light);
+      background: var(--brand-pale);
+      color: var(--brand);
+    }
+
+    .tab-counter {
+      background: var(--surface-3);
+    }
+
+    .tab-btn.active .tab-counter {
+      background: var(--paper);
+      color: var(--brand);
+    }
+
+    main.studio-content {
+      width: 100%;
+      max-width: 1480px;
+      padding: 24px clamp(20px, 3vw, 40px) 52px;
+    }
+
+    .metrics-bar {
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .metric-card,
+    .card,
+    .opblock,
+    .dag-container {
+      border-color: var(--divider);
+      border-radius: 10px;
+      background: var(--paper);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .metric-card {
+      padding: 12px;
+    }
+
+    .metric-icon-box {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: var(--brand-pale);
+      color: var(--brand);
+    }
+
+    .metric-value {
+      font-family: var(--font-display);
+      font-weight: 600;
+    }
+
+    .card-header {
+      padding: 11px 15px;
+      background: var(--paper);
+    }
+
+    .card-header h2,
+    .card-header h3,
+    .section-title {
+      font-family: var(--font-display);
+      font-weight: 600;
+    }
+
+    .detail-item {
+      border-radius: 7px;
+    }
+
+    .opblock:hover,
+    .dag-node-card:hover {
+      border-color: var(--gold-light);
+    }
+
+    .opblock-badge,
+    .pill {
+      border-radius: 6px;
+    }
+
+    .dag-container {
+      background-color: var(--paper);
+      background-image: radial-gradient(var(--border-strong) 0.8px, transparent 0.8px);
+      background-size: 16px 16px;
+    }
+
+    .dag-node-card {
+      border-left: 3px solid var(--brand);
+      border-radius: 9px;
+    }
+
+    .dag-node-card:hover {
+      box-shadow: 0 0 0 3px var(--brand-ring), var(--shadow-md);
+    }
+
+    .studio-callout {
+      border-color: var(--gold-light);
+      border-left-color: var(--gold);
+      border-radius: 10px;
+      background: var(--brand-pale);
+    }
+
+    .form-control {
+      border-radius: 6px;
+      background: var(--paper);
+    }
+
+    .form-control:focus {
+      outline: none;
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px var(--brand-ring);
+    }
+
+    .code-box {
+      border-color: #2c2a23;
+      border-radius: 8px;
+    }
+
+    .drawer-panel {
+      background: var(--paper);
+    }
+
+    .manifest-status {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px;
+      min-height: 36px;
+      padding: 6px 16px;
+      border-top: 1px solid var(--divider);
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .manifest-status .ok {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--success);
+      font-weight: 650;
+    }
+
+    .manifest-status .ok::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 3px var(--success-pale);
+    }
+
+    .manifest-status .spacer {
+      flex: 1;
+    }
+
+    .toast {
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--page);
+    }
+
+    @media (max-width: 900px) {
+      .studio-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .product-tabs-bar {
+        top: 60px;
+        z-index: 50;
+        flex-direction: row;
+        width: 100%;
+        height: auto;
+        padding: 8px 12px;
+        border-right: 0;
+        border-bottom: 1px solid var(--divider);
+      }
+
+      .product-tabs-bar::before {
+        display: none;
+      }
+
+      .tab-btn {
+        display: inline-flex;
+        min-height: 36px;
+        padding: 4px 9px;
+      }
+
+      .tab-step {
+        width: 24px;
+        height: 24px;
+      }
+
+      .studio-brand-tagline {
+        display: none;
+      }
+    }
+
+    @media (max-width: 700px) {
+      header.top-bar {
+        padding: 0 12px;
+      }
+
+      .search-box {
+        display: none;
+      }
+
+      .btn-topbar span {
+        display: none;
+      }
+
+      .btn-topbar {
+        width: 34px;
+        padding: 0;
+      }
+
+      .workspace-header {
+        padding: 12px 16px;
+      }
+
+      .workspace-header > div:last-child {
+        display: none !important;
+      }
+
+      main.studio-content {
+        padding: 18px 14px 36px;
+      }
+
+      .metrics-bar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .opblock-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .opblock-desc {
+        flex-basis: 100%;
+        white-space: normal;
+      }
+
+      .drawer-panel {
+        width: 100%;
+        max-width: 100vw;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition: none !important;
+      }
+    }
   </style>
 </head>
-<body data-theme="dark">
+<body data-theme="light">
 
   <!-- Shell Top Bar -->
   <header class="top-bar">
     <div class="studio-brand">
       <div class="studio-brand-logo-badge">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-          <polyline points="2 17 12 22 22 17"/>
-          <polyline points="2 12 12 17 22 12"/>
+        <svg width="24" height="24" viewBox="20 20 160 160" fill="none" aria-hidden="true">
+          <path d="M57 119 78 74l45-14 26 38-18 45-49-2Z" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="m78 74 34 35 37-11m-37 11 19 34m-49-2 30-32" stroke="currentColor" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+          <circle cx="112" cy="109" r="13" fill="var(--gold-light)" stroke="currentColor" stroke-width="6"/>
         </svg>
       </div>
       <div class="studio-brand-text">
-        <span class="studio-brand-title">ALGEN</span>
-        <span class="studio-brand-subtitle">AGENT RUNTIME</span>
+        <span class="studio-brand-title">Algen Agent</span>
+        <span class="studio-brand-subtitle">RUNTIME</span>
       </div>
-      <span class="studio-brand-tagline">specification explorer</span>
+      <span class="studio-brand-tagline">Agent Manifest</span>
     </div>
 
     <div class="top-bar-actions">
@@ -1049,7 +1518,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <span>Export HTML</span>
       </button>
 
-      <button class="btn btn-topbar" onclick="toggleTheme()" id="themeToggleBtn" title="Toggle Theme">
+      <button class="btn btn-topbar" onclick="toggleTheme()" id="themeToggleBtn" title="Toggle color theme" aria-label="Toggle color theme">
         <svg id="themeIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
       </button>
     </div>
@@ -1076,7 +1545,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Studio Product Tabs -->
+  <div class="studio-shell">
+  <!-- Manifest navigation -->
   <div class="product-tabs-bar">
     <button class="tab-btn active" onclick="switchTab('overview')">
       <span class="tab-step">01</span>
@@ -1143,7 +1613,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
 
       <div class="metric-card">
-        <div class="metric-icon-box" style="color: #10b981;">
+        <div class="metric-icon-box" style="color: var(--success);">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
         </div>
         <div>
@@ -1153,7 +1623,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
 
       <div class="metric-card">
-        <div class="metric-icon-box" style="color: #f59e0b;">
+        <div class="metric-icon-box" style="color: var(--warning);">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         </div>
         <div>
@@ -1163,7 +1633,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
 
       <div class="metric-card">
-        <div class="metric-icon-box" style="color: #ec4899;">
+        <div class="metric-icon-box" style="color: var(--brand-pink);">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
         </div>
         <div>
@@ -1378,6 +1848,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
   </main>
+  </div>
+
+  <footer class="manifest-status">
+    <span class="ok">agent.yaml validated</span>
+    <span>__STAT_AGENTS__ agents</span>
+    <span>__STAT_WORKFLOWS__ workflows</span>
+    <span>__STAT_PROVIDERS__ providers</span>
+    <span>__STAT_TOOLS__ tools</span>
+    <span class="spacer"></span>
+    <span>GET /agent-ui/spec</span>
+  </footer>
 
   <!-- Slide-Over Drawer for Node Inspection -->
   <div class="drawer-overlay" id="nodeDrawerOverlay" onclick="closeNodeDrawer()"></div>
@@ -1396,7 +1877,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <!-- Toast Notification -->
   <div class="toast" id="toast">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
     <span id="toastMsg">Copied to clipboard</span>
   </div>
 
@@ -1404,6 +1885,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const SPEC = __SPEC_JSON__;
 
     function init() {
+      initializeTheme();
       renderOverview();
       renderWorkflows();
       renderAgents();
@@ -1428,10 +1910,32 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (activeBtn) activeBtn.classList.add('active');
     }
 
+    function applyTheme(theme, persist = false) {
+      document.body.setAttribute('data-theme', theme);
+      const button = document.getElementById('themeToggleBtn');
+      if (button) {
+        const nextLabel = theme === 'dark' ? 'Use light theme' : 'Use dark theme';
+        button.setAttribute('title', nextLabel);
+        button.setAttribute('aria-label', nextLabel);
+      }
+      if (persist) {
+        try { localStorage.setItem('algen-agent-ui-theme', theme); } catch (error) { /* storage unavailable */ }
+      }
+    }
+
+    function initializeTheme() {
+      let storedTheme = null;
+      try { storedTheme = localStorage.getItem('algen-agent-ui-theme'); } catch (error) { /* storage unavailable */ }
+      const preferredTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light';
+      applyTheme(storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : preferredTheme);
+    }
+
     function toggleTheme() {
       const current = document.body.getAttribute('data-theme');
       const next = current === 'dark' ? 'light' : 'dark';
-      document.body.setAttribute('data-theme', next);
+      applyTheme(next, true);
     }
 
     function showToast(message) {

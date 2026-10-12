@@ -25,6 +25,7 @@ from algen_agent_runtime.types.contracts import (
     Artifact,
     ArtifactStatus,
     Message,
+    RequestOverrides,
     Role,
     RunRequest,
     RunState,
@@ -37,6 +38,18 @@ from algen_agent_runtime.workflows import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
+
+
+def _jsonb_normalize(value: Any) -> Any:
+    """Approximate PostgreSQL jsonb object-key ordering for the behavioral double."""
+    if isinstance(value, dict):
+        return {
+            key: _jsonb_normalize(value[key])
+            for key in sorted(value, key=lambda item: (len(item.encode()), item.encode()))
+        }
+    if isinstance(value, list):
+        return [_jsonb_normalize(item) for item in value]
+    return value
 
 
 class BehavioralAsyncpgDouble:
@@ -58,11 +71,14 @@ class BehavioralAsyncpgDouble:
                 key = (str(args[1]), str(args[0]))
                 if key in self.runs:
                     raise ConflictError(f"run {args[0]!r} already exists")
+                state = str(args[3])
+                if "::jsonb" in q:
+                    state = json.dumps(_jsonb_normalize(json.loads(state)))
                 self.runs[key] = {
                     "id": str(args[0]),
                     "tenant_id": str(args[1]),
                     "version": int(args[2]),
-                    "state": str(args[3]),
+                    "state": state,
                     "updated_at": datetime.now(UTC),
                 }
                 return "INSERT 0 1"
@@ -73,7 +89,10 @@ class BehavioralAsyncpgDouble:
                 if row is None or row["version"] != int(args[4]):
                     return "UPDATE 0"
                 row["version"] = int(args[0])
-                row["state"] = str(args[1])
+                state = str(args[1])
+                if "::jsonb" in q:
+                    state = json.dumps(_jsonb_normalize(json.loads(state)))
+                row["state"] = state
                 row["updated_at"] = datetime.now(UTC)
                 return "UPDATE 1"
 
@@ -308,6 +327,45 @@ async def test_postgres_run_store_lifecycle_and_tenant_isolation(storage_db: Any
     # Stale version raises ConflictError
     with pytest.raises(ConflictError, match="concurrently modified"):
         await store.save(fetched_a, expected_version=0)
+
+
+@pytest.mark.asyncio
+async def test_postgres_run_store_preserves_request_object_key_order(storage_db: Any) -> None:
+    schema_properties = {
+        "status": {"type": "string"},
+        "standalone_request": {"type": "string"},
+        "analysis_kind": {"type": "string"},
+        "tasks": {"type": "array"},
+    }
+    metadata = {"trace_label": "planner", "x": "first", "workflow_name": "routing"}
+    state = _make_run("run-ordered-json", "tenant-ordered-json")
+    state.request = state.request.model_copy(
+        update={
+            "metadata": metadata,
+            "overrides": RequestOverrides(
+                response_schema={
+                    "type": "object",
+                    "properties": schema_properties,
+                    "required": ["status", "standalone_request"],
+                }
+            ),
+        }
+    )
+    store = PostgresRunStore(storage_db)
+
+    await store.create(state)
+    created = await store.get(state.id, state.request.tenant_id)
+    assert created is not None
+    assert created.request.overrides.response_schema is not None
+    assert list(created.request.overrides.response_schema["properties"]) == list(schema_properties)
+    assert list(created.request.metadata) == list(metadata)
+
+    await store.save(created, expected_version=0)
+    saved = await store.get(state.id, state.request.tenant_id)
+    assert saved is not None
+    assert saved.request.overrides.response_schema is not None
+    assert list(saved.request.overrides.response_schema["properties"]) == list(schema_properties)
+    assert list(saved.request.metadata) == list(metadata)
 
 
 @pytest.mark.asyncio

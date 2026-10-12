@@ -1,0 +1,2327 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description"
+        content="Official documentation for Algen Agent Runtime, a typed, provider-neutral Python runtime for governed AI agents.">
+    <title>Algen Agent Runtime Documentation</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f7f8f6;
+            --surface: #ffffff;
+            --surface-2: #f0f3ef;
+            --surface-3: #e7ece8;
+            --text: #17221d;
+            --muted: #5e6c65;
+            --faint: #89958f;
+            --line: #d9e0dc;
+            --line-strong: #bac6c0;
+            --brand: #0b756f;
+            --brand-strong: #075d58;
+            --brand-soft: #dcefed;
+            --lime: #b9dd66;
+            --amber: #a46b06;
+            --amber-soft: #f7ebce;
+            --red: #b64235;
+            --code-bg: #13201b;
+            --code-text: #dcebe3;
+            --code-muted: #87a194;
+            --header-h: 58px;
+            --nav-w: 266px;
+            --toc-w: 220px;
+            --content-w: 780px;
+            --shadow: 0 12px 35px rgba(22, 42, 32, .08);
+            --font: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+            --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        }
+
+        html[data-theme="dark"] {
+            color-scheme: dark;
+            --bg: #111713;
+            --surface: #171f1a;
+            --surface-2: #1d2822;
+            --surface-3: #26332c;
+            --text: #e8eee9;
+            --muted: #a6b4ac;
+            --faint: #78877f;
+            --line: #2d3b34;
+            --line-strong: #44564d;
+            --brand: #66cbc2;
+            --brand-strong: #91e1d9;
+            --brand-soft: #173c37;
+            --lime: #c9ec7a;
+            --amber: #efbd58;
+            --amber-soft: #3d321b;
+            --red: #f08a7e;
+            --code-bg: #0b100d;
+            --code-text: #dcebe3;
+            --shadow: 0 18px 45px rgba(0, 0, 0, .25);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-h) + 28px);
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font: 15px/1.65 var(--font);
+            letter-spacing: 0;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        button {
+            color: inherit;
+        }
+
+        a {
+            color: var(--brand);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--brand-strong);
+        }
+
+        code,
+        kbd {
+            font-family: var(--mono);
+        }
+
+        .skip-link {
+            position: fixed;
+            z-index: 100;
+            top: 8px;
+            left: 8px;
+            padding: 8px 12px;
+            background: var(--text);
+            color: var(--bg);
+            transform: translateY(-150%);
+        }
+
+        .skip-link:focus {
+            transform: none;
+        }
+
+        .topbar {
+            position: fixed;
+            z-index: 40;
+            inset: 0 0 auto;
+            height: var(--header-h);
+            display: grid;
+            grid-template-columns: var(--nav-w) minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 20px;
+            padding: 0 22px;
+            border-bottom: 1px solid var(--line);
+            background: color-mix(in srgb, var(--surface) 92%, transparent);
+            backdrop-filter: blur(15px);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+        }
+
+        .brand img {
+            width: 190px;
+            height: 34px;
+            object-fit: contain;
+            object-position: left center;
+        }
+
+        .logo-dark {
+            display: none;
+        }
+
+        html[data-theme="dark"] .logo-light {
+            display: none;
+        }
+
+        html[data-theme="dark"] .logo-dark {
+            display: block;
+        }
+
+        .top-search {
+            justify-self: center;
+            width: min(520px, 100%);
+            height: 36px;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 0 11px;
+            border: 1px solid var(--line);
+            background: var(--surface-2);
+            color: var(--muted);
+            cursor: pointer;
+        }
+
+        .top-search:hover {
+            border-color: var(--line-strong);
+        }
+
+        .top-search svg {
+            width: 16px;
+        }
+
+        .top-search span {
+            flex: 1;
+            text-align: left;
+        }
+
+        kbd {
+            padding: 2px 6px;
+            border: 1px solid var(--line-strong);
+            border-bottom-width: 2px;
+            border-radius: 4px;
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .version-pill {
+            height: 30px;
+            display: flex;
+            align-items: center;
+            padding: 0 9px;
+            border: 1px solid var(--line);
+            background: var(--surface-2);
+            color: var(--muted);
+            font: 11px var(--mono);
+        }
+
+        .version-select {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .version-select select {
+            height: 30px;
+            padding: 0 25px 0 9px;
+            border: 1px solid var(--line);
+            border-radius: 0;
+            background: var(--surface-2);
+            color: var(--text);
+            font: 11px var(--mono);
+            appearance: none;
+            cursor: pointer;
+        }
+
+        .version-select select:hover {
+            border-color: var(--line-strong);
+        }
+
+        .version-select select:focus-visible {
+            outline: 2px solid var(--brand);
+            outline-offset: 1px;
+        }
+
+        .version-select::after {
+            content: "▾";
+            position: absolute;
+            right: 9px;
+            color: var(--muted);
+            font-size: 10px;
+            pointer-events: none;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        .icon-btn {
+            width: 34px;
+            height: 34px;
+            display: grid;
+            place-items: center;
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        .icon-btn:hover {
+            border-color: var(--line);
+            background: var(--surface-2);
+        }
+
+        .icon-btn svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .mobile-menu {
+            display: none;
+        }
+
+        .sidebar {
+            position: fixed;
+            z-index: 30;
+            top: var(--header-h);
+            bottom: 0;
+            left: 0;
+            width: var(--nav-w);
+            overflow-y: auto;
+            padding: 23px 18px 36px 22px;
+            border-right: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .nav-group {
+            margin-bottom: 25px;
+        }
+
+        .nav-group h2 {
+            margin: 0 0 7px 10px;
+            color: var(--faint);
+            font: 700 10px/1.3 var(--mono);
+            text-transform: uppercase;
+        }
+
+        .nav-link {
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 10px;
+            border-left: 2px solid transparent;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .nav-link svg {
+            width: 15px;
+            height: 15px;
+            flex: none;
+        }
+
+        .nav-link:hover {
+            background: var(--surface-2);
+            color: var(--text);
+        }
+
+        .nav-link.active {
+            border-left-color: var(--brand);
+            background: var(--brand-soft);
+            color: var(--brand-strong);
+            font-weight: 700;
+        }
+
+        .nav-status {
+            margin: 15px 10px 0;
+            padding: 12px;
+            border: 1px solid var(--line);
+            background: var(--surface-2);
+        }
+
+        .nav-status strong {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            background: var(--amber);
+            border-radius: 50%;
+        }
+
+        .nav-status p {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.45;
+        }
+
+        .layout {
+            min-height: 100vh;
+            padding: calc(var(--header-h) + 34px) calc(var(--toc-w) + 42px) 100px calc(var(--nav-w) + 42px);
+        }
+
+        main {
+            width: min(100%, var(--content-w));
+            margin: 0 auto;
+        }
+
+        .page-kicker {
+            margin-bottom: 12px;
+            color: var(--brand);
+            font: 700 11px var(--mono);
+            text-transform: uppercase;
+        }
+
+        h1,
+        h2,
+        h3 {
+            letter-spacing: 0;
+            line-height: 1.18;
+        }
+
+        h1 {
+            max-width: 700px;
+            margin: 0;
+            font-size: clamp(36px, 5vw, 58px);
+            font-weight: 650;
+        }
+
+        h2 {
+            margin: 66px 0 16px;
+            padding-top: 4px;
+            font-size: 28px;
+            font-weight: 650;
+        }
+
+        h3 {
+            margin: 32px 0 10px;
+            font-size: 18px;
+        }
+
+        .lead {
+            max-width: 720px;
+            margin: 20px 0 24px;
+            color: var(--muted);
+            font-size: 18px;
+            line-height: 1.65;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 26px 0 30px;
+        }
+
+        .button {
+            min-height: 40px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 15px;
+            border: 1px solid var(--line-strong);
+            color: var(--text);
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .button:hover {
+            background: var(--surface-2);
+            color: var(--text);
+        }
+
+        .button.primary {
+            border-color: var(--brand);
+            background: var(--brand);
+            color: #fff;
+        }
+
+        .button svg {
+            width: 16px;
+        }
+
+        .signal-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            border: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .signal {
+            min-height: 90px;
+            padding: 16px;
+            border-right: 1px solid var(--line);
+        }
+
+        .signal:last-child {
+            border-right: 0;
+        }
+
+        .signal span {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--faint);
+            font: 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .signal strong {
+            display: block;
+            font-size: 14px;
+        }
+
+        .signal small {
+            color: var(--muted);
+        }
+
+        .callout {
+            margin: 24px 0;
+            display: grid;
+            grid-template-columns: 4px 1fr;
+            border: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .callout::before {
+            content: "";
+            background: var(--brand);
+        }
+
+        .callout.warning::before {
+            background: var(--amber);
+        }
+
+        .callout-body {
+            padding: 16px 18px;
+        }
+
+        .callout-title {
+            margin-bottom: 4px;
+            font-weight: 750;
+        }
+
+        .callout p {
+            margin: 0;
+            color: var(--muted);
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin: 22px 0;
+        }
+
+        .feature {
+            min-height: 150px;
+            padding: 19px;
+            border: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .feature-icon {
+            width: 32px;
+            height: 32px;
+            display: grid;
+            place-items: center;
+            margin-bottom: 18px;
+            background: var(--brand-soft);
+            color: var(--brand-strong);
+        }
+
+        .feature-icon svg {
+            width: 17px;
+        }
+
+        .feature h3 {
+            margin: 0 0 7px;
+            font-size: 15px;
+        }
+
+        .feature p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .steps {
+            margin: 24px 0;
+            border-left: 1px solid var(--line-strong);
+        }
+
+        .step {
+            position: relative;
+            padding: 0 0 30px 30px;
+        }
+
+        .step:last-child {
+            padding-bottom: 0;
+        }
+
+        .step-num {
+            position: absolute;
+            top: -2px;
+            left: -14px;
+            width: 27px;
+            height: 27px;
+            display: grid;
+            place-items: center;
+            border: 1px solid var(--line-strong);
+            border-radius: 50%;
+            background: var(--bg);
+            color: var(--brand);
+            font: 700 10px var(--mono);
+        }
+
+        .step h3 {
+            margin: 0 0 7px;
+        }
+
+        .step p {
+            margin: 0 0 12px;
+            color: var(--muted);
+        }
+
+        .code-block {
+            position: relative;
+            margin: 16px 0 24px;
+            border: 1px solid #2d3c35;
+            background: var(--code-bg);
+            color: var(--code-text);
+            box-shadow: var(--shadow);
+        }
+
+        .code-head {
+            height: 39px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 9px 0 15px;
+            border-bottom: 1px solid #314139;
+            color: var(--code-muted);
+            font: 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .copy-btn {
+            height: 28px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 8px;
+            border: 1px solid #405249;
+            background: transparent;
+            color: var(--code-muted);
+            cursor: pointer;
+            font: 10px var(--mono);
+        }
+
+        .copy-btn:hover {
+            color: var(--code-text);
+        }
+
+        pre {
+            margin: 0;
+            padding: 18px;
+            overflow-x: auto;
+            font: 12px/1.7 var(--mono);
+            tab-size: 4;
+        }
+
+        .tok-key {
+            color: #8bd5ca;
+        }
+
+        .tok-string {
+            color: #d6dc8b;
+        }
+
+        .tok-type {
+            color: #c7a7ea;
+        }
+
+        .tok-comment {
+            color: #789286;
+        }
+
+        .tabset {
+            margin: 20px 0;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .tab {
+            padding: 9px 13px;
+            border: 0;
+            border-bottom: 2px solid transparent;
+            background: none;
+            color: var(--muted);
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .tab[aria-selected="true"] {
+            border-bottom-color: var(--brand);
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        .tab-panel[hidden] {
+            display: none;
+        }
+
+        .flow {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            align-items: stretch;
+            margin: 22px 0;
+            border: 1px solid var(--line);
+        }
+
+        .flow-node {
+            position: relative;
+            min-height: 105px;
+            padding: 14px 12px;
+            border-right: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .flow-node:last-child {
+            border-right: 0;
+        }
+
+        .flow-node:not(:last-child)::after {
+            content: "›";
+            position: absolute;
+            z-index: 2;
+            top: 37px;
+            right: -9px;
+            width: 18px;
+            height: 24px;
+            display: grid;
+            place-items: center;
+            background: var(--surface);
+            color: var(--brand);
+            font-size: 20px;
+        }
+
+        .flow-node span {
+            color: var(--brand);
+            font: 10px var(--mono);
+        }
+
+        .flow-node strong {
+            display: block;
+            margin: 9px 0 4px;
+            font-size: 12px;
+        }
+
+        .flow-node small {
+            color: var(--muted);
+            line-height: 1.35;
+        }
+
+        .contract-table {
+            width: 100%;
+            margin: 20px 0;
+            border-collapse: collapse;
+            border: 1px solid var(--line);
+            background: var(--surface);
+            font-size: 13px;
+        }
+
+        .contract-table th,
+        .contract-table td {
+            padding: 11px 13px;
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .contract-table th {
+            background: var(--surface-2);
+            color: var(--muted);
+            font: 700 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .contract-table td:first-child {
+            font-family: var(--mono);
+            color: var(--brand-strong);
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font: 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .status::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--brand);
+        }
+
+        .status.experimental::before {
+            background: var(--amber);
+        }
+
+        .doc-links {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 22px;
+        }
+
+        .doc-link {
+            min-height: 86px;
+            padding: 15px;
+            border: 1px solid var(--line);
+            background: var(--surface);
+            color: var(--text);
+        }
+
+        .doc-link:hover {
+            border-color: var(--brand);
+            color: var(--text);
+        }
+
+        .doc-link strong {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 13px;
+        }
+
+        .doc-link span {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .release-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 9px;
+            margin: 0 0 10px;
+        }
+
+        .release-badge {
+            padding: 3px 7px;
+            background: var(--brand-soft);
+            color: var(--brand-strong);
+            font: 700 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .release-badge.older {
+            background: var(--amber-soft);
+            color: var(--amber);
+        }
+
+        .release-meta {
+            color: var(--faint);
+            font: 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .release-summary {
+            max-width: 720px;
+            margin: 0;
+            color: var(--muted);
+        }
+
+        .release-group {
+            margin-top: 18px;
+            border: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        .release-group h4 {
+            margin: 0;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--line);
+            background: var(--surface-2);
+            color: var(--muted);
+            font: 700 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .release-group ul {
+            margin: 0;
+            padding: 14px 18px 15px 34px;
+        }
+
+        .release-group li {
+            margin-bottom: 9px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .release-group li:last-child {
+            margin-bottom: 0;
+        }
+
+        .release-group li strong {
+            color: var(--text);
+        }
+
+        .release-history {
+            display: grid;
+            gap: 8px;
+            margin-top: 22px;
+        }
+
+        .release-history button {
+            display: grid;
+            grid-template-columns: 96px 1fr auto;
+            align-items: center;
+            gap: 12px;
+            padding: 11px 13px;
+            border: 1px solid var(--line);
+            background: var(--surface);
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .release-history button:hover {
+            border-color: var(--brand);
+        }
+
+        .release-history button[aria-current="true"] {
+            border-color: var(--brand);
+            background: var(--brand-soft);
+        }
+
+        .release-history code {
+            color: var(--brand-strong);
+            font-size: 12px;
+        }
+
+        .release-history span {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .release-history em {
+            color: var(--faint);
+            font: normal 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .page-footer {
+            margin-top: 72px;
+            padding-top: 20px;
+            border-top: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .toc {
+            position: fixed;
+            z-index: 10;
+            top: calc(var(--header-h) + 34px);
+            right: 20px;
+            width: var(--toc-w);
+            max-height: calc(100vh - var(--header-h) - 60px);
+            overflow: auto;
+        }
+
+        .toc h2 {
+            margin: 0 0 12px;
+            padding: 0;
+            color: var(--faint);
+            font: 700 10px var(--mono);
+            text-transform: uppercase;
+        }
+
+        .toc a {
+            display: block;
+            padding: 5px 0 5px 12px;
+            border-left: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .toc a:hover,
+        .toc a.active {
+            border-left-color: var(--brand);
+            color: var(--brand-strong);
+        }
+
+        .search-dialog {
+            width: min(650px, calc(100vw - 28px));
+            padding: 0;
+            border: 1px solid var(--line-strong);
+            background: var(--surface);
+            color: var(--text);
+            box-shadow: 0 25px 80px rgba(0, 0, 0, .25);
+        }
+
+        .search-dialog::backdrop {
+            background: rgba(8, 14, 10, .52);
+            backdrop-filter: blur(3px);
+        }
+
+        .search-input-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 13px 16px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .search-input-wrap svg {
+            width: 18px;
+            color: var(--muted);
+        }
+
+        #searchInput {
+            width: 100%;
+            border: 0;
+            outline: 0;
+            background: transparent;
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        .search-results {
+            max-height: 420px;
+            overflow: auto;
+            padding: 8px;
+        }
+
+        .search-result {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 32px 1fr auto;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            border: 0;
+            background: transparent;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .search-result:hover,
+        .search-result.active {
+            background: var(--surface-2);
+        }
+
+        .result-mark {
+            width: 30px;
+            height: 30px;
+            display: grid;
+            place-items: center;
+            background: var(--brand-soft);
+            color: var(--brand);
+            font: 700 11px var(--mono);
+        }
+
+        .search-result strong {
+            display: block;
+            font-size: 13px;
+        }
+
+        .search-result small {
+            color: var(--muted);
+        }
+
+        .search-result em {
+            color: var(--faint);
+            font: normal 10px var(--mono);
+        }
+
+        .search-empty {
+            padding: 36px;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .search-foot {
+            display: flex;
+            gap: 14px;
+            padding: 9px 15px;
+            border-top: 1px solid var(--line);
+            color: var(--faint);
+            font-size: 10px;
+        }
+
+        .scrim {
+            display: none;
+        }
+
+        @media (max-width: 1180px) {
+            :root {
+                --toc-w: 0px;
+            }
+
+            .toc {
+                display: none;
+            }
+
+            .layout {
+                padding-right: 38px;
+            }
+        }
+
+        @media (max-width: 800px) {
+            :root {
+                --header-h: 62px;
+            }
+
+            .topbar {
+                grid-template-columns: auto minmax(0, 1fr) auto auto;
+                gap: 6px;
+                padding: 0 10px;
+            }
+
+            .mobile-menu {
+                display: grid;
+            }
+
+            .brand img {
+                width: min(142px, 100%);
+            }
+
+            .top-search {
+                width: 36px;
+                justify-self: end;
+                padding: 0;
+                justify-content: center;
+                border-color: transparent;
+                background: transparent;
+            }
+
+            .top-search span,
+            .top-search kbd,
+            .github-btn {
+                display: none;
+            }
+
+            .version-select select {
+                padding: 0 22px 0 7px;
+                font-size: 10px;
+            }
+
+            .release-history button {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+
+            .top-actions {
+                gap: 0;
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform .2s ease;
+                box-shadow: var(--shadow);
+            }
+
+            body.nav-open .sidebar {
+                transform: none;
+            }
+
+            .scrim {
+                position: fixed;
+                z-index: 20;
+                inset: var(--header-h) 0 0;
+                background: rgba(0, 0, 0, .35);
+            }
+
+            body.nav-open .scrim {
+                display: block;
+            }
+
+            .layout {
+                padding: calc(var(--header-h) + 28px) 18px 70px;
+            }
+
+            h1 {
+                font-size: 38px;
+            }
+
+            h2 {
+                margin-top: 50px;
+                font-size: 25px;
+            }
+
+            .signal-row,
+            .feature-grid,
+            .doc-links {
+                grid-template-columns: 1fr;
+            }
+
+            .signal {
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .signal:last-child {
+                border-bottom: 0;
+            }
+
+            .flow {
+                grid-template-columns: 1fr;
+            }
+
+            .flow-node {
+                min-height: auto;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .flow-node:not(:last-child)::after {
+                top: auto;
+                right: 50%;
+                bottom: -12px;
+                transform: rotate(90deg);
+            }
+
+            .contract-table {
+                display: block;
+                overflow-x: auto;
+                white-space: nowrap;
+            }
+        }
+
+        @media print {
+
+            .topbar,
+            .sidebar,
+            .toc,
+            .hero-actions,
+            .copy-btn {
+                display: none !important;
+            }
+
+            .layout {
+                padding: 20px;
+            }
+
+            main {
+                width: 100%;
+            }
+
+            body {
+                background: #fff;
+                color: #111;
+            }
+
+            section {
+                break-inside: avoid;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            *,
+            *::before,
+            *::after {
+                scroll-behavior: auto !important;
+                transition-duration: 1ms !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <a class="skip-link" href="#main">Skip to documentation</a>
+    <header class="topbar">
+        <button class="icon-btn mobile-menu" id="menuButton" aria-label="Open navigation" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+        </button>
+        <a class="brand" href="#overview" aria-label="Algen Agent Runtime documentation home">
+            <img class="logo-light" src="assets/brand/logo-light.svg" alt="Algen Agent Runtime">
+            <img class="logo-dark" src="assets/brand/logo-dark.svg" alt="Algen Agent Runtime">
+        </a>
+        <button class="top-search" id="searchButton" aria-label="Search documentation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16 16 4 4" />
+            </svg>
+            <span>Search the runtime docs</span><kbd>⌘ K</kbd>
+        </button>
+        <div class="top-actions">
+            <div class="version-select">
+                <label class="sr-only" for="versionSelect">Documentation version</label>
+                <select id="versionSelect" title="Documentation version">
+                    <option value="0.1.0a4">v0.1.0a4 · latest</option>
+                    <option value="0.1.0a3">v0.1.0a3</option>
+                    <option value="0.1.0a2">v0.1.0a2</option>
+                </select>
+            </div>
+            <a class="icon-btn github-btn" href="https://github.com/AlgenAI/algen-agent-runtime"
+                aria-label="GitHub repository" title="GitHub repository">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path
+                        d="M15 22v-4c.14-1.33-.47-2.62-1.5-3.5 3.5-.4 7.18-1.72 7.18-7.78A6.1 6.1 0 0 0 19.06 2.5 5.65 5.65 0 0 0 18.9 0S17.63-.42 15 1.61a14 14 0 0 0-7 0C5.37-.42 4.1 0 4.1 0a5.65 5.65 0 0 0-.16 2.5 6.1 6.1 0 0 0-1.62 4.22c0 6.05 3.68 7.38 7.18 7.78A4.6 4.6 0 0 0 8 18v4" />
+                    <path d="M8 19c-3 .92-3-1.5-4.2-2" />
+                </svg>
+            </a>
+            <button class="icon-btn" id="themeButton" aria-label="Switch to dark theme" title="Toggle theme">
+                <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <circle cx="12" cy="12" r="4" />
+                    <path
+                        d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
+        <nav>
+            <div class="nav-group">
+                <h2>Start</h2>
+                <a class="nav-link active" href="#overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M4 5h16v14H4zM8 9h8M8 13h5" />
+                    </svg>Overview</a>
+                <a class="nav-link" href="#install"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14" />
+                    </svg>Install</a>
+                <a class="nav-link" href="#quickstart"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="m13 3-9 11h7l-1 7 9-11h-7z" />
+                    </svg>Quickstart</a>
+                <a class="nav-link" href="#releases"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M4 4h16v6H4zM4 14h16v6H4M8 7h.01M8 17h.01" />
+                    </svg>What's new</a>
+            </div>
+            <div class="nav-group">
+                <h2>Build</h2>
+                <a class="nav-link" href="#execution"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <circle cx="5" cy="12" r="2" />
+                        <circle cx="19" cy="5" r="2" />
+                        <circle cx="19" cy="19" r="2" />
+                        <path d="M7 12h5c3 0 3-7 5-7M12 12c3 0 3 7 5 7" />
+                    </svg>Execution model</a>
+                <a class="nav-link" href="#configuration"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M4 6h16M7 6v12M17 6v12M4 18h16" />
+                    </svg>Configuration</a>
+                <a class="nav-link" href="#workflows"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <rect x="3" y="4" width="6" height="6" />
+                        <rect x="15" y="14" width="6" height="6" />
+                        <path d="M9 7h4a5 5 0 0 1 5 5v2" />
+                    </svg>Workflows</a>
+                <a class="nav-link" href="#agent-ui" data-version-min="0.1.0a4"><svg viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor">
+                        <rect x="3" y="4" width="18" height="16" />
+                        <path d="M3 9h18M8 13h8M8 16h5" />
+                    </svg>Agent Manifest UI</a>
+            </div>
+            <div class="nav-group">
+                <h2>Govern</h2>
+                <a class="nav-link" href="#governance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />
+                        <path d="m9 12 2 2 4-5" />
+                    </svg>Policies & approvals</a>
+                <a class="nav-link" href="#tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path
+                            d="m14 7 3-3 3 3-3 3M10 17l-3 3-3-3 3-3M17 10v3a4 4 0 0 1-4 4H7M7 14v-3a4 4 0 0 1 4-4h6" />
+                    </svg>Tools & MCP</a>
+            </div>
+            <div class="nav-group">
+                <h2>Operate</h2>
+                <a class="nav-link" href="#persistence"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <ellipse cx="12" cy="5" rx="8" ry="3" />
+                        <path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" />
+                    </svg>State & persistence</a>
+                <a class="nav-link" href="#observability"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
+                    </svg>Observability</a>
+                <a class="nav-link" href="#production"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path
+                            d="M12 3v4M5.6 5.6l2.8 2.8M3 12h4m-1.4 6.4 2.8-2.8M12 21v-4m6.4 1.4-2.8-2.8M21 12h-4m1.4-6.4-2.8 2.8" />
+                        <circle cx="12" cy="12" r="3" />
+                    </svg>Production guide</a>
+            </div>
+            <div class="nav-group">
+                <h2>Reference</h2>
+                <a class="nav-link" href="#reference"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z" />
+                        <path d="M8 17h11M9 8h6M9 12h6" />
+                    </svg>API map</a>
+                <a class="nav-link" href="#resources"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path
+                            d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1" />
+                    </svg>Deep dives</a>
+            </div>
+        </nav>
+        <div class="nav-status"><strong><span class="status-dot"></span>Pre-alpha release</strong>
+            <p>Evaluate and contribute. Review production gaps before deployment.</p>
+        </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+
+    <div class="layout">
+        <main id="main">
+            <section id="overview" data-title="Overview"
+                data-keywords="runtime introduction provider neutral governed agents">
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a4</span></div>
+                <h1>Build governed agents. Own the runtime.</h1>
+                <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
+                    execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
+                </p>
+                <div class="callout warning" id="versionNotice" hidden>
+                    <div class="callout-body">
+                        <div class="callout-title" id="versionNoticeTitle"></div>
+                        <p id="versionNoticeBody"></p>
+                    </div>
+                </div>
+                <div class="hero-actions">
+                    <a class="button primary" href="#quickstart">Run the quickstart <span
+                            aria-hidden="true">→</span></a>
+                    <a class="button" href="algen-runtime-architecture-atlas.html">Explore architecture <span
+                            aria-hidden="true">↗</span></a>
+                </div>
+                <div class="signal-row" aria-label="Runtime status">
+                    <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
+                            FastAPI service</small></div>
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a4 ·
+                            pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
+                            experimental</small></div>
+                    <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
+                            source</small></div>
+                </div>
+                <div class="callout warning">
+                    <div class="callout-body">
+                        <div class="callout-title">Evaluate before production</div>
+                        <p>This release is a pre-alpha, single-node foundation. Secure deployment, infrastructure
+                            hardening, and operational controls remain operator responsibilities. Start with the
+                            production-readiness and threat-model guides.</p>
+                    </div>
+                </div>
+
+                <h2 id="why-runtime">One execution contract, end to end</h2>
+                <p>Runtime puts governance in the path of execution instead of around it. Every request, model call,
+                    tool operation, approval, checkpoint, and output moves through typed contracts with tenant and user
+                    context preserved.</p>
+                <div class="feature-grid">
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M4 12h16M12 4v16M7 7l10 10M17 7 7 17" />
+                            </svg></div>
+                        <h3>Provider-neutral routing</h3>
+                        <p>Normalize capabilities, requests, responses, usage, and failures across local and hosted
+                            model providers.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />
+                            </svg></div>
+                        <h3>Governance in execution</h3>
+                        <p>Enforce policies, budgets, permissions, approvals, idempotency, and verification at runtime
+                            boundaries.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <ellipse cx="12" cy="5" rx="8" ry="3" />
+                                <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+                            </svg></div>
+                        <h3>Durable by contract</h3>
+                        <p>Checkpoint runs and workflows, resume approvals, reconcile side effects, and persist events
+                            without coupling to one store.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
+                            </svg></div>
+                        <h3>Evidence built in</h3>
+                        <p>Emit structured events, immutable audit records, metrics, traces, and redacted telemetry
+                            through OpenTelemetry.</p>
+                    </article>
+                </div>
+            </section>
+
+            <section id="releases" data-title="What's new"
+                data-keywords="release notes changelog versions 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                <h2>What's new</h2>
+                <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
+                    entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
+                <div class="release-head">
+                    <span class="release-badge" id="releaseBadge"></span>
+                    <span class="release-meta" id="releaseMeta"></span>
+                </div>
+                <h3 id="releaseTitle"></h3>
+                <p class="release-summary" id="releaseSummary"></p>
+                <div id="releaseGroups"></div>
+                <h3>Release history</h3>
+                <div class="release-history" id="releaseHistory"></div>
+            </section>
+
+            <section id="install" data-title="Install" data-keywords="pip package extras python setup">
+                <h2>Install</h2>
+                <p>Install the current pre-release from PyPI. Core execution has no provider lock-in; add only the
+                    integrations your deployment needs.</p>
+                <div class="tabset" data-tabs>
+                    <div class="tabs" role="tablist" aria-label="Install method">
+                        <button class="tab" role="tab" aria-selected="true" data-tab="pip">pip</button>
+                        <button class="tab" role="tab" aria-selected="false" data-tab="extras">Extras</button>
+                        <button class="tab" role="tab" aria-selected="false" data-tab="source">Source</button>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="pip">
+                        <div class="code-block">
+                            <div class="code-head"><span>Shell</span><button class="copy-btn">Copy</button></div>
+                            <pre><code data-version-field="pip">python -m pip install --pre algen-agent-runtime</code></pre>
+                        </div>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="extras" hidden>
+                        <div class="code-block">
+                            <div class="code-head"><span>Shell</span><button class="copy-btn">Copy</button></div>
+                            <pre><code>python -m pip install --pre 'algen-agent-runtime[postgres,redis,auth]'
+python -m pip install --pre 'algen-agent-runtime[mcp]'
+python -m pip install --pre 'algen-agent-runtime[frameworks]'</code></pre>
+                        </div>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="source" hidden>
+                        <div class="code-block">
+                            <div class="code-head"><span>Shell</span><button class="copy-btn">Copy</button></div>
+                            <pre><code>git clone https://github.com/AlgenAI/algen-agent-runtime.git
+cd algen-agent-runtime
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="quickstart" data-title="Quickstart"
+                data-keywords="first agent offline mock RunRequest configuration">
+                <h2>Five-minute offline quickstart</h2>
+                <p>The deterministic mock provider requires no credentials, network access, or paid model calls. This
+                    makes the same first run suitable for local exploration and CI.</p>
+                <div class="steps">
+                    <div class="step"><span class="step-num">01</span>
+                        <h3>Define configuration</h3>
+                        <p>Declare a provider deployment and an agent. Configuration is strictly validated; unknown
+                            fields fail fast.</p>
+                    </div>
+                    <div class="step"><span class="step-num">02</span>
+                        <h3>Build the composition root</h3>
+                        <p><code>build_container</code> wires runtime strategies and adapters from settings without
+                            hiding ownership.</p>
+                    </div>
+                    <div class="step"><span class="step-num">03</span>
+                        <h3>Submit a typed run</h3>
+                        <p>The request carries agent identity, input, tenant, and user context through every execution
+                            boundary.</p>
+                    </div>
+                </div>
+                <div class="code-block">
+                    <div class="code-head"><span>quickstart.py</span><button class="copy-btn">Copy</button></div>
+                    <pre><code><span class="tok-key">import</span> asyncio
+
+<span class="tok-key">from</span> algen_agent_runtime.config.settings <span class="tok-key">import</span> AppSettings
+<span class="tok-key">from</span> algen_agent_runtime.orchestration.container <span class="tok-key">import</span> build_container
+<span class="tok-key">from</span> algen_agent_runtime.runtime.client <span class="tok-key">import</span> AlgenAgentRuntimeClient
+<span class="tok-key">from</span> algen_agent_runtime.types.contracts <span class="tok-key">import</span> RunRequest
+
+<span class="tok-key">async def</span> <span class="tok-type">main</span>() -> <span class="tok-type">None</span>:
+    settings = AppSettings.model_validate({
+        <span class="tok-string">"providers"</span>: {
+            <span class="tok-string">"mock"</span>: {<span class="tok-string">"type"</span>: <span class="tok-string">"mock"</span>, <span class="tok-string">"default_model"</span>: <span class="tok-string">"deterministic"</span>}
+        },
+        <span class="tok-string">"agents"</span>: [{
+            <span class="tok-string">"name"</span>: <span class="tok-string">"hello"</span>,
+            <span class="tok-string">"version"</span>: <span class="tok-string">"1.0.0"</span>,
+            <span class="tok-string">"description"</span>: <span class="tok-string">"Offline quickstart agent"</span>,
+            <span class="tok-string">"system_instructions"</span>: <span class="tok-string">"Answer concisely."</span>,
+            <span class="tok-string">"default_model"</span>: {
+                <span class="tok-string">"name"</span>: <span class="tok-string">"default"</span>,
+                <span class="tok-string">"provider"</span>: <span class="tok-string">"mock"</span>,
+                <span class="tok-string">"model"</span>: <span class="tok-string">"deterministic"</span>,
+            },
+        }],
+    })
+    container = build_container(settings)
+    <span class="tok-key">try</span>:
+        result = <span class="tok-key">await</span> AlgenAgentRuntimeClient(container.runtime).run(
+            RunRequest(
+                agent=<span class="tok-string">"hello"</span>, input=<span class="tok-string">"Hello"</span>,
+                tenant_id=<span class="tok-string">"quickstart"</span>, user_id=<span class="tok-string">"local-user"</span>,
+            )
+        )
+        print(result.output)
+    <span class="tok-key">finally</span>:
+        <span class="tok-key">await</span> container.aclose()
+
+asyncio.run(main())</code></pre>
+                </div>
+                <div class="callout">
+                    <div class="callout-body">
+                        <div class="callout-title">Expected output</div>
+                        <p><code>Hello</code> — deterministic, credential-free, and suitable for an offline test.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="execution" data-title="Execution model"
+                data-keywords="lifecycle state machine planner router verifier tools">
+                <h2>Execution model</h2>
+                <p>The native runtime owns legal state transitions. Strategies can be replaced, but they cannot bypass
+                    the execution contract: input policy runs before planning, model routing follows capability
+                    discovery, side effects pass through the governed tool executor, and output verification is bounded.
+                </p>
+                <div class="flow" aria-label="Runtime execution flow">
+                    <div class="flow-node"><span>01</span><strong>Validate</strong><small>Identity, request, input
+                            policy</small></div>
+                    <div class="flow-node"><span>02</span><strong>Prepare</strong><small>Context and strict plan</small>
+                    </div>
+                    <div class="flow-node"><span>03</span><strong>Execute</strong><small>Model routing and tools</small>
+                    </div>
+                    <div class="flow-node"><span>04</span><strong>Verify</strong><small>Output policy and repair</small>
+                    </div>
+                    <div class="flow-node"><span>05</span><strong>Commit</strong><small>Checkpoint, audit,
+                            response</small></div>
+                </div>
+                <div class="callout">
+                    <div class="callout-body">
+                        <div class="callout-title">Durability is the source of truth</div>
+                        <p>Active asyncio tasks are an optimization. Checkpoints, versions, tool reservations, approval
+                            states, and workflow fingerprints define recoverable execution.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="configuration" data-title="Configuration"
+                data-keywords="yaml environment settings precedence strict">
+                <h2>Configuration</h2>
+                <p>Settings merge in a deliberate order: built-in defaults, YAML files, nested
+                    <code>ALGEN_AGENT_RUNTIME__</code> environment variables, then deployment overrides. Request
+                    overrides should be explicitly allowlisted by operators.</p>
+                <div class="code-block">
+                    <div class="code-head"><span>agent.yaml</span><button class="copy-btn">Copy</button></div>
+                    <pre><code><span class="tok-key">providers</span>:
+  <span class="tok-key">local</span>:
+    <span class="tok-key">type</span>: <span class="tok-string">mock</span>
+    <span class="tok-key">default_model</span>: <span class="tok-string">deterministic</span>
+
+<span class="tok-key">agents</span>:
+  - <span class="tok-key">name</span>: <span class="tok-string">assistant</span>
+    <span class="tok-key">version</span>: <span class="tok-string">1.0.0</span>
+    <span class="tok-key">description</span>: <span class="tok-string">Governed assistant</span>
+    <span class="tok-key">system_instructions</span>: <span class="tok-string">Answer with cited evidence.</span>
+    <span class="tok-key">default_model</span>:
+      <span class="tok-key">name</span>: <span class="tok-string">default</span>
+      <span class="tok-key">provider</span>: <span class="tok-string">local</span>
+      <span class="tok-key">model</span>: <span class="tok-string">deterministic</span></code></pre>
+                </div>
+            </section>
+
+            <section id="workflows" data-title="Workflows"
+                data-keywords="multi agent DAG map join child workflow checkpoints">
+                <h2>Multi-agent workflows</h2>
+                <p>Runtime-owned DAGs compose agent nodes, deterministic handlers, dynamic fan-out, predicates, joins,
+                    bounded loops, repair, and exact-version child workflows. Node outputs remain individually
+                    addressable and checkpointed.</p>
+                <table class="contract-table">
+                    <thead>
+                        <tr>
+                            <th>Node</th>
+                            <th>Purpose</th>
+                            <th>Runtime guarantee</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>agent</td>
+                            <td>Invoke a registered agent definition.</td>
+                            <td>Typed input/output and child run lineage.</td>
+                        </tr>
+                        <tr>
+                            <td>map-agent</td>
+                            <td>Fan out over bounded input items.</td>
+                            <td>Deterministic collection and concurrency limits.</td>
+                        </tr>
+                        <tr>
+                            <td>handler</td>
+                            <td>Run trusted application logic.</td>
+                            <td>Registered action kinds only.</td>
+                        </tr>
+                        <tr>
+                            <td>join</td>
+                            <td>Combine upstream evidence.</td>
+                            <td>Explicit dependencies and addressable outputs.</td>
+                        </tr>
+                        <tr>
+                            <td>child workflow</td>
+                            <td>Compose an exact trusted version.</td>
+                            <td>Parent/root lineage and duplicate-safe reconciliation.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="agent-ui" data-title="Agent Manifest UI"
+                data-keywords="visualizer swagger agent.yaml DAG canvas export-ui agent-ui spec playground"
+                data-version-min="0.1.0a4">
+                <h2>Agent Manifest UI</h2>
+                <p>Added in 0.1.0a4, the Agent Manifest UI is a Swagger-style visualizer for <code>agent.yaml</code>. It
+                    reads validated settings and renders the agent catalog, workflow DAG, provider and model matrix,
+                    tools and MCP servers, retrieval stores, and a read-only execution view. Output is self-contained
+                    HTML with no CDN dependency.</p>
+                <div class="tabset" data-tabs>
+                    <div class="tabs" role="tablist" aria-label="Agent UI mode">
+                        <button class="tab" role="tab" aria-selected="true" data-tab="static">Static export</button>
+                        <button class="tab" role="tab" aria-selected="false" data-tab="served">Served endpoint</button>
+                        <button class="tab" role="tab" aria-selected="false" data-tab="uiconfig">Config</button>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="static">
+                        <div class="code-block">
+                            <div class="code-head"><span>Shell</span><button class="copy-btn">Copy</button></div>
+                            <pre><code>algen-agent-runtime ui --config agent.yaml --output agent-ui.html --open
+
+<span class="tok-comment"># export-ui is an alias of ui; use '-' to write HTML to stdout</span>
+algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
+                        </div>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="served" hidden>
+                        <div class="code-block">
+                            <div class="code-head"><span>Shell</span><button class="copy-btn">Copy</button></div>
+                            <pre><code>algen-agent-runtime serve --ui
+
+<span class="tok-comment"># GET /agent-ui        interactive page (alias: /ui)</span>
+<span class="tok-comment"># GET /agent-ui/spec   structured JSON manifest</span></code></pre>
+                        </div>
+                    </div>
+                    <div class="tab-panel" role="tabpanel" data-panel="uiconfig" hidden>
+                        <div class="code-block">
+                            <div class="code-head"><span>agent.yaml</span><button class="copy-btn">Copy</button></div>
+                            <pre><code><span class="tok-key">api</span>:
+  <span class="tok-key">agent_ui_enabled</span>: <span class="tok-string">true</span>
+  <span class="tok-key">agent_ui_path</span>: <span class="tok-string">/agent-ui</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+                <div class="callout warning">
+                    <div class="callout-body">
+                        <div class="callout-title">Keep the served UI internal</div>
+                        <p>The UI route is disabled by default and returns 404 with guidance when disabled. It renders
+                            configuration detail, so expose it only on trusted networks and behind your own access
+                            controls.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="governance" data-title="Policies and approvals"
+                data-keywords="governance policy approval budget tenant permissions">
+                <h2>Policies & approvals</h2>
+                <p>Governance is evaluated at explicit boundaries, not inferred from prompts. Input and output policies,
+                    model permissions, query permissions, budgets, tool classifications, and human approval decisions
+                    remain separately auditable.</p>
+                <div class="feature-grid">
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="m9 12 2 2 4-5M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />
+                            </svg></div>
+                        <h3>Policy gates</h3>
+                        <p>Check tenant, user, permission, model, source, purpose, budget, and output rules with stable
+                            denial codes.</p>
+                    </article>
+                    <article class="feature">
+                        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z" />
+                            </svg></div>
+                        <h3>Durable approvals</h3>
+                        <p>Persist pause state before returning control. Resume with attributed approve, reject, or
+                            modify decisions.</p>
+                    </article>
+                </div>
+            </section>
+
+            <section id="tools" data-title="Tools and MCP"
+                data-keywords="ToolDefinition executor idempotency side effect MCP">
+                <h2>Tools & MCP</h2>
+                <p>Every callable becomes a typed <code>ToolDefinition</code>. The executor validates arguments, checks
+                    permissions, reserves idempotency, handles approval, records outcomes, and redacts results.
+                    Side-effecting tools are never response-cached.</p>
+                <table class="contract-table">
+                    <thead>
+                        <tr>
+                            <th>Classification</th>
+                            <th>Meaning</th>
+                            <th>Execution posture</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>read-only</td>
+                            <td>No externally visible mutation.</td>
+                            <td>May be cacheable under explicit policy.</td>
+                        </tr>
+                        <tr>
+                            <td>idempotent</td>
+                            <td>Repeated execution has the same effect.</td>
+                            <td>Uses deterministic reservation and replay.</td>
+                        </tr>
+                        <tr>
+                            <td>non-idempotent</td>
+                            <td>Mutation may be unsafe to repeat.</td>
+                            <td>Persist before execution; reconcile interruption.</td>
+                        </tr>
+                        <tr data-version-max="0.1.0a2">
+                            <td>MCP client</td>
+                            <td>Remote tools normalized into Runtime definitions. Wired from Python over
+                                <code>stdio</code> and legacy <code>sse</code>.</td>
+                            <td><span class="status experimental">Experimental</span></td>
+                        </tr>
+                        <tr data-version-min="0.1.0a3">
+                            <td>MCP client</td>
+                            <td>Declarative <code>mcp_servers</code> config over <code>stdio</code>,
+                                <code>streamable_http</code>, and legacy <code>sse</code>.</td>
+                            <td><span class="status">Supported</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div data-version-min="0.1.0a3">
+                    <h3>Declarative MCP servers</h3>
+                    <p>Since 0.1.0a3, MCP servers are declared in YAML and started with the container. Remote transports
+                        go through DNS-pinned safe egress, sensitive headers must be <code>env://</code> references, and
+                        operator <code>tool_policies</code> outrank server annotations, which are distrusted by default.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-head"><span>agent.yaml</span><button class="copy-btn">Copy</button></div>
+                        <pre><code><span class="tok-key">mcp_servers</span>:
+  - <span class="tok-key">name</span>: <span class="tok-string">local-files</span>
+    <span class="tok-key">transport</span>: <span class="tok-string">stdio</span>
+    <span class="tok-key">command</span>: <span class="tok-string">npx</span>
+    <span class="tok-key">args</span>: [<span class="tok-string">-y</span>, <span class="tok-string">"@modelcontextprotocol/server-filesystem"</span>, <span class="tok-string">/workspace</span>]
+    <span class="tok-key">allowed_tools</span>: [<span class="tok-string">read_file</span>, <span class="tok-string">list_directory</span>]
+    <span class="tok-key">required</span>: <span class="tok-string">true</span>
+
+  - <span class="tok-key">name</span>: <span class="tok-string">inventory</span>
+    <span class="tok-key">transport</span>: <span class="tok-string">streamable_http</span>
+    <span class="tok-key">url</span>: <span class="tok-string">https://mcp.example.com/mcp</span>
+    <span class="tok-key">auth_token_ref</span>: <span class="tok-string">env://MCP_INVENTORY_TOKEN</span>
+    <span class="tok-key">allowed_tools</span>: [<span class="tok-string">lookup_item</span>, <span class="tok-string">update_stock</span>]
+    <span class="tok-key">tool_policies</span>:
+      <span class="tok-key">update_stock</span>:
+        <span class="tok-key">side_effect</span>: <span class="tok-string">write</span>
+        <span class="tok-key">idempotency</span>: <span class="tok-string">non_idempotent</span></code></pre>
+                    </div>
+                    <div class="callout warning">
+                        <div class="callout-body">
+                            <div class="callout-title">Stdio servers are unsandboxed</div>
+                            <p><code>stdio</code> commands run as trusted operator code on the host without process
+                                isolation. Declare only commands you control. See <a href="mcp.md">the MCP guide</a> for
+                                the full schema and trust model.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="persistence" data-title="State and persistence"
+                data-keywords="postgres redis memory artifacts S3 checkpoint stores">
+                <h2>State & persistence</h2>
+                <p>Ports keep execution semantics independent from infrastructure. In-memory adapters support local use
+                    and deterministic tests; PostgreSQL and Redis cover durable records, checkpoints, leases, and
+                    expiring session state. Artifact bytes can live in encrypted S3-compatible storage while lifecycle
+                    metadata remains transactional.</p>
+                <table class="contract-table">
+                    <thead>
+                        <tr>
+                            <th>Layer</th>
+                            <th>Default</th>
+                            <th>Optional adapter</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>run records & events</td>
+                            <td>In memory</td>
+                            <td>PostgreSQL</td>
+                        </tr>
+                        <tr>
+                            <td>checkpoints & sessions</td>
+                            <td>In memory</td>
+                            <td>Redis / PostgreSQL</td>
+                        </tr>
+                        <tr>
+                            <td>artifact metadata</td>
+                            <td>In memory</td>
+                            <td>PostgreSQL</td>
+                        </tr>
+                        <tr>
+                            <td>artifact bytes</td>
+                            <td>In memory</td>
+                            <td>Encrypted S3-compatible storage</td>
+                        </tr>
+                        <tr>
+                            <td>retrieval</td>
+                            <td>Hashing embedder</td>
+                            <td>Registered vector-store adapters</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="observability" data-title="Observability"
+                data-keywords="OpenTelemetry OTLP Traccia metrics traces audit events">
+                <h2>Observability</h2>
+                <p>Runtime emits structured lifecycle events, immutable audit contracts, logs, metrics, and traces.
+                    Redaction happens before export. OpenTelemetry and OTLP remain the vendor-neutral baseline; Traccia
+                    is an optional lifecycle and identity integration.</p>
+                <div class="callout">
+                    <div class="callout-body">
+                        <div class="callout-title">Audit is not logging</div>
+                        <p>Diagnostic logs can change for operations. Audit records are stable evidence contracts with
+                            identity, correlation, policy, decision, and execution attribution.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="production" data-title="Production guide"
+                data-keywords="deployment security readiness threat model hardening">
+                <h2>Production guide</h2>
+                <p>Pre-alpha does not mean prototype, but it does mean deployment claims must stay narrow. Before
+                    serving external traffic, validate the complete operator boundary.</p>
+                <div class="steps">
+                    <div class="step"><span class="step-num">01</span>
+                        <h3>Threat-model the deployment</h3>
+                        <p>Define trust boundaries for API clients, model providers, tool processes, MCP servers,
+                            stores, artifacts, and telemetry exporters.</p>
+                    </div>
+                    <div class="step"><span class="step-num">02</span>
+                        <h3>Externalize durable state</h3>
+                        <p>Configure production stores, migrations, backups, retention, reconciliation, and
+                            tenant-isolation verification.</p>
+                    </div>
+                    <div class="step"><span class="step-num">03</span>
+                        <h3>Constrain every egress path</h3>
+                        <p>Use secret references, outbound allowlists, TLS verification, safe transports, request
+                            limits, and provider-specific timeouts.</p>
+                    </div>
+                    <div class="step"><span class="step-num">04</span>
+                        <h3>Prove recovery</h3>
+                        <p>Exercise worker interruption, approval resume, duplicate delivery, tool indeterminacy,
+                            workflow fingerprint mismatch, and store degradation.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="reference" data-title="API map" data-keywords="modules contracts runtime packages reference">
+                <h2>API map</h2>
+                <p>The default composition root is intentionally singular. Public contracts stay provider-neutral;
+                    adapters live at the edges.</p>
+                <table class="contract-table">
+                    <thead>
+                        <tr>
+                            <th>Package</th>
+                            <th>Ownership</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>types</td>
+                            <td>Normalized public contracts and identities.</td>
+                            <td><span class="status">Core</span></td>
+                        </tr>
+                        <tr>
+                            <td>runtime</td>
+                            <td>Legal state transitions and termination.</td>
+                            <td><span class="status">Core</span></td>
+                        </tr>
+                        <tr>
+                            <td>policies / tools</td>
+                            <td>Governance strategies and side-effect control.</td>
+                            <td><span class="status">Core</span></td>
+                        </tr>
+                        <tr>
+                            <td>workflows</td>
+                            <td>Typed multi-agent DAG execution.</td>
+                            <td><span class="status">Core</span></td>
+                        </tr>
+                        <tr>
+                            <td>models / persistence</td>
+                            <td>Provider and infrastructure adapters.</td>
+                            <td><span class="status">Adapters</span></td>
+                        </tr>
+                        <tr data-version-min="0.1.0a3">
+                            <td>mcp</td>
+                            <td>Declarative MCP client, transports, and tool mapping.</td>
+                            <td><span class="status">Adapters</span></td>
+                        </tr>
+                        <tr>
+                            <td>frameworks</td>
+                            <td>Trusted outer adapters for external frameworks. Registration is explicit; Runtime never
+                                auto-dispatches agents into them.</td>
+                            <td><span class="status experimental">Optional</span></td>
+                        </tr>
+                        <tr data-version-min="0.1.0a4">
+                            <td>ui</td>
+                            <td>Agent manifest spec extraction and static UI generation.</td>
+                            <td><span class="status experimental">Optional</span></td>
+                        </tr>
+                        <tr>
+                            <td>orchestration</td>
+                            <td>Default settings-driven composition root.</td>
+                            <td><span class="status">Core</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="resources" data-title="Deep dives"
+                data-keywords="architecture artifacts RAG operations API stability docs">
+                <h2>Deep dives</h2>
+                <p>Continue into focused design and operational guides from the repository documentation.</p>
+                <div class="doc-links">
+                    <a class="doc-link" href="architecture.md"><strong>Architecture & decisions
+                            →</strong><span>Boundaries, execution flow, durability, and configuration.</span></a>
+                    <a class="doc-link" href="multi-agent-workflows.md"><strong>Multi-agent workflows
+                            →</strong><span>DAG contracts, recovery, child workflows, and lifecycle events.</span></a>
+                    <a class="doc-link" href="production-readiness.md"><strong>Production readiness
+                            →</strong><span>Current guarantees, gaps, deployment posture, and roadmap.</span></a>
+                    <a class="doc-link" href="threat-model.md"><strong>Threat model →</strong><span>Assets, actors,
+                            trust boundaries, threats, and mitigations.</span></a>
+                    <a class="doc-link" href="rag.md"><strong>Retrieval & citations →</strong><span>Indexing, tenant
+                            filtering, untrusted context, and verification.</span></a>
+                    <a class="doc-link" href="artifacts.md"><strong>Artifact lifecycle →</strong><span>Staging,
+                            scanning, quarantine, checksums, and retention.</span></a>
+                    <a class="doc-link" href="operations.md"><strong>Operations →</strong><span>Health, migrations,
+                            recovery, telemetry, and runbooks.</span></a>
+                    <a class="doc-link" href="api-stability.md"><strong>API stability →</strong><span>Compatibility
+                            policy for experimental 0.x public surfaces.</span></a>
+                    <a class="doc-link" href="mcp.md" data-version-min="0.1.0a3"><strong>MCP integration
+                            →</strong><span>Transports, declarative servers, governance mapping, and egress.</span></a>
+                    <a class="doc-link" href="framework-adapters.md"><strong>Framework adapters
+                            →</strong><span>Registration, evidence tiers, and governance boundaries.</span></a>
+                    <a class="doc-link" href="../CHANGELOG.md"><strong>Full changelog →</strong><span>Every change
+                            across 0.1.0a1 through the latest pre-release.</span></a>
+                </div>
+            </section>
+
+            <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
+                    data-version-field="version">0.1.0a4</span>.</footer>
+        </main>
+    </div>
+
+    <aside class="toc" aria-label="On this page">
+        <h2>On this page</h2>
+        <nav id="tocNav">
+            <a href="#overview">Overview</a><a href="#why-runtime">Execution contract</a><a href="#releases">What's
+                new</a><a href="#install">Install</a><a href="#quickstart">Quickstart</a><a href="#execution">Execution
+                model</a><a href="#configuration">Configuration</a><a href="#workflows">Workflows</a><a href="#agent-ui"
+                data-version-min="0.1.0a4">Agent Manifest UI</a><a href="#governance">Governance</a><a
+                href="#tools">Tools & MCP</a><a href="#persistence">Persistence</a><a
+                href="#observability">Observability</a><a href="#production">Production</a><a href="#reference">API
+                map</a><a href="#resources">Deep dives</a>
+        </nav>
+    </aside>
+
+    <dialog class="search-dialog" id="searchDialog" aria-label="Search documentation">
+        <div class="search-input-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16 16 4 4" />
+            </svg>
+            <input id="searchInput" type="search" placeholder="Search concepts, guides, and APIs…" autocomplete="off">
+        </div>
+        <div class="search-results" id="searchResults"></div>
+        <div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> Navigate</span><span><kbd>Enter</kbd>
+                Open</span><span><kbd>Esc</kbd> Close</span></div>
+    </dialog>
+
+    <script>
+        const $ = (selector, root = document) => root.querySelector(selector);
+        const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+        const root = document.documentElement;
+        const themeButton = $('#themeButton');
+        const storedTheme = localStorage.getItem('algen-docs-theme');
+        const preferredDark = matchMedia('(prefers-color-scheme: dark)').matches;
+
+        function setTheme(theme) {
+            root.dataset.theme = theme;
+            localStorage.setItem('algen-docs-theme', theme);
+            themeButton.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`);
+        }
+        setTheme(storedTheme || (preferredDark ? 'dark' : 'light'));
+        themeButton.addEventListener('click', () => setTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'));
+
+        const menuButton = $('#menuButton');
+        const closeNav = () => { document.body.classList.remove('nav-open'); menuButton.setAttribute('aria-expanded', 'false'); };
+        menuButton.addEventListener('click', () => {
+            const open = document.body.classList.toggle('nav-open');
+            menuButton.setAttribute('aria-expanded', String(open));
+        });
+        $('#scrim').addEventListener('click', closeNav);
+        $$('.nav-link').forEach(link => link.addEventListener('click', closeNav));
+
+        $$('[data-tabs]').forEach(tabset => {
+            $$('.tab', tabset).forEach(tab => tab.addEventListener('click', () => {
+                $$('.tab', tabset).forEach(item => item.setAttribute('aria-selected', String(item === tab)));
+                $$('.tab-panel', tabset).forEach(panel => panel.hidden = panel.dataset.panel !== tab.dataset.tab);
+            }));
+        });
+
+        $$('.copy-btn').forEach(button => button.addEventListener('click', async () => {
+            const code = $('code', button.closest('.code-block')).innerText;
+            await navigator.clipboard.writeText(code);
+            const prior = button.textContent;
+            button.textContent = 'Copied';
+            setTimeout(() => button.textContent = prior, 1400);
+        }));
+
+        const sections = $$('main section[id]');
+        const navLinks = $$('.nav-link');
+        const tocLinks = $$('#tocNav a');
+        const observer = new IntersectionObserver(entries => {
+            const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+            if (!visible) return;
+            const id = visible.target.id;
+            navLinks.forEach(link => link.classList.toggle('active', link.hash === `#${id}`));
+            tocLinks.forEach(link => link.classList.toggle('active', link.hash === `#${id}`));
+        }, { rootMargin: '-20% 0px -68% 0px', threshold: [0, .1, .5] });
+        sections.forEach(section => observer.observe(section));
+
+        const dialog = $('#searchDialog');
+        const searchInput = $('#searchInput');
+        const searchResults = $('#searchResults');
+        const buildSearchItems = () => sections.filter(section => !section.hidden).map(section => ({
+            id: section.id,
+            title: section.dataset.title,
+            keywords: section.dataset.keywords || '',
+            description: ($('p', section)?.textContent || '').slice(0, 95)
+        }));
+        let resultIndex = 0;
+
+        function renderResults(query = '') {
+            const normalized = query.trim().toLowerCase();
+            const results = buildSearchItems().filter(item => `${item.title} ${item.keywords} ${item.description}`.toLowerCase().includes(normalized));
+            resultIndex = 0;
+            searchResults.innerHTML = results.length ? results.map((item, index) => `
+        <button class="search-result ${index === 0 ? 'active' : ''}" data-id="${item.id}">
+          <span class="result-mark">${String(index + 1).padStart(2, '0')}</span>
+          <span><strong>${item.title}</strong><small>${item.description}</small></span><em>Guide</em>
+        </button>`).join('') : '<div class="search-empty">No documentation matched that search.</div>';
+            $$('.search-result', searchResults).forEach(button => button.addEventListener('click', () => openResult(button.dataset.id)));
+        }
+        function openSearch() { renderResults(); dialog.showModal(); requestAnimationFrame(() => searchInput.focus()); }
+        function openResult(id) { dialog.close(); location.hash = id; $(`#${id}`).scrollIntoView(); }
+        function moveResult(direction) {
+            const results = $$('.search-result', searchResults);
+            if (!results.length) return;
+            resultIndex = (resultIndex + direction + results.length) % results.length;
+            results.forEach((result, index) => result.classList.toggle('active', index === resultIndex));
+            results[resultIndex].scrollIntoView({ block: 'nearest' });
+        }
+        $('#searchButton').addEventListener('click', openSearch);
+        searchInput.addEventListener('input', event => renderResults(event.target.value));
+        searchInput.addEventListener('keydown', event => {
+            if (event.key === 'ArrowDown') { event.preventDefault(); moveResult(1); }
+            if (event.key === 'ArrowUp') { event.preventDefault(); moveResult(-1); }
+            if (event.key === 'Enter') { event.preventDefault(); const active = $('.search-result.active', searchResults); if (active) openResult(active.dataset.id); }
+        });
+        document.addEventListener('keydown', event => {
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); dialog.open ? dialog.close() : openSearch(); }
+        });
+        dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+
+        /* ----- Versioned documentation ----- */
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4'];
+        const LATEST_VERSION = '0.1.0a4';
+        const RELEASES = {
+            '0.1.0a4': {
+                date: '2026-09-24',
+                kind: 'Manifest UI and lifecycle correctness',
+                title: 'Agent Manifest UI, adapter lifecycles, and validation hardening',
+                summary: 'Adds a Swagger-style manifest visualizer for agents and workflows, puts framework adapters and workflow hooks under container lifecycle management, tightens manifest validation, and drops the deprecated rate-limit alias.',
+                fields: {
+                    tag: 'v0.1.0a4',
+                    package: '0.1.0a4 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a4',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Agent Manifest UI.</strong> Interactive browser UI and DAG canvas for inspecting, visualizing, and testing <code>agent.yaml</code> specifications and multi-agent workflows.',
+                            '<strong>Static export.</strong> <code>algen-agent-runtime ui</code> and <code>export-ui</code> generate self-contained HTML with no external or CDN dependencies.',
+                            '<strong>Served endpoints.</strong> <code>/agent-ui</code> page (alias <code>/ui</code>) and <code>/agent-ui/spec</code> JSON manifest, enabled by <code>api.agent_ui_enabled: true</code> or <code>serve --ui</code>.',
+                            '<strong>Manifest views.</strong> Agent catalog, workflow DAG topology, provider and model matrix, tools and MCP servers, retrieval stores, read-only execution, and raw <code>agent.yaml</code>.',
+                            '<strong>Adapter lifecycles.</strong> Registered <code>framework_adapters</code> are container lifecycle resources; <code>start()</code> runs on <code>container.astart()</code> and <code>aclose()</code> on <code>container.aclose()</code>.',
+                            '<strong>Hook teardown.</strong> <code>LoadedHookProvider</code> and <code>WorkflowHookLoader</code> gained async <code>aclose()</code> so factory-managed resources close on shutdown.',
+                            '<strong>Placeholder delimiter validation.</strong> Manifest loading rejects unmatched <code>{{</code> or <code>}}</code> template delimiters.',
+                            '<strong>Contribution rules.</strong> Root <code>AGENTS.md</code> plus <code>CONTRIBUTING.md</code> cover DCO signoff, optional-dependency test isolation, PostgreSQL and Redis persistence constraints, and Gitleaks secret scanning.'
+                        ]
+                    },
+                    {
+                        kind: 'Removed', items: [
+                            '<strong>Obsolete rate-limit alias.</strong> <code>max_concurrent_runs_per_tenant</code> is gone. Use <code>max_concurrent_run_requests_per_tenant</code>; configurations that still set the old key are rejected with a validation error.'
+                        ]
+                    }
+                ]
+            },
+            '0.1.0a3': {
+                date: '2026-09-24',
+                kind: 'Stabilization and integration',
+                title: 'Functional MCP, real OpenAI Agents SDK evidence, and 0.1.0a2 corrections',
+                summary: 'Completes the MCP client as a declarative, governed integration, promotes the OpenAI Agents SDK adapter to a supported surface with credential-free execution evidence, and corrects capability narrowing, request-body limits, examples, and scaffolds.',
+                fields: {
+                    tag: 'v0.1.0a3',
+                    package: '0.1.0a3 · pre-alpha',
+                    packageNote: 'Superseded by 0.1.0a4',
+                    version: '0.1.0a3',
+                    pip: "python -m pip install --pre 'algen-agent-runtime==0.1.0a3'"
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Declarative MCP servers.</strong> <code>mcp_servers</code> configuration with <code>stdio</code>, <code>streamable_http</code>, and legacy <code>sse</code> transports on the official <code>mcp&gt;=1.30.0,&lt;2</code> SDK.',
+                            '<strong>Safe remote transport.</strong> Remote MCP traffic runs through <code>create_safe_http_client</code> and <code>SafeAsyncTransport</code> with DNS pinning, host allowlists, and private-IP blocking.',
+                            '<strong>Secret hygiene.</strong> Literal sensitive headers are rejected in configuration; <code>auth_token_ref</code> and <code>secret_headers</code> require <code>env://</code> references.',
+                            '<strong>Governance precedence.</strong> Operator <code>tool_policies</code> outrank trusted server annotations, which default to distrusted, falling back to <code>SideEffect.EXTERNAL</code> and <code>Idempotency.NON_IDEMPOTENT</code>.',
+                            '<strong>Lifecycle and discovery.</strong> Cursor-paginated tool discovery, optional servers degrading gracefully, clean shutdown, and cancellation-safe execution.',
+                            '<strong>OpenAI Agents SDK promoted.</strong> Real credential-free execution with <code>agents.testing.ScriptedModel</code>, two-turn tool loops, normalized streaming events, cancellation safety, runtime metadata propagation, and an offline pattern example. Durable resume stays unsupported (<code>persistence=False</code>).'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            '<strong>Partial capability narrowing.</strong> Omitted fields in a partial <code>capabilities</code> block now inherit adapter-reported capabilities instead of defaulting to false.',
+                            '<strong>Example configurations.</strong> Provider references repaired to configured instance keys, with automatic discovery validating every shipped <code>agent.yaml</code>.',
+                            '<strong>Streamed request-body limits.</strong> A pure ASGI <code>RequestBodyLimitMiddleware</code> returns 400 for invalid <code>Content-Length</code> and 413 for oversized bodies, enforced on actual wire bytes including chunked requests.',
+                            '<strong>Deterministic example automation.</strong> The customer-support reference example runs with zero input through a committed answers fixture and <code>--answers-file</code>.',
+                            '<strong>Optional-dependency tests.</strong> Import isolation via <code>sys.modules</code> masking plus an <code>optional-integration</code> CI job for <code>[dev,frameworks,mcp,traccia]</code>.',
+                            '<strong>Scaffold correctness.</strong> Workflow manifests and generated projects reject unresolved <code>{{...}}</code> placeholders, and scaffolds enable API rate limiting.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Honest quota naming.</strong> <code>max_concurrent_run_requests_per_tenant</code> bounds in-flight <code>POST /v1/runs</code> request concurrency, not active run lifetimes.',
+                            '<strong>Corrected claims.</strong> Documentation now states that MCP <code>stdio</code> is unsandboxed operator code, and that framework adapters are explicit application registrations rather than automatic native dispatch.'
+                        ]
+                    }
+                ]
+            },
+            '0.1.0a2': {
+                date: '2026-09-22',
+                kind: 'Usability and boundary hardening',
+                title: 'Provider instances, scaffolding, starter tools, and safe egress',
+                summary: 'Adds provider-instance identity, uniform capability narrowing, load-time reference validation, project scaffolding, an opt-in starter tool pack, MCP client foundations, application-registered framework adapters, SSRF-resistant outbound networking, and API admission controls.',
+                fields: {
+                    tag: 'v0.1.0a2',
+                    package: '0.1.0a2 · pre-alpha',
+                    packageNote: 'Superseded by 0.1.0a4',
+                    version: '0.1.0a2',
+                    pip: "python -m pip install --pre 'algen-agent-runtime==0.1.0a2'"
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Provider instance identity.</strong> Multiple deployments of one adapter type coexist with isolated health, rate limiting, cost accounting, and capability caching.',
+                            '<strong>Uniform capability narrowing.</strong> Effective capabilities are the intersection of adapter and configured capabilities; widening fails safe.',
+                            '<strong>Load-time reference validation.</strong> Agent default models, fallbacks, and embedding providers must resolve to configured provider instances.',
+                            '<strong>Project scaffolding.</strong> <code>algen-agent-runtime new &lt;name&gt;</code> generates agent, approval, and workflow projects that run offline.',
+                            '<strong>Starter tool pack.</strong> Bounded calculator, JSON query, rooted file read and directory list, and deterministic clock, disabled by default.',
+                            '<strong>MCP client foundations.</strong> Python-wired <code>stdio</code> and <code>sse</code> tool consumption with namespaced registration and <code>env://</code> secret references.',
+                            '<strong>Framework registration.</strong> LangGraph, OpenAI Agents SDK, AutoGen, and CrewAI adapters register explicitly through <code>build_container(framework_adapters=...)</code>; YAML dotted imports are disallowed.',
+                            '<strong>Safe outbound network.</strong> DNS rebinding windows eliminated by resolving once, validating every address against an SSRF and metadata deny matrix, and pinning connections while preserving TLS SNI.',
+                            '<strong>API admission controls.</strong> Tenant-aware token buckets and in-flight run-creation concurrency with 429 responses and <code>Retry-After</code>.',
+                            '<strong>Hook loader hardening.</strong> Module allowlists are enforced before import, with factory shape checks and sanitized audit provenance.',
+                            '<strong>Storage and worker evidence.</strong> Service-backed PostgreSQL and Redis tests plus distributed worker fencing coverage in CI.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            'Silent collision and overwrite when multiple providers of the same type were configured.',
+                            'Capability cache collisions across different instances of the same provider type.'
+                        ]
+                    }
+                ]
+            }
+        };
+
+        const versionSelect = $('#versionSelect');
+        const versionRank = version => DOC_ORDER.indexOf(version);
+
+        function renderRelease(version) {
+            const release = RELEASES[version];
+            const latest = version === LATEST_VERSION;
+            const badge = $('#releaseBadge');
+            badge.textContent = latest ? `v${version} · latest` : `v${version} · superseded`;
+            badge.classList.toggle('older', !latest);
+            $('#releaseMeta').textContent = `Released ${release.date} · ${release.kind}`;
+            $('#releaseTitle').textContent = release.title;
+            $('#releaseSummary').textContent = release.summary;
+            $('#releaseGroups').innerHTML = release.groups.map(group => `
+        <div class="release-group"><h4>${group.kind}</h4><ul>${group.items.map(item => `<li>${item}</li>`).join('')}</ul></div>`).join('');
+            $('#releaseHistory').innerHTML = [...DOC_ORDER].reverse().map(id => `
+        <button type="button" data-version-jump="${id}" aria-current="${id === version}">
+          <code>v${id}</code><span>${RELEASES[id].title}</span><em>${id === LATEST_VERSION ? 'latest' : RELEASES[id].date}</em>
+        </button>`).join('');
+            $$('[data-version-jump]').forEach(button => button.addEventListener('click', () => setVersion(button.dataset.versionJump)));
+        }
+
+        function applyVersionGates(version) {
+            const current = versionRank(version);
+            $$('[data-version-min], [data-version-max]').forEach(element => {
+                const min = element.dataset.versionMin ? versionRank(element.dataset.versionMin) : 0;
+                const max = element.dataset.versionMax ? versionRank(element.dataset.versionMax) : DOC_ORDER.length - 1;
+                element.hidden = current < min || current > max;
+            });
+        }
+
+        function setVersion(version) {
+            const target = RELEASES[version] ? version : LATEST_VERSION;
+            const release = RELEASES[target];
+            versionSelect.value = target;
+            $$('[data-version-field]').forEach(element => {
+                const value = release.fields[element.dataset.versionField];
+                if (value !== undefined) element.textContent = value;
+            });
+            applyVersionGates(target);
+            renderRelease(target);
+            const notice = $('#versionNotice');
+            notice.hidden = target === LATEST_VERSION;
+            if (!notice.hidden) {
+                $('#versionNoticeTitle').textContent = `You are reading v${target} documentation`;
+                $('#versionNoticeBody').innerHTML = `This version is superseded by v${LATEST_VERSION}, and capabilities introduced later are hidden on this page. <a href="#releases" data-version-latest>Switch to v${LATEST_VERSION}</a>.`;
+                $('[data-version-latest]').addEventListener('click', () => setVersion(LATEST_VERSION));
+            }
+            document.title = `Algen Agent Runtime Documentation · v${target}`;
+            try { localStorage.setItem('algen-docs-version', target); } catch (error) { /* storage unavailable */ }
+            try {
+                const url = new URL(location.href);
+                url.searchParams.set('v', target);
+                history.replaceState(null, '', url);
+            } catch (error) { /* replaceState unavailable on this origin */ }
+        }
+
+        versionSelect.addEventListener('change', event => setVersion(event.target.value));
+
+        let requestedVersion = null;
+        try { requestedVersion = new URL(location.href).searchParams.get('v'); } catch (error) { requestedVersion = null; }
+        if (!requestedVersion) {
+            try { requestedVersion = localStorage.getItem('algen-docs-version'); } catch (error) { requestedVersion = null; }
+        }
+        setVersion(requestedVersion || LATEST_VERSION);
+    </script>
+</body>
+
+</html>

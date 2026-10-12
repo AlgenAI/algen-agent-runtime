@@ -97,6 +97,12 @@ def test_generate_agent_ui_html() -> None:
     assert "algen-agent-studio" in html
     assert "<svg" in html
 
+    # Keep the shipped UI aligned with the Algen Runtime documentation theme and layout.
+    assert "--brand: #755c0a" in html
+    assert 'class="studio-shell"' in html
+    assert 'class="manifest-status"' in html
+    assert "algen-agent-ui-theme" in html
+
 
 def test_export_agent_ui_html(tmp_path: Path) -> None:
     target = tmp_path / "exported-ui.html"
