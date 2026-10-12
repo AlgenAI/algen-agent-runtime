@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a4">v0.1.0a4 · latest</option>
+                    <option value="0.1.0a5">v0.1.0a5 · latest</option>
+                    <option value="0.1.0a4">v0.1.0a4</option>
                     <option value="0.1.0a3">v0.1.0a3</option>
                     <option value="0.1.0a2">v0.1.0a2</option>
                 </select>
@@ -1380,7 +1381,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a4</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a5</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1400,7 +1401,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a4 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a5 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1457,7 +1458,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2017,7 +2018,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a4</span>.</footer>
+                    data-version-field="version">0.1.0a5</span>.</footer>
         </main>
     </div>
 
@@ -2143,9 +2144,36 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4'];
-        const LATEST_VERSION = '0.1.0a4';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5'];
+        const LATEST_VERSION = '0.1.0a5';
         const RELEASES = {
+            '0.1.0a5': {
+                date: '2026-10-12',
+                kind: 'Persistence correctness and visual alignment',
+                title: 'Ordered PostgreSQL state, refreshed manifest UI, and readiness audit',
+                summary: 'Preserves caller-defined object order in PostgreSQL run state, aligns the manifest explorer and existing brand assets with the Algen palette, and reconciles production-readiness claims with the implementation and CI evidence.',
+                fields: {
+                    tag: 'v0.1.0a5',
+                    package: '0.1.0a5 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a5',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Agent Manifest UI.</strong> The self-contained manifest explorer now uses the Runtime documentation\'s warm gold, parchment, and charcoal visual system with responsive navigation, refined cards and DAG canvas, persistent theme preference, and a compact validation status bar.',
+                            '<strong>Runtime brand palette.</strong> Existing logos and banners now use the warm gold, ivory, and charcoal Algen palette without changing their geometry, typography, wording, or composition.',
+                            '<strong>Production readiness.</strong> The roadmap now distinguishes implemented single-node, persistence, readiness, distributed-worker, and release controls from the remaining production gates, and accurately describes current Redis test coverage.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            '<strong>PostgreSQL run-request object order.</strong> Serialized run state is stored as PostgreSQL <code>json</code> instead of <code>jsonb</code>, with a forward migration for existing installations, so order-sensitive JSON Schema properties and request metadata retain caller-defined order across create and save cycles.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a4': {
                 date: '2026-09-24',
                 kind: 'Manifest UI and lifecycle correctness',
@@ -2154,7 +2182,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a4',
                     package: '0.1.0a4 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a5',
                     version: '0.1.0a4',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
