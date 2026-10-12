@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from algen_agent_runtime.models.providers.adapters import AnthropicProvider, OpenAIProvider
 from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
@@ -95,7 +96,8 @@ async def test_openai_maps_namespaced_tool_names_at_provider_boundary() -> None:
     assert response.tool_calls[0].name == "teaching.build_study_plan"
 
 
-async def test_openai_uses_modern_completion_token_parameter() -> None:
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-6"])
+async def test_openai_uses_modern_completion_token_parameter(model: str) -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)
         assert body["max_completion_tokens"] == 256
@@ -112,7 +114,7 @@ async def test_openai_uses_modern_completion_token_parameter() -> None:
 
     provider = OpenAIProvider(
         "env://OPENAI_API_KEY",
-        "gpt-5",
+        model,
         secret_provider=StaticSecrets(),
         client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
     )

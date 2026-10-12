@@ -310,6 +310,24 @@ async def test_clock_tool_deterministic() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clock_utc_works_without_tz_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zoneinfo
+
+    def missing(name: str) -> None:
+        raise zoneinfo.ZoneInfoNotFoundError(name)
+
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", missing)
+    fixed_dt = datetime(2026, 9, 22, 10, 30, 0, tzinfo=UTC)
+    tool = clock_tool(now_fn=lambda: fixed_dt)
+
+    for name in ("UTC", "Etc/UTC"):
+        res = await tool.execute({"timezone": name}, _make_context("clock"))
+        assert res["hour"] == 10
+    with pytest.raises(ValueError, match="unknown timezone"):
+        await tool.execute({"timezone": "America/New_York"}, _make_context("clock"))
+
+
+@pytest.mark.asyncio
 async def test_clock_invalid_timezone() -> None:
     tool = clock_tool()
     ctx = _make_context("clock")

@@ -468,6 +468,18 @@ class AgentRuntime:
     async def _execute_model(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
+        # Providers reject (or silently mishandle) a transcript whose tool calls have no
+        # results, so a planner that skips pending calls is a bug, not a recoverable state.
+        unresolved_call_ids = [
+            call.id
+            for call in state.pending_tool_calls
+            if call.id not in state.completed_tool_call_ids
+        ]
+        if unresolved_call_ids:
+            raise ConflictError(
+                "cannot invoke the model while tool calls are awaiting responses: "
+                + ", ".join(unresolved_call_ids)
+            )
         await self._transition(state, RunStatus.INVOKING_MODEL)
         tool_specs = tuple(
             ToolSpec(

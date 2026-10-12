@@ -3,6 +3,7 @@ import asyncio
 from conftest import make_agent, make_runtime
 
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
+from algen_agent_runtime.planning.planners import DirectPlanner
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.types.contracts import RunRequest, RunStatus
 
@@ -89,3 +90,64 @@ async def test_side_effect_approval_pause_resume() -> None:
         await asyncio.sleep(0.001)
     assert state.status == RunStatus.COMPLETED
     assert calls == 1
+
+
+def _add_tool() -> Tool:
+    return Tool(
+        ToolDefinition(
+            name="math.add",
+            version="1",
+            description="add",
+            input_schema={
+                "type": "object",
+                "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                "required": ["a", "b"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {"sum": {"type": "integer"}},
+                "required": ["sum"],
+            },
+        ),
+        lambda args, ctx: {"sum": args["a"] + args["b"]},
+    )
+
+
+async def test_direct_planner_executes_model_requested_tool_calls() -> None:
+    runtime = make_runtime(
+        MockModelProvider([tool_call_response("math.add", {"a": 2, "b": 3}), "five"]),
+        make_agent(enabled_tools=frozenset({"math.add"}), planning_strategy="direct"),
+    )
+    runtime.tools.register(_add_tool())
+
+    result = await runtime.run(
+        RunRequest(agent="test-agent", input="2+3", tenant_id="t", user_id="u")
+    )
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.output == "five"
+    assert result.execution_summary.tool_calls == 1
+
+
+async def test_model_is_not_invoked_with_unanswered_tool_calls() -> None:
+    class SkippingPlanner:
+        name = "skipping"
+
+        async def plan(self, state, agent):
+            return await DirectPlanner().plan(
+                state.model_copy(update={"pending_tool_calls": []}), agent
+            )
+
+    runtime = make_runtime(
+        MockModelProvider([tool_call_response("math.add", {"a": 2, "b": 3}), "five"]),
+        make_agent(enabled_tools=frozenset({"math.add"}), planning_strategy="skipping"),
+    )
+    runtime.planners.register(SkippingPlanner())
+    runtime.tools.register(_add_tool())
+
+    result = await runtime.run(
+        RunRequest(agent="test-agent", input="2+3", tenant_id="t", user_id="u")
+    )
+
+    assert result.status == RunStatus.FAILED
+    assert result.execution_summary.model_calls == 1

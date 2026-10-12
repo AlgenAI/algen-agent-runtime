@@ -97,7 +97,8 @@ def _scan_dir_sync(
                 except OSError:
                     continue
 
-                rel_path = str(entry_path.resolve().relative_to(resolved_root))
+                # Tool payloads use portable JSON paths regardless of host OS.
+                rel_path = entry_path.resolve().relative_to(resolved_root).as_posix()
                 entry_type = "directory" if is_dir else ("file" if is_file else "other")
                 entries.append(
                     {

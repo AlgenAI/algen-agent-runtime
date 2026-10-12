@@ -113,3 +113,25 @@ async def test_unknown_policy_boundary_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="unknown policy point"):
         await CompositePolicyEngine().evaluate("misspelled_boundary", "hello", {})
+
+
+async def test_pii_redaction_preserves_role_enum_in_model_messages() -> None:
+    decision = await CompositePolicyEngine().evaluate(
+        "before_model",
+        [Message.text(Role.SYSTEM, "Prefer info@algen.ai for HR email")],
+        {},
+    )
+
+    assert decision.action in {PolicyAction.REDACT, PolicyAction.TRANSFORM}
+    assert decision.value[0].role is Role.SYSTEM
+    assert "info@algen.ai" not in decision.value[0].text_content
+
+
+async def test_secret_redaction_preserves_role_enum() -> None:
+    decision = await CompositePolicyEngine().evaluate(
+        "after_retrieval",
+        [Message.text(Role.SYSTEM, "api_key=supersecretvalue")],
+        {},
+    )
+
+    assert decision.value[0].role is Role.SYSTEM
