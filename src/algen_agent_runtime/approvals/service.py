@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import uuid4
@@ -30,7 +30,7 @@ class ApprovalRequest(BaseModel):
     side_effect_summary: str
     redacted_parameters: dict[str, Any]
     risk: str
-    expires_at: Any
+    expires_at: datetime
     status: ApprovalStatus = ApprovalStatus.PENDING
     modified_parameters: dict[str, Any] | None = None
 

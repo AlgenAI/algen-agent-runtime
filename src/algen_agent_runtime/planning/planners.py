@@ -5,10 +5,30 @@ from algen_agent_runtime.types.contracts import AgentDefinition, RunState
 from algen_agent_runtime.types.interfaces import Planner
 
 
+def _pending_tool_actions(state: RunState) -> tuple[PlannedAction, ...]:
+    return tuple(
+        PlannedAction(
+            id=f"tool-{call.id}",
+            type=ActionType.TOOL,
+            description=f"Execute requested tool {call.name}",
+            tool_name=call.name,
+            arguments=call.arguments,
+        )
+        for call in state.pending_tool_calls
+        if call.id not in state.completed_tool_call_ids
+    )
+
+
 class DirectPlanner:
     name = "direct"
 
     async def plan(self, state: RunState, agent: AgentDefinition) -> Plan:
+        calls = _pending_tool_actions(state)
+        if calls:
+            return Plan(
+                actions=calls,
+                decision_summary="Execute pending model-requested tool calls before continuing.",
+            )
         action = ActionType.COMPLETE if state.output_text else ActionType.MODEL
         return Plan(
             actions=(
@@ -28,23 +48,12 @@ class ReActPlanner:
     name = "react"
 
     async def plan(self, state: RunState, agent: AgentDefinition) -> Plan:
-        if state.pending_tool_calls:
-            calls = tuple(
-                PlannedAction(
-                    id=f"tool-{call.id}",
-                    type=ActionType.TOOL,
-                    description=f"Execute requested tool {call.name}",
-                    tool_name=call.name,
-                    arguments=call.arguments,
-                )
-                for call in state.pending_tool_calls
-                if call.id not in state.completed_tool_call_ids
+        calls = _pending_tool_actions(state)
+        if calls:
+            return Plan(
+                actions=calls,
+                decision_summary="Execute validated model-requested tool calls.",
             )
-            if calls:
-                return Plan(
-                    actions=calls,
-                    decision_summary="Execute validated model-requested tool calls.",
-                )
         if state.output_text:
             return Plan(
                 actions=(

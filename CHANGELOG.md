@@ -6,6 +6,19 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Fixed
+
+- **PostgreSQL approval decisions**: `ApprovalRequest.expires_at` is now typed as a `datetime`. It previously came back from the JSON column as a string, so every approve, reject, or modify decision with `approval_store: postgres` failed with a `TypeError`.
+- **Redis run-store conflicts**: A concurrent write between `WATCH` and `EXEC` now raises `ConflictError` instead of leaking redis-py's `WatchError`.
+- **Direct planner tool calls**: The `direct` planner now executes tool calls the model requested instead of calling the model again with unanswered calls. The runtime also refuses to invoke a model while tool calls are unresolved, so a planner bug fails the run instead of sending providers an invalid transcript.
+- **Enum values in redaction**: Secret and PII redaction no longer turn `StrEnum` fields such as `Message.role` into plain strings.
+- **OpenAI `gpt-6` models**: Use `max_completion_tokens`, as for `gpt-5` and o-series models.
+- **Starter tools on minimal hosts**: The clock tool resolves UTC without a system time-zone database, `tzdata` is installed on Windows, and directory listings return POSIX-style relative paths on every OS.
+
+### Changed
+
+- **Live Redis integration tests**: The container integration job now exercises the Redis run, memory, and cache stores against the live Redis 7 service instead of only an in-memory double.
+
 ## [0.1.0a5] - 2026-10-12
 
 ### Changed
