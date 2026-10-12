@@ -27,6 +27,7 @@ from algen_agent_runtime.types.contracts import (
     RunRequest,
     RunState,
     RunStatus,
+    utc_now,
 )
 from algen_agent_runtime.workflows import (
     PostgresWorkflowCheckpointStore,
@@ -240,11 +241,14 @@ async def test_expired_postgres_approval_times_out_paused_run(database: Postgres
         assert state is not None
         state.pause_payload = {"approval_id": approval.id, "tool_call_id": "call-1"}
         await runtime.runs.save(state, state.version)
+    # Write ISO 8601 like the service does; PostgreSQL's timestamptz text form is not ISO.
+    expired_at = (utc_now() - timedelta(minutes=1)).isoformat()
     await db.execute(
         "UPDATE algen_agent_runtime_approvals "
-        "SET approval = jsonb_set(approval, '{expires_at}', to_jsonb((now() - interval '1 minute')::text)) "
+        "SET approval = jsonb_set(approval, '{expires_at}', to_jsonb($2::text)) "
         "WHERE run_id=$1",
         run_id,
+        expired_at,
     )
 
     await runtime.expire_paused_runs()
