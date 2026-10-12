@@ -7,8 +7,49 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from algen_agent_runtime.scaffold import AVAILABLE_TEMPLATES, scaffold_project
+
+if TYPE_CHECKING:
+    from algen_agent_runtime.config.settings import AppSettings
+
+
+def _settings_from_config(config: list[str] | None) -> AppSettings:
+    from algen_agent_runtime.config.settings import AppSettings, load_settings
+
+    config_files: list[str] = []
+    if config:
+        config_files.extend(config)
+    else:
+        env_config = os.getenv("ALGEN_AGENT_RUNTIME_CONFIG", "")
+        if env_config:
+            config_files.extend(filter(None, env_config.split(os.pathsep)))
+    return (
+        load_settings(tuple(Path(item) for item in config_files)) if config_files else AppSettings()
+    )
+
+
+def _run_maintenance(config: list[str] | None = None) -> int:
+    import asyncio
+
+    from algen_agent_runtime.orchestration.container import build_container
+
+    container = build_container(_settings_from_config(config))
+    maintenance = container.maintenance
+    if maintenance is None:
+        raise RuntimeError("runtime container has no maintenance service")
+
+    async def sweep() -> int:
+        # Run recovery is deliberately not started: this process only performs housekeeping.
+        try:
+            report = await maintenance.run_once()
+        finally:
+            await container.aclose()
+        print(report.model_dump_json(indent=2))
+        return 1 if report.errors else 0
+
+    return asyncio.run(sweep())
 
 
 def _run_serve(
@@ -20,19 +61,8 @@ def _run_serve(
     import uvicorn
 
     from algen_agent_runtime.api.app import create_app
-    from algen_agent_runtime.config.settings import AppSettings, load_settings
 
-    config_files: list[str] = []
-    if config:
-        config_files.extend(config)
-    else:
-        env_config = os.getenv("ALGEN_AGENT_RUNTIME_CONFIG", "")
-        if env_config:
-            config_files.extend(filter(None, env_config.split(os.pathsep)))
-
-    settings = (
-        load_settings(tuple(Path(item) for item in config_files)) if config_files else AppSettings()
-    )
+    settings = _settings_from_config(config)
 
     if agent_ui is not None:
         settings = settings.model_copy(
@@ -130,6 +160,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable the built-in Agent YAML UI endpoint at /agent-ui",
     )
 
+    # maintenance command
+    maintenance_parser = subparsers.add_parser(
+        "maintenance",
+        help="Run one housekeeping sweep (paused-run expiry and retention) and exit",
+    )
+    maintenance_parser.add_argument(
+        "--config",
+        nargs="*",
+        default=None,
+        help="Path(s) to configuration YAML file(s)",
+    )
+
     # new command
     new_parser = subparsers.add_parser("new", help="Scaffold a new agent or workflow project")
     new_parser.add_argument("name", help="Name of the new agent or project")
@@ -196,6 +238,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "serve":
         _run_serve(host=args.host, port=args.port, config=args.config, agent_ui=args.agent_ui)
+    elif args.command == "maintenance":
+        sys.exit(_run_maintenance(config=args.config))
     elif args.command in {"ui", "export-ui"}:
         _run_generate_ui(
             config=args.config,

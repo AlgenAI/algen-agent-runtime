@@ -30,6 +30,8 @@ status and unreleased changes are tracked separately in `CHANGELOG.md`.
 - Graceful drain with resumable checkpoints for work interrupted during shutdown.
 - JWT signature, expiry, issuer, and audience validation with tenant and scope claims.
 - Event subscriber backpressure that cannot terminate an agent run.
+- Batched, concurrency-safe maintenance sweeps that expire stale paused runs and enforce opt-in
+  retention for terminal runs and audit events, verified against live PostgreSQL.
 - Policy-transformed request, model, retrieval, tool, memory, and final-response values are propagated.
 - Typed analytical DAGs with separate results, schema checks, retries, budgets, and checkpoints.
 - Versioned analytical methods and non-LLM model-service discovery, health, drift, and fallback.
@@ -81,12 +83,15 @@ status and unreleased changes are tracked separately in `CHANGELOG.md`.
 6. **Strengthen readiness and lifecycle.** The baseline probes model providers and health-capable
    registered resources. Make mandatory dependency declarations explicit; cover every required store,
    retriever, model, MCP server, and telemetry exporter; expose degradation reasons; wire
-   application-owned workflow recovery into each service lifecycle; expire paused runs without user
-   traffic; and test repeated start/drain cycles.
+   application-owned workflow recovery into each service lifecycle; expire paused workflow approvals
+   without user traffic (paused agent runs are expired by the maintenance sweep); and test repeated
+   start/drain cycles.
 7. **Bound every resource.** Request wire sizes, artifact sizes, API request rates, and in-flight
-   run-creation requests are bounded for single-node deployments. Add limits for model context and
-   responses, event history, memory, audit metadata, per-tenant storage, and database growth. Add
-   cleanup jobs for expired memory and stale operational records.
+   run-creation requests are bounded for single-node deployments. The opt-in maintenance sweep purges
+   expired memory and artifacts and deletes terminal runs (with events, approvals, and tool records)
+   and audit events past configured retention windows. Add per-run limits for model responses and
+   event counts, per-tenant storage quotas, and retention for conversations, workflow checkpoints,
+   analytical graphs, and work items.
 
 ## Remaining for hardened multi-worker or horizontally scaled use
 

@@ -249,6 +249,47 @@ class AgentRuntime:
             recovered += 1
         return recovered
 
+    async def expire_paused_runs(
+        self,
+        *,
+        clarification_timeout_seconds: float | None = None,
+        limit: int = 1000,
+    ) -> int:
+        """Time out paused runs that can no longer be resumed or have waited too long.
+
+        A run awaiting approval expires once its approval request has expired (or is
+        missing). A run awaiting clarification expires only when a timeout is supplied.
+        Runs resumed concurrently are skipped through the optimistic version check.
+        """
+        expired = 0
+        now = utc_now()
+        for state in await self.runs.list_active(limit):
+            if state.status == RunStatus.AWAITING_APPROVAL:
+                approval_id = str((state.pause_payload or {}).get("approval_id", ""))
+                approval = await self.approvals.get(approval_id, state.request.tenant_id)
+                if approval is not None and (
+                    approval.status not in {ApprovalStatus.PENDING, ApprovalStatus.EXPIRED}
+                    or (approval.status == ApprovalStatus.PENDING and approval.expires_at > now)
+                ):
+                    continue
+                reason, error = "approval_expired", "Approval request expired."
+            elif state.status == RunStatus.AWAITING_CLARIFICATION:
+                if clarification_timeout_seconds is None or (
+                    (now - state.updated_at).total_seconds() < clarification_timeout_seconds
+                ):
+                    continue
+                reason, error = "clarification_expired", "Clarification was not provided in time."
+            else:
+                continue
+            state.error = error
+            try:
+                await self._transition(state, RunStatus.TIMED_OUT)
+            except ConflictError:
+                continue
+            await self._emit(state, "run.failed", {"reason": reason})
+            expired += 1
+        return expired
+
     async def shutdown(self, grace_seconds: float = 10.0) -> None:
         """Stop accepting runs, drain active work, then cooperatively cancel leftovers."""
         self._accepting_runs = False

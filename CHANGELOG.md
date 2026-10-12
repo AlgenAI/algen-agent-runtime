@@ -6,6 +6,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- **Maintenance sweeps and data retention**: `maintenance` settings and an `algen-agent-runtime maintenance` command, plus an optional background loop in the API process. Each sweep expires paused runs whose approval request has expired (and, if configured, clarifications that waited too long), purges expired memory and artifacts, and, when opted in, deletes terminal runs with their events, approvals, and tool-execution records, and old audit events. Runs with unresolved side effects or an unfinished parent workflow are kept. Sweeps are batched and use `SKIP LOCKED`, so replicas can run them concurrently. Record deletion is off by default.
+- **Retention indexes**: Migration `010_retention_indexes.sql` adds indexes for run age, run-scoped approvals and tool executions, memory expiry, and audit age.
+
 ### Fixed
 
 - **PostgreSQL approval decisions**: `ApprovalRequest.expires_at` is now typed as a `datetime`. It previously came back from the JSON column as a string, so every approve, reject, or modify decision with `approval_store: postgres` failed with a `TypeError`.
