@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a5">v0.1.0a5 · latest</option>
+                    <option value="0.1.0a6">v0.1.0a6 · latest</option>
+                    <option value="0.1.0a5">v0.1.0a5</option>
                     <option value="0.1.0a4">v0.1.0a4</option>
                     <option value="0.1.0a3">v0.1.0a3</option>
                     <option value="0.1.0a2">v0.1.0a2</option>
@@ -1381,7 +1382,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a5</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a6</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1401,7 +1402,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a5 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a6 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1458,7 +1459,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2018,7 +2019,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a5</span>.</footer>
+                    data-version-field="version">0.1.0a6</span>.</footer>
         </main>
     </div>
 
@@ -2144,9 +2145,43 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5'];
-        const LATEST_VERSION = '0.1.0a5';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6'];
+        const LATEST_VERSION = '0.1.0a6';
         const RELEASES = {
+            '0.1.0a6': {
+                date: '2026-10-12',
+                kind: 'Persistence fixes and data retention',
+                title: 'Working PostgreSQL approvals, maintenance sweeps, and live Redis coverage',
+                summary: 'Fixes PostgreSQL-backed approval decisions and Redis write conflicts, adds opt-in maintenance sweeps that expire stale paused runs and enforce data retention, and runs the Redis stores against live Redis in CI.',
+                fields: {
+                    tag: 'v0.1.0a6',
+                    package: '0.1.0a6 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a6',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Maintenance sweeps.</strong> The <code>algen-agent-runtime maintenance</code> command, or an optional background loop enabled with <code>maintenance.enabled</code>, times out runs whose approval expired, purges expired memory and artifacts, and, when retention windows are configured, deletes old terminal runs with their events, approvals, and tool records, and old audit events. Runs with unresolved side effects or an unfinished workflow are kept, and record deletion is off by default.',
+                            '<strong>Retention indexes.</strong> Migration <code>010_retention_indexes.sql</code> adds indexes for run age, run-scoped approvals and tool executions, memory expiry, and audit age.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            '<strong>PostgreSQL approval decisions.</strong> Approval expiry is typed as a datetime; previously every decision with <code>approval_store: postgres</code> failed with a <code>TypeError</code>.',
+                            '<strong>Redis run-store conflicts.</strong> A concurrent write between <code>WATCH</code> and <code>EXEC</code> raises <code>ConflictError</code> instead of redis-py\'s <code>WatchError</code>.',
+                            '<strong>Direct planner tool calls.</strong> The <code>direct</code> planner executes model-requested tool calls, and the runtime refuses to invoke a model while tool calls are unresolved.',
+                            '<strong>Redaction and providers.</strong> Redaction keeps enum values such as message roles, <code>gpt-6</code> uses <code>max_completion_tokens</code>, the clock tool resolves UTC without tzdata, and directory listings return POSIX paths.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Live Redis tests.</strong> CI exercises the Redis run, memory, and cache stores against live Redis 7.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a5': {
                 date: '2026-10-12',
                 kind: 'Persistence correctness and visual alignment',
@@ -2155,7 +2190,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a5',
                     package: '0.1.0a5 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a6',
                     version: '0.1.0a5',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },

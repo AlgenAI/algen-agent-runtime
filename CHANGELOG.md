@@ -6,6 +6,14 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a6] - 2026-10-12
+
+### Upgrade notes
+
+- Deployments using `approval_store: postgres` should upgrade: approval decisions failed in earlier releases (see Fixed).
+- Migration `010_retention_indexes.sql` runs on startup and creates indexes without `CONCURRENTLY`, briefly locking writes on the runs, approvals, tool-execution, memory, and audit tables. On large tables, create the indexes concurrently beforehand (see `docs/operations.md`).
+- Maintenance is opt-in: set `maintenance.enabled: true` or schedule `algen-agent-runtime maintenance`. No records are deleted unless a retention window is configured.
+
 ### Added
 
 - **Maintenance sweeps and data retention**: `maintenance` settings and an `algen-agent-runtime maintenance` command, plus an optional background loop in the API process. Each sweep expires paused runs whose approval request has expired (and, if configured, clarifications that waited too long), purges expired memory and artifacts, and, when opted in, deletes terminal runs with their events, approvals, and tool-execution records, and old audit events. Runs with unresolved side effects or an unfinished parent workflow are kept. Sweeps are batched and use `SKIP LOCKED`, so replicas can run them concurrently. Record deletion is off by default.
@@ -271,7 +279,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a5...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a6...HEAD
+[0.1.0a6]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a5...v0.1.0a6
 [0.1.0a5]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a4...v0.1.0a5
 [0.1.0a4]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...v0.1.0a4
 [0.1.0a3]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a2...v0.1.0a3
