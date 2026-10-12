@@ -295,6 +295,19 @@ class RuntimeSettings(StrictSettings):
     shutdown_grace_seconds: float = Field(default=10.0, ge=0, le=300)
 
 
+class MaintenanceSettings(StrictSettings):
+    """Background housekeeping; record deletion beyond expired data is opt-in."""
+
+    enabled: bool = False
+    interval_seconds: int = Field(default=300, ge=30, le=86_400)
+    batch_size: int = Field(default=500, ge=1, le=10_000)
+    max_batches_per_sweep: int = Field(default=20, ge=1, le=1_000)
+    expire_paused_runs: bool = True
+    clarification_timeout_seconds: int | None = Field(default=None, ge=60)
+    terminal_run_retention_days: int | None = Field(default=None, ge=1)
+    audit_retention_days: int | None = Field(default=None, ge=1)
+
+
 class ConversationPresentationSettings(StrictSettings):
     progress_audience: Literal["business", "developer"] = "business"
     error_audience: Literal["business", "developer"] = "business"
@@ -377,6 +390,7 @@ class AppSettings(StrictSettings):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
+    maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     conversation_presentation: ConversationPresentationSettings = Field(
         default_factory=ConversationPresentationSettings
     )

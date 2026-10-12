@@ -36,6 +36,12 @@ runtime:
   recover_incomplete_runs: true
   recovery_limit: 1000
   shutdown_grace_seconds: 10
+maintenance:
+  enabled: true
+  interval_seconds: 300
+  clarification_timeout_seconds: 604800
+  terminal_run_retention_days: 30
+  # audit_retention_days: 365  # opt-in; keep unset when audit must be retained indefinitely
 conversation_presentation:
   progress_audience: business
   error_audience: business
@@ -79,7 +85,8 @@ deployment-owned identity boundary.
 The schema runner records applied files transactionally. FastAPI startup initializes storage and
 recovers non-paused incomplete runs. Completed tool calls return their persisted result; an
 interrupted side-effecting call becomes `indeterminate` and requires reconciliation rather than
-automatic replay. Approval and clarification waits remain paused across restarts.
+automatic replay. Approval and clarification waits remain paused across restarts until a
+maintenance sweep expires them (see [Maintenance and data retention](#maintenance-and-data-retention)).
 
 Multi-agent workflows use a separate Runtime checkpoint store because their state spans several
 child agent runs. Runtime provides `list_recoverable()` and `executor.recover(...)`; the embedding
@@ -117,6 +124,39 @@ unversioned agent name in `agent.id` and `gen_ai.agent.id`; `agent.version` and
 `gen_ai.agent.version` carry the selected version. `agent.definition.id` contains the versioned
 `name@version` key for reproducibility. Policies and long-lived dashboards should scope by
 `agent.id`, never by `agent.definition.id`.
+
+## Maintenance and data retention
+
+Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
+runs to a terminal state. Run it inside the API process by setting `maintenance.enabled: true`, or
+on a schedule (for example a Kubernetes CronJob) with:
+
+```bash
+algen-agent-runtime maintenance --config agent.yaml
+```
+
+The command prints a JSON report and exits non-zero if any task failed. Each sweep:
+
+| Task | Default | Behavior |
+| --- | --- | --- |
+| Paused approvals | on (`expire_paused_runs`) | A run awaiting approval becomes `timed_out` with a `run.failed` event (`reason: approval_expired`) once its approval request has expired or is missing. |
+| Paused clarifications | off | With `clarification_timeout_seconds` set, a run awaiting clarification longer than that becomes `timed_out` (`reason: clarification_expired`). |
+| Expired memory | on | Deletes PostgreSQL memory rows past `memory_retention_seconds`; readers already ignore them. |
+| Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
+| Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
+| Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |
+
+Terminal-run deletion is conservative. It keeps runs that still have a `started` or `indeterminate`
+tool execution, so operators can reconcile side effects first, and runs that belong to a workflow
+that has not finished. Artifacts follow their own expiry; deleting a run clears their `run_id`.
+Conversations, workflow checkpoints, analytical graphs, and work items are not deleted by the sweep.
+
+Work is done in batches (`batch_size`, `max_batches_per_sweep`) with `FOR UPDATE SKIP LOCKED`, so
+several replicas or a CronJob can sweep concurrently without blocking request traffic or deleting
+the same rows twice. Migration `010_retention_indexes.sql` adds the supporting indexes; on large
+existing tables, create them `CONCURRENTLY` before upgrading to avoid a long write lock. Choose
+retention windows that cover your incident-investigation and compliance needs before enabling
+deletion, and back up the database first.
 
 ## Scoped caching
 

@@ -92,6 +92,7 @@ from algen_agent_runtime.observability.traccia_adapter import (
     ObservabilityAdapter,
     observability_adapter,
 )
+from algen_agent_runtime.orchestration.maintenance import MaintenanceService
 from algen_agent_runtime.persistence.memory import (
     InMemoryArtifactStore,
     InMemoryMemoryStore,
@@ -105,6 +106,7 @@ from algen_agent_runtime.persistence.postgres import (
     PostgresToolExecutionStore,
 )
 from algen_agent_runtime.persistence.redis import RedisMemoryStore, RedisRunStore
+from algen_agent_runtime.persistence.retention import PostgresRetentionSweeper
 from algen_agent_runtime.persistence.s3 import S3ArtifactStore
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.planning.planners import PlannerRegistry
@@ -178,6 +180,8 @@ class Container:
     recover_incomplete_runs: bool = True
     recovery_limit: int = 1000
     shutdown_grace_seconds: float = 10.0
+    maintenance: MaintenanceService | None = None
+    run_maintenance_in_background: bool = False
 
     async def astart(self) -> None:
         self.observability.start()
@@ -203,6 +207,8 @@ class Container:
         if self.recover_incomplete_runs:
             await self.runtime.recover(self.recovery_limit)
             await self.conversations.recover(self.recovery_limit)
+        if self.maintenance is not None and self.run_maintenance_in_background:
+            self.maintenance.start()
 
     async def resource_health(self) -> dict[str, bool]:
         health: dict[str, bool] = {}
@@ -224,6 +230,8 @@ class Container:
         self.observability.stop()
 
     async def aclose(self) -> None:
+        if self.maintenance is not None:
+            await self.maintenance.stop()
         await self.conversations.shutdown(self.shutdown_grace_seconds)
         await self.runtime.shutdown(self.shutdown_grace_seconds)
         for name in self.retrievers.list():
@@ -783,4 +791,11 @@ def build_container(
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,
         shutdown_grace_seconds=settings.runtime.shutdown_grace_seconds,
+        maintenance=MaintenanceService(
+            runtime,
+            artifacts,
+            settings.maintenance,
+            PostgresRetentionSweeper(database) if database is not None else None,
+        ),
+        run_maintenance_in_background=settings.maintenance.enabled,
     )
