@@ -39,17 +39,46 @@ class DefaultContextBuilder:
         return self.pack(items)
 
     def pack(self, messages: Sequence[Message]) -> tuple[Message, ...]:
-        selected: list[Message] = []
+        """Newest-first packing into the token budget.
+
+        An assistant message with tool calls and the tool results answering them form one unit
+        that is kept or skipped whole: skipping only a large result would leave a tool call without
+        a response, which OpenAI-compatible providers reject. Tool results whose call is not in the
+        transcript are never sent.
+        """
+        selected: list[list[Message]] = []
         remaining = self._max_tokens
-        for message in reversed(messages):
-            estimate = max(1, len(message.text_content) // 4)
+        for unit in reversed(_tool_units(messages)):
+            estimate = sum(max(1, len(message.text_content) // 4) for message in unit)
             if estimate > remaining and selected:
                 continue
-            selected.append(message)
+            selected.append(unit)
             remaining -= min(estimate, remaining)
             if remaining <= 0:
                 break
-        return tuple(reversed(selected))
+        return tuple(message for unit in reversed(selected) for message in unit)
+
+
+def _tool_units(messages: Sequence[Message]) -> list[list[Message]]:
+    units: list[list[Message]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        index += 1
+        if message.role == Role.TOOL:
+            continue
+        unit = [message]
+        if message.role == Role.ASSISTANT and message.tool_calls:
+            call_ids = {call.id for call in message.tool_calls}
+            while (
+                index < len(messages)
+                and messages[index].role == Role.TOOL
+                and messages[index].tool_call_id in call_ids
+            ):
+                unit.append(messages[index])
+                index += 1
+        units.append(unit)
+    return units
 
 
 class ContextBuilderRegistry:
