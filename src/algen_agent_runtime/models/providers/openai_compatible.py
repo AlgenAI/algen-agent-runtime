@@ -367,7 +367,8 @@ class OpenAICompatibleProvider:
                                 "cached_tokens", 0
                             ),
                         )
-                    choice = chunk.get("choices", [{}])[0]
+                    # The usage-only final chunk of a stream has an empty choices list.
+                    choice = (chunk.get("choices") or [{}])[0]
                     delta = choice.get("delta", {})
                     if text := delta.get("content"):
                         text_parts.append(text)
