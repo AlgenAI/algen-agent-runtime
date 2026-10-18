@@ -195,6 +195,12 @@ class MemoryPolicy(StrictModel):
     redact_pii: bool = True
 
 
+class LearnedMemoryPolicy(StrictModel):
+    enabled: bool = False
+    max_recall_tokens: int = Field(default=2048, ge=128, le=8192)
+    max_retention_seconds: int = Field(default=2592000, ge=60, le=31536000)
+
+
 class ContextPolicy(StrictModel):
     skills_enabled: bool = False
     skill_catalog_max_tokens: int = Field(default=2048, ge=128, le=8192)
@@ -296,6 +302,7 @@ class AgentDefinition(StrictModel):
     skills: tuple[SkillDefinition, ...] = Field(default=(), max_length=32)
     planning_strategy: str = "react"
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
+    learned_memory_policy: LearnedMemoryPolicy = Field(default_factory=LearnedMemoryPolicy)
     guardrail_policy: GuardrailPolicy = Field(default_factory=GuardrailPolicy)
     verification_policy: VerificationPolicy = Field(default_factory=VerificationPolicy)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)

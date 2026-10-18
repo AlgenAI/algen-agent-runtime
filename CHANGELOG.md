@@ -8,6 +8,13 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Opt-in learned memory stores facts, preferences, and procedures across runs with tenant/user/agent
+  isolation, runtime provenance, bounded explicit recall, expiry, correction, and deletion. Governed
+  `core.memory_recall`, `core.memory_write`, and `core.memory_delete` tools enforce permissions and
+  approval policies. PostgreSQL and ephemeral adapters use revision checks and atomic operation
+  receipts so retries cannot resurrect deleted or corrected content. Maintenance clears expired
+  payloads while retaining replay metadata.
+
 - Opt-in progressive skill loading exposes bounded descriptions from `AgentDefinition.skills` and
   loads up to four permitted instruction bodies through `core.skills_load`. Explicit selections
   replace or clear the active guidance. Policies, source hashes, and run/tenant/user checks govern
@@ -52,6 +59,12 @@ contracts are explicitly marked experimental during the `0.x` series.
   citations only for evidence that fits in the packed context.
 
 ### Upgrade notes
+
+- Migration `011_learned_memory.sql` adds learned records and replay receipts, independent of source
+  run retention. Enable `learned_memory_policy`, selected memory tools, and their permissions.
+  `storage.learned_memory_store` defaults to ephemeral `memory`; select `postgres` for durability.
+  Strict agent-definition readers must support the new defaulted policy. Content-free revisions and
+  receipts are retained without automatic garbage collection. See `docs/learned-memory.md`.
 
 - Agent manifests gain default-empty `skills`, and run checkpoints gain default-empty `loaded_skills`.
   Upgrade strict readers/workers together; no SQL migration is needed. `core.skills_load` is reserved

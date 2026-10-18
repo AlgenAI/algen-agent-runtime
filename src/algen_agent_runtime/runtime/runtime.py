@@ -53,6 +53,12 @@ from algen_agent_runtime.exceptions.errors import (
     ToolExecutionError,
     VerificationError,
 )
+from algen_agent_runtime.memory.contracts import LearnedMemoryStore, MemoryReceipt
+from algen_agent_runtime.memory.service import (
+    MEMORY_PERMISSIONS,
+    MEMORY_RECALL,
+    LearnedMemoryService,
+)
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.observability.traccia_adapter import (
     NoopObservabilityAdapter,
@@ -118,6 +124,7 @@ class AgentRuntime:
         observability: ObservabilityAdapter | None = None,
         cache: CacheService | None = None,
         context_artifacts: ContextArtifactService | None = None,
+        learned_memory_store: LearnedMemoryStore | None = None,
         telemetry_include_content: bool = False,
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
@@ -139,6 +146,14 @@ class AgentRuntime:
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
         self.context_artifacts = context_artifacts
+        self.learned_memory = (
+            LearnedMemoryService(learned_memory_store, self._memory_context)
+            if learned_memory_store is not None
+            else None
+        )
+        if self.learned_memory is not None:
+            for tool in self.learned_memory.tools():
+                self.tools.register(tool)
         self.tools.register(working_state_tool())
         self.tools.register(skill_load_tool(self._skill_agent))
         if context_artifacts is not None:
@@ -155,6 +170,16 @@ class AgentRuntime:
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
+        memory_tools = agent.enabled_tools.intersection(MEMORY_PERMISSIONS)
+        if agent.learned_memory_policy.enabled:
+            if self.learned_memory is None or not memory_tools:
+                raise ConfigurationError(
+                    "learned memory requires a store and explicitly enabled memory tools"
+                )
+            if any(MEMORY_PERMISSIONS[name] not in agent.tool_permissions for name in memory_tools):
+                raise ConfigurationError("learned memory tools require their memory permissions")
+        elif memory_tools:
+            raise ConfigurationError("memory tools require learned_memory_policy.enabled")
         if agent.context_policy.skills_enabled and (
             SKILL_LOAD_TOOL not in agent.enabled_tools
             or SKILL_LOAD_PERMISSION not in agent.tool_permissions
@@ -1087,6 +1112,12 @@ class AgentRuntime:
         if usage.estimated_cost_usd >= agent.budget.max_cost_usd:
             raise BudgetExceededError("cost budget exhausted")
 
+    async def _memory_context(self, context: ToolContext) -> tuple[RunState, AgentDefinition]:
+        state = await self.runs.get(context.run_id, context.tenant_id)
+        if state is None or state.request.user_id != context.user_id:
+            raise PolicyDeniedError("memory access requires the originating run, tenant, and user")
+        return state, self.agents.get(state.request.agent, state.request.agent_version)
+
     async def _skill_agent(self, context: ToolContext) -> AgentDefinition:
         state = await self.runs.get(context.run_id, context.tenant_id)
         if state is None or state.request.user_id != context.user_id:
@@ -1162,7 +1193,7 @@ class AgentRuntime:
     ) -> None:
         if action.tool_name not in agent.enabled_tools:
             raise PolicyDeniedError(f"tool {action.tool_name!r} is not enabled for this agent")
-        if action.tool_name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL}:
+        if action.tool_name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS}:
             self._validate_context_policy(agent)
         tool = self.tools.get(action.tool_name or "")
         call_id = action.id.removeprefix("tool-")
@@ -1219,6 +1250,7 @@ class AgentRuntime:
         )
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
+        memory_receipt: MemoryReceipt | None = None
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -1237,6 +1269,27 @@ class AgentRuntime:
                     tool.definition.name, action.arguments, context
                 )
                 tool_text = json.dumps(result.value, default=str)
+                if tool.definition.name in MEMORY_PERMISSIONS:
+                    assert self.learned_memory is not None
+                    if tool.definition.name == MEMORY_RECALL:
+                        await self.learned_memory.validate_recall(result, context)
+                    else:
+                        proposal = self.learned_memory.validate_proposal(
+                            tool.definition.name, result.value, action.arguments
+                        )
+                        checked = await self._policy_value(
+                            "before_memory_write",
+                            proposal.model_dump(mode="json"),
+                            state,
+                            {"agent": agent, "operation": tool.definition.name},
+                        )
+                        proposal = self.learned_memory.validate_proposal(
+                            tool.definition.name, checked, action.arguments
+                        )
+                        memory_receipt = await self.learned_memory.apply(
+                            tool.definition.name, proposal, context
+                        )
+                        tool_text = memory_receipt.model_dump_json()
                 if tool.definition.name == SKILL_LOAD_TOOL:
                     skill_update = await self._prepare_loaded_skills(
                         state, agent, result.value, action.arguments
@@ -1258,6 +1311,7 @@ class AgentRuntime:
                     CONTEXT_READ_TOOL,
                     WORKING_STATE_TOOL,
                     SKILL_LOAD_TOOL,
+                    *MEMORY_PERMISSIONS,
                 }:
                     if self.context_artifacts is None:
                         raise ConfigurationError(
@@ -1330,6 +1384,24 @@ class AgentRuntime:
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
+        if memory_receipt is not None:
+            await self._emit(
+                state,
+                "memory.learned.updated",
+                {"revision": memory_receipt.revision, "deleted": memory_receipt.deleted},
+                action.id,
+            )
+            await self._audit(
+                state,
+                "memory.learned",
+                "completed",
+                state.id,
+                {
+                    "revision": memory_receipt.revision,
+                    "deleted": memory_receipt.deleted,
+                    "step_id": action.id,
+                },
+            )
         if skill_update is not None:
             await self._emit(
                 state, "context.skills.updated", {"count": len(skill_update.skills)}, action.id

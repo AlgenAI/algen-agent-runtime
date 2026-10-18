@@ -74,6 +74,7 @@ from algen_agent_runtime.events.bus import (
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
 from algen_agent_runtime.frameworks import FrameworkAdapter, FrameworkAdapterRegistry
 from algen_agent_runtime.governance import QueryGovernanceEngine, QueryGovernancePolicy
+from algen_agent_runtime.memory.store import InMemoryLearnedMemoryStore, PostgresLearnedMemoryStore
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
 from algen_agent_runtime.model_services import ModelServiceRegistry
 from algen_agent_runtime.models.base import ModelRouter
@@ -334,6 +335,7 @@ def build_container(
     selected_backends = {
         storage.run_store,
         storage.memory_store,
+        storage.learned_memory_store,
         storage.event_store,
         storage.audit_store,
         storage.approval_store,
@@ -683,6 +685,11 @@ def build_container(
         observability=observability,
         cache=cache,
         context_artifacts=ContextArtifactService(artifacts),
+        learned_memory_store=(
+            PostgresLearnedMemoryStore(database)
+            if storage.learned_memory_store == "postgres"
+            else InMemoryLearnedMemoryStore()
+        ),
         telemetry_include_content=settings.telemetry.include_content,
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,

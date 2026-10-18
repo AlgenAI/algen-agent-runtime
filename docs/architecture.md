@@ -84,6 +84,10 @@ guidance through `core.skills_load`. Catalogs and active guidance have separate 
 protected during packing, and never grant tool permissions. Accepted selections persist separately
 from canonical history, with source identity and authorization checked again during recovery.
 
+Opt-in [learned memory](learned-memory.md) stores explicitly selected facts and procedures separately
+from session transcripts. Records are scoped to tenant, user, and agent name. Governed tools recall
+content on demand and apply versioned corrections/deletes through atomic replay-safe stores.
+
 Key decisions:
 
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.

@@ -48,6 +48,7 @@ class ProviderSettings(StrictSettings):
 class StorageSettings(StrictSettings):
     run_store: Literal["memory", "postgres", "redis"] = "memory"
     memory_store: Literal["memory", "postgres", "redis"] = "memory"
+    learned_memory_store: Literal["memory", "postgres"] = "memory"
     event_store: Literal["memory", "postgres"] = "memory"
     audit_store: Literal["memory", "postgres"] = "memory"
     approval_store: Literal["memory", "postgres"] = "memory"
@@ -74,6 +75,7 @@ class StorageSettings(StrictSettings):
         selected = {
             self.run_store,
             self.memory_store,
+            self.learned_memory_store,
             self.event_store,
             self.audit_store,
             self.approval_store,

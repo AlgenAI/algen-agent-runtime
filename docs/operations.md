@@ -20,6 +20,7 @@ records on the same PostgreSQL database:
 storage:
   run_store: postgres
   memory_store: postgres
+  learned_memory_store: postgres
   event_store: postgres
   audit_store: postgres
   approval_store: postgres
@@ -142,6 +143,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Paused approvals | on (`expire_paused_runs`) | A run awaiting approval becomes `timed_out` with a `run.failed` event (`reason: approval_expired`) once its approval request has expired or is missing. |
 | Paused clarifications | off | With `clarification_timeout_seconds` set, a run awaiting clarification longer than that becomes `timed_out` (`reason: clarification_expired`). |
 | Expired memory | on | Deletes PostgreSQL memory rows past `memory_retention_seconds`; readers already ignore them. |
+| Expired learned memory | on | Clears content and evidence; retains revisions and replay receipts. Reports `purged_learned_memory`. |
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
 | Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |

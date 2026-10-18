@@ -24,6 +24,7 @@ EventType = Literal[
     "verification.completed",
     "policy.evaluated",
     "memory.written",
+    "memory.learned.updated",
     "clarification.required",
     "approval.required",
     "run.completed",
