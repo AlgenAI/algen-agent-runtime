@@ -195,6 +195,8 @@ class MemoryPolicy(StrictModel):
 
 
 class ContextPolicy(StrictModel):
+    working_state_enabled: bool = False
+    working_state_max_tokens: int = Field(default=2048, ge=128, le=8192)
     offload_tool_results: bool = False
     tool_result_max_inline_bytes: int = Field(default=16_384, ge=1024)
     tool_result_preview_chars: int = Field(default=256, ge=0, le=1024)
@@ -396,6 +398,32 @@ class ContextCompaction(StrictModel):
     archive_id: str
 
 
+WorkingStateItem = Annotated[str, Field(min_length=1, max_length=512)]
+WorkingStateItems = Annotated[tuple[WorkingStateItem, ...], Field(max_length=16)]
+
+
+class WorkingStateContent(StrictModel):
+    goal: str = Field(max_length=2048)
+    constraints: WorkingStateItems
+    decisions: WorkingStateItems
+    completed_work: WorkingStateItems
+    open_tasks: WorkingStateItems
+
+
+class WorkingState(StrictModel):
+    revision: int = Field(default=0, ge=0, strict=True)
+    state: WorkingStateContent = Field(
+        default_factory=lambda: WorkingStateContent(
+            goal="", constraints=(), decisions=(), completed_work=(), open_tasks=()
+        )
+    )
+
+
+class WorkingStateUpdate(StrictModel):
+    expected_revision: int = Field(ge=0, strict=True)
+    state: WorkingStateContent
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -412,6 +440,7 @@ class RunState(BaseModel):
     context_artifact_ids: list[str] = Field(default_factory=list)
     context_history: list[Message] | None = None
     context_compaction: ContextCompaction | None = None
+    working_state: WorkingState | None = None
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)

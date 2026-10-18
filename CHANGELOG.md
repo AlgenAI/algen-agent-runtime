@@ -8,6 +8,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Opt-in structured working state retains goals, constraints, decisions, completed work, and open
+  tasks independently of history summaries. The governed `core.working_state_update` tool uses
+  revision checks and bounded full replacements; run checkpoints preserve accepted records and
+  replay markers together. Built-in builders and model-budget packing protect the current record
+  as untrusted assistant notes. Content-free revision events follow checkpoint persistence.
+
 - Built-in builders retain canonical execution history separately from packed model messages.
   Opt-in history compaction summarizes bounded, complete message groups, preserves recent context,
   and archives source messages with recovery links through `core.context_read`. Summaries remain
@@ -40,6 +46,11 @@ contracts are explicitly marked experimental during the `0.x` series.
   citations only for evidence that fits in the packed context.
 
 ### Upgrade notes
+
+- Checkpoints gain optional `working_state`; upgrade strict readers and workers together without a
+  SQL migration. The reserved `core.working_state_update` tool requires `working_state_enabled`,
+  explicit enablement, and `context.write`. Existing write-approval rules apply. Working state is
+  run-local and disabled by default; custom builders cannot enable it. See `docs/context-management.md`.
 
 - Run checkpoint JSON now includes defaulted `context_history` and `context_compaction` fields.
   Upgrade all readers/workers together; no SQL migration is required. Legacy checkpoints can seed

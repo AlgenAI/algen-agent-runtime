@@ -360,7 +360,12 @@ def test_starter_tools_disabled_by_default_in_container() -> None:
 
     # Core tools are registered; agents must still explicitly enable each one.
     registered_names = {t.definition.name for t in container.tools.list()}
-    assert registered_names == {"core.http", "core.subprocess", "core.context_read"}
+    assert registered_names == {
+        "core.http",
+        "core.subprocess",
+        "core.context_read",
+        "core.working_state_update",
+    }
     assert "core.context_read" not in settings.agents[0].enabled_tools
     assert "starter.calculator" not in registered_names
 

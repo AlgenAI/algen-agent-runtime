@@ -9,6 +9,7 @@ from typing import Any
 
 import structlog
 from opentelemetry import trace
+from pydantic import ValidationError
 
 from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
 from algen_agent_runtime.cache import CacheContext, CacheService
@@ -27,6 +28,12 @@ from algen_agent_runtime.context.builder import (
 from algen_agent_runtime.context.compaction import plan_compaction
 from algen_agent_runtime.context.history import initialize_history, project_history
 from algen_agent_runtime.context.packing import estimate_message
+from algen_agent_runtime.context.working_state import (
+    WORKING_STATE_PERMISSION,
+    WORKING_STATE_TOOL,
+    working_state_message,
+    working_state_tool,
+)
 from algen_agent_runtime.events.bus import InMemoryAuditLog
 from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
@@ -37,6 +44,7 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
+    ToolExecutionError,
     VerificationError,
 )
 from algen_agent_runtime.models.base import ModelRouter
@@ -72,6 +80,9 @@ from algen_agent_runtime.types.contracts import (
     TextBlock,
     TokenUsage,
     ToolSpec,
+    WorkingState,
+    WorkingStateContent,
+    WorkingStateUpdate,
     utc_now,
 )
 from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
@@ -120,6 +131,7 @@ class AgentRuntime:
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
         self.context_artifacts = context_artifacts
+        self.tools.register(working_state_tool())
         if context_artifacts is not None:
             self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
@@ -134,6 +146,19 @@ class AgentRuntime:
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
+        if agent.context_policy.working_state_enabled and (
+            WORKING_STATE_TOOL not in agent.enabled_tools
+            or WORKING_STATE_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "working state requires core.working_state_update in enabled_tools "
+                "and context.write in tool_permissions"
+            )
+        if (
+            WORKING_STATE_TOOL in agent.enabled_tools
+            and not agent.context_policy.working_state_enabled
+        ):
+            raise ConfigurationError("core.working_state_update requires working_state_enabled")
         if (agent.context_policy.offload_tool_results or agent.context_policy.compact_history) and (
             self.context_artifacts is None
             or CONTEXT_READ_TOOL not in agent.enabled_tools
@@ -143,12 +168,14 @@ class AgentRuntime:
                 "context offloading requires context artifact storage, core.context_read "
                 "in enabled_tools, and context.read in tool_permissions"
             )
-        if agent.context_policy.compact_history and not isinstance(
+        if (
+            agent.context_policy.compact_history or agent.context_policy.working_state_enabled
+        ) and not isinstance(
             self.contexts.get(agent.context_builder),
             (DefaultContextBuilder, RetrievalContextBuilder),
         ):
             raise ConfigurationError(
-                "history compaction currently requires a built-in context builder"
+                "history compaction and working state currently require a built-in context builder"
             )
 
     async def start(self, request: RunRequest) -> RunState:
@@ -1036,11 +1063,53 @@ class AgentRuntime:
         if usage.estimated_cost_usd >= agent.budget.max_cost_usd:
             raise BudgetExceededError("cost budget exhausted")
 
+    async def _prepare_working_state(
+        self, state: RunState, agent: AgentDefinition, value: Any, expected_revision: Any
+    ) -> tuple[WorkingState | None, dict[str, Any]]:
+        if (
+            not agent.context_policy.working_state_enabled
+            or WORKING_STATE_PERMISSION not in agent.tool_permissions
+        ):
+            raise PolicyDeniedError("working state is not enabled or permitted")
+        try:
+            update = WorkingStateUpdate.model_validate(value)
+        except ValidationError as exc:
+            raise ToolExecutionError("invalid processed working-state update") from exc
+        if update.expected_revision != expected_revision:
+            raise ToolExecutionError("working-state policy must preserve expected_revision")
+        current = state.working_state or WorkingState()
+        if update.expected_revision != current.revision:
+            return None, {
+                "applied": False,
+                "revision": current.revision,
+                "reason": "stale_revision",
+            }
+        candidate = WorkingState(revision=current.revision + 1, state=update.state)
+        working_state_message(candidate, agent.context_policy)
+        checked = await self._policy_value(
+            "before_memory_write",
+            update.state.model_dump(mode="json"),
+            state,
+            {"agent": agent, "operation": "working_state"},
+        )
+        try:
+            candidate = WorkingState(
+                revision=current.revision + 1, state=WorkingStateContent.model_validate(checked)
+            )
+        except ValidationError as exc:
+            raise ToolExecutionError(
+                "working-state policy must preserve the record structure"
+            ) from exc
+        working_state_message(candidate, agent.context_policy)
+        return candidate, {"applied": True, "revision": candidate.revision}
+
     async def _execute_tool(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
         if action.tool_name not in agent.enabled_tools:
             raise PolicyDeniedError(f"tool {action.tool_name!r} is not enabled for this agent")
+        if action.tool_name == WORKING_STATE_TOOL:
+            self._validate_context_policy(agent)
         tool = self.tools.get(action.tool_name or "")
         call_id = action.id.removeprefix("tool-")
         decision = await self._evaluate_policy(
@@ -1094,6 +1163,7 @@ class AgentRuntime:
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
         )
+        working_update: WorkingState | None = None
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -1112,10 +1182,15 @@ class AgentRuntime:
                     tool.definition.name, action.arguments, context
                 )
                 tool_text = json.dumps(result.value, default=str)
-                if (
-                    agent.context_policy.offload_tool_results
-                    and tool.definition.name != CONTEXT_READ_TOOL
-                ):
+                if tool.definition.name == WORKING_STATE_TOOL:
+                    working_update, receipt = await self._prepare_working_state(
+                        state, agent, result.value, action.arguments.get("expected_revision")
+                    )
+                    tool_text = json.dumps(receipt)
+                if agent.context_policy.offload_tool_results and tool.definition.name not in {
+                    CONTEXT_READ_TOOL,
+                    WORKING_STATE_TOOL,
+                }:
                     if self.context_artifacts is None:
                         raise ConfigurationError(
                             "tool-result offloading requires context artifact storage"
@@ -1148,6 +1223,8 @@ class AgentRuntime:
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
             if self.telemetry_include_content:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
+        if working_update is not None:
+            state.working_state = working_update
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
         state.append_message(
@@ -1183,6 +1260,22 @@ class AgentRuntime:
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
+        if working_update is not None:
+            # The state, receipt and completed-call marker are checkpointed together
+            # before announcing the revision. Replay never applies a proposal twice.
+            await self._emit(
+                state,
+                "context.working_state.updated",
+                {"revision": working_update.revision},
+                action.id,
+            )
+            await self._audit(
+                state,
+                "context.working_state",
+                "completed",
+                state.id,
+                {"revision": working_update.revision, "step_id": action.id},
+            )
 
     async def _verify_and_complete(
         self, state: RunState, agent: AgentDefinition, step_id: str

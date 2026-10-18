@@ -74,6 +74,11 @@ context assembly and replaces them with bounded references. Read-back is an expl
 permissioned tool scoped to the originating run and user. The model-facing view can be small while
 the original processed tool result remains in the execution record and artifact store.
 
+Opt-in [structured working state](context-management.md) keeps goals and task progress separately
+from history summaries. Built-in builders insert a bounded, protected assistant projection of the
+current revision. Governed updates persist in run checkpoints and follow existing write-approval
+policies; they do not establish authorization or carry automatically into other runs.
+
 Key decisions:
 
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.
