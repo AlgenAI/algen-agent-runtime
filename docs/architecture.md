@@ -36,7 +36,11 @@ handler may own externally visible side effects whose idempotency is unknown.
 
 The default and retrieval context builders load session memory once into `RunState.context_history`.
 Model-facing `messages` are a separate projection: packing never deletes retained history. Runtime
-appends user clarifications, model responses, tool results, and repair instructions through
+can opt into archive-backed checkpoints, retaining an absolute offset, protected messages, and the
+uncompacted tail after each successful compaction archive write. Source recovery then depends on
+artifact retention and the governed archive reader. Compaction thresholds adapt to builder and
+configured model budgets, including protected working state and skill projections.
+Runtime appends user clarifications, model responses, tool results, and repair instructions through
 `RunState.append_message()` to update both views. `memory_policy.enabled: false` or `max_items: 0`
 disables loading prior session history; the current run still retains its execution transcript.
 Retrieved evidence remains a fresh builder input rather than being appended repeatedly to history.
@@ -57,8 +61,8 @@ runtime.contexts.register(DefaultContextBuilder(runtime.memory, max_estimated_to
 
 The dependency-free estimate includes serialized message content, tool arguments, and metadata.
 It is not a provider tokenizer or a guarantee about image/file token costs, tool definitions, output
-headroom, or a model's context window. Packing selects an active view; the built-in builders retain
-the underlying history. [Recoverable compaction](artifacts.md#recoverable-history-compaction) can
+headroom, or a model's context window. Packing selects an active view; the underlying history remains
+inline or in the configured archive chain. [Recoverable compaction](artifacts.md#recoverable-history-compaction) can
 replace older message groups in that view with a summary and a source archive. Custom context builders
 remain responsible for their own packing behavior and do not opt into built-in compaction.
 

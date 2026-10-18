@@ -32,8 +32,17 @@ def prepare_model_request(request: ModelRequest, profile: ModelProfile) -> Model
     candidate = request.model_copy(
         update={"model": profile.model, "extensions": profile.extensions}
     )
-    if profile.context_window_tokens is None:
+    available = message_token_budget(candidate, profile)
+    if available is None:
         return candidate
+    return candidate.model_copy(update={"messages": pack_messages(candidate.messages, available)})
+
+
+def message_token_budget(request: ModelRequest, profile: ModelProfile) -> int | None:
+    """Configured message allowance, shared by compaction tuning and final packing."""
+    candidate = request.model_copy(update={"extensions": profile.extensions})
+    if profile.context_window_tokens is None:
+        return None
     if candidate.max_output_tokens is None or candidate.max_output_tokens < 1:
         raise ConfigurationError(
             "a configured context window requires an explicit positive max_output_tokens"
@@ -79,4 +88,4 @@ def prepare_model_request(request: ModelRequest, profile: ModelProfile) -> Model
             "model context window has no room for messages after output, schema, tool, "
             "and safety reservations"
         )
-    return candidate.model_copy(update={"messages": pack_messages(candidate.messages, available)})
+    return available

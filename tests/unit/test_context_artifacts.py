@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from conftest import make_agent, make_runtime
@@ -20,7 +21,7 @@ from algen_agent_runtime.exceptions.errors import (
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.persistence.memory import InMemoryArtifactStore
-from algen_agent_runtime.policies.engine import CompositePolicyEngine
+from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedactionPolicy
 from algen_agent_runtime.tools.contracts import Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -84,6 +85,41 @@ async def test_unicode_paging_recovers_full_content_and_stable_reference() -> No
             break
         offset = page["next_offset"]
     assert "".join(pages) == text
+
+
+async def test_context_identifiers_survive_pii_policy_without_exempting_content(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "algen_agent_runtime.context.artifacts.uuid5",
+        lambda *args: UUID("aaaaaaaa-bbbb-5ccc-8ddd-987654321012"),
+    )
+    service = ContextArtifactService(InMemoryArtifactStore())
+    artifact_id = await saved(service)
+    payload = json.dumps({"previous_archive_id": artifact_id, "content": "Phone: 9876543210"})
+    checked = await PIIRedactionPolicy().evaluate("before_memory_write", payload, {})
+    assert json.loads(checked.value)["previous_archive_id"] == artifact_id
+    assert "9876543210" not in checked.value
+
+
+async def test_legacy_context_artifact_can_be_read_and_reused() -> None:
+    store = InMemoryArtifactStore()
+    service = ContextArtifactService(store)
+    artifact_id = await saved(service)
+    artifact = await store.get(artifact_id, "tenant")
+    legacy_id = service._artifact_id(
+        "tenant", "run", "user", "run:call", artifact.sha256, legacy=True
+    )
+    await store.put(artifact.model_copy(update={"id": legacy_id}))
+    await store.delete(artifact_id, "tenant")
+    reference, replay_id = await service.offload(
+        artifact.data.decode(), context(), policy(), started_at=utc_now()
+    )
+    assert replay_id == legacy_id
+    assert json.loads(reference)["artifact_id"] == legacy_id
+    page = await service.read_tool().execute({"artifact_id": legacy_id}, context())
+    assert page["content"] == "x" * 4096
+    assert len(await store.list("tenant")) == 1
 
 
 @pytest.mark.parametrize("text", ["x" * 1024, "short"])

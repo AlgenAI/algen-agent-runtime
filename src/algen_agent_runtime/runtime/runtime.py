@@ -19,14 +19,22 @@ from algen_agent_runtime.context.artifacts import (
     CONTEXT_READ_TOOL,
     ContextArtifactService,
 )
-from algen_agent_runtime.context.budget import estimate_request_tokens
+from algen_agent_runtime.context.budget import (
+    estimate_request_overhead,
+    estimate_request_tokens,
+    message_token_budget,
+)
 from algen_agent_runtime.context.builder import (
     ContextBuilderRegistry,
     DefaultContextBuilder,
     RetrievalContextBuilder,
 )
 from algen_agent_runtime.context.compaction import plan_compaction
-from algen_agent_runtime.context.history import initialize_history, project_history
+from algen_agent_runtime.context.history import (
+    archive_compacted_prefix,
+    initialize_history,
+    project_history,
+)
 from algen_agent_runtime.context.packing import estimate_message
 from algen_agent_runtime.context.skills import (
     SKILL_LOAD_PERMISSION,
@@ -619,7 +627,59 @@ class AgentRuntime:
                     step_span.set_attribute("agent.step.status", state.status.value)
 
     async def _compact_context(self, state: RunState, agent: AgentDefinition) -> None:
-        plan = plan_compaction(state, agent.context_policy)
+        if not agent.context_policy.compact_history or state.pending_tool_calls:
+            return
+        trigger = agent.context_policy.compaction_trigger_tokens
+        context_tokens = None
+        ratio = agent.context_policy.compaction_trigger_ratio
+        builder = self.contexts.get(agent.context_builder)
+        profiles = tuple(
+            profile
+            for profile in (agent.default_model, *agent.fallback_models)
+            if profile.provider
+            and profile.model
+            and (
+                not agent.model_allowlist
+                or f"{profile.provider}/{profile.model}" in agent.model_allowlist
+            )
+        )
+        if ratio is not None and isinstance(
+            builder, (DefaultContextBuilder, RetrievalContextBuilder)
+        ):
+            assembled = await builder.assemble(state, agent)
+            context_tokens = sum(estimate_message(message) for message in assembled)
+            request = self._model_request(state, agent, assembled)
+            allowances = [builder.compaction_token_budget]
+            for profile in profiles:
+                try:
+                    allowance = message_token_budget(request, profile)
+                except BudgetExceededError:
+                    # The router also skips profiles without room for messages.
+                    continue
+                if allowance is not None:
+                    allowances.append(allowance)
+            available = max(1, min(allowances) - builder.compaction_token_reservation)
+            trigger = min(trigger, max(1, int(available * ratio)))
+        input_limit = agent.context_policy.compaction_max_input_tokens
+        summary_request = ModelRequest(
+            messages=(), max_output_tokens=agent.context_policy.compaction_max_output_tokens
+        )
+        for profile in profiles:
+            try:
+                allowance = message_token_budget(summary_request, profile)
+            except BudgetExceededError:
+                continue
+            if allowance is not None:
+                input_limit = min(
+                    input_limit, allowance + estimate_request_overhead(summary_request)
+                )
+        plan = plan_compaction(
+            state,
+            agent.context_policy,
+            trigger_tokens=trigger,
+            context_tokens=context_tokens,
+            max_input_tokens=input_limit,
+        )
         if plan is None:
             return
         assert self.context_artifacts is not None  # Validated before execution.
@@ -737,6 +797,8 @@ class AgentRuntime:
             )
             if artifact_id not in state.context_artifact_ids:
                 state.context_artifact_ids.append(artifact_id)
+            if agent.context_policy.archive_compacted_history:
+                archive_compacted_prefix(state)
             # Commit cursor, summary, archive reference and charged usage together before announcing it.
             state.updated_at = utc_now()
             await self.runs.save(state, state.version)
@@ -746,6 +808,8 @@ class AgentRuntime:
                 {
                     "message_count": plan.through - plan.start,
                     "through": plan.through,
+                    "history_offset": state.context_history_offset,
+                    "trigger_tokens": trigger,
                     "usage": response.usage.model_dump(mode="json"),
                 },
             )
@@ -778,6 +842,33 @@ class AgentRuntime:
         else:
             raise ConflictError(f"unsupported planned action {action.type.value}")
 
+    def _model_request(
+        self, state: RunState, agent: AgentDefinition, messages: Sequence[Message]
+    ) -> ModelRequest:
+        tool_specs = tuple(
+            ToolSpec(
+                name=tool.definition.name,
+                description=tool.definition.description,
+                input_schema=tool.definition.input_schema,
+            )
+            for tool in self.tools.list()
+            if tool.definition.name in agent.enabled_tools
+        )
+        return ModelRequest(
+            messages=tuple(messages),
+            tools=tool_specs,
+            response_schema=state.request.overrides.response_schema,
+            temperature=state.request.overrides.temperature,
+            max_output_tokens=min(
+                state.request.overrides.max_output_tokens or agent.budget.max_output_tokens,
+                max(1, agent.budget.max_tokens - state.summary.usage.total_tokens),
+            ),
+            timeout_seconds=max(0.001, (state.deadline - utc_now()).total_seconds())
+            if state.deadline
+            else None,
+            stream=state.request.stream,
+        )
+
     async def _execute_model(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
@@ -794,29 +885,7 @@ class AgentRuntime:
                 + ", ".join(unresolved_call_ids)
             )
         await self._transition(state, RunStatus.INVOKING_MODEL)
-        tool_specs = tuple(
-            ToolSpec(
-                name=tool.definition.name,
-                description=tool.definition.description,
-                input_schema=tool.definition.input_schema,
-            )
-            for tool in self.tools.list()
-            if tool.definition.name in agent.enabled_tools
-        )
-        request = ModelRequest(
-            messages=tuple(state.messages),
-            tools=tool_specs,
-            response_schema=state.request.overrides.response_schema,
-            temperature=state.request.overrides.temperature,
-            max_output_tokens=min(
-                state.request.overrides.max_output_tokens or agent.budget.max_output_tokens,
-                max(1, agent.budget.max_tokens - state.summary.usage.total_tokens),
-            ),
-            timeout_seconds=max(0.001, (state.deadline - utc_now()).total_seconds())
-            if state.deadline
-            else None,
-            stream=state.request.stream,
-        )
+        request = self._model_request(state, agent, state.messages)
         checked_request = await self._policy_value("before_model", request, state, {"agent": agent})
         if isinstance(checked_request, ModelRequest):
             request = checked_request

@@ -36,9 +36,18 @@ class ContextArtifactService:
         self.store = store
 
     @staticmethod
-    def _artifact_id(tenant: str, run: str, user: str, execution_key: str, checksum: str) -> str:
+    def _artifact_id(
+        tenant: str, run: str, user: str, execution_key: str, checksum: str, *, legacy: bool = False
+    ) -> str:
         identity = json.dumps([tenant, run, user, execution_key, checksum])
-        return str(uuid5(NAMESPACE_URL, "algen-context:" + identity))
+        identifier = uuid5(NAMESPACE_URL, "algen-context:" + identity)
+        if legacy:
+            return str(identifier)
+        # References cross content policies. Random digit runs in UUIDs can look
+        # like personal identifiers and destroy archive links during PII redaction.
+        return "ctx_" + identifier.hex.translate(
+            str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+        )
 
     @staticmethod
     def _authorize(
@@ -63,7 +72,15 @@ class ContextArtifactService:
             descriptor.metadata["context_execution_key"],
             descriptor.sha256,
         )
-        if descriptor.id != expected_id:
+        legacy_id = ContextArtifactService._artifact_id(
+            context.tenant_id,
+            context.run_id,
+            context.user_id,
+            descriptor.metadata["context_execution_key"],
+            descriptor.sha256,
+            legacy=True,
+        )
+        if descriptor.id not in {expected_id, legacy_id}:
             raise PolicyDeniedError("artifact is not an offloaded context result")
         return descriptor
 
@@ -90,6 +107,18 @@ class ContextArtifactService:
             context.tenant_id, context.run_id, context.user_id, context.idempotency_key, checksum
         )
         descriptor = await self.store.describe(artifact_id, context.tenant_id)
+        if descriptor is None:
+            legacy_id = self._artifact_id(
+                context.tenant_id,
+                context.run_id,
+                context.user_id,
+                context.idempotency_key,
+                checksum,
+                legacy=True,
+            )
+            descriptor = await self.store.describe(legacy_id, context.tenant_id)
+            if descriptor is not None:
+                artifact_id = legacy_id
         if descriptor is None:
             artifact = Artifact(
                 id=artifact_id,

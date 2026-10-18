@@ -9,6 +9,7 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
+    Budget,
     ContextPolicy,
     Message,
     ModelProfile,
@@ -36,13 +37,18 @@ async def main() -> None:
             description="Offline compaction example",
             system_instructions="Use the retained goal and available evidence.",
             default_model=ModelProfile(
-                name="demo", provider="compaction-demo", model="deterministic"
+                name="demo",
+                provider="compaction-demo",
+                model="deterministic",
+                context_window_tokens=2048,
             ),
+            budget=Budget(max_output_tokens=256),
             enabled_tools=frozenset({"core.context_read"}),
             tool_permissions=frozenset({"context.read"}),
             context_policy=ContextPolicy(
                 compact_history=True,
-                compaction_trigger_tokens=256,
+                archive_compacted_history=True,
+                compaction_trigger_ratio=0.8,
                 compaction_keep_recent_groups=2,
                 compaction_max_output_tokens=128,
             ),
@@ -72,7 +78,8 @@ async def main() -> None:
         assert state.context_compaction is not None
         assert state.context_history is not None
         print(
-            f"Retained {len(state.context_history)} canonical messages; source archives: {len(result.artifacts)}."
+            f"Retained {len(state.context_history)} tail messages at offset "
+            f"{state.context_history_offset}; source archives: {len(result.artifacts)}."
         )
         print(f"Model calls including summarization: {result.execution_summary.model_calls}.")
         print(result.output)

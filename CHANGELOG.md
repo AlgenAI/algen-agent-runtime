@@ -8,6 +8,14 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Context compaction adapts its trigger and summary input to configured builder/model allowances,
+  with output, tool/schema, safety, retrieval, and protected-context accounting. A nullable trigger
+  ratio retains fixed-threshold behavior when needed. Opt-in `archive_compacted_history` reduces
+  checkpoint payloads by retaining an absolute history offset, protected messages, summary, and tail;
+  older sources use governed archive chains and artifact retention. Legacy inline checkpoints load
+  with default fields. New opaque context artifact IDs avoid accidental PII redaction of recovery
+  links; existing UUID artifacts remain readable and reusable.
+
 - Opt-in learned memory stores facts, preferences, and procedures across runs with tenant/user/agent
   isolation, runtime provenance, bounded explicit recall, expiry, correction, and deletion. Governed
   `core.memory_recall`, `core.memory_write`, and `core.memory_delete` tools enforce permissions and

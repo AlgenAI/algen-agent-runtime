@@ -212,10 +212,18 @@ class ContextPolicy(StrictModel):
     tool_result_preview_chars: int = Field(default=256, ge=0, le=1024)
     artifact_retention_seconds: int = Field(default=86_400, ge=1)
     compact_history: bool = False
+    archive_compacted_history: bool = False
     compaction_trigger_tokens: int = Field(default=12_000, ge=256)
+    compaction_trigger_ratio: float | None = Field(default=0.8, gt=0, le=1)
     compaction_keep_recent_groups: int = Field(default=6, ge=1)
     compaction_max_input_tokens: int = Field(default=8_000, ge=256)
     compaction_max_output_tokens: int = Field(default=1_024, ge=64)
+
+    @model_validator(mode="after")
+    def archive_requires_compaction(self) -> ContextPolicy:
+        if self.archive_compacted_history and not self.compact_history:
+            raise ValueError("archive_compacted_history requires compact_history")
+        return self
 
 
 class GuardrailPolicy(StrictModel):
@@ -502,6 +510,8 @@ class RunState(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     context_artifact_ids: list[str] = Field(default_factory=list)
     context_history: list[Message] | None = None
+    context_history_offset: int = Field(default=0, ge=0)
+    context_history_pinned: list[Message] = Field(default_factory=list)
     context_compaction: ContextCompaction | None = None
     working_state: WorkingState | None = None
     loaded_skills: LoadedSkills = Field(default_factory=lambda: LoadedSkills(skills=()))
@@ -514,6 +524,27 @@ class RunState(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     summary: ExecutionSummary = Field(default_factory=ExecutionSummary)
     version: int = 0
+
+    @model_validator(mode="after")
+    def archived_history_is_consistent(self) -> RunState:
+        if self.context_history_offset:
+            if self.context_history is None or self.context_compaction is None:
+                raise ValueError("archived history requires a compaction cursor and retained tail")
+            if (
+                not self.context_history_offset
+                <= self.context_compaction.through
+                <= (self.context_history_offset + len(self.context_history))
+            ):
+                raise ValueError("compaction cursor is outside retained history")
+        elif self.context_history_pinned:
+            raise ValueError("pinned history requires an archived prefix")
+        if any(
+            message.role not in {Role.SYSTEM, Role.USER} for message in self.context_history_pinned
+        ):
+            raise ValueError("pinned history can contain only system and user messages")
+        if sum(message.role == Role.USER for message in self.context_history_pinned) > 1:
+            raise ValueError("pinned history can contain at most one user message")
+        return self
 
     def append_message(self, message: Message) -> None:
         self.messages.append(message)

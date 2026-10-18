@@ -118,6 +118,8 @@ stable ID. Retention is measured from run start and is not renewed by replay, so
 long enough for expected pauses. Standard lifecycle changes and deletion remain effective.
 `RunResult.artifacts` includes these references, and `context.offload` audit records contain IDs
 and sizes without previews or content. API downloads continue to use the existing artifact scopes.
+Context artifact IDs are opaque: new IDs use a `ctx_` prefix and letters to avoid incidental PII
+redaction of digit sequences. Existing UUID references remain authorized and reusable.
 
 Run a credential-free paging example with:
 
@@ -128,7 +130,8 @@ python -m examples.context_offloading
 ## Recoverable history compaction
 
 Built-in context builders retain execution messages in `RunState.context_history`, separately from
-the packed model-facing `messages`. Original messages are not removed by packing or compaction.
+the packed model-facing `messages`. Packing never removes retained history. By default, compaction
+also retains original messages inline; archive-backed checkpoints can opt out of that duplication.
 An opt-in summarization step replaces an older prefix in the active view while leaving recent groups
 verbatim. Its source messages are stored in a run-scoped archive readable through `core.context_read`.
 
@@ -138,17 +141,31 @@ tool_permissions: [context.read]
 context_policy:
   compact_history: true
   compaction_trigger_tokens: 12000
+  compaction_trigger_ratio: 0.8
   compaction_keep_recent_groups: 6
   compaction_max_input_tokens: 8000
   compaction_max_output_tokens: 1024
   artifact_retention_seconds: 86400
 ```
 
-Choose the trigger below the effective input allowance of the deployed model, after reserving
-output and schemas. Use tool-result offloading as well for large payloads. Compaction never splits
+The effective trigger is the smaller of `compaction_trigger_tokens` and
+`floor(compaction_trigger_ratio * available_message_tokens)`, with a minimum of one token.
+The available allowance is the smallest of the built-in builder budget and configured windows of
+allowed concrete model profiles, after output, tool/schema, profile-extension, and safety
+reservations. Retrieval builders also reserve `max_retrieval_tokens`. Profiles without configured
+windows contribute no model limit; profiles with no room for messages are skipped, as in router
+fallback. This conservative calculation uses configured profiles, without probing provider health.
+The comparison counts assembled history, system instructions, working state, and skill projections.
+Set the ratio to `null` to retain the fixed history-only trigger. Compaction remains disabled unless
+`compact_history` is true. Later policy transformations are subject to the router's final budget
+checks; tuning does not guarantee that every request can fit.
+
+Use tool-result offloading as well for large payloads. Compaction never splits
 an assistant tool-call message from its results and waits until pending calls have completed. At
 most one bounded prefix is summarized per context-build pass; an indivisible group exceeding the
-summary input allowance is left untouched. This feature currently supports the default and retrieval
+summary input allowance is left untouched. Summary prefixes are bounded by both
+`compaction_max_input_tokens` and configured model allowances with summary-output and safety
+reservations; summary requests have no tool/schema reservation. This feature supports the default and retrieval
 builders; custom builders keep their existing behavior and cannot enable built-in compaction.
 
 Summary requests include the previous summary and new source messages as untrusted data. They use
@@ -168,12 +185,32 @@ Archives contain `start`, `through`, `messages`, and `previous_archive_id`. The 
 compaction sources without placing all archive IDs in every prompt. The archive passes the memory-write
 policy before storage; policy redactions are permitted but JSON message structure and recovery links
 must survive. Cursor, summary, archive reference, and usage are checkpointed before the content-free
-`context.compacted` event is published. New context reads and read replays use the same access and
+`context.compacted` event is published. Events include the effective `trigger_tokens` and retained
+history's absolute `history_offset`, without source content. New context reads and read replays use the same access and
 lifecycle checks as tool-result archives. Retention and artifact byte limits apply to both.
 
-Canonical history uses run-store retention, while archives use artifact retention. This release
-retains history inline in checkpoints; compaction reduces model input, not checkpoint size. Memory
-storage remains ephemeral. Old checkpoints seed history from their surviving active messages and
+By default, canonical history uses run-store retention, while archives use artifact retention.
+For long runs, enable `context_policy.archive_compacted_history: true` alongside `compact_history`.
+After a successful archive write, Runtime removes the compacted prefix from subsequent checkpoints.
+`context_history` then contains the retained tail, `context_history_offset` its absolute start,
+and `context_history_pinned` the archived system messages and latest user message still needed
+verbatim. The summary and archive chain identify older sources. New checkpoints no longer duplicate
+those source payloads in `messages`. The archive and checkpoint must succeed before the compaction
+event is emitted; a failed write leaves the last durable checkpoint usable for recovery.
+
+Archive-backed history follows **artifact retention**: expiry, deletion, or quarantine can make old
+source messages unavailable even while the run and its summary survive. Choose durable artifact
+storage and retention long enough for pauses and audit needs. Runtime does not reload expired
+sources or bypass read authorization to rebuild history. Recovery uses the checkpoint's protected
+messages, summary, and tail; source read-back remains explicit. Disabling archival later retains
+future messages inline but does not restore previously removed sources. This bounds historical
+payload duplication, not total checkpoint size: protected messages, the uncompacted tail, and artifact
+references can still grow, especially if new history arrives faster than one prefix per pass.
+
+The new checkpoint fields default to offset zero and no pinned messages, so existing inline
+checkpoints load without a database migration. Older Runtime versions cannot read the new fields;
+drain or finish these runs before downgrading. Memory storage remains ephemeral. Old checkpoints
+seed history from their surviving active messages and
 cannot recover content discarded by earlier Runtime versions. Runtime code and extensions adding
 execution messages should use `RunState.append_message()`; direct edits to the active `messages`
 list do not append to initialized canonical history. Fresh retrieval evidence is rebuilt from the

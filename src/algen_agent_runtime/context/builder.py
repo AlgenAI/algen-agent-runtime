@@ -39,6 +39,14 @@ class DefaultContextBuilder:
         self._memory = memory
         self._max_tokens = max_estimated_tokens
 
+    @property
+    def compaction_token_budget(self) -> int:
+        return self._max_tokens
+
+    @property
+    def compaction_token_reservation(self) -> int:
+        return 0
+
     async def build(self, state: RunState, agent: AgentDefinition) -> Sequence[Message]:
         return self.pack(await self.assemble(state, agent))
 
@@ -113,6 +121,18 @@ class RetrievalContextBuilder:
         self._max_retrieval_tokens = max_retrieval_tokens
         self._base = DefaultContextBuilder(memory, max_context_tokens)
         self._cache = cache
+
+    @property
+    def compaction_token_budget(self) -> int:
+        return self._base.compaction_token_budget
+
+    @property
+    def compaction_token_reservation(self) -> int:
+        # Reserve room for optional evidence before retrieving it once during build.
+        return self._max_retrieval_tokens
+
+    async def assemble(self, state: RunState, agent: AgentDefinition) -> list[Message]:
+        return await self._base.assemble(state, agent)
 
     async def build(self, state: RunState, agent: AgentDefinition) -> Sequence[Message]:
         request_filters = {
