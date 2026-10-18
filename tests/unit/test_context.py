@@ -53,7 +53,9 @@ async def test_repeated_builds_and_checkpoint_restore_do_not_duplicate_history(
     )
     current = state()
     first = list(await builder.build(current, make_agent()))
-    current.messages = first + tool_exchange()
+    current.messages = list(first)
+    for message in tool_exchange():
+        current.append_message(message)
     restored = RunState.model_validate_json(current.model_dump_json())
 
     second = list(await builder.build(restored, make_agent()))

@@ -70,7 +70,8 @@ results. Documents larger than the remaining `max_retrieval_tokens` allowance ar
 If selected evidence cannot fit beside protected instructions and recent conversation messages,
 the builder removes documents from the end of the ranked selection until it fits. Returned citations
 refer only to evidence included in the context. Evidence is replaced on each build; session history
-is loaded once. See [context packing](architecture.md#context-assembly-and-packing) for estimation
+is loaded once into canonical history. Optional compaction summarizes conversation messages while
+retrieval continues to refresh evidence. See [context packing](architecture.md#context-assembly-and-packing) for estimation
 limits and overflow behavior.
 
 ```yaml

@@ -199,6 +199,11 @@ class ContextPolicy(StrictModel):
     tool_result_max_inline_bytes: int = Field(default=16_384, ge=1024)
     tool_result_preview_chars: int = Field(default=256, ge=0, le=1024)
     artifact_retention_seconds: int = Field(default=86_400, ge=1)
+    compact_history: bool = False
+    compaction_trigger_tokens: int = Field(default=12_000, ge=256)
+    compaction_keep_recent_groups: int = Field(default=6, ge=1)
+    compaction_max_input_tokens: int = Field(default=8_000, ge=256)
+    compaction_max_output_tokens: int = Field(default=1_024, ge=64)
 
 
 class GuardrailPolicy(StrictModel):
@@ -385,6 +390,12 @@ class Citation(StrictModel):
     score: float = Field(ge=0, le=1)
 
 
+class ContextCompaction(StrictModel):
+    through: int = Field(ge=1)
+    summary: str
+    archive_id: str
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -399,6 +410,8 @@ class RunState(BaseModel):
     deadline: datetime | None = None
     messages: list[Message] = Field(default_factory=list)
     context_artifact_ids: list[str] = Field(default_factory=list)
+    context_history: list[Message] | None = None
+    context_compaction: ContextCompaction | None = None
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)
@@ -408,6 +421,11 @@ class RunState(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     summary: ExecutionSummary = Field(default_factory=ExecutionSummary)
     version: int = 0
+
+    def append_message(self, message: Message) -> None:
+        self.messages.append(message)
+        if self.context_history is not None:
+            self.context_history.append(message)
 
 
 class RunResult(StrictModel):

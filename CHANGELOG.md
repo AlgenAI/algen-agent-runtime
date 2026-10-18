@@ -8,6 +8,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Built-in builders retain canonical execution history separately from packed model messages.
+  Opt-in history compaction summarizes bounded, complete message groups, preserves recent context,
+  and archives source messages with recovery links through `core.context_read`. Summaries remain
+  untrusted historical data. Model policies, allowlists, token/cost budgets, and deadlines apply;
+  usage survives validation/storage failures. Completed compactions persist their cursor before
+  publishing the content-free `context.compacted` event.
 - Opt-in `AgentDefinition.context_policy` offloads oversized processed tool results to the configured
   artifact store. Bounded previews and the governed `core.context_read` paging tool keep payloads
   recoverable without sending everything to the model. Reads and completed-read replays enforce
@@ -23,6 +29,7 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Fixed
 
+- Context-building timeouts now transition to `timed_out`, including timeouts during summarization.
 - Context builders no longer duplicate session history on repeated tool-loop builds. Disabled memory
   and a zero history limit prevent loading prior session messages.
 - Context packing preserves system instructions, the latest user message, and the newest message
@@ -34,6 +41,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Upgrade notes
 
+- Run checkpoint JSON now includes defaulted `context_history` and `context_compaction` fields.
+  Upgrade all readers/workers together; no SQL migration is required. Legacy checkpoints can seed
+  canonical history only from surviving active messages. Extensions should append execution messages
+  through `RunState.append_message()` instead of mutating only the active view. Canonical history
+  remains inline in run checkpoints and follows run retention, independently of archive expiry.
 - Tool-result offloading is disabled by default. Enable `core.context_read` and grant `context.read`
   before enabling it. The default container registers this reserved tool and uses its configured
   artifact store; direct runtime construction must supply `context_artifacts`. Run checkpoint JSON

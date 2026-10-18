@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid5
 
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError, ToolExecutionError
@@ -30,7 +30,7 @@ MAX_READ_CHARS = 4096
 
 
 class ContextArtifactService:
-    """Offload policy-processed tool output and provide run-scoped text paging."""
+    """Store processed tool output/history and provide run-scoped text paging."""
 
     def __init__(self, store: ArtifactStore) -> None:
         self.store = store
@@ -49,7 +49,7 @@ class ContextArtifactService:
             or descriptor.tenant_id != context.tenant_id
             or descriptor.run_id != context.run_id
             or descriptor.metadata.get("context_user_id") != context.user_id
-            or descriptor.metadata.get("purpose") != "context_tool_result"
+            or descriptor.metadata.get("purpose") not in {"context_tool_result", "context_history"}
             or not descriptor.metadata.get("context_execution_key")
             or descriptor.status != ArtifactStatus.AVAILABLE
             or descriptor.expires_at is None
@@ -74,9 +74,13 @@ class ContextArtifactService:
         policy: ContextPolicy,
         *,
         started_at: datetime,
+        force: bool = False,
+        purpose: Literal["context_tool_result", "context_history"] = "context_tool_result",
     ) -> tuple[str, str | None]:
         data = text.encode("utf-8")
-        if not policy.offload_tool_results or len(data) <= policy.tool_result_max_inline_bytes:
+        if not force and (
+            not policy.offload_tool_results or len(data) <= policy.tool_result_max_inline_bytes
+        ):
             return text, None
         expires_at = started_at + timedelta(seconds=policy.artifact_retention_seconds)
         if expires_at <= utc_now():
@@ -91,13 +95,13 @@ class ContextArtifactService:
                 id=artifact_id,
                 tenant_id=context.tenant_id,
                 run_id=context.run_id,
-                name="tool-result.json",
+                name="history.json" if purpose == "context_history" else "tool-result.json",
                 media_type="application/json",
                 data=data,
                 sha256=checksum,
                 expires_at=expires_at,
                 metadata={
-                    "purpose": "context_tool_result",
+                    "purpose": purpose,
                     "context_user_id": context.user_id,
                     "context_execution_key": context.idempotency_key,
                 },
@@ -187,7 +191,7 @@ class ContextArtifactService:
             ToolDefinition(
                 name=CONTEXT_READ_TOOL,
                 version="1.0.0",
-                description="Read a bounded page of an offloaded tool result from this run. "
+                description="Read a bounded page of an offloaded tool result or archived history from this run. "
                 "Offsets count Unicode characters; follow next_offset until null.",
                 input_schema={
                     "type": "object",

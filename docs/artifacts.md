@@ -125,6 +125,62 @@ Run a credential-free paging example with:
 python -m examples.context_offloading
 ```
 
+## Recoverable history compaction
+
+Built-in context builders retain execution messages in `RunState.context_history`, separately from
+the packed model-facing `messages`. Original messages are not removed by packing or compaction.
+An opt-in summarization step replaces an older prefix in the active view while leaving recent groups
+verbatim. Its source messages are stored in a run-scoped archive readable through `core.context_read`.
+
+```yaml
+enabled_tools: [core.context_read] # Include the agent's other tools as needed.
+tool_permissions: [context.read]
+context_policy:
+  compact_history: true
+  compaction_trigger_tokens: 12000
+  compaction_keep_recent_groups: 6
+  compaction_max_input_tokens: 8000
+  compaction_max_output_tokens: 1024
+  artifact_retention_seconds: 86400
+```
+
+Choose the trigger below the effective input allowance of the deployed model, after reserving
+output and schemas. Use tool-result offloading as well for large payloads. Compaction never splits
+an assistant tool-call message from its results and waits until pending calls have completed. At
+most one bounded prefix is summarized per context-build pass; an indivisible group exceeding the
+summary input allowance is left untouched. This feature currently supports the default and retrieval
+builders; custom builders keep their existing behavior and cannot enable built-in compaction.
+
+Summary requests include the previous summary and new source messages as untrusted data. They use
+the agent's allowed model profiles, normal model policies, router budgets/fallback, and run deadline.
+The summary request has no tools. Returned usage and model-call count are charged to the same run
+and checkpointed even when summary validation or archive storage subsequently fails. No separate
+automatic summary retry is performed beyond router candidate fallback. A truncated, empty, oversized,
+tool-calling, or non-reducing summary fails explicitly without advancing the cursor.
+
+The summary remains an assistant message labelled historical data, never a system instruction or
+authorization. System messages and the latest user message remain available verbatim. The summary
+is protected during packing, so a request whose essential content still cannot fit fails rather
+than silently dropping the summary. If summarization is disabled, the active view can still omit
+old messages while canonical history retains them.
+
+Archives contain `start`, `through`, `messages`, and `previous_archive_id`. The chain recovers earlier
+compaction sources without placing all archive IDs in every prompt. The archive passes the memory-write
+policy before storage; policy redactions are permitted but JSON message structure and recovery links
+must survive. Cursor, summary, archive reference, and usage are checkpointed before the content-free
+`context.compacted` event is published. New context reads and read replays use the same access and
+lifecycle checks as tool-result archives. Retention and artifact byte limits apply to both.
+
+Canonical history uses run-store retention, while archives use artifact retention. This release
+retains history inline in checkpoints; compaction reduces model input, not checkpoint size. Memory
+storage remains ephemeral. Old checkpoints seed history from their surviving active messages and
+cannot recover content discarded by earlier Runtime versions. Runtime code and extensions adding
+execution messages should use `RunState.append_message()`; direct edits to the active `messages`
+list do not append to initialized canonical history. Fresh retrieval evidence is rebuilt from the
+retriever, rather than repeatedly copied into canonical execution history.
+
+Run an offline example with `python -m examples.context_compaction`.
+
 ## Storage bounds and scanning
 
 `security.max_artifact_bytes` is enforced by the API and every built-in store. Bucket lifecycle

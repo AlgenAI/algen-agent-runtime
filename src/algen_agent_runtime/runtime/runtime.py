@@ -18,7 +18,15 @@ from algen_agent_runtime.context.artifacts import (
     CONTEXT_READ_TOOL,
     ContextArtifactService,
 )
-from algen_agent_runtime.context.builder import ContextBuilderRegistry
+from algen_agent_runtime.context.budget import estimate_request_tokens
+from algen_agent_runtime.context.builder import (
+    ContextBuilderRegistry,
+    DefaultContextBuilder,
+    RetrievalContextBuilder,
+)
+from algen_agent_runtime.context.compaction import plan_compaction
+from algen_agent_runtime.context.history import initialize_history, project_history
+from algen_agent_runtime.context.packing import estimate_message
 from algen_agent_runtime.events.bus import InMemoryAuditLog
 from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
@@ -50,6 +58,7 @@ from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
     TERMINAL_STATUSES,
     AgentDefinition,
+    ContextCompaction,
     ErrorKind,
     FinishReason,
     Message,
@@ -125,14 +134,21 @@ class AgentRuntime:
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
-        if agent.context_policy.offload_tool_results and (
+        if (agent.context_policy.offload_tool_results or agent.context_policy.compact_history) and (
             self.context_artifacts is None
             or CONTEXT_READ_TOOL not in agent.enabled_tools
             or CONTEXT_READ_PERMISSION not in agent.tool_permissions
         ):
             raise ConfigurationError(
-                "tool-result offloading requires context artifact storage, core.context_read "
+                "context offloading requires context artifact storage, core.context_read "
                 "in enabled_tools, and context.read in tool_permissions"
+            )
+        if agent.context_policy.compact_history and not isinstance(
+            self.contexts.get(agent.context_builder),
+            (DefaultContextBuilder, RetrievalContextBuilder),
+        ):
+            raise ConfigurationError(
+                "history compaction currently requires a built-in context builder"
             )
 
     async def start(self, request: RunRequest) -> RunState:
@@ -193,7 +209,7 @@ class AgentRuntime:
             clarification = str(payload.get("clarification", "")).strip()
             if not clarification:
                 raise ValueError("clarification is required")
-            state.messages.append(Message.text(Role.USER, clarification))
+            state.append_message(Message.text(Role.USER, clarification))
             state.pause_payload = None
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
         elif state.status == RunStatus.AWAITING_APPROVAL:
@@ -428,6 +444,24 @@ class AgentRuntime:
                 if isinstance(checked_input, str) and checked_input != state.request.input:
                     state.request = state.request.model_copy(update={"input": checked_input})
                 builder = self.contexts.get(agent.context_builder)
+                if isinstance(builder, (DefaultContextBuilder, RetrievalContextBuilder)):
+                    if state.context_history is None:
+                        await initialize_history(state, agent, self.memory)
+                        checked_history = await self._policy_value(
+                            "after_retrieval",
+                            state.context_history,
+                            state,
+                            {"agent": agent, "operation": "context_history"},
+                        )
+                        if not isinstance(checked_history, list) or not all(
+                            isinstance(message, Message) for message in checked_history
+                        ):
+                            raise ConfigurationError(
+                                "history policy must return a list of messages"
+                            )
+                        state.context_history = checked_history
+                        await self.runs.save(state, state.version)
+                    await self._compact_context(state, agent)
                 with self._tracer.start_as_current_span(
                     "agent.context.build", attributes=self._span_attributes(state)
                 ) as span:
@@ -507,6 +541,145 @@ class AgentRuntime:
                         step_span.set_attribute("error.type", type(exc).__name__)
                         raise
                     step_span.set_attribute("agent.step.status", state.status.value)
+
+    async def _compact_context(self, state: RunState, agent: AgentDefinition) -> None:
+        plan = plan_compaction(state, agent.context_policy)
+        if plan is None:
+            return
+        assert self.context_artifacts is not None  # Validated before execution.
+        self._enforce_budget(state, agent)
+        operation = {"agent": agent, "operation": "context_compaction"}
+        request = await self._policy_value("before_model", plan.request, state, operation)
+        if not isinstance(request, ModelRequest) or request.tools:
+            raise ConfigurationError("compaction model policy must return a request without tools")
+        estimated_input = estimate_request_tokens(request)
+        if estimated_input > agent.context_policy.compaction_max_input_tokens:
+            raise BudgetExceededError("compaction input exceeds its configured estimate limit")
+        remaining = agent.budget.max_tokens - state.summary.usage.total_tokens - estimated_input
+        output_limit = min(
+            request.max_output_tokens or agent.context_policy.compaction_max_output_tokens,
+            agent.context_policy.compaction_max_output_tokens,
+            remaining,
+        )
+        if output_limit < 1:
+            raise BudgetExceededError("insufficient remaining token budget for compaction")
+        request = request.model_copy(
+            update={
+                "max_output_tokens": output_limit,
+                "stream": False,
+                "timeout_seconds": max(0.001, (state.deadline - utc_now()).total_seconds())
+                if state.deadline
+                else None,
+            }
+        )
+        with self._tracer.start_as_current_span(
+            "agent.context.compact", attributes=self._span_attributes(state)
+        ) as span:
+            response = await self.router.generate(
+                request, (agent.default_model, *agent.fallback_models), agent.model_allowlist
+            )
+            self._record_model_usage(state, response)
+            # A later validation/archive failure must not lose already-incurred usage.
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            span.set_attribute("llm.usage.total_tokens", response.usage.total_tokens)
+            span.set_attribute("context.compacted_message_count", plan.through - plan.start)
+            self._enforce_budget(state, agent)
+            if (
+                response.finish_reason != FinishReason.STOP
+                or response.tool_calls
+                or response.message.tool_calls
+            ):
+                raise VerificationError(
+                    "compaction requires a complete text response without tool calls"
+                )
+            summary = await self._policy_value(
+                "after_model", response.message.text_content, state, operation
+            )
+            if not isinstance(summary, str) or not summary.strip():
+                raise VerificationError("compaction returned an empty summary")
+            if (
+                estimate_message(Message.text(Role.ASSISTANT, summary))
+                > agent.context_policy.compaction_max_output_tokens
+            ):
+                raise VerificationError("compaction summary exceeds its configured estimate limit")
+            candidate = state.model_copy(
+                update={
+                    "context_compaction": ContextCompaction(
+                        through=plan.through,
+                        summary=summary.strip(),
+                        archive_id="0" * 36,
+                    )
+                }
+            )
+            if sum(estimate_message(message) for message in project_history(candidate)) >= sum(
+                estimate_message(message) for message in project_history(state)
+            ):
+                raise VerificationError("compaction summary did not reduce active context")
+            archive = await self._policy_value(
+                "before_memory_write", plan.archive_text, state, operation
+            )
+            if not isinstance(archive, str):
+                raise ConfigurationError("compaction archive policy must return text")
+            try:
+                archived = json.loads(archive)
+                if not isinstance(archived, dict):
+                    raise ValueError("expected archive object")
+                if (
+                    archived.get("start") != plan.start
+                    or archived.get("through") != plan.through
+                    or archived.get("previous_archive_id")
+                    != (state.context_compaction.archive_id if state.context_compaction else None)
+                    or not isinstance(archived.get("messages"), list)
+                    or len(archived["messages"]) != plan.through - plan.start
+                ):
+                    raise ValueError("archive structure changed")
+                for message in archived["messages"]:
+                    Message.model_validate(message)
+            except (ValueError, TypeError) as exc:
+                raise ConfigurationError(
+                    "archive policy must preserve message structure and recovery links"
+                ) from exc
+            _, artifact_id = await self.context_artifacts.offload(
+                archive,
+                ToolContext(
+                    run_id=state.id,
+                    step_id=f"compact-{plan.through}",
+                    tenant_id=state.request.tenant_id,
+                    user_id=state.request.user_id,
+                    permissions=agent.tool_permissions,
+                    idempotency_key=f"{state.id}:compaction:{plan.start}:{plan.through}",
+                ),
+                agent.context_policy,
+                started_at=state.started_at,
+                force=True,
+                purpose="context_history",
+            )
+            assert artifact_id is not None
+            state.context_compaction = ContextCompaction(
+                through=plan.through, summary=summary.strip(), archive_id=artifact_id
+            )
+            if artifact_id not in state.context_artifact_ids:
+                state.context_artifact_ids.append(artifact_id)
+            # Commit cursor, summary, archive reference and charged usage together before announcing it.
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            await self._emit(
+                state,
+                "context.compacted",
+                {
+                    "message_count": plan.through - plan.start,
+                    "through": plan.through,
+                    "usage": response.usage.model_dump(mode="json"),
+                },
+            )
+            await self._audit(
+                state,
+                "context.compact",
+                "completed",
+                artifact_id,
+                {"start": plan.start, "through": plan.through},
+            )
 
     async def _execute_action(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
@@ -636,7 +809,7 @@ class AgentRuntime:
         state.output_text = response.message.text_content or None
         state.pending_tool_calls = list(response.tool_calls)
         if response.message.text_content or response.tool_calls:
-            state.messages.append(
+            state.append_message(
                 response.message.model_copy(update={"tool_calls": response.tool_calls})
             )
         state.summary = state.summary.model_copy(
@@ -759,13 +932,13 @@ class AgentRuntime:
                     try:
                         return self._validate_model_completion(completed, request)
                     except ProviderError:
-                        self._record_rejected_completion(state, completed)
+                        self._record_model_usage(state, completed)
                         raise
                 response = await self.router.generate(request, profiles, agent.model_allowlist)
                 try:
                     return self._validate_model_completion(response, request)
                 except ProviderError:
-                    self._record_rejected_completion(state, response)
+                    self._record_model_usage(state, response)
                     raise
             except ProviderError as exc:
                 last_error = exc
@@ -845,8 +1018,8 @@ class AgentRuntime:
             )
         return response
 
-    def _record_rejected_completion(self, state: RunState, response: Any) -> None:
-        """Charge truncated/empty provider completions before attempting recovery."""
+    def _record_model_usage(self, state: RunState, response: Any) -> None:
+        """Charge auxiliary or rejected completions to the same run budget."""
         state.summary = state.summary.model_copy(
             update={
                 "model_calls": state.summary.model_calls + 1,
@@ -977,7 +1150,7 @@ class AgentRuntime:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
-        state.messages.append(
+        state.append_message(
             Message(
                 role=Role.TOOL,
                 name=tool.definition.name,
@@ -1068,7 +1241,7 @@ class AgentRuntime:
             if state.attempt_count < agent.verification_policy.max_repairs:
                 state.attempt_count += 1
                 state.output_text = None
-                state.messages.append(
+                state.append_message(
                     Message.text(Role.SYSTEM, "Repair the previous response to satisfy validation.")
                 )
                 state.summary = state.summary.model_copy(

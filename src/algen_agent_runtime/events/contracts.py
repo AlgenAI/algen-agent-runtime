@@ -12,6 +12,7 @@ EventType = Literal[
     "run.started",
     "step.started",
     "context.retrieved",
+    "context.compacted",
     "model.started",
     "model.delta",
     "model.completed",

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from algen_agent_runtime.cache import CacheContext, CacheService
+from algen_agent_runtime.context.history import initialize_history, project_history
 from algen_agent_runtime.context.packing import estimate_message, pack_messages
 from algen_agent_runtime.exceptions.errors import BudgetExceededError
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, RetrievalQuery, RetrievedDocument
@@ -33,25 +34,11 @@ class DefaultContextBuilder:
         return self.pack(await self.assemble(state, agent))
 
     async def assemble(self, state: RunState, agent: AgentDefinition) -> list[Message]:
-        # RunState.messages already contains assembled history after the first build.
-        # Re-reading memory here would both duplicate it and resurrect evicted messages.
-        if state.messages:
-            instructions = Message.text(Role.SYSTEM, agent.system_instructions)
-            return [
-                instructions,
-                *(message for message in state.messages if message != instructions),
-            ]
-        history = (
-            await self._memory.get(
-                state.request.tenant_id, state.session_id, agent.memory_policy.max_items
-            )
-            if agent.memory_policy.enabled and agent.memory_policy.max_items > 0
-            else ()
-        )
+        await initialize_history(state, agent, self._memory)
+        instructions = Message.text(Role.SYSTEM, agent.system_instructions)
         return [
-            Message.text(Role.SYSTEM, agent.system_instructions),
-            *history,
-            Message.text(Role.USER, state.request.input),
+            instructions,
+            *(message for message in project_history(state) if message != instructions),
         ]
 
     estimate = staticmethod(estimate_message)

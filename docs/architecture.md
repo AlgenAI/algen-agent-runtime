@@ -34,9 +34,12 @@ handler may own externally visible side effects whose idempotency is unknown.
 
 ### Context assembly and packing
 
-The default and retrieval context builders load session memory on the first context build. Later
-builds reuse the assembled run messages, preventing duplicate history and reintroduction of evicted
-messages. `memory_policy.enabled: false` or `max_items: 0` disables loading session history.
+The default and retrieval context builders load session memory once into `RunState.context_history`.
+Model-facing `messages` are a separate projection: packing never deletes retained history. Runtime
+appends user clarifications, model responses, tool results, and repair instructions through
+`RunState.append_message()` to update both views. `memory_policy.enabled: false` or `max_items: 0`
+disables loading prior session history; the current run still retains its execution transcript.
+Retrieved evidence remains a fresh builder input rather than being appended repeatedly to history.
 
 Packing preserves system messages, the latest user message, and the newest message group. An
 assistant tool-call message and its tool results form one group, including partially executed
@@ -54,9 +57,10 @@ runtime.contexts.register(DefaultContextBuilder(runtime.memory, max_estimated_to
 
 The dependency-free estimate includes serialized message content, tool arguments, and metadata.
 It is not a provider tokenizer or a guarantee about image/file token costs, tool definitions, output
-headroom, or a model's context window. This packing is lossy selection of the active transcript;
-recoverable compaction and a separate canonical history remain future work. Custom context builders
-remain responsible for their own packing behavior.
+headroom, or a model's context window. Packing selects an active view; the built-in builders retain
+the underlying history. [Recoverable compaction](artifacts.md#recoverable-history-compaction) can
+replace older message groups in that view with a summary and a source archive. Custom context builders
+remain responsible for their own packing behavior and do not opt into built-in compaction.
 
 The model router additionally applies [per-profile context budgets](providers.md#model-context-budgets)
 when `context_window_tokens` is configured. Before each provider dispatch it reserves the requested
