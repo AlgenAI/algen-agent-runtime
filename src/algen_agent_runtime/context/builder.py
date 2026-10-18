@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.context.history import initialize_history, project_history
 from algen_agent_runtime.context.packing import estimate_message, pack_messages
+from algen_agent_runtime.context.skills import skill_context_messages
 from algen_agent_runtime.context.working_state import working_state_message
 from algen_agent_runtime.exceptions.errors import BudgetExceededError
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, RetrievalQuery, RetrievedDocument
@@ -46,6 +47,7 @@ class DefaultContextBuilder:
         instructions = Message.text(Role.SYSTEM, agent.system_instructions)
         return [
             instructions,
+            *skill_context_messages(state, agent),
             *(
                 [working_state_message(state.working_state or WorkingState(), agent.context_policy)]
                 if agent.context_policy.working_state_enabled

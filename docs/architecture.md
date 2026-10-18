@@ -79,6 +79,11 @@ from history summaries. Built-in builders insert a bounded, protected assistant 
 current revision. Governed updates persist in run checkpoints and follow existing write-approval
 policies; they do not establish authorization or carry automatically into other runs.
 
+Opt-in [progressive skills](skills.md) advertise permitted descriptions first and load selected
+guidance through `core.skills_load`. Catalogs and active guidance have separate budgets, remain
+protected during packing, and never grant tool permissions. Accepted selections persist separately
+from canonical history, with source identity and authorization checked again during recovery.
+
 Key decisions:
 
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.

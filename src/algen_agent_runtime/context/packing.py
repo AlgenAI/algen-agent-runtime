@@ -7,6 +7,8 @@ from algen_agent_runtime.types.contracts import Message, Role
 
 CONTEXT_SUMMARY_NAME = "runtime_context_summary"
 WORKING_STATE_NAME = "runtime_working_state"
+SKILL_CATALOG_NAME = "runtime_skill_catalog"
+LOADED_SKILLS_NAME = "runtime_loaded_skills"
 
 
 def estimate_message(message: Message) -> int:
@@ -44,7 +46,13 @@ def pack_messages(messages: Sequence[Message], max_estimated_tokens: int) -> tup
             message.role == Role.SYSTEM
             or (
                 message.role == Role.ASSISTANT
-                and message.name in {CONTEXT_SUMMARY_NAME, WORKING_STATE_NAME}
+                and message.name
+                in {
+                    CONTEXT_SUMMARY_NAME,
+                    WORKING_STATE_NAME,
+                    SKILL_CATALOG_NAME,
+                    LOADED_SKILLS_NAME,
+                }
             )
             for message in group
         )

@@ -28,6 +28,12 @@ from algen_agent_runtime.context.builder import (
 from algen_agent_runtime.context.compaction import plan_compaction
 from algen_agent_runtime.context.history import initialize_history, project_history
 from algen_agent_runtime.context.packing import estimate_message
+from algen_agent_runtime.context.skills import (
+    SKILL_LOAD_PERMISSION,
+    SKILL_LOAD_TOOL,
+    loaded_skills_message,
+    skill_load_tool,
+)
 from algen_agent_runtime.context.working_state import (
     WORKING_STATE_PERMISSION,
     WORKING_STATE_TOOL,
@@ -69,6 +75,7 @@ from algen_agent_runtime.types.contracts import (
     ContextCompaction,
     ErrorKind,
     FinishReason,
+    LoadedSkills,
     Message,
     ModelRequest,
     ModelResponse,
@@ -77,6 +84,7 @@ from algen_agent_runtime.types.contracts import (
     RunResult,
     RunState,
     RunStatus,
+    SkillSelection,
     TextBlock,
     TokenUsage,
     ToolSpec,
@@ -132,6 +140,7 @@ class AgentRuntime:
         self.cache = cache
         self.context_artifacts = context_artifacts
         self.tools.register(working_state_tool())
+        self.tools.register(skill_load_tool(self._skill_agent))
         if context_artifacts is not None:
             self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
@@ -146,6 +155,15 @@ class AgentRuntime:
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
+        if agent.context_policy.skills_enabled and (
+            SKILL_LOAD_TOOL not in agent.enabled_tools
+            or SKILL_LOAD_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "skills require core.skills_load in enabled_tools and skills.read in tool_permissions"
+            )
+        if SKILL_LOAD_TOOL in agent.enabled_tools and not agent.context_policy.skills_enabled:
+            raise ConfigurationError("core.skills_load requires skills_enabled")
         if agent.context_policy.working_state_enabled and (
             WORKING_STATE_TOOL not in agent.enabled_tools
             or WORKING_STATE_PERMISSION not in agent.tool_permissions
@@ -169,13 +187,15 @@ class AgentRuntime:
                 "in enabled_tools, and context.read in tool_permissions"
             )
         if (
-            agent.context_policy.compact_history or agent.context_policy.working_state_enabled
+            agent.context_policy.compact_history
+            or agent.context_policy.working_state_enabled
+            or agent.context_policy.skills_enabled
         ) and not isinstance(
             self.contexts.get(agent.context_builder),
             (DefaultContextBuilder, RetrievalContextBuilder),
         ):
             raise ConfigurationError(
-                "history compaction and working state currently require a built-in context builder"
+                "history compaction, working state, and skills require a built-in context builder"
             )
 
     async def start(self, request: RunRequest) -> RunState:
@@ -449,6 +469,10 @@ class AgentRuntime:
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
         self._validate_context_policy(agent)
+        if state.loaded_skills.skills:
+            # Recovery may resume at planning with a checkpointed model context.
+            # Revalidate its loaded guidance before any further model dispatch.
+            loaded_skills_message(state.loaded_skills, agent)
         if state.status == RunStatus.RECEIVED:
             await self._transition(state, RunStatus.VALIDATING)
             checked_input = await self._policy_value(
@@ -1063,6 +1087,36 @@ class AgentRuntime:
         if usage.estimated_cost_usd >= agent.budget.max_cost_usd:
             raise BudgetExceededError("cost budget exhausted")
 
+    async def _skill_agent(self, context: ToolContext) -> AgentDefinition:
+        state = await self.runs.get(context.run_id, context.tenant_id)
+        if state is None or state.request.user_id != context.user_id:
+            raise PolicyDeniedError("skill access requires the originating run, tenant, and user")
+        return self.agents.get(state.request.agent, state.request.agent_version)
+
+    async def _prepare_loaded_skills(
+        self, state: RunState, agent: AgentDefinition, value: Any, arguments: dict[str, Any]
+    ) -> LoadedSkills:
+        selected = SkillSelection.model_validate(arguments)
+
+        def validate(value: Any) -> LoadedSkills:
+            try:
+                loaded = LoadedSkills.model_validate(value)
+            except ValidationError as exc:
+                raise ToolExecutionError("invalid processed skill selection") from exc
+            if tuple(skill.name for skill in loaded.skills) != selected.names:
+                raise ToolExecutionError("skill policies must preserve the requested selection")
+            loaded_skills_message(loaded, agent)
+            return loaded
+
+        loaded = validate(value)
+        checked = await self._policy_value(
+            "before_memory_write",
+            loaded.model_dump(mode="json"),
+            state,
+            {"agent": agent, "operation": "skills_load"},
+        )
+        return validate(checked)
+
     async def _prepare_working_state(
         self, state: RunState, agent: AgentDefinition, value: Any, expected_revision: Any
     ) -> tuple[WorkingState | None, dict[str, Any]]:
@@ -1108,7 +1162,7 @@ class AgentRuntime:
     ) -> None:
         if action.tool_name not in agent.enabled_tools:
             raise PolicyDeniedError(f"tool {action.tool_name!r} is not enabled for this agent")
-        if action.tool_name == WORKING_STATE_TOOL:
+        if action.tool_name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL}:
             self._validate_context_policy(agent)
         tool = self.tools.get(action.tool_name or "")
         call_id = action.id.removeprefix("tool-")
@@ -1164,6 +1218,7 @@ class AgentRuntime:
             idempotency_key=f"{state.id}:{call_id}",
         )
         working_update: WorkingState | None = None
+        skill_update: LoadedSkills | None = None
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -1182,6 +1237,18 @@ class AgentRuntime:
                     tool.definition.name, action.arguments, context
                 )
                 tool_text = json.dumps(result.value, default=str)
+                if tool.definition.name == SKILL_LOAD_TOOL:
+                    skill_update = await self._prepare_loaded_skills(
+                        state, agent, result.value, action.arguments
+                    )
+                    tool_text = json.dumps(
+                        {
+                            "loaded": [
+                                {"name": skill.name, "version": skill.version}
+                                for skill in skill_update.skills
+                            ]
+                        }
+                    )
                 if tool.definition.name == WORKING_STATE_TOOL:
                     working_update, receipt = await self._prepare_working_state(
                         state, agent, result.value, action.arguments.get("expected_revision")
@@ -1190,6 +1257,7 @@ class AgentRuntime:
                 if agent.context_policy.offload_tool_results and tool.definition.name not in {
                     CONTEXT_READ_TOOL,
                     WORKING_STATE_TOOL,
+                    SKILL_LOAD_TOOL,
                 }:
                     if self.context_artifacts is None:
                         raise ConfigurationError(
@@ -1225,6 +1293,8 @@ class AgentRuntime:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
         if working_update is not None:
             state.working_state = working_update
+        if skill_update is not None:
+            state.loaded_skills = skill_update
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
         state.append_message(
@@ -1260,6 +1330,17 @@ class AgentRuntime:
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
+        if skill_update is not None:
+            await self._emit(
+                state, "context.skills.updated", {"count": len(skill_update.skills)}, action.id
+            )
+            await self._audit(
+                state,
+                "context.skills",
+                "completed",
+                state.id,
+                {"count": len(skill_update.skills), "step_id": action.id},
+            )
         if working_update is not None:
             # The state, receipt and completed-call marker are checkpointed together
             # before announcing the revision. Replay never applies a proposal twice.

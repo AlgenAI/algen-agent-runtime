@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -195,6 +196,9 @@ class MemoryPolicy(StrictModel):
 
 
 class ContextPolicy(StrictModel):
+    skills_enabled: bool = False
+    skill_catalog_max_tokens: int = Field(default=2048, ge=128, le=8192)
+    loaded_skills_max_tokens: int = Field(default=4096, ge=256, le=16384)
     working_state_enabled: bool = False
     working_state_max_tokens: int = Field(default=2048, ge=128, le=8192)
     offload_tool_results: bool = False
@@ -231,6 +235,51 @@ class ApprovalPolicy(StrictModel):
     expires_seconds: int = Field(default=3600, ge=1)
 
 
+SkillName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
+
+
+class SkillDefinition(StrictModel):
+    name: SkillName
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+    description: str = Field(min_length=1, max_length=512)
+    instructions: str = Field(min_length=1, max_length=16384)
+    required_permissions: frozenset[str] = frozenset()
+
+    @property
+    def sha256(self) -> str:
+        # Sort the permission set for a stable identity across worker processes.
+        value = self.model_dump(mode="json")
+        value["required_permissions"] = sorted(self.required_permissions)
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+class SkillSelection(StrictModel):
+    names: tuple[SkillName, ...] = Field(max_length=4)
+
+    @model_validator(mode="after")
+    def unique_names(self) -> SkillSelection:
+        if len(set(self.names)) != len(self.names):
+            raise ValueError("skill selection names must be unique")
+        return self
+
+
+class LoadedSkill(StrictModel):
+    name: SkillName
+    version: str
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    instructions: str = Field(min_length=1, max_length=16384)
+
+
+class LoadedSkills(StrictModel):
+    skills: tuple[LoadedSkill, ...] = Field(max_length=4)
+
+    @model_validator(mode="after")
+    def unique_names(self) -> LoadedSkills:
+        if len({skill.name for skill in self.skills}) != len(self.skills):
+            raise ValueError("loaded skill names must be unique")
+        return self
+
+
 class AgentDefinition(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
@@ -244,6 +293,7 @@ class AgentDefinition(StrictModel):
     tool_permissions: frozenset[str] = frozenset()
     context_builder: str = "default"
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
+    skills: tuple[SkillDefinition, ...] = Field(default=(), max_length=32)
     planning_strategy: str = "react"
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
     guardrail_policy: GuardrailPolicy = Field(default_factory=GuardrailPolicy)
@@ -258,6 +308,12 @@ class AgentDefinition(StrictModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     tags: frozenset[str] = frozenset()
     model_allowlist: frozenset[str] = frozenset()
+
+    @model_validator(mode="after")
+    def unique_skills(self) -> AgentDefinition:
+        if len({skill.name for skill in self.skills}) != len(self.skills):
+            raise ValueError("agent skill names must be unique")
+        return self
 
     @property
     def logical_id(self) -> str:
@@ -441,6 +497,7 @@ class RunState(BaseModel):
     context_history: list[Message] | None = None
     context_compaction: ContextCompaction | None = None
     working_state: WorkingState | None = None
+    loaded_skills: LoadedSkills = Field(default_factory=lambda: LoadedSkills(skills=()))
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)

@@ -99,6 +99,6 @@ Run the deterministic offline example:
 python -m examples.working_state
 ```
 
-For related capabilities, see [history compaction and offloading](artifacts.md),
+For related capabilities, see [progressive skills](skills.md), [history compaction and offloading](artifacts.md),
 [context packing](architecture.md#context-assembly-and-packing), and
 [model context budgets](providers.md#model-context-budgets).

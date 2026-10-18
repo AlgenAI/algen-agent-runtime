@@ -8,6 +8,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Opt-in progressive skill loading exposes bounded descriptions from `AgentDefinition.skills` and
+  loads up to four permitted instruction bodies through `core.skills_load`. Explicit selections
+  replace or clear the active guidance. Policies, source hashes, and run/tenant/user checks govern
+  loads and replays; checkpoints retain accepted guidance independently of history compaction.
+  Protected context blocks and separate catalog/instruction budgets bound model input.
+
 - Opt-in structured working state retains goals, constraints, decisions, completed work, and open
   tasks independently of history summaries. The governed `core.working_state_update` tool uses
   revision checks and bounded full replacements; run checkpoints preserve accepted records and
@@ -46,6 +52,11 @@ contracts are explicitly marked experimental during the `0.x` series.
   citations only for evidence that fits in the packed context.
 
 ### Upgrade notes
+
+- Agent manifests gain default-empty `skills`, and run checkpoints gain default-empty `loaded_skills`.
+  Upgrade strict readers/workers together; no SQL migration is needed. `core.skills_load` is reserved
+  and requires explicit enablement, `skills.read`, and `context_policy.skills_enabled`. Definitions
+  must match when resuming a run; changed or revoked loaded skills fail closed. See `docs/skills.md`.
 
 - Checkpoints gain optional `working_state`; upgrade strict readers and workers together without a
   SQL migration. The reserved `core.working_state_update` tool requires `working_state_enabled`,
