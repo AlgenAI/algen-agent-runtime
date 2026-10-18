@@ -165,6 +165,8 @@ class ModelProfile(StrictModel):
     max_cost_per_1k_tokens: float | None = Field(default=None, ge=0)
     max_latency_ms: float | None = Field(default=None, ge=0)
     routing_preference: Literal["balanced", "local_first", "cloud_first"] = "balanced"
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    context_safety_margin_tokens: int = Field(default=256, ge=0)
     extensions: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -190,6 +192,13 @@ class MemoryPolicy(StrictModel):
     max_items: int = Field(default=200, ge=0)
     store_tool_payloads: bool = False
     redact_pii: bool = True
+
+
+class ContextPolicy(StrictModel):
+    offload_tool_results: bool = False
+    tool_result_max_inline_bytes: int = Field(default=16_384, ge=1024)
+    tool_result_preview_chars: int = Field(default=256, ge=0, le=1024)
+    artifact_retention_seconds: int = Field(default=86_400, ge=1)
 
 
 class GuardrailPolicy(StrictModel):
@@ -227,6 +236,7 @@ class AgentDefinition(StrictModel):
     enabled_tools: frozenset[str] = frozenset()
     tool_permissions: frozenset[str] = frozenset()
     context_builder: str = "default"
+    context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     planning_strategy: str = "react"
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
     guardrail_policy: GuardrailPolicy = Field(default_factory=GuardrailPolicy)
@@ -388,6 +398,7 @@ class RunState(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     deadline: datetime | None = None
     messages: list[Message] = Field(default_factory=list)
+    context_artifact_ids: list[str] = Field(default_factory=list)
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)

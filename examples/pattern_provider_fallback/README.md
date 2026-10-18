@@ -4,6 +4,12 @@
 
 Demonstrates provider-neutral multi-provider fallback with visible routing decisions. The `resilient` agent attempts Anthropic first, then OpenAI, then a local Ollama model.
 
+Each profile declares an operational context limit, with smaller windows on the fallbacks. Before
+dispatch, Runtime reserves 4,096 output tokens plus tool/schema overhead and a safety margin, then
+packs each candidate independently. Required context that cannot fit causes that candidate to be
+skipped. The example limits are deployment choices; adjust them to your serving configuration.
+The deterministic mode also exercises explicit windows with a 256-token output reservation.
+
 ## Prerequisites
 
 | Requirement | Notes |
@@ -52,7 +58,7 @@ mode continues to demonstrate the configured primary (Anthropic) → fallback (O
 ## Test
 
 ```bash
-python -m pytest examples/pattern_provider_fallback/tests/ -q
+python -m pytest tests/unit/test_example_workflows.py tests/unit/test_context_budget.py -q
 ```
 
 ## Reset

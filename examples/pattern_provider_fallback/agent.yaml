@@ -16,10 +16,13 @@ agents:
     version: 1.0.0
     description: Multi-provider assistant with cloud and local fallbacks
     system_instructions: Produce a concise, verified response.
-    default_model: {name: quality, provider: primary, model: claude-sonnet-4-5, quality_tier: 3}
+    # Operational example limits; adjust to your deployed models' supported windows.
+    default_model: {name: quality, provider: primary, model: claude-sonnet-4-5, quality_tier: 3, context_window_tokens: 32000, context_safety_margin_tokens: 512}
     fallback_models:
-      - {name: cloud-fallback, provider: fallback, model: gpt-5, quality_tier: 2}
-      - {name: local-fallback, provider: local, model: "qwen3:8b", quality_tier: 1}
+      - {name: cloud-fallback, provider: fallback, model: gpt-5, quality_tier: 2, context_window_tokens: 16000, context_safety_margin_tokens: 512}
+      - {name: local-fallback, provider: local, model: "qwen3:8b", quality_tier: 1, context_window_tokens: 12000, context_safety_margin_tokens: 512}
+    budget:
+      max_output_tokens: 4096
     planning_strategy: direct
     max_steps: 5
 

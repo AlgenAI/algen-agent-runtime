@@ -78,6 +78,7 @@ class ToolExecutor:
         execution, reserved = await self._executions.begin(context, name)
         if not reserved:
             if execution.status == ToolExecutionStatus.COMPLETED and execution.result:
+                await tool.validate_replay(execution.result, context)
                 return execution.result
             raise ToolExecutionError(
                 f"tool {name} has an unfinished {execution.status.value} execution; "
@@ -109,6 +110,13 @@ class ToolExecutor:
                 wrapped = ToolResult.model_validate(cached).model_copy(
                     update={"metadata": {**cached.get("metadata", {}), "runtime_cache_hit": True}}
                 )
+                try:
+                    await tool.validate_replay(wrapped, context)
+                except BaseException as exc:
+                    await self._executions.fail(
+                        context.idempotency_key, type(exc).__name__, indeterminate=False
+                    )
+                    raise
                 await self._executions.complete(context.idempotency_key, wrapped)
                 return wrapped
         semaphore = self._semaphores.setdefault(name, asyncio.Semaphore(definition.max_concurrency))

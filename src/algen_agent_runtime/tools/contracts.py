@@ -91,6 +91,7 @@ class ToolExecutionStore(Protocol):
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any] | Any]
 CompensationHandler = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
+ReplayValidator = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
 
 
 class Tool:
@@ -99,10 +100,19 @@ class Tool:
         definition: ToolDefinition,
         handler: ToolHandler,
         compensation: CompensationHandler | None = None,
+        *,
+        replay_validator: ReplayValidator | None = None,
     ) -> None:
         self.definition = definition
         self.handler = handler
         self.compensation = compensation
+        self.replay_validator = replay_validator
+
+    async def validate_replay(self, result: ToolResult, context: ToolContext) -> None:
+        if self.replay_validator is not None:
+            validation = self.replay_validator(result, context)
+            if inspect.isawaitable(validation):
+                await validation
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
         result = self.handler(arguments, context)

@@ -71,12 +71,22 @@ async def deterministic_fallback(message: str) -> tuple[str, str]:
     router.register_provider(PlannedFailureProvider())
     router.register_provider(MockModelProvider(responses=("deterministic fallback response",)))
     response = await router.generate(
-        ModelRequest(messages=(Message.text(Role.USER, message),)),
+        ModelRequest(messages=(Message.text(Role.USER, message),), max_output_tokens=256),
         (
             ModelProfile(
-                name="primary", provider="planned-failure", model="primary", quality_tier=3
+                name="primary",
+                provider="planned-failure",
+                model="primary",
+                quality_tier=3,
+                context_window_tokens=4096,
             ),
-            ModelProfile(name="fallback", provider="mock", model="deterministic", quality_tier=2),
+            ModelProfile(
+                name="fallback",
+                provider="mock",
+                model="deterministic",
+                quality_tier=2,
+                context_window_tokens=2048,
+            ),
         ),
     )
     return f"{response.provider}/{response.model}", response.message.text_content

@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import structlog
 
 from algen_agent_runtime.cache import CacheContext, CacheService
-from algen_agent_runtime.exceptions.errors import CapabilityError, ProviderError
+from algen_agent_runtime.context.budget import prepare_model_request
+from algen_agent_runtime.exceptions.errors import (
+    BudgetExceededError,
+    CapabilityError,
+    ProviderError,
+)
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     ModelCapabilities,
@@ -262,14 +267,15 @@ class ModelRouter:
         for provider, profile in candidates:
             # profile.provider is the registration_id.
             rid = profile.provider or self._registration_id_for(provider)
+            try:
+                candidate_request = prepare_model_request(request, profile)
+            except BudgetExceededError:
+                errors.append(f"{rid}/{profile.model}: configured context budget exceeded")
+                continue
             await self._limits[rid].acquire()
             started = time.monotonic()
             try:
-                response = await provider.generate(
-                    request.model_copy(
-                        update={"model": profile.model, "extensions": profile.extensions}
-                    )
-                )
+                response = await provider.generate(candidate_request)
                 health = self._health[rid]
                 health.consecutive_failures = 0
                 health.opened_at = None
@@ -295,6 +301,8 @@ class ModelRouter:
                     health.opened_at = time.monotonic()
                 if not exc.retryable:
                     continue
+        if not failures:
+            raise BudgetExceededError("no model candidate fits the configured context budget")
         kinds = {failure.error_kind for failure in failures}
         kind = failures[-1].error_kind if len(kinds) == 1 else ErrorKind.UNKNOWN
         retryable = bool(failures) and all(failure.retryable for failure in failures)
@@ -312,17 +320,25 @@ class ModelRouter:
         candidates = await self.candidates(profiles, allowlist)
         if not candidates:
             raise CapabilityError("no healthy allowed streaming model is available")
-        provider, profile = candidates[0]
+        # Only preflight selection can fall back. Never replay a stream once the
+        # provider has started delivering events to the caller.
+        for candidate_provider, profile in candidates:
+            try:
+                candidate_request = prepare_model_request(request, profile)
+            except BudgetExceededError:
+                continue
+            provider = candidate_provider
+            break
+        else:
+            raise BudgetExceededError(
+                "no streaming model candidate fits the configured context budget"
+            )
         rid = profile.provider or self._registration_id_for(provider)
         capabilities = await self._capabilities(rid, provider, profile.model or "")
         if not capabilities.streaming:
             raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
         await self._limits[rid].acquire()
-        async for event in provider.stream(
-            request.model_copy(
-                update={"model": profile.model, "stream": True, "extensions": profile.extensions}
-            )
-        ):
+        async for event in provider.stream(candidate_request.model_copy(update={"stream": True})):
             if event.response:
                 input_cost, output_cost = self._costs[rid]
                 usage = event.response.usage

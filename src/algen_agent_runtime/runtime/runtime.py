@@ -13,12 +13,18 @@ from opentelemetry import trace
 from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
+from algen_agent_runtime.context.artifacts import (
+    CONTEXT_READ_PERMISSION,
+    CONTEXT_READ_TOOL,
+    ContextArtifactService,
+)
 from algen_agent_runtime.context.builder import ContextBuilderRegistry
 from algen_agent_runtime.events.bus import InMemoryAuditLog
 from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     BudgetExceededError,
+    ConfigurationError,
     ConflictError,
     NotFoundError,
     PolicyDeniedError,
@@ -83,6 +89,7 @@ class AgentRuntime:
         audits: AuditLog | None = None,
         observability: ObservabilityAdapter | None = None,
         cache: CacheService | None = None,
+        context_artifacts: ContextArtifactService | None = None,
         telemetry_include_content: bool = False,
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
@@ -103,6 +110,9 @@ class AgentRuntime:
         self.audits = audits or InMemoryAuditLog()
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
+        self.context_artifacts = context_artifacts
+        if context_artifacts is not None:
+            self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
         self.telemetry_max_content_chars = telemetry_max_content_chars
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -114,10 +124,22 @@ class AgentRuntime:
         )
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
+    def _validate_context_policy(self, agent: AgentDefinition) -> None:
+        if agent.context_policy.offload_tool_results and (
+            self.context_artifacts is None
+            or CONTEXT_READ_TOOL not in agent.enabled_tools
+            or CONTEXT_READ_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "tool-result offloading requires context artifact storage, core.context_read "
+                "in enabled_tools, and context.read in tool_permissions"
+            )
+
     async def start(self, request: RunRequest) -> RunState:
         if not self._accepting_runs:
             raise ConflictError("runtime is draining and is not accepting new runs")
         agent = self.agents.get(request.agent, request.agent_version)
+        self._validate_context_policy(agent)
         timeout = request.timeout_seconds or agent.budget.max_latency_seconds
         state_values: dict[str, Any] = {
             "request": request,
@@ -383,6 +405,7 @@ class AgentRuntime:
                 await self._emit(current, "run.failed", {"error": current.error})
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
+        self._validate_context_policy(agent)
         if state.status == RunStatus.RECEIVED:
             await self._transition(state, RunStatus.VALIDATING)
             checked_input = await self._policy_value(
@@ -915,6 +938,34 @@ class AgentRuntime:
                 result = await self.tool_executor.execute(
                     tool.definition.name, action.arguments, context
                 )
+                tool_text = json.dumps(result.value, default=str)
+                if (
+                    agent.context_policy.offload_tool_results
+                    and tool.definition.name != CONTEXT_READ_TOOL
+                ):
+                    if self.context_artifacts is None:
+                        raise ConfigurationError(
+                            "tool-result offloading requires context artifact storage"
+                        )
+                    tool_text, artifact_id = await self.context_artifacts.offload(
+                        tool_text, context, agent.context_policy, started_at=state.started_at
+                    )
+                    if artifact_id is not None:
+                        if artifact_id not in state.context_artifact_ids:
+                            state.context_artifact_ids.append(artifact_id)
+                        result = result.model_copy(
+                            update={"artifact_ids": (*result.artifact_ids, artifact_id)}
+                        )
+                        await self._audit(
+                            state,
+                            "context.offload",
+                            "completed",
+                            artifact_id,
+                            {
+                                "step_id": action.id,
+                                "size_bytes": len(json.dumps(result.value, default=str).encode()),
+                            },
+                        )
             except Exception as exc:
                 span.set_attribute("tool.status", "failed")
                 span.set_attribute("error.type", type(exc).__name__)
@@ -931,7 +982,7 @@ class AgentRuntime:
                 role=Role.TOOL,
                 name=tool.definition.name,
                 tool_call_id=call_id,
-                content=(TextBlock(text=json.dumps(result.value, default=str)),),
+                content=(TextBlock(text=tool_text),),
             )
         )
         state.output_text = None

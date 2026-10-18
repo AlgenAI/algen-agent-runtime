@@ -32,6 +32,44 @@ handler may own externally visible side effects whose idempotency is unknown.
 
 `types` owns normalized contracts. `runtime` owns legal transitions and termination. `planning`, `context`, `policies`, `verification`, `responses`, and `tools` are independent strategies. `models/providers`, `persistence`, and `api` are adapters. `orchestration/container.py` is the only default composition root.
 
+### Context assembly and packing
+
+The default and retrieval context builders load session memory on the first context build. Later
+builds reuse the assembled run messages, preventing duplicate history and reintroduction of evicted
+messages. `memory_policy.enabled: false` or `max_items: 0` disables loading session history.
+
+Packing preserves system messages, the latest user message, and the newest message group. An
+assistant tool-call message and its tool results form one group, including partially executed
+parallel calls. Older groups are retained from newest to oldest until the next group no longer fits.
+Orphan tool results raise `ConflictError`; required context that cannot fit raises
+`BudgetExceededError` rather than silently dropping instructions or exceeding the configured bound.
+
+The default limit is 16,000 estimated tokens. Applications can replace the registered default builder:
+
+```python
+from algen_agent_runtime.context.builder import DefaultContextBuilder
+
+runtime.contexts.register(DefaultContextBuilder(runtime.memory, max_estimated_tokens=24_000))
+```
+
+The dependency-free estimate includes serialized message content, tool arguments, and metadata.
+It is not a provider tokenizer or a guarantee about image/file token costs, tool definitions, output
+headroom, or a model's context window. This packing is lossy selection of the active transcript;
+recoverable compaction and a separate canonical history remain future work. Custom context builders
+remain responsible for their own packing behavior.
+
+The model router additionally applies [per-profile context budgets](providers.md#model-context-budgets)
+when `context_window_tokens` is configured. Before each provider dispatch it reserves the requested
+output limit, tool/schema overhead, and a safety margin, then packs a candidate-specific view. This
+also covers retries, validation repairs, streaming dispatch, and fallback to smaller models. Each
+candidate starts with the original request; packing never mutates that request or the run state.
+This second check cannot restore history already removed by a context builder.
+
+Opt-in [tool-result offloading](artifacts.md#offloaded-tool-context) stores processed payloads before
+context assembly and replaces them with bounded references. Read-back is an explicitly enabled,
+permissioned tool scoped to the originating run and user. The model-facing view can be small while
+the original processed tool result remains in the execution record and artifact store.
+
 Key decisions:
 
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.

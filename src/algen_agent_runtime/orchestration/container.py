@@ -40,6 +40,7 @@ from algen_agent_runtime.cache import (
 from algen_agent_runtime.cache.contracts import CacheStore
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
 from algen_agent_runtime.config.settings import AppSettings, EnvironmentSecretProvider
+from algen_agent_runtime.context.artifacts import ContextArtifactService
 from algen_agent_runtime.context.builder import (
     ContextBuilderRegistry,
     DefaultContextBuilder,
@@ -681,6 +682,7 @@ def build_container(
         audits=audits,
         observability=observability,
         cache=cache,
+        context_artifacts=ContextArtifactService(artifacts),
         telemetry_include_content=settings.telemetry.include_content,
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,
