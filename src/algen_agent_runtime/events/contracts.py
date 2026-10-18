@@ -12,6 +12,7 @@ EventType = Literal[
     "run.started",
     "step.started",
     "context.retrieved",
+    "context.compaction.assessed",
     "context.compacted",
     "context.working_state.updated",
     "context.skills.updated",

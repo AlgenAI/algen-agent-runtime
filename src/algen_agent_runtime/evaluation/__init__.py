@@ -1,3 +1,8 @@
+from algen_agent_runtime.evaluation.context import (
+    ContextEvaluationArtifact,
+    ContextEvaluationCase,
+    ContextEvaluationRunner,
+)
 from algen_agent_runtime.evaluation.contracts import (
     CaseEvaluation,
     EvaluationArtifact,
@@ -9,6 +14,9 @@ from algen_agent_runtime.evaluation.runner import EvaluationRunner
 
 __all__ = [
     "CaseEvaluation",
+    "ContextEvaluationArtifact",
+    "ContextEvaluationCase",
+    "ContextEvaluationRunner",
     "EvaluationArtifact",
     "EvaluationReport",
     "EvaluationRunner",

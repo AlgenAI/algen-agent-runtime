@@ -354,7 +354,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Models | Capability-aware routing, fallback, local and OpenAI-compatible adapters |
 | Tools | Typed schemas, permissions, idempotency, approvals, execution ledger |
 | MCP | Managed client connector for external tools across stdio and streamable HTTP with DNS-pinned egress, secret references, and governance mapping |
-| Context management | [Working state](docs/context-management.md), [progressive skills](docs/skills.md), [learned memory](docs/learned-memory.md), and [compaction/offloading](docs/artifacts.md) |
+| Context management | [Working state](docs/context-management.md), [progressive skills](docs/skills.md), [learned memory](docs/learned-memory.md), [compaction/offloading](docs/artifacts.md), and [evaluations/diagnostics](docs/context-evaluation.md) |
 | Retrieval | Keyword, vector, and hybrid retrieval with citation verification |
 | Governance | Policies, budgets, redaction, network controls, human-in-the-loop decisions |
 | Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |

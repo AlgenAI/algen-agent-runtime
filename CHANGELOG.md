@@ -8,6 +8,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Context evaluation cases check exact message retention, required/forbidden text, message-token
+  and checkpoint-size limits, complete tool exchanges, and ordered archive recovery. Content-free
+  reports reject missing evidence and failed cases; an offline regression example covers simple,
+  compacted, archive-backed, and structured-state/skill contexts. Context events now expose token
+  breakdowns, compaction reductions, and typed planning/skip reasons without message content.
+
 - Context compaction adapts its trigger and summary input to configured builder/model allowances,
   with output, tool/schema, safety, retrieval, and protected-context accounting. A nullable trigger
   ratio retains fixed-threshold behavior when needed. Opt-in `archive_compacted_history` reduces

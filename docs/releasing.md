@@ -51,6 +51,11 @@ gate does not itself bump Studio's Runtime dependency floor or publish a release
 The version and changelog release date should be finalized only after the feature and quality gates
 are complete; an unreleased feature branch is not evidence of release readiness.
 
+Run `python -m examples.context_evaluation` and the base test suite for deterministic context
+regressions. Review [context evaluation limitations](context-evaluation.md) separately from any
+deployment-specific model-quality evidence. Include the new diagnostic event and evaluation API
+in the Studio documentation sync.
+
 ### Publish
 
 1. Merge a release pull request updating the version and changelog.

@@ -29,7 +29,8 @@ from algen_agent_runtime.context.builder import (
     DefaultContextBuilder,
     RetrievalContextBuilder,
 )
-from algen_agent_runtime.context.compaction import plan_compaction
+from algen_agent_runtime.context.compaction import assess_compaction
+from algen_agent_runtime.context.diagnostics import context_snapshot
 from algen_agent_runtime.context.history import (
     archive_compacted_prefix,
     initialize_history,
@@ -572,6 +573,7 @@ class AgentRuntime:
                     "context.retrieved",
                     {
                         "message_count": len(state.messages),
+                        **context_snapshot(state).model_dump(mode="json"),
                         "source_count": len(state.citations),
                         "citations": (
                             [
@@ -627,7 +629,13 @@ class AgentRuntime:
                     step_span.set_attribute("agent.step.status", state.status.value)
 
     async def _compact_context(self, state: RunState, agent: AgentDefinition) -> None:
-        if not agent.context_policy.compact_history or state.pending_tool_calls:
+        if not agent.context_policy.compact_history:
+            return
+        if state.pending_tool_calls:
+            assessment = assess_compaction(state, agent.context_policy)
+            await self._emit(
+                state, "context.compaction.assessed", assessment.diagnostic.model_dump(mode="json")
+            )
             return
         trigger = agent.context_policy.compaction_trigger_tokens
         context_tokens = None
@@ -673,13 +681,17 @@ class AgentRuntime:
                 input_limit = min(
                     input_limit, allowance + estimate_request_overhead(summary_request)
                 )
-        plan = plan_compaction(
+        assessment = assess_compaction(
             state,
             agent.context_policy,
             trigger_tokens=trigger,
             context_tokens=context_tokens,
             max_input_tokens=input_limit,
         )
+        await self._emit(
+            state, "context.compaction.assessed", assessment.diagnostic.model_dump(mode="json")
+        )
+        plan = assessment.plan
         if plan is None:
             return
         assert self.context_artifacts is not None  # Validated before execution.
@@ -748,9 +760,9 @@ class AgentRuntime:
                     )
                 }
             )
-            if sum(estimate_message(message) for message in project_history(candidate)) >= sum(
-                estimate_message(message) for message in project_history(state)
-            ):
+            before_tokens = sum(estimate_message(message) for message in project_history(state))
+            after_tokens = sum(estimate_message(message) for message in project_history(candidate))
+            if after_tokens >= before_tokens:
                 raise VerificationError("compaction summary did not reduce active context")
             archive = await self._policy_value(
                 "before_memory_write", plan.archive_text, state, operation
@@ -810,6 +822,8 @@ class AgentRuntime:
                     "through": plan.through,
                     "history_offset": state.context_history_offset,
                     "trigger_tokens": trigger,
+                    "history_tokens_before": before_tokens,
+                    "history_tokens_after": after_tokens,
                     "usage": response.usage.model_dump(mode="json"),
                 },
             )

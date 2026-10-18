@@ -218,6 +218,9 @@ retriever, rather than repeatedly copied into canonical execution history.
 
 Run an offline example with `python -m examples.context_compaction`.
 
+Use [context evaluations and diagnostics](context-evaluation.md) to check retention and archive
+recovery, measure checkpoint size, and inspect compaction decisions without logging message content.
+
 ## Storage bounds and scanning
 
 `security.max_artifact_bytes` is enforced by the API and every built-in store. Bucket lifecycle
