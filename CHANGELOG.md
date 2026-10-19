@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a7] - 2026-10-19
+
 ### Added
 
 - Context evaluation cases check exact message retention, required/forbidden text, message-token
@@ -62,6 +64,9 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Fixed
 
+- Automated releases preserve changelog Markdown as literal release notes and target the triggering
+  commit. Release packaging verifies context modules and migration 011, then runs all six offline
+  context examples from the installed wheel outside the checkout.
 - Context-building timeouts now transition to `timed_out`, including timeouts during summarization.
 - Context builders no longer duplicate session history on repeated tool-loop builds. Disabled memory
   and a zero history limit prevent loading prior session messages.
@@ -94,7 +99,8 @@ contracts are explicitly marked experimental during the `0.x` series.
   Upgrade all readers/workers together; no SQL migration is required. Legacy checkpoints can seed
   canonical history only from surviving active messages. Extensions should append execution messages
   through `RunState.append_message()` instead of mutating only the active view. Canonical history
-  remains inline in run checkpoints and follows run retention, independently of archive expiry.
+  remains inline by default. Opt-in archive-backed checkpoints add defaulted history offset and
+  pinned-message fields; archived source recovery follows artifact retention rather than run retention.
 - Tool-result offloading is disabled by default. Enable `core.context_read` and grant `context.read`
   before enabling it. The default container registers this reserved tool and uses its configured
   artifact store; direct runtime construction must supply `context_artifacts`. Run checkpoint JSON
@@ -108,6 +114,17 @@ contracts are explicitly marked experimental during the `0.x` series.
   fail explicitly: reduce payloads or increase the builder's configured limit. The serialized-message
   estimate can evict older history sooner than the previous text-only estimate. These estimates are
   not provider-specific token counts; no persisted schema or optional dependency changes are needed.
+
+### Known limitations
+
+- Context estimates are provider-neutral text estimates, not exact tokenizer counts or multimodal
+  capacity measurements. Offline evaluation gates do not establish real-model summary accuracy.
+- Memory-backed artifacts and learned records are ephemeral. Expired, deleted, or quarantined
+  archives cannot be recovered through the runtime, even when their summary survives.
+- Learned memory uses explicit literal recall; it does not automatically extract or semantically
+  retrieve facts. Content-free replay receipts and revision tombstones have no automatic cleanup.
+- Protected messages, uncompacted tails, and artifact references can still grow. Archive-backed
+  checkpoints reduce payload duplication but do not guarantee a fixed checkpoint size.
 
 ## [0.1.0a6] - 2026-10-12
 
@@ -382,7 +399,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a6...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a7...HEAD
+[0.1.0a7]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a6...v0.1.0a7
 [0.1.0a6]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a5...v0.1.0a6
 [0.1.0a5]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a4...v0.1.0a5
 [0.1.0a4]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...v0.1.0a4

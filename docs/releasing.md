@@ -59,8 +59,11 @@ in the Studio documentation sync.
 ### Publish
 
 1. Merge a release pull request updating the version and changelog.
-2. Create a GitHub release whose tag is exactly `v<package-version>`.
-3. The release workflow verifies the tag, runs tests, builds the wheel and source distribution, generates `SHA256SUMS`, inspects contents, tests a clean installation outside the repository checkout, and uploads artifacts.
+2. The Auto Release workflow creates a missing `v<package-version>` tag and GitHub release on a
+   push to `main`. Merging the version bump is therefore a release action: review required quality
+   and security results before merging. If maintainers create the release manually, use that exact
+   tag and do not duplicate an existing release.
+3. The release workflow verifies the tag, runs tests, builds the wheel and source distribution, generates `SHA256SUMS`, inspects contents (including learned-memory migration 011), tests a clean installation and all six offline context examples outside the repository checkout, and uploads artifacts.
 4. An authorized reviewer approves the protected `pypi` environment.
 5. Trusted Publishing uploads the exact artifacts built by the workflow.
 6. Verify the PyPI metadata, provenance, clean installation, CLI, and offline mock run:
