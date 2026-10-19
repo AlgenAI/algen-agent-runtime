@@ -93,3 +93,61 @@ At settings load time, `AppSettings` validates that all provider references reso
 
 If any reference points to an unregistered provider, `load_settings()` fails immediately with a `ConfigurationError` identifying the exact configuration path and candidate providers. Typographical errors never survive configuration loading to become runtime routing failures.
 
+## Model context budgets
+
+Each model profile may declare `context_window_tokens` and `context_safety_margin_tokens` (default
+256). Set the window to an operational limit supported by your deployed model. Runtime does not
+infer capacities from model names. For example, within an agent definition:
+
+```yaml
+default_model:
+  name: primary
+  provider: cloud
+  model: deployed-model
+  context_window_tokens: 32000
+  context_safety_margin_tokens: 512
+fallback_models:
+  - name: local
+    provider: local
+    model: deployed-local-model
+    context_window_tokens: 12000
+    context_safety_margin_tokens: 512
+budget:
+  max_output_tokens: 4096
+```
+
+These example limits are deployment choices, not advertised model capacities. Configure every
+fallback that should have a limit. Omitting `context_window_tokens` preserves existing behavior;
+it does not imply that a model has an unlimited window.
+
+Immediately before dispatch the router computes:
+
+```text
+message allowance = context window - requested output tokens - safety margin
+                    - estimated tool definitions, response schema, and extensions
+```
+
+Packing protects system messages, the latest user message, and the newest message group. Tool calls
+and results stay together. Older groups can be dropped; the output reservation is never silently
+reduced. Each candidate is packed independently from the original request, so a small primary cannot
+remove history from a larger fallback. Run state is unchanged by router packing.
+
+Candidates whose required context cannot fit are skipped before rate limiting or provider calls,
+without affecting provider health. If all eligible candidates exceed their budgets, the router raises
+`BudgetExceededError`. If a fitting provider was called and failed, provider error handling remains
+in effect. Streaming can select a fitting fallback during preflight, but does not switch providers
+after streaming dispatch. Output-limit recovery retries and response repairs pass through the same
+budget check.
+
+The built-in estimator uses normalized serialized content sizes, not a provider tokenizer. The safety
+margin accommodates some wire overhead but cannot guarantee exact model token counts. Builder limits
+still apply earlier; increasing a profile's window cannot recover messages already evicted there.
+Configured budgets currently support text messages only: image/file blocks raise `ConfigurationError`
+because URL length cannot represent their token cost. Direct router callers must supply a positive
+`ModelRequest.max_output_tokens`; Runtime supplies it from the agent budget or request override.
+
+When budgeting is enabled, profile extensions cannot override normalized input, model, tools,
+response format, or output-limit fields. Such overrides raise `ConfigurationError` rather than
+bypassing the estimate. Other extensions are included in the estimated overhead. No optional tokenizer
+or provider SDK dependency is required.
+

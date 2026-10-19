@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,14 @@ class PostgresDatabase:
                     "INSERT INTO algen_agent_runtime_schema_migrations (name) VALUES ($1)",
                     migration.name,
                 )
+
+    @asynccontextmanager
+    async def transaction(self) -> Any:
+        await self.start()
+        if self._pool is None:
+            raise RuntimeError("PostgreSQL pool did not initialize")
+        async with self._pool.acquire() as connection, connection.transaction():
+            yield connection
 
     async def execute(self, query: str, *arguments: Any) -> str:
         await self.start()

@@ -107,6 +107,7 @@ jobs:
         if: steps.tag_check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.body }}
         run: |
           tag="${{ steps.version.outputs.tag }}"
           version="${{ steps.version.outputs.version }}"
@@ -118,11 +119,13 @@ jobs:
             echo "Marking as pre-release (version contains alpha/beta/rc suffix)."
           fi
 
+          notes_file="${RUNNER_TEMP}/algen-release-notes.md"
+          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
           gh release create "$tag" \
             --title "algen-agent-runtime ${tag}" \
-            --notes "${{ steps.changelog.outputs.body }}" \
+            --notes-file "$notes_file" \
             $prerelease_flag \
-            --target main
+            --target "$GITHUB_SHA"
 
           echo "GitHub Release ${tag} created successfully."
           echo "release.yml will now be triggered by the release:published event."

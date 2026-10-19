@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -165,6 +166,8 @@ class ModelProfile(StrictModel):
     max_cost_per_1k_tokens: float | None = Field(default=None, ge=0)
     max_latency_ms: float | None = Field(default=None, ge=0)
     routing_preference: Literal["balanced", "local_first", "cloud_first"] = "balanced"
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    context_safety_margin_tokens: int = Field(default=256, ge=0)
     extensions: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -192,6 +195,37 @@ class MemoryPolicy(StrictModel):
     redact_pii: bool = True
 
 
+class LearnedMemoryPolicy(StrictModel):
+    enabled: bool = False
+    max_recall_tokens: int = Field(default=2048, ge=128, le=8192)
+    max_retention_seconds: int = Field(default=2592000, ge=60, le=31536000)
+
+
+class ContextPolicy(StrictModel):
+    skills_enabled: bool = False
+    skill_catalog_max_tokens: int = Field(default=2048, ge=128, le=8192)
+    loaded_skills_max_tokens: int = Field(default=4096, ge=256, le=16384)
+    working_state_enabled: bool = False
+    working_state_max_tokens: int = Field(default=2048, ge=128, le=8192)
+    offload_tool_results: bool = False
+    tool_result_max_inline_bytes: int = Field(default=16_384, ge=1024)
+    tool_result_preview_chars: int = Field(default=256, ge=0, le=1024)
+    artifact_retention_seconds: int = Field(default=86_400, ge=1)
+    compact_history: bool = False
+    archive_compacted_history: bool = False
+    compaction_trigger_tokens: int = Field(default=12_000, ge=256)
+    compaction_trigger_ratio: float | None = Field(default=0.8, gt=0, le=1)
+    compaction_keep_recent_groups: int = Field(default=6, ge=1)
+    compaction_max_input_tokens: int = Field(default=8_000, ge=256)
+    compaction_max_output_tokens: int = Field(default=1_024, ge=64)
+
+    @model_validator(mode="after")
+    def archive_requires_compaction(self) -> ContextPolicy:
+        if self.archive_compacted_history and not self.compact_history:
+            raise ValueError("archive_compacted_history requires compact_history")
+        return self
+
+
 class GuardrailPolicy(StrictModel):
     policies: tuple[str, ...] = (
         "secrets",
@@ -215,6 +249,51 @@ class ApprovalPolicy(StrictModel):
     expires_seconds: int = Field(default=3600, ge=1)
 
 
+SkillName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
+
+
+class SkillDefinition(StrictModel):
+    name: SkillName
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+    description: str = Field(min_length=1, max_length=512)
+    instructions: str = Field(min_length=1, max_length=16384)
+    required_permissions: frozenset[str] = frozenset()
+
+    @property
+    def sha256(self) -> str:
+        # Sort the permission set for a stable identity across worker processes.
+        value = self.model_dump(mode="json")
+        value["required_permissions"] = sorted(self.required_permissions)
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+class SkillSelection(StrictModel):
+    names: tuple[SkillName, ...] = Field(max_length=4)
+
+    @model_validator(mode="after")
+    def unique_names(self) -> SkillSelection:
+        if len(set(self.names)) != len(self.names):
+            raise ValueError("skill selection names must be unique")
+        return self
+
+
+class LoadedSkill(StrictModel):
+    name: SkillName
+    version: str
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    instructions: str = Field(min_length=1, max_length=16384)
+
+
+class LoadedSkills(StrictModel):
+    skills: tuple[LoadedSkill, ...] = Field(max_length=4)
+
+    @model_validator(mode="after")
+    def unique_names(self) -> LoadedSkills:
+        if len({skill.name for skill in self.skills}) != len(self.skills):
+            raise ValueError("loaded skill names must be unique")
+        return self
+
+
 class AgentDefinition(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
@@ -227,8 +306,11 @@ class AgentDefinition(StrictModel):
     enabled_tools: frozenset[str] = frozenset()
     tool_permissions: frozenset[str] = frozenset()
     context_builder: str = "default"
+    context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
+    skills: tuple[SkillDefinition, ...] = Field(default=(), max_length=32)
     planning_strategy: str = "react"
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
+    learned_memory_policy: LearnedMemoryPolicy = Field(default_factory=LearnedMemoryPolicy)
     guardrail_policy: GuardrailPolicy = Field(default_factory=GuardrailPolicy)
     verification_policy: VerificationPolicy = Field(default_factory=VerificationPolicy)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
@@ -241,6 +323,12 @@ class AgentDefinition(StrictModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     tags: frozenset[str] = frozenset()
     model_allowlist: frozenset[str] = frozenset()
+
+    @model_validator(mode="after")
+    def unique_skills(self) -> AgentDefinition:
+        if len({skill.name for skill in self.skills}) != len(self.skills):
+            raise ValueError("agent skill names must be unique")
+        return self
 
     @property
     def logical_id(self) -> str:
@@ -375,6 +463,38 @@ class Citation(StrictModel):
     score: float = Field(ge=0, le=1)
 
 
+class ContextCompaction(StrictModel):
+    through: int = Field(ge=1)
+    summary: str
+    archive_id: str
+
+
+WorkingStateItem = Annotated[str, Field(min_length=1, max_length=512)]
+WorkingStateItems = Annotated[tuple[WorkingStateItem, ...], Field(max_length=16)]
+
+
+class WorkingStateContent(StrictModel):
+    goal: str = Field(max_length=2048)
+    constraints: WorkingStateItems
+    decisions: WorkingStateItems
+    completed_work: WorkingStateItems
+    open_tasks: WorkingStateItems
+
+
+class WorkingState(StrictModel):
+    revision: int = Field(default=0, ge=0, strict=True)
+    state: WorkingStateContent = Field(
+        default_factory=lambda: WorkingStateContent(
+            goal="", constraints=(), decisions=(), completed_work=(), open_tasks=()
+        )
+    )
+
+
+class WorkingStateUpdate(StrictModel):
+    expected_revision: int = Field(ge=0, strict=True)
+    state: WorkingStateContent
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -388,6 +508,13 @@ class RunState(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     deadline: datetime | None = None
     messages: list[Message] = Field(default_factory=list)
+    context_artifact_ids: list[str] = Field(default_factory=list)
+    context_history: list[Message] | None = None
+    context_history_offset: int = Field(default=0, ge=0)
+    context_history_pinned: list[Message] = Field(default_factory=list)
+    context_compaction: ContextCompaction | None = None
+    working_state: WorkingState | None = None
+    loaded_skills: LoadedSkills = Field(default_factory=lambda: LoadedSkills(skills=()))
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)
@@ -397,6 +524,32 @@ class RunState(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     summary: ExecutionSummary = Field(default_factory=ExecutionSummary)
     version: int = 0
+
+    @model_validator(mode="after")
+    def archived_history_is_consistent(self) -> RunState:
+        if self.context_history_offset:
+            if self.context_history is None or self.context_compaction is None:
+                raise ValueError("archived history requires a compaction cursor and retained tail")
+            if (
+                not self.context_history_offset
+                <= self.context_compaction.through
+                <= (self.context_history_offset + len(self.context_history))
+            ):
+                raise ValueError("compaction cursor is outside retained history")
+        elif self.context_history_pinned:
+            raise ValueError("pinned history requires an archived prefix")
+        if any(
+            message.role not in {Role.SYSTEM, Role.USER} for message in self.context_history_pinned
+        ):
+            raise ValueError("pinned history can contain only system and user messages")
+        if sum(message.role == Role.USER for message in self.context_history_pinned) > 1:
+            raise ValueError("pinned history can contain at most one user message")
+        return self
+
+    def append_message(self, message: Message) -> None:
+        self.messages.append(message)
+        if self.context_history is not None:
+            self.context_history.append(message)
 
 
 class RunResult(StrictModel):

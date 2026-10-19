@@ -32,6 +32,66 @@ handler may own externally visible side effects whose idempotency is unknown.
 
 `types` owns normalized contracts. `runtime` owns legal transitions and termination. `planning`, `context`, `policies`, `verification`, `responses`, and `tools` are independent strategies. `models/providers`, `persistence`, and `api` are adapters. `orchestration/container.py` is the only default composition root.
 
+### Context assembly and packing
+
+The default and retrieval context builders load session memory once into `RunState.context_history`.
+Model-facing `messages` are a separate projection: packing never deletes retained history. Runtime
+can opt into archive-backed checkpoints, retaining an absolute offset, protected messages, and the
+uncompacted tail after each successful compaction archive write. Source recovery then depends on
+artifact retention and the governed archive reader. Compaction thresholds adapt to builder and
+configured model budgets, including protected working state and skill projections.
+Runtime appends user clarifications, model responses, tool results, and repair instructions through
+`RunState.append_message()` to update both views. `memory_policy.enabled: false` or `max_items: 0`
+disables loading prior session history; the current run still retains its execution transcript.
+Retrieved evidence remains a fresh builder input rather than being appended repeatedly to history.
+
+Packing preserves system messages, the latest user message, and the newest message group. An
+assistant tool-call message and its tool results form one group, including partially executed
+parallel calls. Older groups are retained from newest to oldest until the next group no longer fits.
+Orphan tool results raise `ConflictError`; required context that cannot fit raises
+`BudgetExceededError` rather than silently dropping instructions or exceeding the configured bound.
+
+The default limit is 16,000 estimated tokens. Applications can replace the registered default builder:
+
+```python
+from algen_agent_runtime.context.builder import DefaultContextBuilder
+
+runtime.contexts.register(DefaultContextBuilder(runtime.memory, max_estimated_tokens=24_000))
+```
+
+The dependency-free estimate includes serialized message content, tool arguments, and metadata.
+It is not a provider tokenizer or a guarantee about image/file token costs, tool definitions, output
+headroom, or a model's context window. Packing selects an active view; the underlying history remains
+inline or in the configured archive chain. [Recoverable compaction](artifacts.md#recoverable-history-compaction) can
+replace older message groups in that view with a summary and a source archive. Custom context builders
+remain responsible for their own packing behavior and do not opt into built-in compaction.
+
+The model router additionally applies [per-profile context budgets](providers.md#model-context-budgets)
+when `context_window_tokens` is configured. Before each provider dispatch it reserves the requested
+output limit, tool/schema overhead, and a safety margin, then packs a candidate-specific view. This
+also covers retries, validation repairs, streaming dispatch, and fallback to smaller models. Each
+candidate starts with the original request; packing never mutates that request or the run state.
+This second check cannot restore history already removed by a context builder.
+
+Opt-in [tool-result offloading](artifacts.md#offloaded-tool-context) stores processed payloads before
+context assembly and replaces them with bounded references. Read-back is an explicitly enabled,
+permissioned tool scoped to the originating run and user. The model-facing view can be small while
+the original processed tool result remains in the execution record and artifact store.
+
+Opt-in [structured working state](context-management.md) keeps goals and task progress separately
+from history summaries. Built-in builders insert a bounded, protected assistant projection of the
+current revision. Governed updates persist in run checkpoints and follow existing write-approval
+policies; they do not establish authorization or carry automatically into other runs.
+
+Opt-in [progressive skills](skills.md) advertise permitted descriptions first and load selected
+guidance through `core.skills_load`. Catalogs and active guidance have separate budgets, remain
+protected during packing, and never grant tool permissions. Accepted selections persist separately
+from canonical history, with source identity and authorization checked again during recovery.
+
+Opt-in [learned memory](learned-memory.md) stores explicitly selected facts and procedures separately
+from session transcripts. Records are scoped to tenant, user, and agent name. Governed tools recall
+content on demand and apply versioned corrections/deletes through atomic replay-safe stores.
+
 Key decisions:
 
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.

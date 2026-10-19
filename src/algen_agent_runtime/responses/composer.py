@@ -14,6 +14,7 @@ class DefaultResponseComposer:
             session_id=state.session_id,
             output=state.output_text,
             error=state.error,
+            artifacts=tuple(state.context_artifact_ids),
             sources=tuple(dict.fromkeys(item.source for item in state.citations)),
             citations=tuple(state.citations),
             execution_summary=state.summary,

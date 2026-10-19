@@ -6,6 +6,126 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a7] - 2026-10-19
+
+### Added
+
+- Context evaluation cases check exact message retention, required/forbidden text, message-token
+  and checkpoint-size limits, complete tool exchanges, and ordered archive recovery. Content-free
+  reports reject missing evidence and failed cases; an offline regression example covers simple,
+  compacted, archive-backed, and structured-state/skill contexts. Context events now expose token
+  breakdowns, compaction reductions, and typed planning/skip reasons without message content.
+
+- Context compaction adapts its trigger and summary input to configured builder/model allowances,
+  with output, tool/schema, safety, retrieval, and protected-context accounting. A nullable trigger
+  ratio retains fixed-threshold behavior when needed. Opt-in `archive_compacted_history` reduces
+  checkpoint payloads by retaining an absolute history offset, protected messages, summary, and tail;
+  older sources use governed archive chains and artifact retention. Legacy inline checkpoints load
+  with default fields. New opaque context artifact IDs avoid accidental PII redaction of recovery
+  links; existing UUID artifacts remain readable and reusable.
+
+- Opt-in learned memory stores facts, preferences, and procedures across runs with tenant/user/agent
+  isolation, runtime provenance, bounded explicit recall, expiry, correction, and deletion. Governed
+  `core.memory_recall`, `core.memory_write`, and `core.memory_delete` tools enforce permissions and
+  approval policies. PostgreSQL and ephemeral adapters use revision checks and atomic operation
+  receipts so retries cannot resurrect deleted or corrected content. Maintenance clears expired
+  payloads while retaining replay metadata.
+
+- Opt-in progressive skill loading exposes bounded descriptions from `AgentDefinition.skills` and
+  loads up to four permitted instruction bodies through `core.skills_load`. Explicit selections
+  replace or clear the active guidance. Policies, source hashes, and run/tenant/user checks govern
+  loads and replays; checkpoints retain accepted guidance independently of history compaction.
+  Protected context blocks and separate catalog/instruction budgets bound model input.
+
+- Opt-in structured working state retains goals, constraints, decisions, completed work, and open
+  tasks independently of history summaries. The governed `core.working_state_update` tool uses
+  revision checks and bounded full replacements; run checkpoints preserve accepted records and
+  replay markers together. Built-in builders and model-budget packing protect the current record
+  as untrusted assistant notes. Content-free revision events follow checkpoint persistence.
+
+- Built-in builders retain canonical execution history separately from packed model messages.
+  Opt-in history compaction summarizes bounded, complete message groups, preserves recent context,
+  and archives source messages with recovery links through `core.context_read`. Summaries remain
+  untrusted historical data. Model policies, allowlists, token/cost budgets, and deadlines apply;
+  usage survives validation/storage failures. Completed compactions persist their cursor before
+  publishing the content-free `context.compacted` event.
+- Opt-in `AgentDefinition.context_policy` offloads oversized processed tool results to the configured
+  artifact store. Bounded previews and the governed `core.context_read` paging tool keep payloads
+  recoverable without sending everything to the model. Reads and completed-read replays enforce
+  tenant/run/user boundaries, expiry, lifecycle state, and content identity. Offloaded references
+  persist in run checkpoints and appear in `RunResult.artifacts`; audit records exclude content.
+- Optional `Tool.replay_validator` lets lifecycle-sensitive tools validate access before returning
+  a completed execution or cached result. Existing tools preserve their replay behavior by default.
+- Optional `ModelProfile.context_window_tokens` and `context_safety_margin_tokens` (default 256)
+  enable per-candidate estimated context budgeting. Generate and streaming preflight reserve output,
+  tool definitions, response schemas, extensions, and safety headroom before packing messages.
+  Each fallback uses the original request, without mutating run state. Candidates that cannot fit
+  are skipped without affecting provider health; all-over-budget candidates raise `BudgetExceededError`.
+
+### Fixed
+
+- Automated releases preserve changelog Markdown as literal release notes and target the triggering
+  commit. Release packaging verifies context modules and migration 011, then runs all six offline
+  context examples from the installed wheel outside the checkout.
+- Context-building timeouts now transition to `timed_out`, including timeouts during summarization.
+- Context builders no longer duplicate session history on repeated tool-loop builds. Disabled memory
+  and a zero history limit prevent loading prior session messages.
+- Context packing preserves system instructions, the latest user message, and the newest message
+  group; tool calls and their results are retained or evicted together. Estimates include tool
+  arguments and content metadata. Required context that exceeds the configured estimate limit now
+  raises `BudgetExceededError`; orphan tool results raise `ConflictError`.
+- Retrieval enforces context limits even with no results, skips oversized evidence, and reports
+  citations only for evidence that fits in the packed context.
+
+### Upgrade notes
+
+- Migration `011_learned_memory.sql` adds learned records and replay receipts, independent of source
+  run retention. Enable `learned_memory_policy`, selected memory tools, and their permissions.
+  `storage.learned_memory_store` defaults to ephemeral `memory`; select `postgres` for durability.
+  Strict agent-definition readers must support the new defaulted policy. Content-free revisions and
+  receipts are retained without automatic garbage collection. See `docs/learned-memory.md`.
+
+- Agent manifests gain default-empty `skills`, and run checkpoints gain default-empty `loaded_skills`.
+  Upgrade strict readers/workers together; no SQL migration is needed. `core.skills_load` is reserved
+  and requires explicit enablement, `skills.read`, and `context_policy.skills_enabled`. Definitions
+  must match when resuming a run; changed or revoked loaded skills fail closed. See `docs/skills.md`.
+
+- Checkpoints gain optional `working_state`; upgrade strict readers and workers together without a
+  SQL migration. The reserved `core.working_state_update` tool requires `working_state_enabled`,
+  explicit enablement, and `context.write`. Existing write-approval rules apply. Working state is
+  run-local and disabled by default; custom builders cannot enable it. See `docs/context-management.md`.
+
+- Run checkpoint JSON now includes defaulted `context_history` and `context_compaction` fields.
+  Upgrade all readers/workers together; no SQL migration is required. Legacy checkpoints can seed
+  canonical history only from surviving active messages. Extensions should append execution messages
+  through `RunState.append_message()` instead of mutating only the active view. Canonical history
+  remains inline by default. Opt-in archive-backed checkpoints add defaulted history offset and
+  pinned-message fields; archived source recovery follows artifact retention rather than run retention.
+- Tool-result offloading is disabled by default. Enable `core.context_read` and grant `context.read`
+  before enabling it. The default container registers this reserved tool and uses its configured
+  artifact store; direct runtime construction must supply `context_artifacts`. Run checkpoint JSON
+  gains a default-empty `context_artifact_ids` field, without a database migration. All workers
+  reading these new checkpoints must run the updated Runtime because older strict readers reject
+  unknown fields. Ephemeral artifact storage does not survive process restarts.
+- Model context budgets are opt-in and require an explicit positive output cap for direct router
+  calls. Configured budgets currently reject image/file inputs and extensions that override normalized
+  request fields. Existing profiles without a context window retain their previous routing behavior.
+- Oversized required inputs and tool exchanges previously could bypass context limits. They now
+  fail explicitly: reduce payloads or increase the builder's configured limit. The serialized-message
+  estimate can evict older history sooner than the previous text-only estimate. These estimates are
+  not provider-specific token counts; no persisted schema or optional dependency changes are needed.
+
+### Known limitations
+
+- Context estimates are provider-neutral text estimates, not exact tokenizer counts or multimodal
+  capacity measurements. Offline evaluation gates do not establish real-model summary accuracy.
+- Memory-backed artifacts and learned records are ephemeral. Expired, deleted, or quarantined
+  archives cannot be recovered through the runtime, even when their summary survives.
+- Learned memory uses explicit literal recall; it does not automatically extract or semantically
+  retrieve facts. Content-free replay receipts and revision tombstones have no automatic cleanup.
+- Protected messages, uncompacted tails, and artifact references can still grow. Archive-backed
+  checkpoints reduce payload duplication but do not guarantee a fixed checkpoint size.
+
 ## [0.1.0a6] - 2026-10-12
 
 ### Upgrade notes
@@ -279,7 +399,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a6...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a7...HEAD
+[0.1.0a7]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a6...v0.1.0a7
 [0.1.0a6]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a5...v0.1.0a6
 [0.1.0a5]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a4...v0.1.0a5
 [0.1.0a4]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a3...v0.1.0a4

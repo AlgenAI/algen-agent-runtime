@@ -9,7 +9,13 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         {RunStatus.BUILDING_CONTEXT, RunStatus.FAILED, RunStatus.CANCELLED}
     ),
     RunStatus.BUILDING_CONTEXT: frozenset(
-        {RunStatus.PLANNING, RunStatus.RETRYING, RunStatus.FAILED, RunStatus.CANCELLED}
+        {
+            RunStatus.PLANNING,
+            RunStatus.RETRYING,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.TIMED_OUT,
+        }
     ),
     RunStatus.PLANNING: frozenset(
         {

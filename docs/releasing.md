@@ -39,9 +39,31 @@ Algen Agent Runtime supports three reproducible distribution channels:
 
 ## Release steps
 
+### Context-management a7 documentation gate
+
+Before declaring `0.1.0a7` ready, finish and verify the intended context-management scope, then sync
+the Runtime documentation in the separate Algen Agent Studio repository. Update both the source
+`docs/runtime-docs.html` and served `src/algen_agent_studio/static/runtime-docs.html` with the final
+configuration, defaults, compatibility notes, limitations, and examples. Verify that the two copies
+agree and that their navigation works. Keep Studio changes in its own repository. This documentation
+gate does not itself bump Studio's Runtime dependency floor or publish a release.
+
+The version and changelog release date should be finalized only after the feature and quality gates
+are complete; an unreleased feature branch is not evidence of release readiness.
+
+Run `python -m examples.context_evaluation` and the base test suite for deterministic context
+regressions. Review [context evaluation limitations](context-evaluation.md) separately from any
+deployment-specific model-quality evidence. Include the new diagnostic event and evaluation API
+in the Studio documentation sync.
+
+### Publish
+
 1. Merge a release pull request updating the version and changelog.
-2. Create a GitHub release whose tag is exactly `v<package-version>`.
-3. The release workflow verifies the tag, runs tests, builds the wheel and source distribution, generates `SHA256SUMS`, inspects contents, tests a clean installation outside the repository checkout, and uploads artifacts.
+2. The Auto Release workflow creates a missing `v<package-version>` tag and GitHub release on a
+   push to `main`. Merging the version bump is therefore a release action: review required quality
+   and security results before merging. If maintainers create the release manually, use that exact
+   tag and do not duplicate an existing release.
+3. The release workflow verifies the tag, runs tests, builds the wheel and source distribution, generates `SHA256SUMS`, inspects contents (including learned-memory migration 011), tests a clean installation and all six offline context examples outside the repository checkout, and uploads artifacts.
 4. An authorized reviewer approves the protected `pypi` environment.
 5. Trusted Publishing uploads the exact artifacts built by the workflow.
 6. Verify the PyPI metadata, provenance, clean installation, CLI, and offline mock run:

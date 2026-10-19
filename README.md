@@ -14,7 +14,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.1.0a6` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.1.0a7` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 ## Why Algen Agent Runtime?
 
@@ -62,7 +62,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Pre-alpha (`0.1.0a6`) |
+| Package maturity | Pre-alpha (`0.1.0a7`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -94,10 +94,10 @@ python -m pip install --pre 'algen-agent-runtime[mcp]'
 python -m pip install --pre 'algen-agent-runtime[langgraph]'
 ```
 
-Direct install from a pinned GitHub release tag:
+After a7 is published, install directly from its pinned GitHub release tag:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a6
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a7
 ```
 
 For development from a checkout:
@@ -354,6 +354,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Models | Capability-aware routing, fallback, local and OpenAI-compatible adapters |
 | Tools | Typed schemas, permissions, idempotency, approvals, execution ledger |
 | MCP | Managed client connector for external tools across stdio and streamable HTTP with DNS-pinned egress, secret references, and governance mapping |
+| Context management | [Working state](docs/context-management.md), [progressive skills](docs/skills.md), [learned memory](docs/learned-memory.md), [compaction/offloading](docs/artifacts.md), and [evaluations/diagnostics](docs/context-evaluation.md) |
 | Retrieval | Keyword, vector, and hybrid retrieval with citation verification |
 | Governance | Policies, budgets, redaction, network controls, human-in-the-loop decisions |
 | Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |

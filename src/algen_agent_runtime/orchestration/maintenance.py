@@ -21,6 +21,7 @@ class MaintenanceReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expired_paused_runs: int = 0
     purged_artifacts: int = 0
+    purged_learned_memory: int = 0
     deleted: dict[str, int] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
 
@@ -79,6 +80,17 @@ class MaintenanceService:
                     return
 
         await self._guard("artifacts", purge_artifacts, report)
+        learned_memory = self._runtime.learned_memory
+        if learned_memory is not None:
+
+            async def purge_memory() -> None:
+                for _ in range(settings.max_batches_per_sweep):
+                    count = await learned_memory.store.purge_expired(settings.batch_size)
+                    report.purged_learned_memory += count
+                    if count < settings.batch_size:
+                        return
+
+            await self._guard("learned_memory", purge_memory, report)
         sweeper = self._sweeper
         if sweeper is not None:
 

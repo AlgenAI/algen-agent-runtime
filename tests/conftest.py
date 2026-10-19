@@ -6,8 +6,10 @@ import pytest
 
 from algen_agent_runtime.approvals.service import InMemoryApprovalService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
+from algen_agent_runtime.context.artifacts import ContextArtifactService
 from algen_agent_runtime.context.builder import ContextBuilderRegistry, DefaultContextBuilder
 from algen_agent_runtime.events.bus import InMemoryEventBus
+from algen_agent_runtime.memory.contracts import LearnedMemoryStore
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.persistence.memory import InMemoryMemoryStore, InMemoryRunStore
@@ -35,7 +37,13 @@ def make_agent(**updates: Any) -> AgentDefinition:
     return AgentDefinition(**values)
 
 
-def make_runtime(provider: Any | None = None, agent: AgentDefinition | None = None) -> AgentRuntime:
+def make_runtime(
+    provider: Any | None = None,
+    agent: AgentDefinition | None = None,
+    *,
+    context_artifacts: ContextArtifactService | None = None,
+    learned_memory_store: LearnedMemoryStore | None = None,
+) -> AgentRuntime:
     agents = InMemoryAgentRegistry()
     agents.register(agent or make_agent())
     memory = InMemoryMemoryStore()
@@ -57,6 +65,8 @@ def make_runtime(provider: Any | None = None, agent: AgentDefinition | None = No
         memory=memory,
         events=InMemoryEventBus(),
         approvals=InMemoryApprovalService(),
+        context_artifacts=context_artifacts,
+        learned_memory_store=learned_memory_store,
     )
 
 

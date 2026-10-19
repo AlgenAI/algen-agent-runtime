@@ -9,21 +9,64 @@ from typing import Any
 
 import structlog
 from opentelemetry import trace
+from pydantic import ValidationError
 
 from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
-from algen_agent_runtime.context.builder import ContextBuilderRegistry
+from algen_agent_runtime.context.artifacts import (
+    CONTEXT_READ_PERMISSION,
+    CONTEXT_READ_TOOL,
+    ContextArtifactService,
+)
+from algen_agent_runtime.context.budget import (
+    estimate_request_overhead,
+    estimate_request_tokens,
+    message_token_budget,
+)
+from algen_agent_runtime.context.builder import (
+    ContextBuilderRegistry,
+    DefaultContextBuilder,
+    RetrievalContextBuilder,
+)
+from algen_agent_runtime.context.compaction import assess_compaction
+from algen_agent_runtime.context.diagnostics import context_snapshot
+from algen_agent_runtime.context.history import (
+    archive_compacted_prefix,
+    initialize_history,
+    project_history,
+)
+from algen_agent_runtime.context.packing import estimate_message
+from algen_agent_runtime.context.skills import (
+    SKILL_LOAD_PERMISSION,
+    SKILL_LOAD_TOOL,
+    loaded_skills_message,
+    skill_load_tool,
+)
+from algen_agent_runtime.context.working_state import (
+    WORKING_STATE_PERMISSION,
+    WORKING_STATE_TOOL,
+    working_state_message,
+    working_state_tool,
+)
 from algen_agent_runtime.events.bus import InMemoryAuditLog
 from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     BudgetExceededError,
+    ConfigurationError,
     ConflictError,
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
+    ToolExecutionError,
     VerificationError,
+)
+from algen_agent_runtime.memory.contracts import LearnedMemoryStore, MemoryReceipt
+from algen_agent_runtime.memory.service import (
+    MEMORY_PERMISSIONS,
+    MEMORY_RECALL,
+    LearnedMemoryService,
 )
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.observability.traccia_adapter import (
@@ -44,8 +87,10 @@ from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
     TERMINAL_STATUSES,
     AgentDefinition,
+    ContextCompaction,
     ErrorKind,
     FinishReason,
+    LoadedSkills,
     Message,
     ModelRequest,
     ModelResponse,
@@ -54,9 +99,13 @@ from algen_agent_runtime.types.contracts import (
     RunResult,
     RunState,
     RunStatus,
+    SkillSelection,
     TextBlock,
     TokenUsage,
     ToolSpec,
+    WorkingState,
+    WorkingStateContent,
+    WorkingStateUpdate,
     utc_now,
 )
 from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
@@ -83,6 +132,8 @@ class AgentRuntime:
         audits: AuditLog | None = None,
         observability: ObservabilityAdapter | None = None,
         cache: CacheService | None = None,
+        context_artifacts: ContextArtifactService | None = None,
+        learned_memory_store: LearnedMemoryStore | None = None,
         telemetry_include_content: bool = False,
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
@@ -103,6 +154,19 @@ class AgentRuntime:
         self.audits = audits or InMemoryAuditLog()
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
+        self.context_artifacts = context_artifacts
+        self.learned_memory = (
+            LearnedMemoryService(learned_memory_store, self._memory_context)
+            if learned_memory_store is not None
+            else None
+        )
+        if self.learned_memory is not None:
+            for tool in self.learned_memory.tools():
+                self.tools.register(tool)
+        self.tools.register(working_state_tool())
+        self.tools.register(skill_load_tool(self._skill_agent))
+        if context_artifacts is not None:
+            self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
         self.telemetry_max_content_chars = telemetry_max_content_chars
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -114,10 +178,65 @@ class AgentRuntime:
         )
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
+    def _validate_context_policy(self, agent: AgentDefinition) -> None:
+        memory_tools = agent.enabled_tools.intersection(MEMORY_PERMISSIONS)
+        if agent.learned_memory_policy.enabled:
+            if self.learned_memory is None or not memory_tools:
+                raise ConfigurationError(
+                    "learned memory requires a store and explicitly enabled memory tools"
+                )
+            if any(MEMORY_PERMISSIONS[name] not in agent.tool_permissions for name in memory_tools):
+                raise ConfigurationError("learned memory tools require their memory permissions")
+        elif memory_tools:
+            raise ConfigurationError("memory tools require learned_memory_policy.enabled")
+        if agent.context_policy.skills_enabled and (
+            SKILL_LOAD_TOOL not in agent.enabled_tools
+            or SKILL_LOAD_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "skills require core.skills_load in enabled_tools and skills.read in tool_permissions"
+            )
+        if SKILL_LOAD_TOOL in agent.enabled_tools and not agent.context_policy.skills_enabled:
+            raise ConfigurationError("core.skills_load requires skills_enabled")
+        if agent.context_policy.working_state_enabled and (
+            WORKING_STATE_TOOL not in agent.enabled_tools
+            or WORKING_STATE_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "working state requires core.working_state_update in enabled_tools "
+                "and context.write in tool_permissions"
+            )
+        if (
+            WORKING_STATE_TOOL in agent.enabled_tools
+            and not agent.context_policy.working_state_enabled
+        ):
+            raise ConfigurationError("core.working_state_update requires working_state_enabled")
+        if (agent.context_policy.offload_tool_results or agent.context_policy.compact_history) and (
+            self.context_artifacts is None
+            or CONTEXT_READ_TOOL not in agent.enabled_tools
+            or CONTEXT_READ_PERMISSION not in agent.tool_permissions
+        ):
+            raise ConfigurationError(
+                "context offloading requires context artifact storage, core.context_read "
+                "in enabled_tools, and context.read in tool_permissions"
+            )
+        if (
+            agent.context_policy.compact_history
+            or agent.context_policy.working_state_enabled
+            or agent.context_policy.skills_enabled
+        ) and not isinstance(
+            self.contexts.get(agent.context_builder),
+            (DefaultContextBuilder, RetrievalContextBuilder),
+        ):
+            raise ConfigurationError(
+                "history compaction, working state, and skills require a built-in context builder"
+            )
+
     async def start(self, request: RunRequest) -> RunState:
         if not self._accepting_runs:
             raise ConflictError("runtime is draining and is not accepting new runs")
         agent = self.agents.get(request.agent, request.agent_version)
+        self._validate_context_policy(agent)
         timeout = request.timeout_seconds or agent.budget.max_latency_seconds
         state_values: dict[str, Any] = {
             "request": request,
@@ -171,7 +290,7 @@ class AgentRuntime:
             clarification = str(payload.get("clarification", "")).strip()
             if not clarification:
                 raise ValueError("clarification is required")
-            state.messages.append(Message.text(Role.USER, clarification))
+            state.append_message(Message.text(Role.USER, clarification))
             state.pause_payload = None
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
         elif state.status == RunStatus.AWAITING_APPROVAL:
@@ -383,6 +502,11 @@ class AgentRuntime:
                 await self._emit(current, "run.failed", {"error": current.error})
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
+        self._validate_context_policy(agent)
+        if state.loaded_skills.skills:
+            # Recovery may resume at planning with a checkpointed model context.
+            # Revalidate its loaded guidance before any further model dispatch.
+            loaded_skills_message(state.loaded_skills, agent)
         if state.status == RunStatus.RECEIVED:
             await self._transition(state, RunStatus.VALIDATING)
             checked_input = await self._policy_value(
@@ -405,6 +529,24 @@ class AgentRuntime:
                 if isinstance(checked_input, str) and checked_input != state.request.input:
                     state.request = state.request.model_copy(update={"input": checked_input})
                 builder = self.contexts.get(agent.context_builder)
+                if isinstance(builder, (DefaultContextBuilder, RetrievalContextBuilder)):
+                    if state.context_history is None:
+                        await initialize_history(state, agent, self.memory)
+                        checked_history = await self._policy_value(
+                            "after_retrieval",
+                            state.context_history,
+                            state,
+                            {"agent": agent, "operation": "context_history"},
+                        )
+                        if not isinstance(checked_history, list) or not all(
+                            isinstance(message, Message) for message in checked_history
+                        ):
+                            raise ConfigurationError(
+                                "history policy must return a list of messages"
+                            )
+                        state.context_history = checked_history
+                        await self.runs.save(state, state.version)
+                    await self._compact_context(state, agent)
                 with self._tracer.start_as_current_span(
                     "agent.context.build", attributes=self._span_attributes(state)
                 ) as span:
@@ -431,6 +573,7 @@ class AgentRuntime:
                     "context.retrieved",
                     {
                         "message_count": len(state.messages),
+                        **context_snapshot(state).model_dump(mode="json"),
                         "source_count": len(state.citations),
                         "citations": (
                             [
@@ -485,6 +628,213 @@ class AgentRuntime:
                         raise
                     step_span.set_attribute("agent.step.status", state.status.value)
 
+    async def _compact_context(self, state: RunState, agent: AgentDefinition) -> None:
+        if not agent.context_policy.compact_history:
+            return
+        if state.pending_tool_calls:
+            assessment = assess_compaction(state, agent.context_policy)
+            await self._emit(
+                state, "context.compaction.assessed", assessment.diagnostic.model_dump(mode="json")
+            )
+            return
+        trigger = agent.context_policy.compaction_trigger_tokens
+        context_tokens = None
+        ratio = agent.context_policy.compaction_trigger_ratio
+        builder = self.contexts.get(agent.context_builder)
+        profiles = tuple(
+            profile
+            for profile in (agent.default_model, *agent.fallback_models)
+            if profile.provider
+            and profile.model
+            and (
+                not agent.model_allowlist
+                or f"{profile.provider}/{profile.model}" in agent.model_allowlist
+            )
+        )
+        if ratio is not None and isinstance(
+            builder, (DefaultContextBuilder, RetrievalContextBuilder)
+        ):
+            assembled = await builder.assemble(state, agent)
+            context_tokens = sum(estimate_message(message) for message in assembled)
+            request = self._model_request(state, agent, assembled)
+            allowances = [builder.compaction_token_budget]
+            for profile in profiles:
+                try:
+                    allowance = message_token_budget(request, profile)
+                except BudgetExceededError:
+                    # The router also skips profiles without room for messages.
+                    continue
+                if allowance is not None:
+                    allowances.append(allowance)
+            available = max(1, min(allowances) - builder.compaction_token_reservation)
+            trigger = min(trigger, max(1, int(available * ratio)))
+        input_limit = agent.context_policy.compaction_max_input_tokens
+        summary_request = ModelRequest(
+            messages=(), max_output_tokens=agent.context_policy.compaction_max_output_tokens
+        )
+        for profile in profiles:
+            try:
+                allowance = message_token_budget(summary_request, profile)
+            except BudgetExceededError:
+                continue
+            if allowance is not None:
+                input_limit = min(
+                    input_limit, allowance + estimate_request_overhead(summary_request)
+                )
+        assessment = assess_compaction(
+            state,
+            agent.context_policy,
+            trigger_tokens=trigger,
+            context_tokens=context_tokens,
+            max_input_tokens=input_limit,
+        )
+        await self._emit(
+            state, "context.compaction.assessed", assessment.diagnostic.model_dump(mode="json")
+        )
+        plan = assessment.plan
+        if plan is None:
+            return
+        assert self.context_artifacts is not None  # Validated before execution.
+        self._enforce_budget(state, agent)
+        operation = {"agent": agent, "operation": "context_compaction"}
+        request = await self._policy_value("before_model", plan.request, state, operation)
+        if not isinstance(request, ModelRequest) or request.tools:
+            raise ConfigurationError("compaction model policy must return a request without tools")
+        estimated_input = estimate_request_tokens(request)
+        if estimated_input > agent.context_policy.compaction_max_input_tokens:
+            raise BudgetExceededError("compaction input exceeds its configured estimate limit")
+        remaining = agent.budget.max_tokens - state.summary.usage.total_tokens - estimated_input
+        output_limit = min(
+            request.max_output_tokens or agent.context_policy.compaction_max_output_tokens,
+            agent.context_policy.compaction_max_output_tokens,
+            remaining,
+        )
+        if output_limit < 1:
+            raise BudgetExceededError("insufficient remaining token budget for compaction")
+        request = request.model_copy(
+            update={
+                "max_output_tokens": output_limit,
+                "stream": False,
+                "timeout_seconds": max(0.001, (state.deadline - utc_now()).total_seconds())
+                if state.deadline
+                else None,
+            }
+        )
+        with self._tracer.start_as_current_span(
+            "agent.context.compact", attributes=self._span_attributes(state)
+        ) as span:
+            response = await self.router.generate(
+                request, (agent.default_model, *agent.fallback_models), agent.model_allowlist
+            )
+            self._record_model_usage(state, response)
+            # A later validation/archive failure must not lose already-incurred usage.
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            span.set_attribute("llm.usage.total_tokens", response.usage.total_tokens)
+            span.set_attribute("context.compacted_message_count", plan.through - plan.start)
+            self._enforce_budget(state, agent)
+            if (
+                response.finish_reason != FinishReason.STOP
+                or response.tool_calls
+                or response.message.tool_calls
+            ):
+                raise VerificationError(
+                    "compaction requires a complete text response without tool calls"
+                )
+            summary = await self._policy_value(
+                "after_model", response.message.text_content, state, operation
+            )
+            if not isinstance(summary, str) or not summary.strip():
+                raise VerificationError("compaction returned an empty summary")
+            if (
+                estimate_message(Message.text(Role.ASSISTANT, summary))
+                > agent.context_policy.compaction_max_output_tokens
+            ):
+                raise VerificationError("compaction summary exceeds its configured estimate limit")
+            candidate = state.model_copy(
+                update={
+                    "context_compaction": ContextCompaction(
+                        through=plan.through,
+                        summary=summary.strip(),
+                        archive_id="0" * 36,
+                    )
+                }
+            )
+            before_tokens = sum(estimate_message(message) for message in project_history(state))
+            after_tokens = sum(estimate_message(message) for message in project_history(candidate))
+            if after_tokens >= before_tokens:
+                raise VerificationError("compaction summary did not reduce active context")
+            archive = await self._policy_value(
+                "before_memory_write", plan.archive_text, state, operation
+            )
+            if not isinstance(archive, str):
+                raise ConfigurationError("compaction archive policy must return text")
+            try:
+                archived = json.loads(archive)
+                if not isinstance(archived, dict):
+                    raise ValueError("expected archive object")
+                if (
+                    archived.get("start") != plan.start
+                    or archived.get("through") != plan.through
+                    or archived.get("previous_archive_id")
+                    != (state.context_compaction.archive_id if state.context_compaction else None)
+                    or not isinstance(archived.get("messages"), list)
+                    or len(archived["messages"]) != plan.through - plan.start
+                ):
+                    raise ValueError("archive structure changed")
+                for message in archived["messages"]:
+                    Message.model_validate(message)
+            except (ValueError, TypeError) as exc:
+                raise ConfigurationError(
+                    "archive policy must preserve message structure and recovery links"
+                ) from exc
+            _, artifact_id = await self.context_artifacts.offload(
+                archive,
+                ToolContext(
+                    run_id=state.id,
+                    step_id=f"compact-{plan.through}",
+                    tenant_id=state.request.tenant_id,
+                    user_id=state.request.user_id,
+                    permissions=agent.tool_permissions,
+                    idempotency_key=f"{state.id}:compaction:{plan.start}:{plan.through}",
+                ),
+                agent.context_policy,
+                started_at=state.started_at,
+                force=True,
+                purpose="context_history",
+            )
+            assert artifact_id is not None
+            state.context_compaction = ContextCompaction(
+                through=plan.through, summary=summary.strip(), archive_id=artifact_id
+            )
+            if artifact_id not in state.context_artifact_ids:
+                state.context_artifact_ids.append(artifact_id)
+            if agent.context_policy.archive_compacted_history:
+                archive_compacted_prefix(state)
+            # Commit cursor, summary, archive reference and charged usage together before announcing it.
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            await self._emit(
+                state,
+                "context.compacted",
+                {
+                    "message_count": plan.through - plan.start,
+                    "through": plan.through,
+                    "history_offset": state.context_history_offset,
+                    "trigger_tokens": trigger,
+                    "history_tokens_before": before_tokens,
+                    "history_tokens_after": after_tokens,
+                    "usage": response.usage.model_dump(mode="json"),
+                },
+            )
+            await self._audit(
+                state,
+                "context.compact",
+                "completed",
+                artifact_id,
+                {"start": plan.start, "through": plan.through},
+            )
+
     async def _execute_action(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
@@ -506,6 +856,33 @@ class AgentRuntime:
         else:
             raise ConflictError(f"unsupported planned action {action.type.value}")
 
+    def _model_request(
+        self, state: RunState, agent: AgentDefinition, messages: Sequence[Message]
+    ) -> ModelRequest:
+        tool_specs = tuple(
+            ToolSpec(
+                name=tool.definition.name,
+                description=tool.definition.description,
+                input_schema=tool.definition.input_schema,
+            )
+            for tool in self.tools.list()
+            if tool.definition.name in agent.enabled_tools
+        )
+        return ModelRequest(
+            messages=tuple(messages),
+            tools=tool_specs,
+            response_schema=state.request.overrides.response_schema,
+            temperature=state.request.overrides.temperature,
+            max_output_tokens=min(
+                state.request.overrides.max_output_tokens or agent.budget.max_output_tokens,
+                max(1, agent.budget.max_tokens - state.summary.usage.total_tokens),
+            ),
+            timeout_seconds=max(0.001, (state.deadline - utc_now()).total_seconds())
+            if state.deadline
+            else None,
+            stream=state.request.stream,
+        )
+
     async def _execute_model(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
@@ -522,29 +899,7 @@ class AgentRuntime:
                 + ", ".join(unresolved_call_ids)
             )
         await self._transition(state, RunStatus.INVOKING_MODEL)
-        tool_specs = tuple(
-            ToolSpec(
-                name=tool.definition.name,
-                description=tool.definition.description,
-                input_schema=tool.definition.input_schema,
-            )
-            for tool in self.tools.list()
-            if tool.definition.name in agent.enabled_tools
-        )
-        request = ModelRequest(
-            messages=tuple(state.messages),
-            tools=tool_specs,
-            response_schema=state.request.overrides.response_schema,
-            temperature=state.request.overrides.temperature,
-            max_output_tokens=min(
-                state.request.overrides.max_output_tokens or agent.budget.max_output_tokens,
-                max(1, agent.budget.max_tokens - state.summary.usage.total_tokens),
-            ),
-            timeout_seconds=max(0.001, (state.deadline - utc_now()).total_seconds())
-            if state.deadline
-            else None,
-            stream=state.request.stream,
-        )
+        request = self._model_request(state, agent, state.messages)
         checked_request = await self._policy_value("before_model", request, state, {"agent": agent})
         if isinstance(checked_request, ModelRequest):
             request = checked_request
@@ -613,7 +968,7 @@ class AgentRuntime:
         state.output_text = response.message.text_content or None
         state.pending_tool_calls = list(response.tool_calls)
         if response.message.text_content or response.tool_calls:
-            state.messages.append(
+            state.append_message(
                 response.message.model_copy(update={"tool_calls": response.tool_calls})
             )
         state.summary = state.summary.model_copy(
@@ -736,13 +1091,13 @@ class AgentRuntime:
                     try:
                         return self._validate_model_completion(completed, request)
                     except ProviderError:
-                        self._record_rejected_completion(state, completed)
+                        self._record_model_usage(state, completed)
                         raise
                 response = await self.router.generate(request, profiles, agent.model_allowlist)
                 try:
                     return self._validate_model_completion(response, request)
                 except ProviderError:
-                    self._record_rejected_completion(state, response)
+                    self._record_model_usage(state, response)
                     raise
             except ProviderError as exc:
                 last_error = exc
@@ -822,8 +1177,8 @@ class AgentRuntime:
             )
         return response
 
-    def _record_rejected_completion(self, state: RunState, response: Any) -> None:
-        """Charge truncated/empty provider completions before attempting recovery."""
+    def _record_model_usage(self, state: RunState, response: Any) -> None:
+        """Charge auxiliary or rejected completions to the same run budget."""
         state.summary = state.summary.model_copy(
             update={
                 "model_calls": state.summary.model_calls + 1,
@@ -840,11 +1195,89 @@ class AgentRuntime:
         if usage.estimated_cost_usd >= agent.budget.max_cost_usd:
             raise BudgetExceededError("cost budget exhausted")
 
+    async def _memory_context(self, context: ToolContext) -> tuple[RunState, AgentDefinition]:
+        state = await self.runs.get(context.run_id, context.tenant_id)
+        if state is None or state.request.user_id != context.user_id:
+            raise PolicyDeniedError("memory access requires the originating run, tenant, and user")
+        return state, self.agents.get(state.request.agent, state.request.agent_version)
+
+    async def _skill_agent(self, context: ToolContext) -> AgentDefinition:
+        state = await self.runs.get(context.run_id, context.tenant_id)
+        if state is None or state.request.user_id != context.user_id:
+            raise PolicyDeniedError("skill access requires the originating run, tenant, and user")
+        return self.agents.get(state.request.agent, state.request.agent_version)
+
+    async def _prepare_loaded_skills(
+        self, state: RunState, agent: AgentDefinition, value: Any, arguments: dict[str, Any]
+    ) -> LoadedSkills:
+        selected = SkillSelection.model_validate(arguments)
+
+        def validate(value: Any) -> LoadedSkills:
+            try:
+                loaded = LoadedSkills.model_validate(value)
+            except ValidationError as exc:
+                raise ToolExecutionError("invalid processed skill selection") from exc
+            if tuple(skill.name for skill in loaded.skills) != selected.names:
+                raise ToolExecutionError("skill policies must preserve the requested selection")
+            loaded_skills_message(loaded, agent)
+            return loaded
+
+        loaded = validate(value)
+        checked = await self._policy_value(
+            "before_memory_write",
+            loaded.model_dump(mode="json"),
+            state,
+            {"agent": agent, "operation": "skills_load"},
+        )
+        return validate(checked)
+
+    async def _prepare_working_state(
+        self, state: RunState, agent: AgentDefinition, value: Any, expected_revision: Any
+    ) -> tuple[WorkingState | None, dict[str, Any]]:
+        if (
+            not agent.context_policy.working_state_enabled
+            or WORKING_STATE_PERMISSION not in agent.tool_permissions
+        ):
+            raise PolicyDeniedError("working state is not enabled or permitted")
+        try:
+            update = WorkingStateUpdate.model_validate(value)
+        except ValidationError as exc:
+            raise ToolExecutionError("invalid processed working-state update") from exc
+        if update.expected_revision != expected_revision:
+            raise ToolExecutionError("working-state policy must preserve expected_revision")
+        current = state.working_state or WorkingState()
+        if update.expected_revision != current.revision:
+            return None, {
+                "applied": False,
+                "revision": current.revision,
+                "reason": "stale_revision",
+            }
+        candidate = WorkingState(revision=current.revision + 1, state=update.state)
+        working_state_message(candidate, agent.context_policy)
+        checked = await self._policy_value(
+            "before_memory_write",
+            update.state.model_dump(mode="json"),
+            state,
+            {"agent": agent, "operation": "working_state"},
+        )
+        try:
+            candidate = WorkingState(
+                revision=current.revision + 1, state=WorkingStateContent.model_validate(checked)
+            )
+        except ValidationError as exc:
+            raise ToolExecutionError(
+                "working-state policy must preserve the record structure"
+            ) from exc
+        working_state_message(candidate, agent.context_policy)
+        return candidate, {"applied": True, "revision": candidate.revision}
+
     async def _execute_tool(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
         if action.tool_name not in agent.enabled_tools:
             raise PolicyDeniedError(f"tool {action.tool_name!r} is not enabled for this agent")
+        if action.tool_name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS}:
+            self._validate_context_policy(agent)
         tool = self.tools.get(action.tool_name or "")
         call_id = action.id.removeprefix("tool-")
         decision = await self._evaluate_policy(
@@ -898,6 +1331,9 @@ class AgentRuntime:
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
         )
+        working_update: WorkingState | None = None
+        skill_update: LoadedSkills | None = None
+        memory_receipt: MemoryReceipt | None = None
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -915,6 +1351,74 @@ class AgentRuntime:
                 result = await self.tool_executor.execute(
                     tool.definition.name, action.arguments, context
                 )
+                tool_text = json.dumps(result.value, default=str)
+                if tool.definition.name in MEMORY_PERMISSIONS:
+                    assert self.learned_memory is not None
+                    if tool.definition.name == MEMORY_RECALL:
+                        await self.learned_memory.validate_recall(result, context)
+                    else:
+                        proposal = self.learned_memory.validate_proposal(
+                            tool.definition.name, result.value, action.arguments
+                        )
+                        checked = await self._policy_value(
+                            "before_memory_write",
+                            proposal.model_dump(mode="json"),
+                            state,
+                            {"agent": agent, "operation": tool.definition.name},
+                        )
+                        proposal = self.learned_memory.validate_proposal(
+                            tool.definition.name, checked, action.arguments
+                        )
+                        memory_receipt = await self.learned_memory.apply(
+                            tool.definition.name, proposal, context
+                        )
+                        tool_text = memory_receipt.model_dump_json()
+                if tool.definition.name == SKILL_LOAD_TOOL:
+                    skill_update = await self._prepare_loaded_skills(
+                        state, agent, result.value, action.arguments
+                    )
+                    tool_text = json.dumps(
+                        {
+                            "loaded": [
+                                {"name": skill.name, "version": skill.version}
+                                for skill in skill_update.skills
+                            ]
+                        }
+                    )
+                if tool.definition.name == WORKING_STATE_TOOL:
+                    working_update, receipt = await self._prepare_working_state(
+                        state, agent, result.value, action.arguments.get("expected_revision")
+                    )
+                    tool_text = json.dumps(receipt)
+                if agent.context_policy.offload_tool_results and tool.definition.name not in {
+                    CONTEXT_READ_TOOL,
+                    WORKING_STATE_TOOL,
+                    SKILL_LOAD_TOOL,
+                    *MEMORY_PERMISSIONS,
+                }:
+                    if self.context_artifacts is None:
+                        raise ConfigurationError(
+                            "tool-result offloading requires context artifact storage"
+                        )
+                    tool_text, artifact_id = await self.context_artifacts.offload(
+                        tool_text, context, agent.context_policy, started_at=state.started_at
+                    )
+                    if artifact_id is not None:
+                        if artifact_id not in state.context_artifact_ids:
+                            state.context_artifact_ids.append(artifact_id)
+                        result = result.model_copy(
+                            update={"artifact_ids": (*result.artifact_ids, artifact_id)}
+                        )
+                        await self._audit(
+                            state,
+                            "context.offload",
+                            "completed",
+                            artifact_id,
+                            {
+                                "step_id": action.id,
+                                "size_bytes": len(json.dumps(result.value, default=str).encode()),
+                            },
+                        )
             except Exception as exc:
                 span.set_attribute("tool.status", "failed")
                 span.set_attribute("error.type", type(exc).__name__)
@@ -924,14 +1428,18 @@ class AgentRuntime:
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
             if self.telemetry_include_content:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
+        if working_update is not None:
+            state.working_state = working_update
+        if skill_update is not None:
+            state.loaded_skills = skill_update
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
-        state.messages.append(
+        state.append_message(
             Message(
                 role=Role.TOOL,
                 name=tool.definition.name,
                 tool_call_id=call_id,
-                content=(TextBlock(text=json.dumps(result.value, default=str)),),
+                content=(TextBlock(text=tool_text),),
             )
         )
         state.output_text = None
@@ -959,6 +1467,51 @@ class AgentRuntime:
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
+        if memory_receipt is not None:
+            await self._emit(
+                state,
+                "memory.learned.updated",
+                {"revision": memory_receipt.revision, "deleted": memory_receipt.deleted},
+                action.id,
+            )
+            await self._audit(
+                state,
+                "memory.learned",
+                "completed",
+                state.id,
+                {
+                    "revision": memory_receipt.revision,
+                    "deleted": memory_receipt.deleted,
+                    "step_id": action.id,
+                },
+            )
+        if skill_update is not None:
+            await self._emit(
+                state, "context.skills.updated", {"count": len(skill_update.skills)}, action.id
+            )
+            await self._audit(
+                state,
+                "context.skills",
+                "completed",
+                state.id,
+                {"count": len(skill_update.skills), "step_id": action.id},
+            )
+        if working_update is not None:
+            # The state, receipt and completed-call marker are checkpointed together
+            # before announcing the revision. Replay never applies a proposal twice.
+            await self._emit(
+                state,
+                "context.working_state.updated",
+                {"revision": working_update.revision},
+                action.id,
+            )
+            await self._audit(
+                state,
+                "context.working_state",
+                "completed",
+                state.id,
+                {"revision": working_update.revision, "step_id": action.id},
+            )
 
     async def _verify_and_complete(
         self, state: RunState, agent: AgentDefinition, step_id: str
@@ -1017,7 +1570,7 @@ class AgentRuntime:
             if state.attempt_count < agent.verification_policy.max_repairs:
                 state.attempt_count += 1
                 state.output_text = None
-                state.messages.append(
+                state.append_message(
                     Message.text(Role.SYSTEM, "Repair the previous response to satisfy validation.")
                 )
                 state.summary = state.summary.model_copy(

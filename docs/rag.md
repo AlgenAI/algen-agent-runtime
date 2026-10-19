@@ -65,6 +65,15 @@ flowchart LR
 
 ## Configuration
 
+`max_context_tokens` bounds the builder's estimated message size even when retrieval returns no
+results. Documents larger than the remaining `max_retrieval_tokens` allowance are skipped whole.
+If selected evidence cannot fit beside protected instructions and recent conversation messages,
+the builder removes documents from the end of the ranked selection until it fits. Returned citations
+refer only to evidence included in the context. Evidence is replaced on each build; session history
+is loaded once into canonical history. Optional compaction summarizes conversation messages while
+retrieval continues to refresh evidence. See [context packing](architecture.md#context-assembly-and-packing) for estimation
+limits and overflow behavior.
+
 ```yaml
 retrieval:
   handbook:
