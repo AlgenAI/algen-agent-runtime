@@ -192,6 +192,7 @@ class MemoryPolicy(StrictModel):
     retention_seconds: int = Field(default=86_400, ge=0)
     max_items: int = Field(default=200, ge=0)
     store_tool_payloads: bool = False
+    tool_payload_max_chars: int = Field(default=4_000, ge=256, le=200_000)
     redact_pii: bool = True
 
 
@@ -235,6 +236,12 @@ class GuardrailPolicy(StrictModel):
         "authorization",
     )
     require_citations: bool = False
+    # Policies applied to tool arguments and results. ``None`` applies ``policies``; an
+    # agent that edits code can keep secret redaction on its answers but not on its files.
+    tool_policies: tuple[str, ...] | None = None
+    # Tool results that look like instructions to the model: ``flag`` marks the result as
+    # untrusted data before the model reads it, ``block`` fails the tool call.
+    tool_result_injection: Literal["off", "flag", "block"] = "off"
 
 
 class VerificationPolicy(StrictModel):
@@ -247,6 +254,17 @@ class ApprovalPolicy(StrictModel):
     require_for_side_effects: bool = True
     require_for_destructive: bool = True
     expires_seconds: int = Field(default=3600, ge=1)
+    # ``continue`` tells the model the action was declined and lets the run go on.
+    on_rejection: Literal["fail_run", "continue"] = "fail_run"
+
+
+class ToolPolicy(StrictModel):
+    # ``return_to_model`` reports a failed tool call to the model as the call's result,
+    # so it can correct itself, instead of failing the run.
+    on_error: Literal["fail_run", "return_to_model"] = "fail_run"
+    # Run the tool calls one model reply requests concurrently when none needs approval.
+    parallel_calls: bool = False
+    max_parallel_calls: int = Field(default=4, ge=1, le=16)
 
 
 SkillName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
@@ -315,6 +333,7 @@ class AgentDefinition(StrictModel):
     verification_policy: VerificationPolicy = Field(default_factory=VerificationPolicy)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
+    tool_policy: ToolPolicy = Field(default_factory=ToolPolicy)
     response_composer: str = "default"
     budget: Budget = Field(default_factory=Budget)
     max_steps: int = Field(default=16, ge=1, le=1000)

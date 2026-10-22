@@ -44,13 +44,19 @@ class ToolExecutor:
         payload: Any,
         definition: Any,
         context: ToolContext,
+        agent: Any = None,
     ) -> Any:
+        # With the agent in the context, its guardrail selection decides which policies run
+        # (see GuardrailPolicy.tool_policies); without it every registered policy runs.
+        policy_context: dict[str, Any] = {"tool": definition, "context": context}
+        if agent is not None:
+            policy_context["agent"] = agent
         return await evaluate_policy_observed(
             tracer=self._tracer,
             engine=self._policy_engine,
             point=point,
             payload=payload,
-            context={"tool": definition, "context": context},
+            context=policy_context,
             attributes={
                 "run.id": context.run_id,
                 "step.id": context.step_id,
@@ -61,7 +67,12 @@ class ToolExecutor:
         )
 
     async def execute(
-        self, name: str, arguments: dict[str, Any], context: ToolContext
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolContext,
+        *,
+        agent: Any = None,
     ) -> ToolResult:
         tool = self._registry.get(name)
         definition = tool.definition
@@ -72,7 +83,7 @@ class ToolExecutor:
             jsonschema.validate(arguments, definition.input_schema)
         except jsonschema.ValidationError as exc:
             raise ToolExecutionError(f"invalid input for {name}: {exc.message}") from exc
-        decision = await self._evaluate_policy("before_tool", arguments, definition, context)
+        decision = await self._evaluate_policy("before_tool", arguments, definition, context, agent)
         if decision.action != "allow":
             raise PolicyDeniedError(decision.reason)
         execution, reserved = await self._executions.begin(context, name)
@@ -163,7 +174,7 @@ class ToolExecutor:
                 except jsonschema.ValidationError as exc:
                     raise ToolExecutionError(f"invalid output from {name}: {exc.message}") from exc
                 output_decision = await self._evaluate_policy(
-                    "after_tool", result, definition, context
+                    "after_tool", result, definition, context, agent
                 )
                 if output_decision.action not in {"allow", "redact", "transform"}:
                     raise PolicyDeniedError(output_decision.reason)

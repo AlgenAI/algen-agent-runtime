@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from algen_agent_runtime.context.packing import CONTEXT_SUMMARY_NAME
+from algen_agent_runtime.context.turn_memory import whole_tool_exchanges
 from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.types.contracts import AgentDefinition, Message, Role, RunState, TextBlock
 from algen_agent_runtime.types.interfaces import MemoryStore
@@ -23,7 +24,8 @@ async def initialize_history(state: RunState, agent: AgentDefinition, memory: Me
     )
     state.context_history = [
         Message.text(Role.SYSTEM, agent.system_instructions),
-        *history,
+        # A memory window can start mid-turn; start it at a whole turn.
+        *whole_tool_exchanges(history),
         Message.text(Role.USER, state.request.input),
     ]
 
