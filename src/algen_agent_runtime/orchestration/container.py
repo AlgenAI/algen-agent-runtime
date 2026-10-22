@@ -132,6 +132,7 @@ from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
+from algen_agent_runtime.tools.http_api import http_api_tool
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import ModelCapabilities
 from algen_agent_runtime.types.interfaces import (
@@ -309,6 +310,15 @@ def build_container(
         )
     )
     tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
+    for declared in settings.http_tools:
+        tools.register(
+            http_api_tool(
+                declared,
+                allowed_hosts=settings.security.allowed_http_hosts,
+                allow_private_networks=settings.security.allow_private_networks,
+                secrets=secret_provider.get,
+            )
+        )
     for tool in additional_tools:
         tools.register(tool)
     combined_mcp_servers: list[MCPServerConfigBase] = list(settings.mcp_servers)

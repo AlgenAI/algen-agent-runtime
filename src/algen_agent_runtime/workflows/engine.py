@@ -13,8 +13,10 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError, NotFoundError
+from algen_agent_runtime.tools.contracts import ToolContext
 from algen_agent_runtime.types.contracts import RequestOverrides, RunRequest, RunStatus, utc_now
 from algen_agent_runtime.workflows.contracts import (
+    TOOL_HANDLER_PREFIX,
     NodeHandler,
     OutputValidator,
     PayloadBuilder,
@@ -908,9 +910,12 @@ class MultiAgentWorkflowExecutor:
                     return
             elif node.kind == WorkflowNodeKind.HANDLER:
                 async with semaphore:
-                    result = await self._call(
-                        self._hooks.handler(node.handler or ""), self._context(state, node)
-                    )
+                    if (node.handler or "").startswith(TOOL_HANDLER_PREFIX):
+                        result = await self._call_tool_step(state, node)
+                    else:
+                        result = await self._call(
+                            self._hooks.handler(node.handler or ""), self._context(state, node)
+                        )
             elif node.kind == WorkflowNodeKind.JOIN:
                 outputs = [
                     state.values[nodes[item].output_key]
@@ -1353,6 +1358,48 @@ class MultiAgentWorkflowExecutor:
         **updates: Any,
     ) -> WorkflowHookContext:
         return WorkflowHookContext(state=state, node=node, **updates)
+
+    async def _call_tool_step(self, state: WorkflowExecutionState, node: WorkflowNode) -> Any:
+        """Run the tool a ``tool:<name>`` step names, through the runtime's tool executor.
+
+        The tool's own permissions are granted: the workflow author declared the call. A step
+        whose tool changes things should follow an approval node; agent approvals do not apply.
+        """
+        name = (node.handler or "").removeprefix(TOOL_HANDLER_PREFIX)
+        executor = getattr(self._runtime, "tool_executor", None)
+        tools = getattr(self._runtime, "tools", None)
+        if executor is None or tools is None:
+            raise ConfigurationError(f"tool step {node.id!r} needs a runtime with tools")
+        tool = tools.get(name)
+        arguments = self._tool_arguments(node.arguments, state.values, node)
+        context = ToolContext(
+            run_id=state.id,
+            step_id=node.id,
+            tenant_id=state.tenant_id,
+            user_id=state.user_id,
+            permissions=tool.definition.required_permissions,
+            idempotency_key=f"{state.id}:{node.id}:{state.nodes[node.id].attempts}",
+        )
+        result = await executor.execute(name, arguments, context)
+        return result.value
+
+    @classmethod
+    def _tool_arguments(cls, value: Any, values: dict[str, Any], node: WorkflowNode) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._tool_arguments(item, values, node) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._tool_arguments(item, values, node) for item in value]
+        if not isinstance(value, str) or "{{" not in value:
+            return value
+        whole = re.fullmatch(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}", value)
+        if whole:
+            try:
+                return cls._path(values, whole.group(1))
+            except (KeyError, AttributeError, IndexError) as exc:
+                raise ConfigurationError(
+                    f"tool step {node.id!r} reads {value!r}, which the workflow does not have"
+                ) from exc
+        return cls._render_template(value, values, None, node=node)
 
     @staticmethod
     async def _call(function: Any, *args: Any) -> Any:

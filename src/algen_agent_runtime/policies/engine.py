@@ -229,6 +229,23 @@ class SideEffectPolicy:
         )
 
 
+INSTRUCTION_OVERRIDE_PATTERNS = (
+    re.compile(r"(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?\b"),
+    re.compile(
+        r"(?i)\b(?:reveal|print|show|repeat|expose)\b.{0,40}\b(?:system|developer)\s+(?:prompt|message|instructions?)\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:bypass|disable|override)\b.{0,40}\b(?:guardrails?|safety|policy|instructions?)\b"
+    ),
+    re.compile(r"(?i)\b(?:jailbreak|do anything now|DAN mode)\b"),
+)
+
+
+def looks_like_instruction_override(text: str) -> bool:
+    """High-signal attempts to override or disclose privileged instructions."""
+    return any(pattern.search(text) for pattern in INSTRUCTION_OVERRIDE_PATTERNS)
+
+
 class PromptInjectionPolicy:
     """Block clear attempts to override or disclose privileged instructions.
 
@@ -240,18 +257,7 @@ class PromptInjectionPolicy:
     category = "prompt_injection"
     enforcement_mode = "block"
     applies_to = frozenset({PolicyPoint.INPUT})
-    _patterns = (
-        re.compile(
-            r"(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?\b"
-        ),
-        re.compile(
-            r"(?i)\b(?:reveal|print|show|repeat|expose)\b.{0,40}\b(?:system|developer)\s+(?:prompt|message|instructions?)\b"
-        ),
-        re.compile(
-            r"(?i)\b(?:bypass|disable|override)\b.{0,40}\b(?:guardrails?|safety|policy|instructions?)\b"
-        ),
-        re.compile(r"(?i)\b(?:jailbreak|do anything now|DAN mode)\b"),
-    )
+    _patterns = INSTRUCTION_OVERRIDE_PATTERNS
 
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
@@ -323,6 +329,9 @@ class OutputValidationPolicy:
         )
 
 
+_TOOL_POINTS = frozenset({PolicyPoint.BEFORE_TOOL, PolicyPoint.AFTER_TOOL})
+
+
 class CompositePolicyEngine:
     def __init__(
         self,
@@ -382,7 +391,11 @@ class CompositePolicyEngine:
         transformed = payload
         transforms: list[str] = []
         agent = context.get("agent")
-        selected = set(getattr(getattr(agent, "guardrail_policy", None), "policies", ()))
+        guardrails = getattr(agent, "guardrail_policy", None)
+        selected = set(getattr(guardrails, "policies", ()))
+        tool_policies = getattr(guardrails, "tool_policies", None)
+        if tool_policies is not None and policy_point in _TOOL_POINTS:
+            selected = set(tool_policies)
         # Authorization and side-effect approval are runtime security invariants.
         selected.update({"authorization", "side_effects"})
         invoked: list[str] = []

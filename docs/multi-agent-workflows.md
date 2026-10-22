@@ -139,6 +139,26 @@ node. Read-only model calls and deterministic calculations are common candidates
 write, and other externally visible handlers must remain fail-closed unless their adapter provides a
 stable idempotency key and reconciliation contract.
 
+## Tool steps
+
+A `handler` node whose handler is `tool:<name>` calls that registered tool (a built-in, an MCP
+tool or an [HTTP API tool](http-tools.md)) and stores its result under `output_key`, with no
+hook code. `arguments` holds the call's arguments: a string that is exactly `{{key}}` passes the
+workflow value through unchanged (a dotted key such as `{{inputs.tag}}` reads into it); other
+strings have their placeholders filled in as text.
+
+```yaml
+- id: evidence
+  kind: handler
+  handler: tool:github.issue
+  arguments: {owner: "{{inputs.owner}}", repo: "{{inputs.repo}}", number: "{{inputs.number}}"}
+  output_key: evidence
+```
+
+The tool's own permissions are granted, because the workflow author declared the call. Agent
+approvals do not apply to tool steps: put an `approval` node before a step whose tool changes
+things.
+
 ## Input Template Grammar
 
 When configuring an `input_template` on an `agent`, `map_agent`, or `workflow` node, Algen Agent Runtime enforces a strict, deterministic placeholder grammar:

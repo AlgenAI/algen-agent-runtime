@@ -121,6 +121,10 @@ class WorkflowApprovalDecision(BaseModel):
     decided_at: datetime = Field(default_factory=utc_now)
 
 
+# A handler that names a registered tool rather than a workflow hook.
+TOOL_HANDLER_PREFIX = "tool:"
+
+
 class WorkflowNode(BaseModel):
     """One Runtime-owned workflow node; domain behavior is named, never embedded code."""
 
@@ -131,6 +135,10 @@ class WorkflowNode(BaseModel):
     output_key: str
     agent: str | None = None
     handler: str | None = None
+    # A ``tool:<name>`` handler calls that registered tool with these arguments. A string
+    # that is exactly ``{{key}}`` passes the workflow value through unchanged (a dotted key
+    # reads into it); other strings have their ``{{key}}`` placeholders filled in as text.
+    arguments: dict[str, Any] = Field(default_factory=dict)
     workflow_name: str | None = None
     workflow_version: str | None = None
     input_builder: str | None = None
@@ -156,6 +164,8 @@ class WorkflowNode(BaseModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> WorkflowNode:
+        if self.arguments and not (self.handler or "").startswith(TOOL_HANDLER_PREFIX):
+            raise ValueError("only tool steps (handler 'tool:<name>') take arguments")
         if self.kind in {WorkflowNodeKind.AGENT, WorkflowNodeKind.MAP_AGENT}:
             if not self.agent or not (self.input_builder or self.input_template):
                 raise ValueError(
@@ -165,6 +175,15 @@ class WorkflowNode(BaseModel):
                 raise ValueError("agent nodes accept output_schema or output_schema_hook, not both")
         elif self.kind == WorkflowNodeKind.HANDLER and not self.handler:
             raise ValueError("handler workflow nodes require handler")
+        elif (
+            self.kind == WorkflowNodeKind.HANDLER
+            and self.handler
+            and (self.handler.startswith(TOOL_HANDLER_PREFIX))
+        ):
+            if not re.fullmatch(
+                r"[a-z][a-z0-9_.-]+", self.handler.removeprefix(TOOL_HANDLER_PREFIX)
+            ):
+                raise ValueError(f"tool step {self.handler!r} does not name a valid tool")
         elif self.kind == WorkflowNodeKind.PREDICATE and self.condition is None:
             raise ValueError("predicate workflow nodes require condition")
         elif self.kind == WorkflowNodeKind.JOIN and not self.depends_on:

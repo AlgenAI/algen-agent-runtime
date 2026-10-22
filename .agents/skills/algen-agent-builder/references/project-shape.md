@@ -77,4 +77,26 @@ configuration but not executable Python; hook-based projects must also be instal
 Python environment or imported from a trusted server-visible source. Git imports likewise do not
 auto-install untrusted code.
 
+## Exporting hook-backed projects
+
+Studio's standalone and marketplace exports package hook Python only when the project declares it.
+List the hook module's own file (`pkg/hooks.py` or `pkg/hooks/__init__.py`) and every package module
+it imports under the top-level `extensions.studio.export_assets`. Use a `{source, path}` mapping when
+the source lives under `src/`:
+
+```yaml
+extensions:
+  studio:
+    export_assets:
+      - {source: src/my_agent/__init__.py, path: my_agent/__init__.py}
+      - {source: src/my_agent/hooks.py, path: my_agent/hooks.py}
+```
+
+The Studio host must also set `ALGEN_AGENT_STUDIO_EXPORT_ASSET_ROOT` to the directory that the
+`source` paths are relative to, and `ALGEN_AGENT_STUDIO_WORKFLOW_HOOK_ALLOWED_MODULES` must cover the
+package. Studio reads `extensions` only at import, so re-import after changing it.
+
+`AppSettings` forbids unknown top-level keys, so loading such a file directly through Runtime
+fails. Remove `extensions` before `AppSettings.model_validate`, and validate the project that way.
+
 
