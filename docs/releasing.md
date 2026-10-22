@@ -39,14 +39,16 @@ Algen Agent Runtime supports three reproducible distribution channels:
 
 ## Release steps
 
-### Context-management a7 documentation gate
+### Documentation gate
 
-Before declaring `0.1.0a7` ready, finish and verify the intended context-management scope, then sync
-the Runtime documentation in the separate Algen Agent Studio repository. Update both the source
-`docs/runtime-docs.html` and served `src/algen_agent_studio/static/runtime-docs.html` with the final
-configuration, defaults, compatibility notes, limitations, and examples. Verify that the two copies
-agree and that their navigation works. Keep Studio changes in its own repository. This documentation
-gate does not itself bump Studio's Runtime dependency floor or publish a release.
+Before declaring a version ready, update `docs/docs.html` here: add the version to the selector,
+`DOC_ORDER`, `LATEST_VERSION` and `RELEASES` (marking the previous release superseded), and gate new
+sections with `data-version-min`. Then sync the Runtime documentation in the separate Algen Agent
+Studio repository. Update both the source `docs/runtime-docs.html` and served
+`src/algen_agent_studio/static/runtime-docs.html` with the final configuration, defaults,
+compatibility notes, limitations, and examples. Verify that the two copies agree and that their
+navigation works. Keep Studio changes in its own repository. This documentation gate does not itself
+bump Studio's Runtime dependency floor or publish a release.
 
 The version and changelog release date should be finalized only after the feature and quality gates
 are complete; an unreleased feature branch is not evidence of release readiness.

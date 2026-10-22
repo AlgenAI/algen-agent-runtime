@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a8] - 2026-10-22
+
 ### Added
 
 - Declarative HTTP API tools (`AppSettings.http_tools`): method, URL template, query, header and
