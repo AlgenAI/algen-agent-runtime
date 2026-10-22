@@ -12,9 +12,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from algen_agent_runtime.cache.contracts import CacheScope
-from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
+from algen_agent_runtime.security.network import check_host_allowlist
+from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
 
@@ -408,7 +410,32 @@ class AppSettings(StrictSettings):
         default_factory=DistributedExecutionSettings
     )
     mcp_servers: tuple[MCPServerConfig, ...] = ()
+    # Declarative HTTP API tools; see algen_agent_runtime.tools.http_api.
+    http_tools: tuple[HttpToolConfig, ...] = ()
     feature_flags: dict[str, bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_http_tools(self) -> AppSettings:
+        names = [tool.name for tool in self.http_tools]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"http tool names must be unique: {duplicates}")
+        reserved = sorted(name for name in names if name.startswith("core."))
+        if reserved:
+            raise ValueError(f"http tool names may not use the core. prefix: {reserved}")
+        allowed = self.security.allowed_http_hosts
+        for tool in self.http_tools:
+            # An empty allowlist admits every host; declared API tools must be listed.
+            try:
+                if not allowed:
+                    raise PolicyDeniedError("no hosts are allowlisted")
+                check_host_allowlist(tool.host, allowed)
+            except PolicyDeniedError as exc:
+                raise ValueError(
+                    f"http tool {tool.name!r} calls {tool.host!r}, which must be listed in "
+                    "security.allowed_http_hosts"
+                ) from exc
+        return self
 
     @model_validator(mode="after")
     def validate_analytical_backends(self) -> AppSettings:
