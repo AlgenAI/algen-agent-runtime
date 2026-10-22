@@ -1270,7 +1270,9 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a6">v0.1.0a6 · latest</option>
+                    <option value="0.1.0a8">v0.1.0a8 · latest</option>
+                    <option value="0.1.0a7">v0.1.0a7</option>
+                    <option value="0.1.0a6">v0.1.0a6</option>
                     <option value="0.1.0a5">v0.1.0a5</option>
                     <option value="0.1.0a4">v0.1.0a4</option>
                     <option value="0.1.0a3">v0.1.0a3</option>
@@ -1382,7 +1384,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a6</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a8</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1402,7 +1404,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a6 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a8 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1459,7 +1461,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -1674,6 +1676,12 @@ asyncio.run(main())</code></pre>
                             <td>Compose an exact trusted version.</td>
                             <td>Parent/root lineage and duplicate-safe reconciliation.</td>
                         </tr>
+                        <tr data-version-min="0.1.0a8">
+                            <td>tool step</td>
+                            <td>Call a registered tool with <code>handler: tool:&lt;name&gt;</code> and
+                                <code>arguments</code>.</td>
+                            <td>Same permissions, approval, and idempotency as an agent's tool call.</td>
+                        </tr>
                     </tbody>
                 </table>
             </section>
@@ -1752,6 +1760,16 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                         <p>Persist pause state before returning control. Resume with attributed approve, reject, or
                             modify decisions.</p>
                     </article>
+                </div>
+                <div data-version-min="0.1.0a8">
+                    <h3>Tool behaviour</h3>
+                    <p>Since 0.1.0a8, <code>tool_policy.on_error: return_to_model</code> hands a failed tool call back
+                        to the model as its result, and <code>approval_policy.on_rejection: continue</code> tells the
+                        model an action was declined instead of failing the run. <code>parallel_calls</code> runs
+                        independent tool calls together. <code>guardrail_policy.tool_policies</code> chooses the
+                        policies applied to tool arguments and results, and <code>tool_result_injection</code> flags
+                        or blocks tool output that tries to instruct the model. See <a href="agent-tooling.md">agent
+                        tool behaviour</a>.</p>
                 </div>
             </section>
 
@@ -1833,6 +1851,33 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                                 the full schema and trust model.</p>
                         </div>
                     </div>
+                </div>
+                <div data-version-min="0.1.0a8">
+                    <h3>Declarative HTTP API tools</h3>
+                    <p>Since 0.1.0a8, <code>http_tools</code> turns an HTTP API operation into a tool without code.
+                        Calls use the SSRF-safe client without redirects, credentials are <code>env://</code>
+                        references, and settings validation requires every host in
+                        <code>security.allowed_http_hosts</code>. Methods other than <code>GET</code> are external
+                        side effects and need approval under the default approval policy.</p>
+                    <div class="code-block">
+                        <div class="code-head"><span>agent.yaml</span><button class="copy-btn">Copy</button></div>
+                        <pre><code><span class="tok-key">security</span>:
+  <span class="tok-key">allowed_http_hosts</span>: [<span class="tok-string">api.github.com</span>]
+<span class="tok-key">http_tools</span>:
+  - <span class="tok-key">name</span>: <span class="tok-string">github.issue</span>
+    <span class="tok-key">description</span>: <span class="tok-string">Read one GitHub issue.</span>
+    <span class="tok-key">url</span>: <span class="tok-string">https://api.github.com/repos/{owner}/{repo}/issues/{number}</span>
+    <span class="tok-key">parameters</span>:
+      <span class="tok-key">type</span>: <span class="tok-string">object</span>
+      <span class="tok-key">properties</span>:
+        <span class="tok-key">owner</span>: {<span class="tok-key">type</span>: <span class="tok-string">string</span>}
+        <span class="tok-key">repo</span>: {<span class="tok-key">type</span>: <span class="tok-string">string</span>}
+        <span class="tok-key">number</span>: {<span class="tok-key">type</span>: <span class="tok-string">integer</span>}
+      <span class="tok-key">required</span>: [<span class="tok-string">owner</span>, <span class="tok-string">repo</span>, <span class="tok-string">number</span>]
+    <span class="tok-key">auth</span>: {<span class="tok-key">type</span>: <span class="tok-string">bearer</span>, <span class="tok-key">token</span>: <span class="tok-string">env://GITHUB_TOKEN</span>}
+    <span class="tok-key">response</span>: {<span class="tok-key">select</span>: <span class="tok-string">/title</span>}</code></pre>
+                    </div>
+                    <p>See <a href="http-tools.md">HTTP API tools</a> for authentication, pagination, and limits.</p>
                 </div>
             </section>
 
@@ -2009,6 +2054,15 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                             recovery, telemetry, and runbooks.</span></a>
                     <a class="doc-link" href="api-stability.md"><strong>API stability →</strong><span>Compatibility
                             policy for experimental 0.x public surfaces.</span></a>
+                    <a class="doc-link" href="context-management.md" data-version-min="0.1.0a7"><strong>Context
+                            management →</strong><span>Budgets, compaction, working state, and recovery.</span></a>
+                    <a class="doc-link" href="learned-memory.md" data-version-min="0.1.0a7"><strong>Learned memory
+                            →</strong><span>Cross-run facts, isolation, correction, and deletion.</span></a>
+                    <a class="doc-link" href="agent-tooling.md" data-version-min="0.1.0a8"><strong>Agent tool
+                            behaviour →</strong><span>Tool errors, declined approvals, parallel calls, and
+                            guardrails.</span></a>
+                    <a class="doc-link" href="http-tools.md" data-version-min="0.1.0a8"><strong>HTTP API tools
+                            →</strong><span>Declarative operations, authentication, pagination, and egress.</span></a>
                     <a class="doc-link" href="mcp.md" data-version-min="0.1.0a3"><strong>MCP integration
                             →</strong><span>Transports, declarative servers, governance mapping, and egress.</span></a>
                     <a class="doc-link" href="framework-adapters.md"><strong>Framework adapters
@@ -2019,7 +2073,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a6</span>.</footer>
+                    data-version-field="version">0.1.0a8</span>.</footer>
         </main>
     </div>
 
@@ -2145,9 +2199,68 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6'];
-        const LATEST_VERSION = '0.1.0a6';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8'];
+        const LATEST_VERSION = '0.1.0a8';
         const RELEASES = {
+            '0.1.0a8': {
+                date: '2026-10-22',
+                kind: 'Agent tooling and HTTP API tools',
+                title: 'Tool policies, declarative HTTP API tools, and workflow tool steps',
+                summary: 'Lets agents recover from failed or declined tool calls, run independent tool calls in parallel, screen tool output for injected instructions, keep tool exchanges in session memory, and call HTTP APIs declared in configuration, from agents or workflow steps.',
+                fields: {
+                    tag: 'v0.1.0a8',
+                    package: '0.1.0a8 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a8',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>HTTP API tools.</strong> <code>http_tools</code> declares an HTTP operation as a tool: URL, query, header, and body templates, JSON Schema parameters, <code>env://</code> authentication, pagination, and response selection. Calls use the SSRF-safe client, and each host must be listed in <code>security.allowed_http_hosts</code>.',
+                            '<strong>Workflow tool steps.</strong> A <code>handler</code> node with <code>handler: tool:&lt;name&gt;</code> and <code>arguments</code> calls a registered tool and stores its result.',
+                            '<strong>Tool policy.</strong> <code>tool_policy.on_error: return_to_model</code> reports a failed tool call to the model instead of failing the run; <code>parallel_calls</code> runs one reply\'s tool calls concurrently when none needs approval.',
+                            '<strong>Declined approvals.</strong> <code>approval_policy.on_rejection: continue</code> tells the model the action was declined, with an optional reason, and the run continues.',
+                            '<strong>Tool guardrails.</strong> <code>guardrail_policy.tool_policies</code> chooses the policies applied to tool arguments and results; <code>tool_result_injection</code> flags or blocks tool output that tries to instruct the model.',
+                            '<strong>Tool payloads in memory.</strong> <code>memory_policy.store_tool_payloads</code> keeps a turn\'s tool calls and results in session memory, capped by <code>tool_payload_max_chars</code>.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Agent guardrails at tool boundaries.</strong> An agent\'s <code>guardrail_policy.policies</code> now apply at <code>before_tool</code> and <code>after_tool</code>; previously every registered policy ran there. Agents with the default list are unaffected.',
+                            '<strong>Session history.</strong> History read from memory starts at a whole turn and never holds a tool call without its result.'
+                        ]
+                    }
+                ]
+            },
+            '0.1.0a7': {
+                date: '2026-10-19',
+                kind: 'Context management and learned memory',
+                title: 'Governed context for simple and multi-step agents',
+                summary: 'Adds model context budgets, recoverable history compaction, archive-backed checkpoints, structured working state, progressive skill loading, opt-in learned memory, and offline context evaluation.',
+                fields: {
+                    tag: 'v0.1.0a7',
+                    package: '0.1.0a7 · pre-alpha',
+                    packageNote: 'Superseded by 0.1.0a8',
+                    version: '0.1.0a7',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Context budgets and compaction.</strong> Per-model context windows reserve output, tool, and safety headroom; opt-in compaction summarizes complete message groups and archives sources, recoverable through <code>core.context_read</code>.',
+                            '<strong>Working state and skills.</strong> Opt-in structured working state and progressive skill loading through <code>core.working_state_update</code> and <code>core.skills_load</code>.',
+                            '<strong>Learned memory.</strong> Opt-in facts, preferences, and procedures across runs with tenant, user, and agent isolation through governed memory tools.',
+                            '<strong>Context evaluation.</strong> Offline cases check retention, tool exchanges, recovery, and checkpoint size.'
+                        ]
+                    },
+                    {
+                        kind: 'Upgrade notes', items: [
+                            '<strong>Migration 011.</strong> PostgreSQL learned memory uses <code>011_learned_memory.sql</code>. Checkpoints gain defaulted fields, so upgrade readers and workers together. Every new feature is disabled by default.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a6': {
                 date: '2026-10-12',
                 kind: 'Persistence fixes and data retention',
@@ -2156,7 +2269,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a6',
                     package: '0.1.0a6 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a7',
                     version: '0.1.0a6',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
