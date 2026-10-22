@@ -55,6 +55,9 @@ class OpenAIProvider(OpenAICompatibleProvider):
         uses_completion_limit = model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
         if uses_completion_limit and "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
+        if payload.get("stream") and "stream_options" not in payload:
+            # Streamed chat completions report token usage only when asked (final usage chunk).
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
 
@@ -97,6 +100,9 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
             payload["response_format"]["json_schema"]["schema"] = openai_strict_json_schema(
                 request.response_schema
             )
+        if payload.get("stream") and "stream_options" not in payload:
+            # Streamed chat completions report token usage only when asked (final usage chunk).
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
 

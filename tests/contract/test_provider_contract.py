@@ -246,3 +246,63 @@ async def test_anthropic_native_messages_contract() -> None:
     )
     assert response.tool_calls[0].name == "lookup"
     assert response.usage.total_tokens == 6
+
+
+async def test_openai_stream_requests_and_reports_token_usage() -> None:
+    seen: dict[str, object] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        seen["stream_options"] = body.get("stream_options")
+        stream = "\n".join(
+            (
+                'data: {"id":"s1","model":"gpt-6-luna","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
+                'data: {"id":"s1","model":"gpt-6-luna","choices":[{"delta":{},"finish_reason":"stop"}]}',
+                # OpenAI's usage-only final chunk: no choices.
+                'data: {"id":"s1","model":"gpt-6-luna","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":64}}}',
+                "data: [DONE]",
+            )
+        )
+        return httpx.Response(200, text=stream, headers={"content-type": "text/event-stream"})
+
+    provider = OpenAIProvider(
+        "env://OPENAI_API_KEY",
+        "gpt-6-luna",
+        secret_provider=StaticSecrets(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(messages=(Message.text(Role.USER, "hi"),), stream=True)
+        )
+    ]
+    completed = events[-1].response
+    assert seen["stream_options"] == {"include_usage": True}
+    assert completed is not None
+    assert completed.message.text_content == "ok"
+    assert (completed.usage.input_tokens, completed.usage.output_tokens) == (120, 9)
+    assert completed.usage.cached_tokens == 64
+
+
+async def test_non_streaming_openai_requests_carry_no_stream_options() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert "stream_options" not in __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "r1",
+                "model": "gpt-6-luna",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            },
+        )
+
+    provider = OpenAIProvider(
+        "env://OPENAI_API_KEY",
+        "gpt-6-luna",
+        secret_provider=StaticSecrets(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    response = await provider.generate(ModelRequest(messages=(Message.text(Role.USER, "hi"),)))
+    assert response.usage.input_tokens == 3
