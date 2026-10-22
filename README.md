@@ -375,6 +375,8 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Deployment and configuration | [Operations](docs/operations.md) |
 | Providers | [Provider extension](docs/providers.md) and [compatibility](docs/provider-compatibility.md) |
 | MCP tools | [Model Context Protocol (MCP)](docs/mcp.md) |
+| HTTP API tools | [HTTP API tools](docs/http-tools.md) |
+| Agent tool behaviour | [Errors, declines, guardrails, parallel calls, memory](docs/agent-tooling.md) |
 | Framework adapters | [Framework adapters](docs/framework-adapters.md) |
 | Retrieval | [RAG](docs/rag.md) |
 | Analytical agents | [Analytical runtime](docs/analytical-runtime.md) and [semantic layer](docs/semantic-layer.md) |

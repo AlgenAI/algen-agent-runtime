@@ -6,6 +6,34 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- Declarative HTTP API tools (`AppSettings.http_tools`): method, URL template, query, header and
+  body templates, JSON Schema parameters, `none`/`bearer`/`basic`/`header` auth by `env://`
+  reference, `link_header`/`page_param` pagination, JSON-pointer response selection, timeouts and
+  size limits. Calls use the SSRF-safe client without redirects; settings validation requires each
+  tool's host in `security.allowed_http_hosts`. See `docs/http-tools.md`.
+- Workflow tool steps: a `handler` node with `handler: tool:<name>` and `arguments` calls a
+  registered tool and stores its result.
+- `ToolPolicy` on agents: `on_error="return_to_model"` reports a failed tool call to the model as
+  its result instead of failing the run; `parallel_calls` runs one reply's tool calls concurrently
+  (up to `max_parallel_calls`) when none needs approval.
+- `ApprovalPolicy.on_rejection="continue"`: a rejected approval tells the model the action was
+  declined (with an optional reason) and the run continues.
+- `GuardrailPolicy.tool_policies` selects the policies applied to tool arguments and results;
+  `GuardrailPolicy.tool_result_injection` (`flag` or `block`) screens tool output that tries to
+  instruct the model.
+- `MemoryPolicy.store_tool_payloads` (previously unused) now keeps a turn's tool calls and results
+  in session memory, capped by the new `tool_payload_max_chars`. See `docs/agent-tooling.md`.
+
+### Changed
+
+- The tool executor passes the agent to the policy engine, so an agent's
+  `guardrail_policy.policies` apply at `before_tool` and `after_tool` as at other boundaries
+  (previously every registered policy ran there). Agents with the default list are unaffected.
+- Session history read from memory starts at a whole turn and never holds a tool call without its
+  result.
+
 ## [0.1.0a7] - 2026-10-19
 
 ### Added
