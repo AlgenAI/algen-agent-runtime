@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a9] - 2026-10-24
+
 ### Added
 
 - OAuth refresh-token Gmail adapter (`communications.gmail`) supporting governed outbound delivery,
