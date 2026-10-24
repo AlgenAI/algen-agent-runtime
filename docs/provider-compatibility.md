@@ -6,7 +6,7 @@ Capabilities depend on the selected model and server. These adapter defaults are
 |---|---:|---:|---:|---:|---:|---:|---|
 | OpenAI | yes | yes | yes | yes | yes | yes | OpenAI |
 | Azure OpenAI | yes | yes | yes | yes | yes | model-dependent | Azure OpenAI |
-| Anthropic | yes | yes | yes | no native schema guarantee | no | yes | Messages |
+| Anthropic | yes | yes | yes | yes | no | yes | Messages |
 | DeepSeek | yes | yes | model-dependent | no strict guarantee | endpoint-dependent | no | OpenAI-compatible |
 | Mistral AI | yes | yes | model-dependent | model-dependent | yes | model-dependent | Mistral Chat/Embeddings |
 | Ollama | yes | yes | model-dependent | model-dependent | yes | model-dependent | OpenAI-compatible |
@@ -16,6 +16,28 @@ Capabilities depend on the selected model and server. These adapter defaults are
 | Mock | yes | yes | yes | yes | yes | yes | deterministic in-process |
 
 An unsupported requested feature fails with `CapabilityError` before provider invocation.
+
+## Streaming usage
+
+OpenAI-style adapters ask for token usage on streamed calls (`stream_options.include_usage`), so
+budgets and metering count them. A server that rejects the field is configured with
+`stream_usage: false` on its provider entry; Mistral defaults to off because its API reports usage
+unasked. `stream_options` from profile extensions are kept.
+
+## Anthropic notes
+
+- `response_schema` is sent as `output_config.format` (`json_schema`). Keywords the endpoint does not
+  accept (numeric and length bounds, `pattern`, `default`, unknown string formats) are removed and
+  every object is closed with `additionalProperties: false`; the Runtime's `json_schema` verifier
+  still checks the answer against the full original schema.
+- Profile `extensions` are merged into the request body; an `output_config` extension such as
+  `{effort: low}` is merged with the response format rather than replacing it.
+- Results of parallel tool calls are sent together in one user turn.
+- `stop_reason` maps to `finish_reason`: `max_tokens` → `length`, `refusal` → `content_filter`.
+- Thinking blocks are never sent back. Current Claude models bind each block to the conversation
+  that produced it, and Runtime guardrails may rewrite history between turns; omitting the blocks is
+  always accepted, at the cost of the model reasoning afresh on each turn.
+- Current Claude models reject non-default `temperature`; leave it unset for them.
 
 ## Capability narrowing semantics
 

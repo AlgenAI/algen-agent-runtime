@@ -6,14 +6,16 @@ from algen_agent_runtime.communications.email import (
     EmailDeliveryStatus,
     EmailMessage,
     EmailSender,
+    SmtpEmailSender,
+    SmtpSettings,
+    email_tool,
+)
+from algen_agent_runtime.communications.gmail import (
     GmailMailboxClient,
     GmailMailboxPage,
     GmailOAuthSettings,
     InboundEmailAttachment,
     InboundEmailSummary,
-    SmtpEmailSender,
-    SmtpSettings,
-    email_tool,
     gmail_inbox_tool,
 )
 

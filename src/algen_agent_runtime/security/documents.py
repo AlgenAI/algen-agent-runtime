@@ -172,6 +172,23 @@ def redact_pii(text: str, *, entities: tuple[str, ...] = ()) -> str:
     return "\n".join(lines)
 
 
+def classify_findings(
+    findings: list[DocumentSecurityFinding],
+) -> tuple[tuple[DocumentSecurityFinding, ...], DocumentDisposition]:
+    """Keep one finding per kind and page, and derive the document's disposition."""
+    unique: list[DocumentSecurityFinding] = []
+    seen: set[tuple[str, int | None]] = set()
+    for finding in findings:
+        key = (finding.kind, finding.page)
+        if key not in seen:
+            seen.add(key)
+            unique.append(finding)
+    severities = {finding.severity for finding in unique}
+    if severities & {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
+        return tuple(unique), DocumentDisposition.QUARANTINE
+    return tuple(unique), DocumentDisposition.REVIEW if unique else DocumentDisposition.PASS
+
+
 class PlainTextDocumentExtractor:
     def __init__(self, *, max_bytes: int = 2_000_000, max_characters: int = 250_000) -> None:
         self._max_bytes = max_bytes
@@ -321,28 +338,13 @@ class PdfDocumentExtractor:
                     message="Embedded images were excluded from downstream screening.",
                 )
             )
-        deduplicated: list[DocumentSecurityFinding] = []
-        finding_keys: set[tuple[str, int | None]] = set()
-        for finding in findings:
-            key = (finding.kind, finding.page)
-            if key not in finding_keys:
-                finding_keys.add(key)
-                deduplicated.append(finding)
-        findings = deduplicated
-        highest = {finding.severity for finding in findings}
-        disposition = (
-            DocumentDisposition.QUARANTINE
-            if FindingSeverity.CRITICAL in highest or FindingSeverity.HIGH in highest
-            else DocumentDisposition.REVIEW
-            if findings
-            else DocumentDisposition.PASS
-        )
+        unique_findings, disposition = classify_findings(findings)
         return ExtractedDocument(
             media_type="application/pdf",
             text="\n".join(span.text for span in spans),
             sanitized_text=sanitized,
             spans=tuple(spans),
-            findings=tuple(findings),
+            findings=unique_findings,
             disposition=disposition,
             page_count=document.page_count,
             image_count=image_count,
@@ -353,6 +355,10 @@ def extractor_for(filename: str) -> DocumentExtractor:
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
         return PdfDocumentExtractor()
+    if suffix == ".docx":
+        from algen_agent_runtime.security.docx import DocxDocumentExtractor
+
+        return DocxDocumentExtractor()
     if suffix in {".txt", ".md"}:
         return PlainTextDocumentExtractor()
-    raise ValueError("only PDF, TXT, and Markdown documents are supported")
+    raise ValueError("only PDF, DOCX, TXT, and Markdown documents are supported")

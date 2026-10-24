@@ -1295,10 +1295,7 @@ class AgentRuntime:
 
     @staticmethod
     def _step_limit(state: RunState, agent: AgentDefinition) -> int:
-        return (
-            agent.max_steps
-            + state.continuation_count * agent.continuation_policy.step_increment
-        )
+        return agent.max_steps + state.continuation_count * agent.continuation_policy.step_increment
 
     @classmethod
     def _limit_reason(cls, state: RunState, agent: AgentDefinition) -> str | None:

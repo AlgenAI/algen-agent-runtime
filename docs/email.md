@@ -47,9 +47,19 @@ SMTP acceptance is not proof of inbox delivery. A timeout or disconnect may occu
 accepted DATA, so the Runtime tool ledger treats the outcome as indeterminate. An operator or
 application reconciliation process must query the provider or inspect delivery events before retrying.
 
+## Gmail
+
+`GmailMailboxClient(GmailOAuthSettings(...))` sends through the Gmail API with an OAuth refresh
+token and reads bounded inbox metadata: `list_messages(query=..., max_results=...)` returns
+`InboundEmailSummary` rows (sender, subject, snippet, labels and attachment descriptors) and
+`download_attachment(message_id, attachment_id)` fetches one attachment within
+`max_attachment_bytes`. `gmail_inbox_tool(mailbox)` exposes the listing as the read-only tool
+`communications.email.inbox`. Secrets are `SecretStr` values resolved by the application; they never
+appear in manifests or model context.
+
 ## Application boundary
 
-Gmail, Microsoft Graph/Outlook, Amazon SES, SendGrid, Resend, inbound mailbox ingestion, webhook
-signature verification, bounce/complaint handling, suppression lists, scheduled sending, and reply
+Microsoft Graph/Outlook, Amazon SES, SendGrid, Resend, inbound mailbox ingestion, webhook
+signature verification, polling schedules, bounce/complaint handling, suppression lists, scheduled sending, and reply
 threading are connector implementations above the same `EmailSender` contract. They should preserve
 Runtime idempotency keys, return `EmailDeliveryReceipt`, and keep provider SDKs optional.

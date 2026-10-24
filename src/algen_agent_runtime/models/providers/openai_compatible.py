@@ -136,6 +136,10 @@ def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class OpenAICompatibleProvider:
+    # Ask for token usage on streamed calls; servers that reject ``stream_options`` turn it off
+    # with the provider setting ``stream_usage: false``.
+    default_stream_usage: bool = True
+
     def __init__(
         self,
         provider_id: str,
@@ -147,6 +151,7 @@ class OpenAICompatibleProvider:
         client: httpx.AsyncClient | None = None,
         headers: dict[str, str] | None = None,
         endpoint: str = "/chat/completions",
+        stream_usage: bool | None = None,
     ) -> None:
         self._provider_id = provider_id
         self._base_url = base_url.rstrip("/")
@@ -157,6 +162,7 @@ class OpenAICompatibleProvider:
         self._client = client or httpx.AsyncClient()
         self._headers = headers or {}
         self._endpoint = endpoint
+        self._stream_usage = self.default_stream_usage if stream_usage is None else stream_usage
         self._wire_tool_names: dict[str, str] = {}
         self._runtime_tool_names: dict[str, str] = {}
 
@@ -337,12 +343,20 @@ class OpenAICompatibleProvider:
         tool_parts: dict[int, dict[str, Any]] = {}
         finish_reason = FinishReason.STOP
         usage = TokenUsage()
+        payload = self._payload(request.model_copy(update={"stream": True}))
+        if self._stream_usage:
+            # Without this OpenAI reports no usage for a stream, so budgets and metering see 0.
+            options = payload.get("stream_options")
+            payload["stream_options"] = {
+                "include_usage": True,
+                **(options if isinstance(options, Mapping) else {}),
+            }
         try:
             async with self._client.stream(
                 "POST",
                 self._base_url + self._endpoint,
                 headers=await self._auth_headers(),
-                json=self._payload(request.model_copy(update={"stream": True})),
+                json=payload,
                 timeout=request.timeout_seconds,
             ) as response:
                 if response.is_error:
@@ -367,8 +381,10 @@ class OpenAICompatibleProvider:
                                 "cached_tokens", 0
                             ),
                         )
-                    choice = chunk.get("choices", [{}])[0]
-                    delta = choice.get("delta", {})
+                    # The usage chunk that ends a stream carries an empty ``choices`` list.
+                    choices = chunk.get("choices") or [{}]
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
                     if text := delta.get("content"):
                         text_parts.append(text)
                         yield ModelStreamEvent(type="delta", delta=text)

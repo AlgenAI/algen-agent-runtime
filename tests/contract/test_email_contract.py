@@ -287,9 +287,6 @@ async def test_gmail_oauth_sender_and_inbox_reader_use_bounded_api_contracts() -
     assert receipt.provider_message_id == "gmail-sent-1"
     assert inbox.messages[0].subject == "Documents"
     assert inbox.messages[0].attachments[0].filename == "candidate-documents.zip"
-    assert (
-        await gmail.download_attachment("gmail-in-1", "attachment-1")
-        == b"zip-bytes"
-    )
+    assert await gmail.download_attachment("gmail-in-1", "attachment-1") == b"zip-bytes"
     assert calls.count("/token") == 1
     await client.aclose()

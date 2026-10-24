@@ -46,9 +46,7 @@ async def test_jev_client_returns_typed_decisions_without_leaking_key() -> None:
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    decision = JevDecisionClient(
-        JevSettings(api_key=SecretStr("secret-value")), client=client
-    )
+    decision = JevDecisionClient(JevSettings(api_key=SecretStr("secret-value")), client=client)
     result = await decision.decide(
         JevRequest(
             state="Show current candidates",

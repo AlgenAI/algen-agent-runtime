@@ -79,9 +79,7 @@ class JevDecisionError(RuntimeError):
 class JevDecisionClient:
     """Typed client for TypeSafe's Jev System One decision endpoint."""
 
-    def __init__(
-        self, settings: JevSettings, *, client: httpx.AsyncClient | None = None
-    ) -> None:
+    def __init__(self, settings: JevSettings, *, client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
         self._client = client or httpx.AsyncClient(timeout=settings.timeout_seconds)
         self._owns_client = client is None
@@ -99,9 +97,7 @@ class JevDecisionClient:
             response.raise_for_status()
             return JevResponse.model_validate(response.json())
         except (httpx.HTTPError, ValueError) as exc:
-            raise JevDecisionError(
-                f"Jev decision request failed ({type(exc).__name__})"
-            ) from exc
+            raise JevDecisionError(f"Jev decision request failed ({type(exc).__name__})") from exc
 
     async def aclose(self) -> None:
         if self._owns_client:

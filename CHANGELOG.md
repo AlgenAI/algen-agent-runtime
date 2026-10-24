@@ -8,9 +8,35 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
-- OAuth refresh-token Gmail adapter supporting governed outbound delivery and bounded inbox metadata
-  reads without placing mailbox secrets in manifests or model context.
+- OAuth refresh-token Gmail adapter (`communications.gmail`) supporting governed outbound delivery,
+  bounded inbox metadata reads and on-demand attachment downloads without placing mailbox secrets in
+  manifests or model context. See `docs/email.md`.
 - Typed TypeSafe Jev System One client for confidence-aware Choice, Score, and Noul decisions.
+- `DocxDocumentExtractor`: dependency-free DOCX inspection with hidden-run, contrast-aware
+  low-visibility, macro, remote-template and zip-bomb checks; `extractor_for` accepts `.docx`. See
+  `docs/document-security.md`.
+- `ContinuationPolicy` on agents: a run that reaches its step, token or cost budget can continue
+  with small automatic extensions and then pause for approval instead of failing, resuming from its
+  checkpoint (`run.continued` event). Time spent paused no longer counts against the run deadline.
+- `DELETE /v1/conversations/{id}` removes a conversation with its messages, events and feedback.
+
+### Changed
+
+- The Anthropic adapter supports native structured output: `response_schema` is sent as
+  `output_config.format`, profile `output_config` extensions are merged with it, parallel tool
+  results share one user turn, and `stop_reason` maps to `finish_reason` (`length`,
+  `content_filter`). The adapter moved to `models.providers.anthropic` and is still importable from
+  `models.providers.adapters`.
+- `classify_findings` is shared by all document extractors.
+
+### Fixed
+
+- OpenAI-compatible streaming now reports token usage (#28). Streamed calls send
+  `stream_options: {include_usage: true}` and read usage from the final chunk, whose `choices` list
+  is empty, so budgets, cost estimates and host metering count streamed calls. Servers that reject
+  the field set the provider option `stream_usage: false`; Mistral leaves it off by default.
+- Declining a budget-continuation approval ends the run even when the agent's
+  `ApprovalPolicy.on_rejection` is `continue`, instead of reporting a phantom declined tool call.
 
 ## [0.1.0a8] - 2026-10-22
 

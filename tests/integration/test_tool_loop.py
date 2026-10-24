@@ -117,9 +117,9 @@ async def test_direct_planner_completes_every_parallel_tool_call_before_model_co
     assert len(provider.requests) == 2
     follow_up = provider.requests[1]
     assert sum(message.role == Role.SYSTEM for message in follow_up.messages) == 1
-    assert {message.tool_call_id for message in follow_up.messages if message.role == Role.TOOL} == {
-        call.id for call in calls
-    }
+    assert {
+        message.tool_call_id for message in follow_up.messages if message.role == Role.TOOL
+    } == {call.id for call in calls}
 
 
 async def test_side_effect_approval_pause_resume() -> None:
@@ -289,8 +289,7 @@ async def test_execution_budget_continues_automatically_without_losing_progress(
     assert calls == 1
     assert state.continuation_count == 1
     assert any(
-        event.type == "run.continued" and event.data["mode"] == "automatic"
-        for event in history
+        event.type == "run.continued" and event.data["mode"] == "automatic" for event in history
     )
 
 
