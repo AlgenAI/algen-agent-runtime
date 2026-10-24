@@ -4,7 +4,7 @@ import inspect
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -503,7 +503,10 @@ def build_container(
     )
     router = ModelRouter(cache=cache)
     for name, provider_config in settings.providers.items():
-        kwargs = {"default_model": provider_config.default_model}
+        kwargs: dict[str, Any] = {
+            "default_model": provider_config.default_model,
+            "stream_usage": provider_config.stream_usage,
+        }
         provider: ModelProvider
         if provider_config.type == "openai":
             provider = OpenAIProvider(
@@ -518,6 +521,7 @@ def build_container(
                 provider_config.default_model,
                 provider_config.api_version or "2024-10-21",
                 secret_provider=secret_provider,
+                stream_usage=provider_config.stream_usage,
             )
         elif provider_config.type == "anthropic":
             provider = AnthropicProvider(
@@ -564,6 +568,7 @@ def build_container(
                 provider_config.default_model,
                 provider_config.capabilities,
                 secret_provider=secret_provider,
+                stream_usage=provider_config.stream_usage,
             )
         elif provider_config.type == "mock":
             from algen_agent_runtime.models.providers.mock import MockModelProvider

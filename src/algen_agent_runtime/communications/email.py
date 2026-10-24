@@ -223,36 +223,12 @@ class SmtpEmailSender:
         idempotency_key: str,
         attachments: list[tuple[EmailAttachmentReference, bytes]],
     ) -> tuple[MimeEmailMessage, str]:
-        mime = MimeEmailMessage()
-        message_id = (
-            f"<{hashlib.sha256(idempotency_key.encode()).hexdigest()}@"
-            f"{self._settings.message_id_domain}>"
+        return _build_mime_message(
+            message,
+            idempotency_key=idempotency_key,
+            attachments=attachments,
+            message_id_domain=self._settings.message_id_domain,
         )
-        mime["Message-ID"] = message_id
-        mime["From"] = message.sender.formatted()
-        mime["To"] = ", ".join(item.formatted() for item in message.to)
-        if message.cc:
-            mime["Cc"] = ", ".join(item.formatted() for item in message.cc)
-        if message.reply_to is not None:
-            mime["Reply-To"] = message.reply_to.formatted()
-        mime["Subject"] = message.subject
-        for name, value in message.headers.items():
-            mime[name] = value
-        if message.text_body is not None:
-            mime.set_content(message.text_body)
-        else:
-            mime.set_content("This message requires an HTML-capable email client.")
-        if message.html_body is not None:
-            mime.add_alternative(message.html_body, subtype="html")
-        for reference, payload in attachments:
-            media_type, _, subtype = reference.media_type.partition("/")
-            mime.add_attachment(
-                payload,
-                maintype=media_type,
-                subtype=subtype or "octet-stream",
-                filename=reference.filename,
-            )
-        return mime, message_id
 
     def _open_client(self, settings: SmtpSettings) -> Any:
         if settings.security == "tls":
@@ -290,6 +266,42 @@ class SmtpEmailSender:
                 client.quit()
             except (smtplib.SMTPException, OSError):
                 client.close()
+
+
+def _build_mime_message(
+    message: EmailMessage,
+    *,
+    idempotency_key: str,
+    attachments: list[tuple[EmailAttachmentReference, bytes]],
+    message_id_domain: str,
+) -> tuple[MimeEmailMessage, str]:
+    mime = MimeEmailMessage()
+    message_id = f"<{hashlib.sha256(idempotency_key.encode()).hexdigest()}@{message_id_domain}>"
+    mime["Message-ID"] = message_id
+    mime["From"] = message.sender.formatted()
+    mime["To"] = ", ".join(item.formatted() for item in message.to)
+    if message.cc:
+        mime["Cc"] = ", ".join(item.formatted() for item in message.cc)
+    if message.reply_to is not None:
+        mime["Reply-To"] = message.reply_to.formatted()
+    mime["Subject"] = message.subject
+    for name, value in message.headers.items():
+        mime[name] = value
+    if message.text_body is not None:
+        mime.set_content(message.text_body)
+    else:
+        mime.set_content("This message requires an HTML-capable email client.")
+    if message.html_body is not None:
+        mime.add_alternative(message.html_body, subtype="html")
+    for reference, payload in attachments:
+        media_type, _, subtype = reference.media_type.partition("/")
+        mime.add_attachment(
+            payload,
+            maintype=media_type,
+            subtype=subtype or "octet-stream",
+            filename=reference.filename,
+        )
+    return mime, message_id
 
 
 def email_tool(sender: EmailSender, *, name: str = "communications.email.send") -> Tool:

@@ -14,7 +14,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.1.0a8` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.1.0a9` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 ## Why Algen Agent Runtime?
 
@@ -28,7 +28,10 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
   predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
   lifecycle events; compose exact-version child workflows without duplicating their topology.
 - **Governed communications:** send validated, idempotency-aware email through a provider-neutral
-  contract and TLS-first SMTP adapter while keeping attachments behind Runtime artifact references.
+  contract, TLS-first SMTP, or OAuth Gmail adapter; read bounded Gmail metadata while keeping
+  attachments behind Runtime artifact references.
+- **Typed System One decisions:** use the optional TypeSafe Jev client for fast Choice, Score, and
+  Noul routing gates while keeping generative work in model providers and deterministic work in code.
 - **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
 - **Offline-testable:** the deterministic mock provider supports tests without credentials, network access, or paid model calls.
 
@@ -62,7 +65,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Pre-alpha (`0.1.0a8`) |
+| Package maturity | Pre-alpha (`0.1.0a9`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -94,10 +97,10 @@ python -m pip install --pre 'algen-agent-runtime[mcp]'
 python -m pip install --pre 'algen-agent-runtime[langgraph]'
 ```
 
-After a7 is published, install directly from its pinned GitHub release tag:
+After a9 is published, install directly from its pinned GitHub release tag:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a8
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a9
 ```
 
 For development from a checkout:

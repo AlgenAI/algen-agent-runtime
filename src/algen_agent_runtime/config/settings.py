@@ -39,6 +39,11 @@ class ProviderSettings(StrictSettings):
     cost_per_1k_input: float = Field(default=0, ge=0)
     cost_per_1k_output: float = Field(default=0, ge=0)
     extensions: dict[str, Any] = Field(default_factory=dict)
+    stream_usage: bool | None = Field(
+        default=None,
+        description="Request token usage on streamed calls (OpenAI-style stream_options); "
+        "None keeps the adapter default.",
+    )
 
     @model_validator(mode="after")
     def reject_literal_secret(self) -> ProviderSettings:

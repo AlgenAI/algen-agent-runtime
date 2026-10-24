@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a8">v0.1.0a8 · latest</option>
+                    <option value="0.1.0a9">v0.1.0a9 · latest</option>
+                    <option value="0.1.0a8">v0.1.0a8</option>
                     <option value="0.1.0a7">v0.1.0a7</option>
                     <option value="0.1.0a6">v0.1.0a6</option>
                     <option value="0.1.0a5">v0.1.0a5</option>
@@ -1384,7 +1385,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a8</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a9</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1404,7 +1405,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a8 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a9 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1461,7 +1462,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2063,6 +2064,15 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                             guardrails.</span></a>
                     <a class="doc-link" href="http-tools.md" data-version-min="0.1.0a8"><strong>HTTP API tools
                             →</strong><span>Declarative operations, authentication, pagination, and egress.</span></a>
+                    <a class="doc-link" href="document-security.md" data-version-min="0.1.0a9"><strong>Untrusted
+                            documents →</strong><span>PDF and DOCX inspection, hidden text, and
+                            dispositions.</span></a>
+                    <a class="doc-link" href="email.md" data-version-min="0.1.0a9"><strong>Email and Gmail
+                            →</strong><span>Governed sending, the Gmail mailbox, and the application
+                            boundary.</span></a>
+                    <a class="doc-link" href="provider-compatibility.md" data-version-min="0.1.0a9"><strong>Provider
+                            compatibility →</strong><span>Capabilities, streamed usage, and Anthropic
+                            notes.</span></a>
                     <a class="doc-link" href="mcp.md" data-version-min="0.1.0a3"><strong>MCP integration
                             →</strong><span>Transports, declarative servers, governance mapping, and egress.</span></a>
                     <a class="doc-link" href="framework-adapters.md"><strong>Framework adapters
@@ -2073,7 +2083,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a8</span>.</footer>
+                    data-version-field="version">0.1.0a9</span>.</footer>
         </main>
     </div>
 
@@ -2199,9 +2209,44 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8'];
-        const LATEST_VERSION = '0.1.0a8';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9'];
+        const LATEST_VERSION = '0.1.0a9';
         const RELEASES = {
+            '0.1.0a9': {
+                date: '2026-10-24',
+                kind: 'Mailboxes, documents and providers',
+                title: 'Gmail mailbox, DOCX inspection, resumable budgets, and Anthropic structured output',
+                summary: 'Adds a Gmail mailbox client, safe DOCX inspection, runs that continue past their budget from a checkpoint, conversation deletion, native structured output for Anthropic, and token usage for streamed OpenAI-compatible calls.',
+                fields: {
+                    tag: 'v0.1.0a9',
+                    package: '0.1.0a9 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a9',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Gmail mailbox.</strong> <code>GmailMailboxClient</code> sends through the Gmail API with an OAuth refresh token, lists bounded inbox metadata, and downloads attachments on demand; <code>gmail_inbox_tool</code> exposes the listing as a read-only tool.',
+                            '<strong>DOCX inspection.</strong> <code>extractor_for</code> accepts <code>.docx</code>: hidden, tiny and background-coloured text, macros, remote templates and zip bombs are reported, and only visible text reaches <code>sanitized_text</code>.',
+                            '<strong>Resumable budgets.</strong> <code>continuation_policy</code> lets a run that reaches its step, token or cost budget continue with small automatic extensions, then pause for approval, resuming from its checkpoint.',
+                            '<strong>Conversation deletion.</strong> <code>DELETE /v1/conversations/{id}</code> removes a conversation with its messages, events and feedback.',
+                            '<strong>Jev decisions.</strong> A typed client for TypeSafe Jev System One choice, score and noul decisions.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Anthropic structured output.</strong> <code>response_schema</code> is sent as <code>output_config.format</code>; profile <code>output_config</code> extensions such as effort are merged with it; parallel tool results share one turn; stop reasons map to <code>length</code> and <code>content_filter</code>.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            '<strong>Streamed token usage.</strong> OpenAI-compatible streams request and read usage, so budgets and metering count streamed calls; <code>stream_usage: false</code> turns it off for servers that reject it.',
+                            '<strong>Declined continuations.</strong> Declining a budget extension ends the run even when declined tool calls continue it.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a8': {
                 date: '2026-10-22',
                 kind: 'Agent tooling and HTTP API tools',
@@ -2210,7 +2255,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a8',
                     package: '0.1.0a8 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a9',
                     version: '0.1.0a8',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },

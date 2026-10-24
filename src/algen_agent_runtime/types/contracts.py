@@ -312,6 +312,22 @@ class LoadedSkills(StrictModel):
         return self
 
 
+class ContinuationPolicy(StrictModel):
+    """Progressive execution budgets with an approval-backed escape hatch.
+
+    The base agent budget remains a real safety boundary. A configured number of
+    small extensions may be granted automatically; every later extension pauses
+    durably for a human decision instead of failing the run.
+    """
+
+    enabled: bool = False
+    automatic_extensions: int = Field(default=0, ge=0, le=10)
+    step_increment: int = Field(default=16, ge=1, le=1000)
+    token_increment: int = Field(default=8_000, ge=1)
+    cost_increment_usd: float = Field(default=0.25, ge=0)
+    approval_expires_seconds: int = Field(default=3600, ge=1)
+
+
 class AgentDefinition(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
@@ -334,6 +350,7 @@ class AgentDefinition(StrictModel):
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
     tool_policy: ToolPolicy = Field(default_factory=ToolPolicy)
+    continuation_policy: ContinuationPolicy = Field(default_factory=ContinuationPolicy)
     response_composer: str = "default"
     budget: Budget = Field(default_factory=Budget)
     max_steps: int = Field(default=16, ge=1, le=1000)
@@ -522,6 +539,7 @@ class RunState(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     status: RunStatus = RunStatus.RECEIVED
     step_count: int = 0
+    continuation_count: int = 0
     attempt_count: int = 0
     started_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
