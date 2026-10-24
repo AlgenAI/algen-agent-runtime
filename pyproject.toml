@@ -62,12 +62,12 @@ chroma = ["chromadb>=1.0,<2"]
 faiss = ["faiss-cpu>=1.9,<2", "numpy>=2,<3"]
 qdrant = ["qdrant-client>=1.12,<2"]
 langgraph = ["langgraph>=1,<2"]
-openai-agents = ["openai-agents>=0.6,<1"]
+openai-agents = ["openai-agents>=0.21,<1"]
 autogen = ["autogen-agentchat>=0.7,<1"]
 crewai = ["crewai>=1,<2"]
 frameworks = [
   "langgraph>=1,<2",
-  "openai-agents>=0.6,<1",
+  "openai-agents>=0.21,<1",
   "autogen-agentchat>=0.7,<1",
   "crewai>=1,<2",
 ]

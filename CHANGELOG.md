@@ -30,6 +30,9 @@ contracts are explicitly marked experimental during the `0.x` series.
   `content_filter`). The adapter moved to `models.providers.anthropic` and is still importable from
   `models.providers.adapters`.
 - `classify_findings` is shared by all document extractors.
+- The `openai-agents` and `frameworks` extras require `openai-agents>=0.21`, the first release with
+  the `agents.testing` helpers the adapter contract tests use. Without the floor, resolvers could
+  fall back to 0.20 when another framework constrained `openai` or `pydantic`.
 
 ### Fixed
 
