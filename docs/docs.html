@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a10">v0.1.0a10 · latest</option>
+                    <option value="0.1.0a11">v0.1.0a11 · latest</option>
+                    <option value="0.1.0a10">v0.1.0a10</option>
                     <option value="0.1.0a9">v0.1.0a9</option>
                     <option value="0.1.0a8">v0.1.0a8</option>
                     <option value="0.1.0a7">v0.1.0a7</option>
@@ -1386,7 +1387,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a10</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a11</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1406,7 +1407,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a10 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a11 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1463,7 +1464,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2093,7 +2094,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a10</span>.</footer>
+                    data-version-field="version">0.1.0a11</span>.</footer>
         </main>
     </div>
 
@@ -2219,9 +2220,45 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10'];
-        const LATEST_VERSION = '0.1.0a10';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11'];
+        const LATEST_VERSION = '0.1.0a11';
         const RELEASES = {
+            '0.1.0a11': {
+                date: '2026-10-27',
+                kind: 'Code components and traces',
+                title: 'Declared plugins, project validation, tool authoring, and complete traces',
+                summary: 'Code components get a declared source Studio can see: plugins named in domain_plugins register them, describe and check show what a project registers, the build fails on any name nothing registered, and tools are written as typed functions with policy presets. With Traccia, runs export whole and every span carries the signals an analyst needs.',
+                fields: {
+                    tag: 'v0.1.0a11',
+                    package: '0.1.0a11 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a11',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Declared plugins.</strong> <code>domain_plugins</code> load by <code>module:attribute</code> or entry point from <code>security.trusted_plugin_prefixes</code> and register tools, planners, context builders, verifiers, composers, providers, MCP servers, semantic layers, methods, model services, guardrail policies, analytical handlers and search stores. See <a href="plugins.md">plugins</a>.',
+                            '<strong>describe and check.</strong> <code>algen-agent-runtime describe</code> lists every component and its source without running it; <code>algen-agent-runtime check</code> validates a project as Studio will and warns about code Studio cannot run. See <a href="studio-compatibility.md">Studio compatibility</a>.',
+                            '<strong>Tool authoring.</strong> <code>@tool</code>, the <code>read</code>, <code>write</code>, <code>external</code>, <code>destructive</code> and <code>long_running</code> presets, <code>Toolkit</code> and <code>ApprovalHandler</code>, with <code>assert_tool_contract</code> and <code>fake_tool_context</code> for tests. See <a href="tool-authoring.md">writing agent tools</a>.',
+                            '<strong>Run narrative.</strong> <code>GET /v1/runs/{run_id}/narrative</code> tells a run in order without prompt, answer or tool content.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Startup validation.</strong> <code>build_container</code> fails on any tool, planner, composer, verifier, context builder, guardrail policy or provider an agent names that nothing registered, with the closest match; <code>runtime.component_check: warn</code> logs instead.',
+                            '<strong>Complete traces.</strong> With Traccia, every Runtime span goes through its tracer, runs export whole with <code>agent.run.span_count</code>, a resumed run continues its first trace, and every span has a <code>span.type</code>. <code>minimal</code> keeps the decision chain.',
+                            '<strong>Costs and tokens.</strong> An unpriced model call carries no cost instead of 0.0, so Traccia prices it; <code>llm.usage.prompt_tokens</code> is uncached input, with cache reads and writes separate.'
+                        ]
+                    },
+                    {
+                        kind: 'Compatibility', items: [
+                            'The <code>talk-to-data</code> and <code>hiring</code> extras are removed: use <code>[pgvector,traccia]</code>, and <code>documents</code> for PDF inspection.',
+                            'An agent naming a component registered only after <code>build_container</code> returns now fails to build; register it from a plugin, or set <code>runtime.component_check: warn</code> meanwhile. See the CHANGELOG upgrade notes for trace attribute changes.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a10': {
                 date: '2026-10-26',
                 kind: 'Provider costs',
@@ -2230,7 +2267,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a10',
                     package: '0.1.0a10 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a11',
                     version: '0.1.0a10',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
