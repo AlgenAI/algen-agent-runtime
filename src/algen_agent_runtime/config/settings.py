@@ -209,6 +209,13 @@ class TracciaSettings(StrictSettings):
     governance_enabled: bool = False
     governance_fail_open: bool = False
     governance_agent_id: str | None = None
+    export_whole_runs: bool = Field(
+        default=True,
+        description="Hold a run's spans until its root ends and export them together, so the "
+        "backend never receives part of a run.",
+    )
+    run_export_max_spans: int = Field(default=2_000, ge=1, le=100_000)
+    run_export_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
 
     @model_validator(mode="after")
     def validate_api_key_reference(self) -> TracciaSettings:
@@ -304,6 +311,11 @@ class ApiSettings(StrictSettings):
 
 
 class RuntimeSettings(StrictSettings):
+    component_check: Literal["error", "warn"] = Field(
+        default="error",
+        description="What build_container does when an agent names a tool, planner, composer, "
+        "verifier, context builder or provider that nothing registered: fail, or log a warning.",
+    )
     recover_incomplete_runs: bool = True
     recovery_limit: int = Field(default=1000, ge=1, le=100_000)
     shutdown_grace_seconds: float = Field(default=10.0, ge=0, le=300)
@@ -514,15 +526,16 @@ class AppSettings(StrictSettings):
     def validate_provider_references(self) -> AppSettings:
         invalid_references: list[str] = []
         for agent in self.agents:
-            if (
-                agent.default_model.provider is None
-                or agent.default_model.provider not in self.providers
-            ):
+            # A plugin may register the provider; build_container checks that one did.
+            def unknown(provider: str | None, plugins: bool = bool(agent.domain_plugins)) -> bool:
+                return provider is None or (provider not in self.providers and not plugins)
+
+            if unknown(agent.default_model.provider):
                 invalid_references.append(
                     f"agents[{agent.name}].default_model.provider ({agent.default_model.provider!r})"
                 )
             for idx, fallback in enumerate(agent.fallback_models):
-                if fallback.provider is None or fallback.provider not in self.providers:
+                if unknown(fallback.provider):
                     invalid_references.append(
                         f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
                     )
@@ -580,7 +593,14 @@ def _environment(prefix: str) -> dict[str, Any]:
 def load_settings(
     files: tuple[str | Path, ...] = (),
     deployment_overrides: dict[str, Any] | None = None,
+    *,
+    ignore_extensions: bool = False,
 ) -> AppSettings:
+    """Merge YAML files, ``ALGEN_AGENT_RUNTIME__`` variables and overrides into settings.
+
+    ``ignore_extensions`` drops a top-level ``extensions`` mapping, where Studio keeps its own
+    project metadata, instead of rejecting it.
+    """
     data: dict[str, Any] = {}
     try:
         for file in files:
@@ -590,6 +610,8 @@ def load_settings(
             data = _merge(data, loaded)
         data = _merge(data, _environment("ALGEN_AGENT_RUNTIME__"))
         data = _merge(data, deployment_overrides or {})
+        if ignore_extensions:
+            data.pop("extensions", None)
         return AppSettings.model_validate(data)
     except (OSError, yaml.YAMLError, ValueError) as exc:
         raise ConfigurationError(f"invalid configuration: {exc}") from exc

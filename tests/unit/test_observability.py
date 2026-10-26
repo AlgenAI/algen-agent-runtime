@@ -84,7 +84,7 @@ def test_traccia_adapter_lifecycle_and_run_identity(
             endpoint="https://api.traccia.ai/v2/traces",
             metrics_endpoint="https://api.traccia.ai/v2/metrics",
             environment="test",
-            project_id="talk-to-data",
+            project_id="analytics-agent",
             sample_rate=0.5,
         ),
         "algen-agent-runtime-test",
@@ -114,7 +114,7 @@ def test_traccia_adapter_lifecycle_and_run_identity(
             "agent_name": "agent",
             "env": "test",
             "tenant_id": "tenant",
-            "project_id": "talk-to-data",
+            "project_id": "analytics-agent",
         },
     ) in calls
     assert ("flush", 5.0) in calls
@@ -466,19 +466,22 @@ def test_trace_level_tracer_filters_internal_spans_by_configured_detail() -> Non
             pass
         with minimal.start_as_current_span("cache.get"):
             pass
-    assert [span.name for span in recorded.spans] == ["agent.run", "agent.model.call"]
+    # minimal keeps the decision chain: run, model call and the checkpoint's policy summary.
+    assert [span.name for span in recorded.spans] == [
+        "agent.run",
+        "agent.model.call",
+        "agent.policy.input",
+    ]
 
     recorded = RecordingTracer()
     standard = TraceLevelTracer(recorded, "standard")
-    with standard.start_as_current_span("agent.policy.input"):
-        pass
-    with standard.start_as_current_span("agent.verification"):
-        pass
-    with standard.start_as_current_span("agent.step"):
-        pass
+    for name in ("agent.context.build", "agent.verification", "agent.step", "agent.planning"):
+        with standard.start_as_current_span(name):
+            pass
     assert [span.name for span in recorded.spans] == [
-        "agent.policy.input",
+        "agent.context.build",
         "agent.verification",
+        "agent.step",
     ]
 
 
@@ -554,7 +557,9 @@ async def test_runtime_emits_one_root_trace_with_traccia_semantics() -> None:
     assert model_span.attributes["llm.usage.prompt_tokens"] == 10
     assert model_span.attributes["llm.usage.total_tokens"] == 11
     assert model_span.attributes["llm.finish_reason"] == "stop"
-    assert model_span.attributes["llm.cost.source"] == "configured_provider_rates"
+    # The mock provider has no rates: no cost rather than 0.0, so a backend can price the call.
+    assert "llm.cost.usd" not in model_span.attributes
+    assert "llm.cost.source" not in model_span.attributes
     assert "llm.prompt" not in model_span.attributes
 
 
@@ -622,3 +627,83 @@ async def test_conversation_turn_is_one_trace_with_agent_runs_as_children() -> N
     assert turn.attributes["conversation.output"] == "answer"
     assert turn.attributes["conversation.turn.status"] == "completed"
     assert turn.attributes["conversation.agent_run_count"] == 1
+
+
+def test_traccia_adapter_routes_spans_and_exports_runs_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from algen_agent_runtime.observability.run_export import RunScopedExportProcessor
+
+    exporter = InMemorySpanExporter()
+    otel_provider = TracerProvider()
+    otel_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    enrichers: list[Any] = []
+    tracers: list[str] = []
+
+    def get_tracer(name: str) -> Any:
+        tracers.append(name)
+        return otel_provider.get_tracer(name)
+
+    fake = SimpleNamespace(
+        init=lambda **options: SimpleNamespace(
+            _otel_tracer_provider=otel_provider, add_span_processor=enrichers.append
+        ),
+        get_tracer=get_tracer,
+    )
+    monkeypatch.setattr(
+        "algen_agent_runtime.observability.traccia_adapter.importlib.import_module",
+        lambda name: fake,
+    )
+    adapter = TracciaObservabilityAdapter(TracciaSettings(enabled=True), "svc")
+    monkeypatch.setattr(adapter, "_register_otel_provider", lambda provider: None)
+    tracer = adapter.tracer("algen_agent_runtime.runtime")
+    assert tracers == []  # nothing starts before the first span
+
+    with tracer.start_as_current_span("agent.run", attributes={"span.type": "agent"}) as root:
+        with tracer.start_as_current_span("agent.model.call"):
+            pass
+        assert exporter.get_finished_spans() == ()
+        [enricher] = enrichers
+        traccia_span = SimpleNamespace(
+            name="agent.run", _otel_span=root, set_attribute=root.set_attribute
+        )
+        enricher.on_end(traccia_span)
+
+    assert tracers == ["algen_agent_runtime.runtime"] * 2
+    processors = otel_provider._active_span_processor._span_processors
+    assert len(processors) == 1 and isinstance(processors[0], RunScopedExportProcessor)
+    spans = exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["agent.model.call", "agent.run"]
+    assert spans[1].attributes is not None
+    assert spans[1].attributes["agent.run.span_count"] == 2
+
+
+def test_whole_run_export_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    otel_provider = TracerProvider()
+    processor = SimpleSpanProcessor(InMemorySpanExporter())
+    otel_provider.add_span_processor(processor)
+    fake = SimpleNamespace(
+        init=lambda **options: SimpleNamespace(
+            _otel_tracer_provider=otel_provider, add_span_processor=lambda p: None
+        ),
+    )
+    monkeypatch.setattr(
+        "algen_agent_runtime.observability.traccia_adapter.importlib.import_module",
+        lambda name: fake,
+    )
+    adapter = TracciaObservabilityAdapter(
+        TracciaSettings(enabled=True, export_whole_runs=False), "svc"
+    )
+    monkeypatch.setattr(adapter, "_register_otel_provider", lambda provider: None)
+
+    adapter.start()
+
+    assert otel_provider._active_span_processor._span_processors == (processor,)

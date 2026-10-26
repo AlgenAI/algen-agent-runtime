@@ -14,7 +14,7 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
-| Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`), prefix-confusion defense, callable shape & API version checks, secret-free audit metadata |
+| Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`, `PluginLoader` with `trusted_plugin_prefixes`), prefix-confusion defense, callable shape & API version checks, secret-free audit metadata |
 | Resource exhaustion | payload/result/artifact limits, semaphores, API admission rate limits & in-flight run concurrency quotas, time/token/cost/step budgets |
 | Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
 | Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |

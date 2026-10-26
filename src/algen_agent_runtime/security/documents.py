@@ -238,7 +238,7 @@ class PdfDocumentExtractor:
         try:
             import fitz
         except ImportError as exc:
-            raise ImportError("install algen-agent-runtime[hiring] for PDF inspection") from exc
+            raise ImportError("install algen-agent-runtime[documents] for PDF inspection") from exc
         document = fitz.open(stream=data, filetype="pdf")
         if document.page_count < 1 or document.page_count > self._max_pages:
             raise ValueError(f"PDF page count must be between 1 and {self._max_pages}")

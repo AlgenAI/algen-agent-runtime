@@ -311,6 +311,9 @@ class ModelRouter:
     def providers(self) -> tuple[ModelProvider, ...]:
         return tuple(self._providers[key] for key in sorted(self._providers))
 
+    def registration_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._providers))
+
     async def stream(
         self,
         request: ModelRequest,

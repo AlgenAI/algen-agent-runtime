@@ -1,0 +1,22 @@
+id: quickstart_agent_tool
+display_name: "Agent Tool Quickstart"
+tier: quickstart
+status: runnable
+description: >
+  Two typed agent tools in a Toolkit, a read and an approval-gated write, declared through a plugin.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.quickstart_agent_tool.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.quickstart_agent_tool.app"
+  test: "python -m pytest tests/unit/test_quickstart_agent_tool.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 10
+deterministic_mock_support: true

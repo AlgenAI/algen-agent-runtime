@@ -201,7 +201,7 @@ sequence.
 - Studio's `workflow_hooks.py` delegates to Runtime's allowlisted loader and no longer mutates global import state. Hook modules must be installed in the Studio host environment and be authorized by host-owned configuration.
 - Runtime's loader authorizes exact module segments before import, validates factory/API shape, and returns audit metadata.
 - Runtime's loader expects modules to be importable already and does not retain or close a factory result's `aclose()` method. Studio currently supports that teardown behavior.
-- `SecuritySettings.trusted_plugin_prefixes` exists, but Studio does not use an explicit module allowlist when loading workflow hooks.
+- `SecuritySettings.trusted_plugin_prefixes` gates the plugins named in `domain_plugins` (see `docs/plugins.md`); it is separate from the host-owned allowlist Studio uses for workflow hooks.
 
 **Required Studio work**
 

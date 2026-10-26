@@ -10,7 +10,6 @@ from algen_agent_runtime.config.settings import load_settings
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.types.contracts import RunRequest, RunResult
-from examples.case_study_teaching_assistant.application import register_teaching_tools
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = EXAMPLE_DIR / "config" / "agent.yaml"
@@ -18,8 +17,8 @@ UI_PATH = EXAMPLE_DIR / "ui" / "index.html"
 
 
 async def ask(question: str) -> RunResult:
+    # The settings declare TeachingPlugin, which registers the teaching.* tools.
     container = build_container(load_settings((CONFIG_PATH,)))
-    register_teaching_tools(container.tools)
     try:
         await container.astart()
         run = container.observability.govern(

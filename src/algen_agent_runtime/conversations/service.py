@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from opentelemetry import trace
 from opentelemetry.context import Context
 
 from algen_agent_runtime.conversations.contracts import (
@@ -150,7 +149,7 @@ class ConversationService:
         self.presentation = presentation or ConversationPresentation()
         self.feedback_store = feedback_store or InMemoryConversationFeedbackStore()
         self._followup_provider = followup_provider
-        self._tracer = trace.get_tracer("algen_agent_runtime.conversations")
+        self._tracer = self._observability.tracer("algen_agent_runtime.conversations")
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         self._accepting = True

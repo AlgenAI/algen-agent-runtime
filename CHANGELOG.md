@@ -6,6 +6,156 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `domain_plugins` now loads: `build_container` imports each plugin an agent names, once, and calls
+  its `register(context)`. A plugin is named as `module:attribute` or as an entry point in the
+  `algen_agent_runtime.plugins` group, and must sit under `security.trusted_plugin_prefixes`;
+  trust is checked for the whole set before anything is imported. The context registers tools,
+  planners, context builders, verifiers, response composers, semantic layers, analytical methods,
+  model services, model providers and MCP servers, and `add_resource` hands a shared client to the
+  container's lifecycle. A name that is already registered, by the Runtime, the manifest or an
+  earlier plugin, raises `ConflictError`.
+- `Container.plugins` lists the loaded plugin manifests and `Container.component_sources` records
+  which plugin registered each component.
+- `PlannerRegistry`, `ResponseComposerRegistry`, `ContextBuilderRegistry` and
+  `VerificationService` gain `names()`.
+- `describe_components(settings)` (`algen_agent_runtime.orchestration.describe`) and
+  `algen-agent-runtime describe [--config ...] [--path src] [--json]` list everything a container
+  built from the settings would register, by kind and source (`runtime`, `manifest` or the plugin
+  reference): tools with side effect, idempotency, permissions, timeout, attempts and schemas;
+  planners, composers, verifiers, context builders; provider types and providers; MCP servers;
+  semantic layers, methods and model services; and every environment variable a deploy must
+  supply. It imports plugins and runs their `register`, but calls no component, resolves no secret
+  and connects to nothing.
+- `PluginManifest.env` declares the environment variable names a plugin's components read.
+- `build_container` checks every name an agent uses (`enabled_tools`, `planning_strategy`,
+  `response_composer`, `verification_policy.verifiers`, `context_builder`, model providers) against
+  what was registered and fails with a `ConfigurationError` that lists each unknown name with the
+  closest registered one. Enabled MCP tools are checked when `Container.astart()` connects to their
+  server. `runtime.component_check: warn` logs instead of failing.
+  `algen_agent_runtime.orchestration.validation` runs the same check against a `describe` inventory.
+- `ModelRouter.registration_ids()`.
+- `algen-agent-runtime check [agent.yaml] [--path src] [--project-root .] [--json] [--strict]` and
+  `check_project` (`algen_agent_runtime.orchestration.check`) validate a project as Studio will:
+  settings, plugins, conflicts, unknown names with the closest match, and provider types are errors;
+  a static scan of the project's Python warns about its own container, constructor components,
+  registration on a built container, direct `os.environ` reads and agents defined in code. The JSON
+  report carries the full inventory.
+- `load_settings(..., ignore_extensions=True)` drops a top-level `extensions` mapping instead of
+  rejecting it.
+- Tool authoring (`algen_agent_runtime.tools.authoring`): `@tool` turns a typed function into a
+  `Tool`, with strict input and output schemas from type hints or Pydantic models and the
+  description from the docstring; a `ToolContext` parameter receives the call's context. Presets
+  `read()`, `write(approval=...)`, `external(approval=...)`, `destructive()` and
+  `long_running(...)` set side effect, permission, idempotency, retries and timeout together
+  (writes are keyed and single-attempt) and can be overridden with `.replace(...)`. `Toolkit`
+  groups tools that share a lazily opened client, `env://` secrets and a permission prefix, and
+  registers through a plugin. `ApprovalHandler` lets a deployment run its own approval flow around
+  a tool call. See `docs/tool-authoring.md`.
+- `ToolDefinition.requires_approval` asks for the Runtime's approval before every call of a tool,
+  whatever the agent's approval policy; `describe` reports it.
+- `algen_agent_runtime.tools.testing`: `fake_tool_context`, `assert_tool_contract` and
+  `tool_contract_problems`.
+- `examples/quickstart_agent_tool`: a toolkit with a read tool and an approval-gated write tool,
+  declared through `domain_plugins`, run offline.
+- The plugin context gains `secrets` (resolves `env://` with the container's environment) and
+  `declare_env(...)`; `MockModelProvider.queue(...)` scripts its next replies.
+- `algen-agent-runtime new` (the `agent` template) scaffolds `<name>_plugin.py` with a toolkit and
+  its `domain_plugins` entry, and the generated project passes `check`.
+- `docs/studio-compatibility.md` lists what Studio can and cannot see; `docs/plugins.md` has the
+  steps for moving from constructor arguments to a plugin.
+- Plugins register guardrail policies (`context.policies`), the handler for an analytical node kind
+  that has none (`context.analytical_nodes`, for `semantic_query` and `model_call`), and search stores
+  with their `retrieval.<name>` context builder (`context.retrievers`); `describe` lists all three.
+- The startup check covers `guardrail_policy.policies` and `guardrail_policy.tool_policies`. The
+  policy engine skips a name it does not know, so an unregistered or misspelt guardrail used to be
+  silently off; it now fails the build. `check` also flags policies, search stores, semantic layers
+  and analytical handlers registered on a built container.
+- A `documents` extra installs PyMuPDF for PDF inspection.
+- Whole-run trace export: with Traccia, a `RunScopedExportProcessor` holds each run's spans until its
+  root ends and exports them together, so a backend never receives part of a run (a lost middle
+  batch, or child spans whose root never arrives). `telemetry.traccia.export_whole_runs` (default
+  on), `run_export_max_spans` and `run_export_max_seconds` bound it; `install_run_scoped_export`
+  serves other OpenTelemetry deployments. The root records `agent.run.span_count`.
+- A run resumed after an approval or a pause continues its first trace: `RunState.trace_parent`
+  stores the first `agent.run` span and the resumed `agent.run` is its child.
+- `ObservabilityAdapter.tracer(name)`; `ToolExecutor(..., tracer=...)`.
+- Run narrative: `GET /v1/runs/{run_id}/narrative` and `AgentRuntime.narrative(run_id, tenant_id)`
+  tell a run in order from its state and events (model calls and requested tools, tool calls with
+  argument keys and result sizes, approvals, policies that acted, verification, outcome, totals and
+  `trace_id`), with no prompt, answer or tool content.
+- Safe-by-default span signals: `llm.response.tool_names`, `llm.response.output_chars`,
+  `llm.request.message_count` and `llm.request.tool_count` on model calls; `tool.argument_keys`,
+  `tool.result_chars` and `gen_ai.tool.name` on tool calls; `retrieval.scores` on context builds;
+  input and output sizes and tokens on the run root. Timing: `llm.time_to_first_token_ms` on
+  streamed calls and `agent.model.prepare_ms` before every model call.
+- `TokenUsage.cache_write_tokens`; the Anthropic adapter reports tokens written to its prompt cache.
+- `docs/plugins.md` documents plugins and the inventory; the agent-builder, connector, extension and
+  contributor skills now register code components from a declared plugin instead of
+  `build_container(additional_tools=...)`.
+
+### Changed
+
+- `additional_tools=` and `mcp_servers=` are merged after declared plugins; they keep working
+  as before.
+- Trusted plugin prefixes match on module boundaries: `acme` trusts `acme.crm` but no longer
+  `acme_evil`.
+- An agent that declares `domain_plugins` may name a model provider not listed under `providers:`,
+  since a plugin may register it; the startup check fails if none did.
+
+- `examples/pattern_text_to_sql` (and its `advanced` variant) and
+  `examples/case_study_teaching_assistant` register their tools from a declared plugin instead of
+  on the built container, and every example project passes `check` in the test suite. The
+  text-to-SQL database connects on first query.
+- A plugin module that cannot be found says to install its package or pass `--path`.
+- With Traccia enabled, every Runtime span is created through Traccia's tracer, so its enrichment
+  processors see model, tool, step and memory spans too. Before, only the run root and guardrail
+  spans went through them: the root's `guardrail.summary` reported "No LLM or tool spans observed"
+  and agent identity was missing from the other spans.
+- Every Runtime span has a `span.type` (`step`, `planning`, `context`, `verification`, `memory` and
+  `cache` are new), and the tool executor's policy spans follow `telemetry.trace_level`.
+- `telemetry.trace_level: minimal` now keeps the decision chain: steps, one policy summary per
+  checkpoint and verification join the run, model and tool spans. Context building and memory writes
+  move to `standard`; planning, cache and unfired guardrails stay at `detailed`.
+- Model-span tokens follow Traccia's pricing and OpenTelemetry's conventions without duplicates:
+  `llm.usage.prompt_tokens` is now the uncached input, with `llm.usage.cache_read_tokens` and
+  `llm.usage.cache_write_tokens` beside it, and `gen_ai.usage.input_tokens` stays the whole prompt.
+  `llm.usage.input_tokens`, `llm.usage.output_tokens`, `llm.usage.cached_tokens` and the per-direction
+  `*_source` attributes are gone.
+- An unpriced model call (no provider rates) carries no `llm.cost.usd` instead of 0.0, so Traccia
+  prices it; the run root carries `agent.run.estimated_cost_usd` only when priced. Before, the 0.0
+  stopped Traccia's cost processor from pricing Runtime model calls at all.
+- Descriptive agent attributes (description, tags, capabilities, planning strategy, run mode) are on
+  the run root only, and empty values are left out.
+- `examples/case_study_teaching_assistant` registers its education guardrail policies from its
+  plugin. Before, only `dashboard.py` registered them, so `app.py` ran with them silently off.
+
+### Removed
+
+- The `talk-to-data` and `hiring` extras, which only bundled dependencies under product names.
+
+### Upgrade notes
+
+- Trace queries and dashboards: `llm.usage.prompt_tokens` now counts only uncached input; read
+  `gen_ai.usage.input_tokens` for the whole prompt. `llm.usage.input_tokens` and
+  `llm.usage.output_tokens` become `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`,
+  and `llm.usage.cached_tokens` becomes `llm.usage.cache_read_tokens`. Unpriced calls no longer
+  carry `llm.cost.usd: 0.0`. At `trace_level: minimal`, expect step, policy-summary and
+  verification spans that used to need `standard` or `detailed`.
+- Replace the removed extras in each project's dependencies: `algen-agent-runtime[talk-to-data]`
+  becomes `algen-agent-runtime[pgvector,traccia]`, and `algen-agent-runtime[hiring]` becomes
+  `algen-agent-runtime[pgvector,traccia,documents]` plus `python-multipart` in the project itself if
+  it accepts form uploads. Keep `traccia` explicitly: pip only warns about an unknown extra and
+  installs nothing for it, so a project still naming the old extra loses Traccia and asyncpg.
+- An agent whose `guardrail_policy` names a policy that is registered only on the built runtime
+  (`container.runtime.policies.register`) now fails to build: register it from a plugin.
+- An agent that names a tool, planner, composer, verifier, context builder or provider that was
+  not registered by the time `build_container` returns now fails to build. A deployment that
+  registers components on the built container (for example `register_starter_tools(container.tools)`
+  for an enabled tool) should move them into a plugin, or pass them as `additional_tools=`; set
+  `runtime.component_check: warn` meanwhile.
+
 ## [0.1.0a10] - 2026-10-26
 
 ### Changed

@@ -16,6 +16,10 @@ from opentelemetry.trace import INVALID_SPAN_CONTEXT, NonRecordingSpan, Status, 
 
 from algen_agent_runtime.config.settings import TelemetrySettings, TracciaSettings
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.observability.run_export import (
+    RunScopedExportProcessor,
+    install_run_scoped_export,
+)
 from algen_agent_runtime.observability.trace_levels import TraceLevel
 
 
@@ -32,6 +36,11 @@ class _DeferredGuardrailSpan(NonRecordingSpan):
 
 class ObservabilityAdapter(Protocol):
     def start(self) -> None: ...
+
+    def tracer(self, name: str) -> Any:
+        """The tracer Runtime components create their spans with, so every span takes the
+        adapter's path (for Traccia, its enrichment processors)."""
+        ...
 
     def run_scope(
         self, *, agent_id: str, agent_name: str, tenant_id: str
@@ -71,6 +80,9 @@ class NoopObservabilityAdapter:
 
     def start(self) -> None:
         return None
+
+    def tracer(self, name: str) -> Any:
+        return trace.get_tracer(name)
 
     def run_scope(
         self, *, agent_id: str, agent_name: str, tenant_id: str
@@ -117,9 +129,12 @@ class NoopObservabilityAdapter:
         }
         if policy_id:
             attributes["guardrail.policy_id"] = policy_id
-        tracer = trace.get_tracer("algen_agent_runtime.guardrails")
+        tracer = self.tracer("algen_agent_runtime.guardrails")
         if self._trace_level == "detailed":
-            return tracer.start_as_current_span(f"guardrail.{name}", attributes=attributes)
+            return cast(
+                AbstractContextManager[Any],
+                tracer.start_as_current_span(f"guardrail.{name}", attributes=attributes),
+            )
 
         @contextmanager
         def triggered_only_scope() -> Any:
@@ -141,6 +156,55 @@ class NoopObservabilityAdapter:
         return None
 
 
+class _TracciaTracer:
+    """Creates spans through Traccia's tracer, which runs its enrichment processors (agent
+    identity, tokens, cost, guardrail detection, governance) on every span. Traccia starts on the
+    first span, not when the container is built."""
+
+    def __init__(self, adapter: TracciaObservabilityAdapter, name: str) -> None:
+        self._adapter = adapter
+        self._name = name
+
+    def start_as_current_span(
+        self, name: str, attributes: Mapping[str, Any] | None = None, **_: Any
+    ) -> AbstractContextManager[Any]:
+        self._adapter.start()
+        module = self._adapter._module
+        assert module is not None
+        return cast(
+            AbstractContextManager[Any],
+            module.get_tracer(self._name).start_as_current_span(
+                name, attributes=dict(attributes or {})
+            ),
+        )
+
+
+class _RunSpanCountEnricher:
+    """A Traccia enrichment processor: writes ``agent.run.span_count`` onto each run's root while
+    it can still change, from what the run-scoped export counted."""
+
+    def __init__(self, export: RunScopedExportProcessor) -> None:
+        self._export = export
+
+    def on_start(self, span: Any, parent_context: Any = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        if getattr(span, "name", None) != "agent.run":
+            return
+        otel_span = getattr(span, "_otel_span", span)
+        context = otel_span.get_span_context()
+        count = self._export.span_count(context.trace_id, context.span_id)
+        if count is not None:
+            span.set_attribute("agent.run.span_count", count)
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout: float | None = None) -> bool:
+        return True
+
+
 class TracciaObservabilityAdapter:
     """Optional Traccia lifecycle and per-run identity bridge."""
 
@@ -157,6 +221,10 @@ class TracciaObservabilityAdapter:
         self._environment = dict(environment or {})
         self._module: ModuleType | Any | None = None
         self._started = False
+        self._run_export: RunScopedExportProcessor | None = None
+
+    def tracer(self, name: str) -> Any:
+        return _TracciaTracer(self, name)
 
     def start(self) -> None:
         if self._started:
@@ -197,6 +265,15 @@ class TracciaObservabilityAdapter:
         provider = module.init(**options)
         self._ensure_span_processor_compatibility(provider)
         self._register_otel_provider(provider)
+        otel_provider = getattr(provider, "_otel_tracer_provider", None)
+        if self._settings.export_whole_runs and self._run_export is None and otel_provider:
+            self._run_export = install_run_scoped_export(
+                otel_provider,
+                max_spans=self._settings.run_export_max_spans,
+                max_seconds=self._settings.run_export_max_seconds,
+            )
+            if self._run_export is not None:
+                provider.add_span_processor(_RunSpanCountEnricher(self._run_export))
         self._module = module
         self._started = True
 

@@ -8,6 +8,14 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Does it change a public import, YAML contract, event, error code, or persisted schema?
 - If it changes `WorkflowManifest`, are manifest validation, execution validation, Studio
   consumption, examples, agent-builder guidance, and the changelog updated together?
+- If it adds a registry, a name-valued manifest field, or changes what `build_container` registers,
+  are `RuntimePluginContext`, `describe_components` and its container-parity test
+  (`tests/unit/test_describe.py`), the startup check (`orchestration/validation.py`),
+  `docs/plugins.md`, the agent-builder skill, and the changelog updated together?
+- Does every project under `examples/` still pass `algen-agent-runtime check`
+  (`tests/unit/test_check.py`)? A new example registers its code components from a declared plugin.
+- Does every new or changed tool pass `assert_tool_contract`, and does a change to a preset in
+  `tools/authoring.py` keep the rule that writes are keyed and single-attempt?
 - If compatibility changes, is there an upgrade note, migration path, and changelog entry?
 - For durable workflows, are tenant isolation, optimistic version conflicts, manifest fingerprints,
   pause/resume, deadline suspension, recovery opt-in, and interrupted side effects tested?
@@ -38,6 +46,8 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Avoid telemetry content by default; redact credentials and sensitive payloads.
 - Keep workflow approval review paths and parameters explicitly secret-free; approval events must not
   expose review values, parameters, or operator comments.
+- Plugin loading: Enforce `PluginLoader` with `trusted_plugin_prefixes` checked for every reference
+  before any import; keep `register(context)` free of network calls and secrets.
 - Dynamic hook loading: Enforce `WorkflowHookLoader` with explicit module allowlists (`allowed_modules`)
   before import; verify callable shape, API version compatibility (`__api_version__`), and `WorkflowHookRegistry`
   return type; never serialize code or secrets in audit metadata.

@@ -77,6 +77,9 @@ class ContextBuilderRegistry:
     def register(self, builder: ContextBuilder) -> None:
         self._items[builder.name] = builder
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._items))
+
     def get(self, name: str) -> ContextBuilder:
         try:
             return self._items[name]

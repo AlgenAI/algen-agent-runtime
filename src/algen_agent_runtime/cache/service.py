@@ -159,7 +159,8 @@ class CacheService:
     async def invalidate_tags(self, *tags: str) -> int:
         safe_tags = tuple(self._digest(tag) for tag in tags)
         with self._tracer.start_as_current_span(
-            "cache.invalidate", attributes={"cache.backend": self.store.backend_name}
+            "cache.invalidate",
+            attributes={"span.type": "cache", "cache.backend": self.store.backend_name},
         ) as span:
             try:
                 count = await self.store.invalidate_tags(safe_tags)
@@ -226,6 +227,7 @@ class CacheService:
 
     def _attributes(self, policy_name: str, namespace: str, policy: CachePolicy) -> dict[str, str]:
         return {
+            "span.type": "cache",
             "cache.backend": self.store.backend_name,
             "cache.policy": policy_name,
             "cache.namespace": self._namespace(namespace),

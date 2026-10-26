@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Mapping, Sequence
+from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
+from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
 
 from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
@@ -82,6 +87,7 @@ from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
 from algen_agent_runtime.policies.engine import looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
+from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.security.redaction import redact
 from algen_agent_runtime.tools.contracts import Tool, ToolContext, ToolResult
@@ -116,6 +122,62 @@ from algen_agent_runtime.verification.verifiers import VerificationService
 
 # Tools whose completion updates run state (memory, skills, working state): never batched.
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
+
+
+def _usage_attributes(usage: TokenUsage) -> dict[str, Any]:
+    """Token and cost attributes for a model span, without duplicates.
+
+    ``llm.usage.prompt_tokens`` is the uncached input, as Traccia prices it, beside separate cache
+    reads and writes; ``gen_ai.usage.input_tokens`` is the whole prompt, as OpenTelemetry's GenAI
+    conventions define it. A cost is set only when provider rates priced the call, so a tracing
+    backend can price an unpriced call itself instead of reading 0.0.
+    """
+    uncached = max(0, usage.input_tokens - usage.cached_tokens - usage.cache_write_tokens)
+    attributes: dict[str, Any] = {
+        "llm.usage.prompt_tokens": uncached,
+        "llm.usage.completion_tokens": usage.output_tokens,
+        "llm.usage.cache_read_tokens": usage.cached_tokens,
+        "llm.usage.cache_write_tokens": usage.cache_write_tokens,
+        "llm.usage.total_tokens": usage.total_tokens,
+        "llm.usage.source": "provider_usage",
+        "gen_ai.usage.input_tokens": usage.input_tokens,
+        "gen_ai.usage.output_tokens": usage.output_tokens,
+        "gen_ai.usage.cache_read.input_tokens": usage.cached_tokens,
+        "gen_ai.usage.cache_creation.input_tokens": usage.cache_write_tokens,
+    }
+    if usage.estimated_cost_usd > 0:
+        attributes["llm.cost.usd"] = usage.estimated_cost_usd
+        attributes["llm.cost.source"] = "configured_provider_rates"
+    return attributes
+
+
+def _current_trace_parent() -> dict[str, str] | None:
+    """The current span's ids as hex, to store with a run; None outside a recorded span."""
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    return {
+        "trace_id": format(context.trace_id, "032x"),
+        "span_id": format(context.span_id, "016x"),
+    }
+
+
+def _attach_trace_parent(parent: dict[str, str] | None) -> Token[Context] | None:
+    """Make a stored span the current parent, so a resumed run's spans join its first trace."""
+    if not parent:
+        return None
+    try:
+        context = SpanContext(
+            trace_id=int(parent["trace_id"], 16),
+            span_id=int(parent["span_id"], 16),
+            is_remote=False,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not context.is_valid:
+        return None
+    return otel_context.attach(trace.set_span_in_context(NonRecordingSpan(context)))
 
 
 @dataclass
@@ -191,7 +253,7 @@ class AgentRuntime:
         self._accepting_runs = True
         self._shutdown_cancellation = False
         self._tracer = TraceLevelTracer(
-            trace.get_tracer("algen_agent_runtime.runtime"), telemetry_trace_level
+            self.observability.tracer("algen_agent_runtime.runtime"), telemetry_trace_level
         )
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
 
@@ -287,6 +349,15 @@ class AgentRuntime:
 
     async def status(self, run_id: str, tenant_id: str) -> RunState:
         return await self._require_state(run_id, tenant_id)
+
+    async def narrative(self, run_id: str, tenant_id: str) -> RunNarrative:
+        """The run in order, from its state and events: what an analyst or agent reads first.
+
+        It names tools, argument keys, sizes, tokens and outcomes, never prompt, answer or tool
+        content, and does not depend on what a tracing backend received.
+        """
+        state = await self._require_state(run_id, tenant_id)
+        return build_narrative(state, await self.events.history(run_id))
 
     async def cancel(self, run_id: str, tenant_id: str) -> RunState:
         state = await self._require_state(run_id, tenant_id)
@@ -518,33 +589,49 @@ class AgentRuntime:
             tenant_id=state.request.tenant_id,
         ):
             attributes = {
-                **self._span_attributes(state),
+                **self._span_attributes(state, root=True),
                 "span.type": "agent",
                 "agent.span.type": "agent",
                 "gen_ai.operation.name": "invoke_agent",
             }
-            span_scope = self.observability.span_scope(
-                "agent.run", attributes=attributes
-            ) or self._tracer.start_as_current_span(
-                "agent.run",
-                attributes=attributes,
-            )
-            with span_scope as span:
-                await self._drive_observed(run_id, tenant_id, state, agent)
-                current = await self._require_state(run_id, tenant_id)
-                span.set_attribute("agent.run.status", current.status.value)
-                span.set_attribute("agent.run.step_count", current.step_count)
-                span.set_attribute("agent.run.model_calls", current.summary.model_calls)
-                span.set_attribute("agent.run.tool_calls", current.summary.tool_calls)
-                span.set_attribute("agent.run.retry_count", current.summary.retries)
-                span.set_attribute(
-                    "agent.run.outcome",
-                    "completed" if current.status == RunStatus.COMPLETED else current.status.value,
+            # A resumed run continues the trace its first drive started.
+            parent_token = _attach_trace_parent(state.trace_parent)
+            try:
+                span_scope = self.observability.span_scope(
+                    "agent.run", attributes=attributes
+                ) or self._tracer.start_as_current_span(
+                    "agent.run",
+                    attributes=attributes,
                 )
-                span.set_attribute(
-                    "agent.run.estimated_cost_usd",
-                    current.summary.usage.estimated_cost_usd,
-                )
+                with span_scope as span:
+                    if state.trace_parent is None:
+                        state.trace_parent = _current_trace_parent()
+                    await self._drive_observed(run_id, tenant_id, state, agent)
+                    current = await self._require_state(run_id, tenant_id)
+                    span.set_attribute("agent.run.status", current.status.value)
+                    span.set_attribute("agent.run.step_count", current.step_count)
+                    span.set_attribute("agent.run.model_calls", current.summary.model_calls)
+                    span.set_attribute("agent.run.tool_calls", current.summary.tool_calls)
+                    span.set_attribute("agent.run.retry_count", current.summary.retries)
+                    span.set_attribute(
+                        "agent.run.outcome",
+                        "completed"
+                        if current.status == RunStatus.COMPLETED
+                        else current.status.value,
+                    )
+                    usage = current.summary.usage
+                    span.set_attribute("agent.run.input_tokens", usage.input_tokens)
+                    span.set_attribute("agent.run.output_tokens", usage.output_tokens)
+                    span.set_attribute("agent.run.input_chars", len(current.request.input))
+                    if current.output_text is not None:
+                        span.set_attribute("agent.run.output_chars", len(current.output_text))
+                    if usage.estimated_cost_usd > 0:
+                        # Unpriced runs carry no cost rather than a misleading 0.0.
+                        span.set_attribute("agent.run.estimated_cost_usd", usage.estimated_cost_usd)
+                        span.set_attribute("agent.run.cost.source", "configured_provider_rates")
+            finally:
+                if parent_token is not None:
+                    otel_context.detach(parent_token)
 
     async def _drive_observed(
         self, run_id: str, tenant_id: str, state: RunState, agent: AgentDefinition
@@ -635,7 +722,8 @@ class AgentRuntime:
                         await self.runs.save(state, state.version)
                     await self._compact_context(state, agent)
                 with self._tracer.start_as_current_span(
-                    "agent.context.build", attributes=self._span_attributes(state)
+                    "agent.context.build",
+                    attributes={**self._span_attributes(state), "span.type": "context"},
                 ) as span:
                     span.set_attribute("context.builder", agent.context_builder)
                     state.messages = list(await builder.build(state, agent))
@@ -649,6 +737,10 @@ class AgentRuntime:
                         span.set_attribute(
                             "retrieval.maximum_score",
                             max(item.score for item in state.citations),
+                        )
+                        span.set_attribute(
+                            "retrieval.scores",
+                            tuple(round(item.score, 4) for item in state.citations[:20]),
                         )
                 checked_messages = await self._policy_value(
                     "after_retrieval", state.messages, state, {"agent": agent}
@@ -683,7 +775,8 @@ class AgentRuntime:
             if state.status == RunStatus.PLANNING:
                 planner = self.planners.get(agent.planning_strategy)
                 with self._tracer.start_as_current_span(
-                    "agent.planning", attributes=self._span_attributes(state)
+                    "agent.planning",
+                    attributes={**self._span_attributes(state), "span.type": "planning"},
                 ) as planning_span:
                     planning_span.set_attribute("agent.planner.name", agent.planning_strategy)
                     plan = await planner.plan(state, agent)
@@ -705,7 +798,8 @@ class AgentRuntime:
                 action = plan.actions[0]
                 await self._emit(state, "step.started", {"action": action.type.value}, action.id)
                 with self._tracer.start_as_current_span(
-                    "agent.step", attributes=self._span_attributes(state, action.id)
+                    "agent.step",
+                    attributes={**self._span_attributes(state, action.id), "span.type": "step"},
                 ) as step_span:
                     step_span.set_attribute("agent.step.type", action.type.value)
                     if action.tool_name:
@@ -811,7 +905,8 @@ class AgentRuntime:
             }
         )
         with self._tracer.start_as_current_span(
-            "agent.context.compact", attributes=self._span_attributes(state)
+            "agent.context.compact",
+            attributes={**self._span_attributes(state), "span.type": "context"},
         ) as span:
             response = await self.router.generate(
                 request, (agent.default_model, *agent.fallback_models), agent.model_allowlist
@@ -979,6 +1074,7 @@ class AgentRuntime:
     async def _execute_model(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
+        prepare_started = time.monotonic()
         # Providers reject (or silently mishandle) a transcript whose tool calls have no
         # results, so a planner that skips pending calls is a bug, not a recoverable state.
         unresolved_call_ids = [
@@ -1001,6 +1097,15 @@ class AgentRuntime:
         with self._tracer.start_as_current_span(
             "agent.model.call", attributes=self._span_attributes(state, action.id)
         ) as span:
+            # Time between the step deciding to call the model and the call: policy checks and
+            # event delivery, which would otherwise show as an unexplained gap.
+            span.set_attribute(
+                "agent.model.prepare_ms", round((time.monotonic() - prepare_started) * 1000, 3)
+            )
+            span.set_attribute("llm.request.message_count", len(request.messages))
+            span.set_attribute("llm.request.tool_count", len(request.tools))
+            if request.max_output_tokens is not None:
+                span.set_attribute("gen_ai.request.max_tokens", request.max_output_tokens)
             if self.telemetry_include_content:
                 span.set_attribute("llm.prompt", self._model_prompt(request))
                 span.set_attribute(
@@ -1012,7 +1117,6 @@ class AgentRuntime:
             response, cache_hit = await self._model_response(
                 state, agent, request, profiles, action.id
             )
-            total_tokens = response.usage.input_tokens + response.usage.output_tokens
             span.set_attribute("span.type", "LLM")
             span.set_attribute("llm.vendor", response.provider)
             span.set_attribute("llm.model", response.model)
@@ -1020,22 +1124,16 @@ class AgentRuntime:
             span.set_attribute("llm.finish_reason", response.finish_reason.value)
             span.set_attribute("llm.latency_ms", response.latency_ms)
             span.set_attribute("llm.tool_call_count", len(response.tool_calls))
-            span.set_attribute("llm.usage.prompt_tokens", response.usage.input_tokens)
-            span.set_attribute("llm.usage.input_tokens", response.usage.input_tokens)
-            span.set_attribute("llm.usage.completion_tokens", response.usage.output_tokens)
-            span.set_attribute("llm.usage.output_tokens", response.usage.output_tokens)
-            span.set_attribute("llm.usage.total_tokens", total_tokens)
-            span.set_attribute("llm.usage.source", "provider_usage")
-            span.set_attribute("llm.usage.prompt_source", "provider_usage")
-            span.set_attribute("llm.usage.completion_source", "provider_usage")
-            span.set_attribute("llm.usage.cached_tokens", response.usage.cached_tokens)
-            span.set_attribute("llm.cost.usd", response.usage.estimated_cost_usd)
-            span.set_attribute("llm.cost.source", "configured_provider_rates")
+            if response.tool_calls:
+                span.set_attribute(
+                    "llm.response.tool_names", tuple(call.name for call in response.tool_calls)
+                )
+            span.set_attribute("llm.response.output_chars", len(response.message.text_content))
+            for key, value in _usage_attributes(response.usage).items():
+                span.set_attribute(key, value)
             span.set_attribute("gen_ai.system", response.provider)
             span.set_attribute("gen_ai.request.model", response.model)
             span.set_attribute("gen_ai.response.model", response.model)
-            span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
-            span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
             span.set_attribute("llm.status", "completed")
             span.set_attribute("cache.hit", cache_hit)
             span.set_attribute("cache.type", "model_response")
@@ -1082,9 +1180,11 @@ class AgentRuntime:
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
                 "cached_tokens": response.usage.cached_tokens,
+                "cache_write_tokens": response.usage.cache_write_tokens,
                 "total_tokens": response.usage.total_tokens,
                 "estimated_cost_usd": response.usage.estimated_cost_usd,
                 "tool_call_count": len(response.tool_calls),
+                "tool_names": [call.name for call in response.tool_calls],
             },
             action.id,
         )
@@ -1167,7 +1267,15 @@ class AgentRuntime:
                 if request.stream:
                     text_parts: list[str] = []
                     completed = None
+                    stream_started = time.monotonic()
+                    first_chunk = True
                     async for event in self.router.stream(request, profiles, agent.model_allowlist):
+                        if first_chunk and (event.delta or event.tool_call):
+                            first_chunk = False
+                            trace.get_current_span().set_attribute(
+                                "llm.time_to_first_token_ms",
+                                round((time.monotonic() - stream_started) * 1000, 3),
+                            )
                         if event.delta:
                             text_parts.append(event.delta)
                             await self._emit(state, "model.delta", {"delta": event.delta}, step_id)
@@ -1547,6 +1655,7 @@ class AgentRuntime:
                 "tool": tool.definition.name,
                 "status": "running",
                 "side_effect": tool.definition.side_effect.value,
+                "argument_keys": sorted(action.arguments),
             },
             action.id,
         )
@@ -1572,6 +1681,9 @@ class AgentRuntime:
             span.set_attribute("tool.declared_cost_usd", tool.definition.cost_usd)
             span.set_attribute("agent.tool.name", tool.definition.name)
             span.set_attribute("agent.tool.side_effect", tool.definition.side_effect.value)
+            span.set_attribute("gen_ai.tool.name", tool.definition.name)
+            span.set_attribute("gen_ai.tool.call.id", call_id)
+            span.set_attribute("tool.argument_keys", tuple(sorted(action.arguments)))
             if self.telemetry_include_content:
                 span.set_attribute("tool.input", self._telemetry_content(action.arguments))
             try:
@@ -1652,6 +1764,7 @@ class AgentRuntime:
                 span.set_attribute("error.type", type(exc).__name__)
                 raise
             span.set_attribute("tool.status", "completed")
+            span.set_attribute("tool.result_chars", len(tool_text))
             span.set_attribute("tool.result.redacted", result.redacted)
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
             if self.telemetry_include_content:
@@ -1700,6 +1813,7 @@ class AgentRuntime:
                 "status": "completed",
                 "side_effect": tool.definition.side_effect.value,
                 "result_redacted": result.redacted,
+                "result_chars": len(tool_text),
                 "artifact_count": len(result.artifact_ids),
                 "artifact_ids": list(result.artifact_ids) if self.telemetry_include_content else [],
             },
@@ -1814,7 +1928,8 @@ class AgentRuntime:
                 return await self._run_tool_call(state, agent, action, tool)
 
         with self._tracer.start_as_current_span(
-            "agent.step", attributes=self._span_attributes(state, actions[0].id)
+            "agent.step",
+            attributes={**self._span_attributes(state, actions[0].id), "span.type": "step"},
         ) as span:
             span.set_attribute("agent.step.type", "tool_batch")
             span.set_attribute("agent.step.tool_count", len(actions))
@@ -1944,7 +2059,8 @@ class AgentRuntime:
     ) -> None:
         await self._transition(state, RunStatus.VERIFYING)
         with self._tracer.start_as_current_span(
-            "agent.verification", attributes=self._span_attributes(state, step_id)
+            "agent.verification",
+            attributes={**self._span_attributes(state, step_id), "span.type": "verification"},
         ) as span:
             verifier_names = list(agent.verification_policy.verifiers)
             if state.request.overrides.response_schema and "json_schema" not in verifier_names:
@@ -2032,7 +2148,8 @@ class AgentRuntime:
             ):
                 persisted = checked_memory
             with self._tracer.start_as_current_span(
-                "agent.memory.write", attributes=self._span_attributes(state)
+                "agent.memory.write",
+                attributes={**self._span_attributes(state), "span.type": "memory"},
             ) as span:
                 span.set_attribute("memory.operation", "append")
                 span.set_attribute("memory.item_count", len(persisted))
@@ -2191,7 +2308,9 @@ class AgentRuntime:
             )
         )
 
-    def _span_attributes(self, state: RunState, step_id: str | None = None) -> dict[str, str]:
+    def _span_attributes(
+        self, state: RunState, step_id: str | None = None, *, root: bool = False
+    ) -> dict[str, str]:
         agent = self.agents.get(state.request.agent, state.request.agent_version)
         agent_id = agent.logical_id
         agent_name = agent.name
@@ -2211,14 +2330,19 @@ class AgentRuntime:
             "gen_ai.agent.name": agent_name,
             "gen_ai.agent.version": agent.version,
             "gen_ai.conversation.id": state.session_id,
-            "agent.type": agent.metadata.get("type", "workflow" if agent.workflow else "agent"),
             "agent.version": agent.version,
-            "agent.description": agent.description,
-            "agent.capabilities": ",".join(sorted(agent.capabilities)),
-            "agent.tags": ",".join(sorted(agent.tags)),
-            "agent.planning.strategy": agent.planning_strategy,
-            "agent.run.mode": "streaming" if state.request.stream else "standard",
         }
+        if root:
+            # Descriptive attributes belong to the run, not to each of its spans.
+            descriptive = {
+                "agent.type": agent.metadata.get("type", "workflow" if agent.workflow else "agent"),
+                "agent.description": agent.description,
+                "agent.capabilities": ",".join(sorted(agent.capabilities)),
+                "agent.tags": ",".join(sorted(agent.tags)),
+                "agent.planning.strategy": agent.planning_strategy,
+                "agent.run.mode": "streaming" if state.request.stream else "standard",
+            }
+            attributes.update({key: value for key, value in descriptive.items() if value})
         optional_attributes = {
             "agent.conversation.id": state.request.conversation_id,
             "agent.turn.id": state.request.turn_id,
@@ -2252,6 +2376,7 @@ class AgentRuntime:
             input_tokens=left.input_tokens + right.input_tokens,
             output_tokens=left.output_tokens + right.output_tokens,
             cached_tokens=left.cached_tokens + right.cached_tokens,
+            cache_write_tokens=left.cache_write_tokens + right.cache_write_tokens,
             estimated_cost_usd=left.estimated_cost_usd + right.estimated_cost_usd,
         )
 

@@ -54,7 +54,11 @@ Built-in handlers implement relationship-checked row joins, period deltas, allow
 ranking, structural verification, and composition. Applications register semantic-query, LLM, and
 model-call handlers because those require deployment-specific providers and policies.
 
-The container-owned engine exposes `register_handler(kind, handler)` for those application adapters.
+A project supplies those handlers from a declared plugin, so `describe` and Studio see them:
+`context.analytical_nodes.register("semantic_query", handler)` (see [plugins](plugins.md)). The node
+kinds are fixed, and a plugin can fill in a missing handler but not replace a built-in one.
+`describe` lists the kinds that have a handler. The container-owned engine's
+`register_handler(kind, handler)` remains for tests and embedding.
 This keeps concurrency bounds, checkpoints, schemas, retries, result budgets, caching, and lineage in
 Runtime while leaving database drivers and domain policy in the application. Application query
 credentials can be declared without embedding a secret:

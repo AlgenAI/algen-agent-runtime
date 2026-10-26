@@ -78,6 +78,7 @@ python -m examples.case_study_teaching_assistant.app \
 ```text
 case_study_teaching_assistant/
 ├── application/          # Handler, education guardrails, and deterministic teaching tools
+│                         #   (plugin.py registers the tools; agent.yaml declares it)
 ├── config/agent.yaml     # Local agent, RAG, safety, budget, and telemetry configuration
 ├── config/ecs.yaml       # Production persistence, JWT, Redis cache, and Traccia overlay
 ├── deploy/               # ECS task template and operational notes

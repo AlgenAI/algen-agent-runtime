@@ -78,6 +78,88 @@ def _run_serve(
     uvicorn.run(create_app(settings), host=bind_host, port=bind_port)
 
 
+def _discover_config_paths(config: list[str] | None) -> tuple[Path, ...] | None:
+    """Explicit paths, else ALGEN_AGENT_RUNTIME_CONFIG, else the first conventional file found."""
+    if config:
+        return tuple(Path(item) for item in config)
+    env_config = os.getenv("ALGEN_AGENT_RUNTIME_CONFIG", "")
+    if env_config:
+        return tuple(Path(item) for item in filter(None, env_config.split(os.pathsep)))
+    candidates = [
+        Path("agent.yaml"),
+        Path("config/agent.yaml"),
+        Path("algen-agent-runtime.yaml"),
+    ]
+    found = next((c for c in candidates if c.exists()), None)
+    return (found,) if found else None
+
+
+def _run_describe(
+    config: list[str] | None = None,
+    paths: list[str] | None = None,
+    as_json: bool = False,
+) -> int:
+    from algen_agent_runtime.config.settings import AppSettings, load_settings
+    from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
+    from algen_agent_runtime.orchestration.describe import describe_components
+
+    for path in reversed(paths or []):
+        sys.path.insert(0, str(Path(path).resolve()))
+    config_paths = _discover_config_paths(config)
+    try:
+        settings = load_settings(config_paths) if config_paths else AppSettings()
+        inventory = describe_components(settings)
+    except (ConfigurationError, ConflictError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if as_json:
+        print(inventory.model_dump_json(indent=2))
+        return 0
+    for plugin in inventory.plugins:
+        print(f"plugin {plugin.reference} ({plugin.name} {plugin.version})")
+    for tool in inventory.tools:
+        print(f"tool {tool.name} [{tool.side_effect}] from {tool.source}")
+    for kind in ("planners", "response_composers", "verifiers", "context_builders"):
+        for component in getattr(inventory, kind):
+            print(f"{kind.removesuffix('s')} {component.name} from {component.source}")
+    for provider in inventory.providers:
+        print(f"provider {provider.name} from {provider.source}")
+    for server in inventory.mcp_servers:
+        print(f"mcp_server {server.name} from {server.source}")
+    for kind in ("semantic_layers", "analytical_methods", "model_services"):
+        for component in getattr(inventory, kind):
+            print(f"{kind.removesuffix('s')} {component.name} from {component.source}")
+    if inventory.environment:
+        print("environment " + ", ".join(inventory.environment))
+    return 0
+
+
+def _run_check(
+    config: list[str] | None = None,
+    paths: list[str] | None = None,
+    project_root: str = ".",
+    as_json: bool = False,
+    strict: bool = False,
+) -> int:
+    from algen_agent_runtime.orchestration.check import check_project
+
+    for path in reversed(paths or []):
+        sys.path.insert(0, str(Path(path).resolve()))
+    config_paths = _discover_config_paths(config)
+    if not config_paths:
+        print("Error: no configuration found; pass agent.yaml", file=sys.stderr)
+        return 1
+    report = check_project(config_paths, project_root=Path(project_root))
+    if as_json:
+        print(report.model_dump_json(indent=2))
+    else:
+        for issue in report.issues:
+            where = f" {issue.location}" if issue.location else ""
+            print(f"{issue.severity} {issue.code}{where}: {issue.message}")
+        print(f"{len(report.errors)} error(s), {len(report.warnings)} warning(s)")
+    return 0 if report.ok and not (strict and report.warnings) else 1
+
+
 def _run_generate_ui(
     config: list[str] | None = None,
     output: str = "agent-ui.html",
@@ -87,24 +169,8 @@ def _run_generate_ui(
     from algen_agent_runtime.config.settings import AppSettings, load_settings
     from algen_agent_runtime.ui.generator import generate_agent_ui_html
 
-    config_paths: tuple[Path, ...] | None = None
+    config_paths = _discover_config_paths(config)
     raw_yaml: str | None = None
-
-    if config:
-        config_paths = tuple(Path(item) for item in config)
-    else:
-        env_config = os.getenv("ALGEN_AGENT_RUNTIME_CONFIG", "")
-        if env_config:
-            config_paths = tuple(Path(item) for item in filter(None, env_config.split(os.pathsep)))
-        else:
-            candidates = [
-                Path("agent.yaml"),
-                Path("config/agent.yaml"),
-                Path("algen-agent-runtime.yaml"),
-            ]
-            found = next((c for c in candidates if c.exists()), None)
-            if found:
-                config_paths = (found,)
 
     if config_paths and config_paths[0].exists():
         try:
@@ -192,6 +258,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite files in target directory if it already exists and is not empty",
     )
 
+    # describe command
+    describe_parser = subparsers.add_parser(
+        "describe",
+        help="List every component the settings would register, without running any of them",
+    )
+    describe_parser.add_argument(
+        "--config",
+        "-c",
+        nargs="*",
+        default=None,
+        help="Path(s) to configuration YAML file(s) (defaults to agent.yaml or config/agent.yaml)",
+    )
+    describe_parser.add_argument(
+        "--path",
+        action="append",
+        default=None,
+        help="Directory to import plugin modules from, such as src (repeatable)",
+    )
+    describe_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the inventory as JSON",
+    )
+    # check command
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Validate a project as Studio will, and warn about code Studio cannot run",
+    )
+    check_parser.add_argument(
+        "config",
+        nargs="*",
+        default=None,
+        help="Configuration YAML file(s) (defaults to agent.yaml or config/agent.yaml)",
+    )
+    check_parser.add_argument(
+        "--path",
+        action="append",
+        default=None,
+        help="Directory to import plugin modules from, such as src (repeatable)",
+    )
+    check_parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Directory whose Python code is scanned (default: current directory)",
+    )
+    check_parser.add_argument("--json", action="store_true", help="Print the report as JSON")
+    check_parser.add_argument(
+        "--strict", action="store_true", help="Exit with status 1 on warnings too"
+    )
     # ui / export-ui command
     for cmd_name, cmd_help in [
         ("ui", "Generate standalone static HTML for the Agent YAML UI"),
@@ -240,6 +355,18 @@ def main(argv: list[str] | None = None) -> None:
         _run_serve(host=args.host, port=args.port, config=args.config, agent_ui=args.agent_ui)
     elif args.command == "maintenance":
         sys.exit(_run_maintenance(config=args.config))
+    elif args.command == "check":
+        sys.exit(
+            _run_check(
+                config=args.config or None,
+                paths=args.path,
+                project_root=args.project_root,
+                as_json=args.json,
+                strict=args.strict,
+            )
+        )
+    elif args.command == "describe":
+        sys.exit(_run_describe(config=args.config, paths=args.path, as_json=args.json))
     elif args.command in {"ui", "export-ui"}:
         _run_generate_ui(
             config=args.config,

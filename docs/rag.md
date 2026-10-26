@@ -141,9 +141,17 @@ interpreted as system instructions.
 ## Adding a vector database
 
 Implement `Retriever.retrieve` and, for mutable indexes, `DocumentIndexer.ingest/delete`. Register
-the adapter under a stable name in `RetrieverRegistry`, then register a `RetrievalContextBuilder`
-with the desired configuration. Runtime, planning, verification, and response composition do not
-need modification.
+the store from a declared plugin under a stable name:
+
+```python
+context.retrievers.register("handbook", ElasticStore(...), mode="hybrid", limit=6)
+```
+
+The container then serves it as `container.retrievers.get("handbook")` and as the
+`retrieval.handbook` context builder an agent names in `context_builder`; the options are
+`RetrievalContextBuilder`'s, and the store's `close()` runs with the container. A name already
+used under `retrieval:` is a conflict. Runtime, planning, verification, and response composition do
+not need modification. See [plugins](plugins.md).
 
 A production adapter should provide:
 

@@ -296,6 +296,14 @@ def create_app(
         state = await dependencies.runtime.status(run_id, identity.tenant_id)
         return state.model_dump(mode="json", exclude={"messages", "pending_tool_calls"})
 
+    @app.get("/v1/runs/{run_id}/narrative")
+    async def read_run_narrative(
+        run_id: str, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_scope(identity, "runs:read")
+        narrative = await dependencies.runtime.narrative(run_id, identity.tenant_id)
+        return narrative.model_dump(mode="json")
+
     @app.delete("/v1/runs/{run_id}")
     async def cancel_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:write")

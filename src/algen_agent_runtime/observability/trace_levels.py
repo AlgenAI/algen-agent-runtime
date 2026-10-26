@@ -13,22 +13,21 @@ _LEVEL_ORDER: dict[TraceLevel, int] = {
     "detailed": 2,
 }
 
-_STANDARD_SPANS = frozenset(
-    {
-        "agent.context.build",
-        "agent.verification",
-        "agent.memory.write",
-    }
-)
+_STANDARD_SPANS = frozenset({"agent.context.build", "agent.memory.write"})
+_DETAILED_SPANS = frozenset({"agent.planning"})
 
 
 def required_trace_level(span_name: str) -> TraceLevel:
-    """Return the detail level required for a runtime-owned span."""
-    if span_name.startswith("cache."):
+    """Return the detail level required for a runtime-owned span.
+
+    ``minimal`` keeps the decision chain: the run, each step, model and tool calls, one policy
+    summary per checkpoint, verification, and guardrails that fired. ``standard`` adds context
+    building and memory writes; ``detailed`` adds planning, cache operations and every guardrail
+    evaluation, fired or not.
+    """
+    if span_name.startswith("cache.") or span_name in _DETAILED_SPANS:
         return "detailed"
-    if span_name in {"agent.planning", "agent.step"}:
-        return "detailed"
-    if span_name.startswith("agent.policy.") or span_name in _STANDARD_SPANS:
+    if span_name in _STANDARD_SPANS:
         return "standard"
     return "minimal"
 

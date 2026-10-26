@@ -49,4 +49,11 @@ python -m examples.pattern_text_to_sql.app
 - Results are limited to 200 rows and 256 KiB.
 - Tool calls are schema-validated, tenant-aware, idempotent, rate-bounded, traced, and audited by Algen Agent Runtime.
 
-The SQLite database is seeded from `schema.sql` and exists only in memory. Replace `ReadOnlyAnalyticsDatabase` with a deployment-owned database adapter for production, retaining the same tool contract and enforcing database-level read-only credentials, statement timeouts, tenant filters, and row-level security.
+`analytics.query` is registered by `AnalyticsPlugin` in `plugin.py`, which `agent.yaml` declares in
+`domain_plugins` (trusted through `security.trusted_plugin_prefixes`), so
+`algen-agent-runtime describe` and Studio can see the tool. The plugin hands the database to the
+container, which closes it. Check the project with
+`algen-agent-runtime check examples/pattern_text_to_sql/agent.yaml --path . --project-root examples/pattern_text_to_sql`
+from the repository root.
+
+The SQLite database is seeded from `schema.sql`, exists only in memory, and connects on first query. Replace `ReadOnlyAnalyticsDatabase` with a deployment-owned database adapter for production, retaining the same tool contract and enforcing database-level read-only credentials, statement timeouts, tenant filters, and row-level security.

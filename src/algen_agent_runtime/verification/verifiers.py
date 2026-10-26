@@ -119,6 +119,9 @@ class VerificationService:
     def register(self, verifier: Verifier) -> None:
         self._items[verifier.name] = verifier
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._items))
+
     async def verify(
         self, names: Sequence[str], value: Any, context: Mapping[str, Any]
     ) -> tuple[VerificationResult, ...]:

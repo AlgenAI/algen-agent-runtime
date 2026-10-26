@@ -31,6 +31,10 @@ class MockModelProvider:
         self._delay = delay_seconds
         self.requests: list[ModelRequest] = []
 
+    def queue(self, *responses: str | ModelResponse) -> None:
+        """Script the next replies, for example tool calls from :func:`tool_call_response`."""
+        self._responses.extend(responses)
+
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
             streaming=True,

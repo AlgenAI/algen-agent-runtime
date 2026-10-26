@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from algen_agent_runtime.config.settings import load_settings
+from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.tools.contracts import ToolContext
 from algen_agent_runtime.tools.executor import ToolExecutor
@@ -79,24 +80,13 @@ def test_text_to_sql_cli_defaults_to_openai() -> None:
     assert parse_args([]).provider == "openai"
 
 
-async def test_text_to_sql_closes_database_and_observability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_text_to_sql_closes_the_container(monkeypatch: pytest.MonkeyPatch) -> None:
     closed: list[str] = []
-
-    class FakeDatabase:
-        def close(self) -> None:
-            closed.append("database")
-
-    class FakeTools:
-        def register(self, tool: Any) -> None:
-            del tool
 
     class FakeContainer:
         runtime = object()
-        tools = FakeTools()
 
-        def close(self) -> None:
+        async def aclose(self) -> None:
             closed.append("container")
 
     class FakeClient:
@@ -107,17 +97,35 @@ async def test_text_to_sql_closes_database_and_observability(
             del request
             return SimpleNamespace(error=None, output="answer")
 
-    monkeypatch.setattr("examples.pattern_text_to_sql.app.ReadOnlyAnalyticsDatabase", FakeDatabase)
-    monkeypatch.setattr(
-        "examples.pattern_text_to_sql.app.create_query_tool", lambda database: object()
-    )
     monkeypatch.setattr(
         "examples.pattern_text_to_sql.app.build_container", lambda settings: FakeContainer()
     )
     monkeypatch.setattr("examples.pattern_text_to_sql.app.AlgenAgentRuntimeClient", FakeClient)
 
     assert await ask("question", "mistral") == "answer"
-    assert closed == ["database", "container"]
+    assert closed == ["container"]
+
+
+async def test_the_declared_plugin_registers_the_query_tool_and_closes_its_database() -> None:
+    container = build_container(load_settings((EXAMPLE_DIR / "agent.yaml",)))
+
+    assert container.component_sources["tools"] == {
+        "analytics.query": "examples.pattern_text_to_sql.plugin:AnalyticsPlugin"
+    }
+    database = next(
+        resource
+        for resource in container.resources
+        if isinstance(resource, ReadOnlyAnalyticsDatabase)
+    )
+    executor = ToolExecutor(container.tools, CompositePolicyEngine())
+    result = await executor.execute(
+        "analytics.query", {"statement": "SELECT COUNT(*) AS n FROM orders"}, tool_context()
+    )
+    assert result.value["rows"][0]["n"] > 0
+
+    await container.aclose()
+
+    assert database._connection is None
 
 
 @pytest.mark.parametrize(

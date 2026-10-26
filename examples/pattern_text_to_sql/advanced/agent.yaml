@@ -45,6 +45,7 @@ agents:
       required_capabilities: [chat, tools]
       quality_tier: 3
     enabled_tools: [analytics.query]
+    domain_plugins: ["examples.pattern_text_to_sql.plugin:AnalyticsPlugin"]
     tool_permissions: [database.read]
     planning_strategy: react
     context_builder: retrieval.analytics_schema
@@ -78,6 +79,7 @@ telemetry:
   include_content: false
 
 security:
+  trusted_plugin_prefixes: [examples.pattern_text_to_sql]
   max_request_bytes: 65536
   max_artifact_bytes: 1048576
   allow_private_networks: false

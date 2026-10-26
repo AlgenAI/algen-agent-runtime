@@ -30,13 +30,14 @@ class ToolExecutor:
         policy_engine: Any,
         executions: ToolExecutionStore | None = None,
         cache: CacheService | None = None,
+        tracer: Any | None = None,
     ) -> None:
         self._registry = registry
         self._policy_engine = policy_engine
         self._executions = executions or InMemoryToolExecutionStore()
         self._cache = cache
         self._semaphores: dict[str, asyncio.Semaphore] = {}
-        self._tracer = trace.get_tracer("algen_agent_runtime.tools")
+        self._tracer = tracer or trace.get_tracer("algen_agent_runtime.tools")
 
     async def _evaluate_policy(
         self,
