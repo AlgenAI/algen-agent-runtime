@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a9">v0.1.0a9 · latest</option>
+                    <option value="0.1.0a10">v0.1.0a10 · latest</option>
+                    <option value="0.1.0a9">v0.1.0a9</option>
                     <option value="0.1.0a8">v0.1.0a8</option>
                     <option value="0.1.0a7">v0.1.0a7</option>
                     <option value="0.1.0a6">v0.1.0a6</option>
@@ -1385,7 +1386,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a9</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a10</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1405,7 +1406,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a9 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a10 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1462,7 +1463,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2083,7 +2084,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a9</span>.</footer>
+                    data-version-field="version">0.1.0a10</span>.</footer>
         </main>
     </div>
 
@@ -2209,9 +2210,30 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9'];
-        const LATEST_VERSION = '0.1.0a9';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10'];
+        const LATEST_VERSION = '0.1.0a10';
         const RELEASES = {
+            '0.1.0a10': {
+                date: '2026-10-26',
+                kind: 'Provider costs',
+                title: 'Anthropic prompt caching',
+                summary: 'The Anthropic adapter caches the instructions and the conversation by default, so an agent loop pays a fraction of the input price on every call after the first, and its usage counts the whole prompt.',
+                fields: {
+                    tag: 'v0.1.0a10',
+                    package: '0.1.0a10 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a10',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Anthropic prompt caching.</strong> The end of the system prompt carries a cache breakpoint and the request asks for automatic caching of the conversation, so later calls read the tools, instructions and earlier turns from the cache. <code>prompt_caching: false</code> on a provider entry turns it off for gateways that reject <code>cache_control</code>.',
+                            '<strong>Anthropic usage.</strong> <code>input_tokens</code> counts the whole prompt (uncached, written to and read from the cache) and <code>cached_tokens</code> the cache reads, the same meaning as the OpenAI adapters, so budgets and metering stay correct.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a9': {
                 date: '2026-10-24',
                 kind: 'Mailboxes, documents and providers',
@@ -2220,7 +2242,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a9',
                     package: '0.1.0a9 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a10',
                     version: '0.1.0a9',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },

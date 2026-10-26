@@ -6,10 +6,12 @@ from typing import Any
 import httpx
 import pytest
 
+from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.models.providers.anthropic import (
     AnthropicProvider,
     anthropic_json_schema,
 )
+from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.types.contracts import (
     FinishReason,
     Message,
@@ -273,3 +275,25 @@ async def test_streamed_usage_counts_the_whole_prompt() -> None:
     assert completed is not None
     assert (completed.usage.input_tokens, completed.usage.cached_tokens) == (3_045, 3_000)
     assert completed.usage.output_tokens == 2
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, True), (False, False)])
+def test_prompt_caching_setting_reaches_the_adapter(
+    configured: bool | None, expected: bool
+) -> None:
+    entry = {"type": "anthropic", "default_model": "claude-haiku-5-5"}
+    settings = AppSettings.model_validate(
+        {
+            "providers": {
+                "claude": {
+                    **entry,
+                    **({} if configured is None else {"prompt_caching": configured}),
+                }
+            }
+        }
+    )
+
+    provider = build_container(settings).runtime.router._providers["claude"]
+
+    assert isinstance(provider, AnthropicProvider)
+    assert provider._prompt_caching is expected

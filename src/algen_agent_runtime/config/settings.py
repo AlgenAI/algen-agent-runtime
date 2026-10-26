@@ -44,6 +44,11 @@ class ProviderSettings(StrictSettings):
         description="Request token usage on streamed calls (OpenAI-style stream_options); "
         "None keeps the adapter default.",
     )
+    prompt_caching: bool = Field(
+        default=True,
+        description="Anthropic: cache the instructions and the conversation (cache_control); "
+        "false for a gateway that rejects the field.",
+    )
 
     @model_validator(mode="after")
     def reject_literal_secret(self) -> ProviderSettings:

@@ -38,6 +38,15 @@ unasked. `stream_options` from profile extensions are kept.
   that produced it, and Runtime guardrails may rewrite history between turns; omitting the blocks is
   always accepted, at the cost of the model reasoning afresh on each turn.
 - Current Claude models reject non-default `temperature`; leave it unset for them.
+- Prompt caching is on by default. The end of the system prompt carries a cache breakpoint, and the
+  request asks for automatic caching of the growing conversation, so an agent loop's later calls
+  read the tools, instructions and earlier turns from the cache (about a tenth of the input price).
+  A gateway that rejects `cache_control` is configured with `prompt_caching: false` on its provider
+  entry.
+- Usage reports the whole prompt as `input_tokens` (Anthropic's uncached `input_tokens` plus
+  `cache_creation_input_tokens` and `cache_read_input_tokens`) and the cache reads as
+  `cached_tokens`, the same meaning as the OpenAI adapters, so budgets and metering count every
+  input token.
 
 ## Capability narrowing semantics
 
