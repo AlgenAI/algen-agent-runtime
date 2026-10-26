@@ -120,6 +120,12 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# The deprecated connectors keep their own tests until they are removed in 0.2;
+# tests/unit/test_deprecations.py asserts the warnings themselves.
+filterwarnings = [
+  "ignore:algen_agent_runtime.communications is deprecated:DeprecationWarning",
+  "ignore:database_tool is deprecated:DeprecationWarning",
+]
 markers = [
   "live: tests requiring external credentials",
   "integration: tests requiring external or behavioral storage/network integration",

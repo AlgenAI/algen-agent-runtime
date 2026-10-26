@@ -6,6 +6,24 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Deprecated
+
+- `algen_agent_runtime.communications` (`EmailMessage` and the other message contracts,
+  `SmtpEmailSender`, `SmtpSettings`, `email_tool`, `GmailMailboxClient`, `gmail_inbox_tool`) moved
+  to the `algen-agent-tools` package and now raises a `DeprecationWarning` on import, attributed
+  to the importing module. It keeps working until it is removed in 0.2.
+- `tools.adapters.database_tool`, which took a raw statement from the model, raises a
+  `DeprecationWarning`; declare typed queries with `algen_agent_tools.postgres.PostgresToolkit`.
+  `remote_tool` and `mcp_tool` stay: they are the Runtime's HTTP and MCP adapters.
+
+### Upgrade notes
+
+- `pip install "algen-agent-tools[smtp]"` (or `[gmail]`, `[postgres]`) and follow its
+  `docs/migrating-from-runtime.md`. The transports and message models keep their names under
+  `algen_agent_tools.mail`, `.smtp` and `.gmail`; the new `send_email` tools are named
+  `smtp.send_email` / `gmail.send_email` with permissions `smtp.write` / `gmail.write`, take the
+  sender from deployment configuration and accept no custom headers.
+
 ## [0.1.0a11] - 2026-10-27
 
 ### Added

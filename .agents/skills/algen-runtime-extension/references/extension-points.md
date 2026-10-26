@@ -46,7 +46,8 @@ approval; `ApprovalHandler` is a protocol only, and the Runtime ships no approva
 `tools/testing.py` (`assert_tool_contract`, `fake_tool_context`) is the contract every tool is
 tested against.
 
-Email provider adapters implement `communications.email.EmailSender` and return the normalized,
+Email provider adapters live in `algen-agent-tools` (`algen_agent_tools.mail.EmailSender`;
+`algen_agent_runtime.communications` is deprecated). They return the normalized,
 content-minimal `EmailDeliveryReceipt`. Preserve the supplied idempotency key as the provider's
 deduplication key or stable message identifier. Validate provider recipient refusals explicitly,
 resolve attachments only through a tenant-authorized artifact loader, do not leak message bodies or

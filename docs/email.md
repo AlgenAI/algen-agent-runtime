@@ -1,5 +1,13 @@
 # Email tool and SMTP adapter
 
+> [!WARNING]
+> **Deprecated.** `algen_agent_runtime.communications` moved to the
+> [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools) package and warns on import;
+> it will be removed in 0.2. Use `algen_agent_tools.mail` for the message contracts and
+> `smtp_toolkit` or `gmail_toolkit` (plugins `algen_agent_tools.smtp`, `algen_agent_tools.gmail`)
+> for the tools. The new `send_email` tools fix the sender in deployment configuration and do not
+> accept custom headers from the model. See its `docs/migrating-from-runtime.md`.
+
 Algen Agent Runtime provides provider-neutral outbound email contracts, a governed Runtime tool, and
 a first SMTP adapter. Applications own templates, recipient policy, consent/suppression rules,
 provider credentials, inbound mail, and delivery-event reconciliation.
