@@ -75,9 +75,12 @@ class ToolCall(StrictModel):
 
 
 class TokenUsage(StrictModel):
+    # ``input_tokens`` is the whole prompt; ``cached_tokens`` the part read from the provider's
+    # prompt cache and ``cache_write_tokens`` the part written to it.
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     estimated_cost_usd: float = 0.0
 
     @property
@@ -560,6 +563,9 @@ class RunState(BaseModel):
     pause_payload: dict[str, Any] | None = None
     citations: list[Citation] = Field(default_factory=list)
     summary: ExecutionSummary = Field(default_factory=ExecutionSummary)
+    # The run's first agent.run span ({"trace_id", "span_id"} as hex), so a run resumed after a
+    # pause continues the same trace.
+    trace_parent: dict[str, str] | None = None
     version: int = 0
 
     @model_validator(mode="after")

@@ -247,6 +247,7 @@ async def test_usage_counts_the_whole_prompt_and_reports_what_was_cached() -> No
     # Anthropic's input_tokens is only the uncached remainder; budgets and credits need it all.
     assert response.usage.input_tokens == 9_250
     assert response.usage.cached_tokens == 9_000
+    assert response.usage.cache_write_tokens == 200
     assert response.usage.output_tokens == 7
 
 
@@ -274,6 +275,7 @@ async def test_streamed_usage_counts_the_whole_prompt() -> None:
     completed = streamed[-1].response
     assert completed is not None
     assert (completed.usage.input_tokens, completed.usage.cached_tokens) == (3_045, 3_000)
+    assert completed.usage.cache_write_tokens == 40
     assert completed.usage.output_tokens == 2
 
 

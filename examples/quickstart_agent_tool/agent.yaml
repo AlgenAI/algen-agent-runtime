@@ -1,0 +1,16 @@
+providers:
+  demo: {type: mock, default_model: deterministic}
+agents:
+  - name: crm-assistant
+    version: 1.0.0
+    description: Looks up CRM accounts and changes owners after a person approves
+    system_instructions: Use crm.find_account to look accounts up and crm.update_owner to change owners.
+    default_model: {name: deterministic, provider: demo, model: deterministic, required_capabilities: [chat, tools]}
+    enabled_tools: [crm.find_account, crm.update_owner]
+    tool_permissions: [crm.read, crm.write]
+    domain_plugins: ["examples.quickstart_agent_tool.plugin:CrmPlugin"]
+security:
+  trusted_plugin_prefixes: [examples.quickstart_agent_tool]
+storage:
+  run_store: memory
+  memory_store: memory

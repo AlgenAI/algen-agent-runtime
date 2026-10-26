@@ -55,7 +55,34 @@ Instead of writing repetitive ad-hoc local utilities, opt into the bounded start
 - `starter.file_read` & `starter.directory_list`: Workspace-rooted text inspection with path traversal (`..`) and symlink-escape denial (`PolicyDeniedError`).
 - `starter.clock`: Timezone-aware date/time inspection with pluggable `now_fn` for deterministic tests.
 
-Register tools explicitly via `register_starter_tools(container.tools)` or pass them to `build_container(additional_tools=...)`.
+Register starter tools from the project's declared plugin (`for tool in get_starter_tools(...):
+context.tools.register(tool)`), so the settings show where they come from. `register_starter_tools`
+and `build_container(additional_tools=...)` are for tests and embedding only; Studio cannot see them.
+An agent that enables a tool registered only after `build_container` returns fails the startup check.
+
+## Code components
+
+Project tools, planners, context builders, verifiers, composers, providers and MCP servers written
+in Python are registered by one plugin module and named in each agent's `domain_plugins`, with the
+package listed in `security.trusted_plugin_prefixes`:
+
+```yaml
+security:
+  trusted_plugin_prefixes: ["my_agent"]
+agents:
+  - name: my-agent
+    enabled_tools: [crm.find_account]
+    domain_plugins: ["my_agent.plugin:MyAgentPlugin"]
+```
+
+The plugin's `register(context)` only constructs and registers components; clients that connect are
+handed to `context.add_resource` and connect on first use or in `start()`.
+`algen-agent-runtime describe --path src` lists every component and its source without calling any
+of them, and `algen-agent-runtime check agent.yaml --path src` validates the project as Studio will.
+`examples/quickstart_agent_tool` is the reference: a `Toolkit` with a read tool and an
+approval-gated write tool, registered by its plugin. `algen-agent-runtime new <name>` scaffolds the
+same shape (`<name>_plugin.py` plus its `domain_plugins` entry). A project still on constructor
+arguments moves with the steps in `docs/plugins.md` ("Moving from constructor arguments").
 
 ## Single-agent baseline
 

@@ -34,6 +34,7 @@ storage:
   postgres_max_pool_size: 10
   memory_retention_seconds: 86400
 runtime:
+  component_check: error  # or warn; see docs/plugins.md
   recover_incomplete_runs: true
   recovery_limit: 1000
   shutdown_grace_seconds: 10
@@ -281,11 +282,22 @@ telemetry:
     governance_agent_id: my-platform-agent-id
     max_spans_per_second: 100
     flush_timeout_seconds: 5
+    export_whole_runs: true        # send each run's spans together (default)
+    run_export_max_spans: 2000     # flush a run early past this many spans
+    run_export_max_seconds: 300    # or once it has been open this long
 ```
 
 Set `TRACCIA_API_KEY` through the deployment secret manager. Alternatively, omit `api_key` here and let the Traccia SDK load `TRACCIA_API_KEY` or `traccia.toml`. Never put a literal key in YAML.
 
-Algen Agent Runtime initializes Traccia once with `service_role: orchestrator` and `auto_start_trace: false`, scopes each run with its stable logical agent identity, and stops and flushes the SDK during FastAPI shutdown. One `agent.run` root span groups the context, model, tool, verification, and memory spans for an execution. Algen Agent Runtime stamps Traccia-compatible `agent.id`, `agent.name`, `session.id`, tenant, environment, and `llm.usage.*` attributes directly, so identity and provider-reported token usage do not depend on provider SDK auto-instrumentation. Existing spans continue to use the OpenTelemetry API; enabling Traccia changes their provider/export pipeline without coupling orchestration to Traccia SDK types.
+Algen Agent Runtime initializes Traccia once with `service_role: orchestrator` and `auto_start_trace: false`, scopes each run with its stable logical agent identity, and stops and flushes the SDK during FastAPI shutdown. One `agent.run` root span groups the context, model, tool, verification, and memory spans for an execution. Algen Agent Runtime stamps Traccia-compatible `agent.id`, `agent.name`, `session.id`, tenant, environment, and `llm.usage.*` attributes directly, so identity and provider-reported token usage do not depend on provider SDK auto-instrumentation. With Traccia enabled, every Runtime span (run, step, planning, context, policy, model, tool,
+verification, memory and conversation spans) is created through Traccia's tracer via the
+observability adapter's `tracer()`, so the SDK's enrichment processors (agent identity, token
+counting, cost annotation, guardrail detection, governance) see all of them; orchestration code still
+depends only on the adapter, not on Traccia types. Without Traccia the same spans use the
+OpenTelemetry API.
+
+Every Runtime span carries a `span.type`: `agent`, `step`, `planning`, `context`, `policy_pipeline`,
+`guardrail`, `LLM`, `tool`, `verification`, `memory` or `cache`.
 
 Platform policy enforcement is opt-in and separate from Runtime guardrails. When
 `governance_enabled` is true, an application composition root should wrap its agent entry point with
@@ -326,17 +338,58 @@ explicitly permits export.
 
 The Traccia adapter registers the SDK's underlying OpenTelemetry provider as the process-global provider before execution. Initialize Traccia before any other component installs a global OTEL provider; conflicting providers are rejected with an actionable configuration error rather than silently dropping spans.
 
+**Whole-run export.** OpenTelemetry's batch processor exports whatever spans have ended each time its
+timer fires, so a run used to leave in several batches with its `agent.run` root, which ends last, in
+the final one; a backend that lost or rejected one batch showed a run with a hole, or child spans whose
+parent never arrived. With `export_whole_runs` (the default), the adapter puts a
+`RunScopedExportProcessor` in front of the export processors present when Traccia starts: it holds a
+trace's spans until the span that opened it in this process ends, then hands them over together. A
+run past `run_export_max_spans` spans or open longer than `run_export_max_seconds` is flushed early, and
+the rest follows its root. The root records `agent.run.span_count`, the number of spans the run
+emitted, so a backend can tell a whole trace from a partial one. Other OpenTelemetry deployments can
+use `install_run_scoped_export(provider)` from `algen_agent_runtime.observability.run_export`.
+
+**Resumed runs.** A run stores its first `agent.run` span in `RunState.trace_parent`; when it resumes
+after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one
+trace even across processes.
+
 To export the same spans to Traccia and another OTLP backend, also set `telemetry.otlp_endpoint`. Algen Agent Runtime attaches the standard OTLP processor to Traccia's OpenTelemetry provider. Leave it unset when Traccia is the only destination to prevent duplicate delivery.
 
 Automatic library patching defaults off because Algen Agent Runtime already traces normalized model and tool boundaries. Enable it only when deployment plugins make otherwise invisible SDK calls, and review content capture first. `telemetry.include_content` remains false by default. When explicitly enabled, Algen Agent Runtime emits redacted `llm.prompt`, `llm.completion`, normalized model messages, and tool input/output attributes, each bounded by `telemetry.max_content_chars`. `redact_pii` enables Traccia's additional best-effort processor; neither mechanism replaces upstream data-minimization policy.
 
-`telemetry.trace_level` controls runtime span volume. `minimal` keeps conversation, agent-run,
-LLM, tool, analytical, and triggered-guardrail spans; `standard` also keeps policy, context,
-verification, and memory spans; `detailed` additionally keeps planning, step, cache, and every
-guardrail evaluation span. The default is `detailed` for backward compatibility. This setting
+`telemetry.trace_level` controls runtime span volume. `minimal` keeps the decision chain: the
+conversation turn and agent run, each step, model and tool calls, one `agent.policy.<checkpoint>`
+summary per checkpoint (policies invoked, triggered and skipped), verification, analytical spans and
+guardrails that fired. `standard` adds context building and memory writes; `detailed` adds planning,
+cache operations and every guardrail evaluation, fired or not. The tool executor's policy spans
+follow the same level. The default is `detailed` for backward compatibility. This setting
 changes trace detail, while `sample_rate` independently controls how many complete traces are kept.
 
-Agent, planning, step, context, policy, model, tool, verification, and memory spans carry provider-neutral operational metadata. LLM spans include latency, finish reason, response ID, token-source fields, and configured-rate cost estimates. Pricing and billing fields owned by the Traccia ingestion service are not forged by Algen Agent Runtime.
+Agent, planning, step, context, policy, model, tool, verification, and memory spans carry provider-neutral operational metadata. Agent identity is on every span; descriptive attributes (description, tags, capabilities, planning strategy, run mode) are on the run root only, and empty values are left out.
+
+What each span records without any content (`include_content` adds prompts, answers and tool payloads):
+
+| Span | Analysis signals |
+| --- | --- |
+| `agent.run` | status, outcome, step, model, tool and retry counts, input and output tokens, `agent.run.input_chars`, `agent.run.output_chars`, `agent.run.span_count`, and a cost only when provider rates priced the run |
+| `agent.model.call` | model, finish reason, latency, `llm.time_to_first_token_ms` on streamed calls, `agent.model.prepare_ms` (policy checks and event delivery before the call), message and tool counts sent, `llm.response.tool_names` requested, `llm.response.output_chars` |
+| `agent.tool.call` | tool, side effect, idempotency, `tool.argument_keys`, status, `error.type` on failure, `tool.result_chars` |
+| `agent.context.build` | builder, message count, retrieved source IDs and `retrieval.scores` |
+
+Tokens follow both conventions without duplicates: `llm.usage.prompt_tokens` is the uncached input,
+beside `llm.usage.cache_read_tokens` and `llm.usage.cache_write_tokens`, as Traccia prices them;
+`gen_ai.usage.input_tokens` is the whole prompt, as OpenTelemetry's GenAI conventions define it, with
+`gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`. A model span
+carries `llm.cost.usd` only when configured provider rates priced the call; an unpriced call has no
+cost rather than 0.0, so Traccia's cost processor prices it from its own table. Pricing and billing
+fields owned by the Traccia ingestion service are not forged by Algen Agent Runtime.
+
+**Run narrative.** `GET /v1/runs/{run_id}/narrative` (scope `runs:read`) and
+`AgentRuntime.narrative(run_id, tenant_id)` return the run in order from its stored state and events:
+context built, model calls with the tools they requested, tool calls with argument keys and result
+sizes, approvals, policies that acted, verification, memory and the outcome, with totals for tokens,
+cost and duration and the run's `trace_id`. It carries no prompt, answer or tool content and does not
+depend on what a tracing backend received, so it is the first thing to hand an analyst or an agent.
 
 Environment-only activation is also supported:
 

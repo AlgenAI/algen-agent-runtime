@@ -1,5 +1,25 @@
 # Runtime extension points
 
+## Plugins
+
+Every code extension point below reaches a container through a plugin: a class with a
+`PluginManifest` and `register(context)`, named in an agent's `domain_plugins` as `module:attribute`
+or an `algen_agent_runtime.plugins` entry point, and loaded only from
+`security.trusted_plugin_prefixes` (checked on module boundaries before import). `register` adds to
+`context.tools`, `planners`, `contexts`, `verifiers`, `composers`, `semantics`, `methods`,
+`model_services`, `providers`, `mcp_servers`, `policies`, `analytical_nodes` and `retrievers`; a
+taken name raises `ConflictError`. Shared clients
+go to `context.add_resource` and connect in `start()`, never at import or in `register`.
+
+Every component must be describable without running: `describe_components` imports the plugin and
+runs `register`, and must not need a secret, a network or a database. Declare the environment
+variables a plugin reads in `PluginManifest.env`. Each kind is named from the settings by a field:
+tools by `enabled_tools`, planners by `planning_strategy`, context builders by `context_builder`,
+verifiers by `verification_policy.verifiers`, composers by `response_composer`, guardrail
+policies by `guardrail_policy.policies` and `tool_policies`, search stores through their
+`retrieval.<name>` context builder, providers by model profiles.
+See `docs/plugins.md`.
+
 ## Model provider
 
 Inspect `src/algen_agent_runtime/models/providers/`, the provider registry, and provider contract
@@ -19,6 +39,13 @@ concurrency bound, and result-size bound. Use `ToolContext` for identity and sec
 connector accepts parameterized statements through a deployment-owned handler; remote HTTP tools
 must validate destinations and propagate the idempotency key.
 
+`tools/authoring.py` builds those fields from typed functions (`@tool`, the presets, `Toolkit`);
+a change to a preset's rules changes every tool built with it, so update `docs/tool-authoring.md`
+and `tests/unit/test_tool_authoring.py` together. `ToolDefinition.requires_approval` may only add
+approval; `ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+`tools/testing.py` (`assert_tool_contract`, `fake_tool_context`) is the contract every tool is
+tested against.
+
 Email provider adapters implement `communications.email.EmailSender` and return the normalized,
 content-minimal `EmailDeliveryReceipt`. Preserve the supplied idempotency key as the provider's
 deduplication key or stable message identifier. Validate provider recipient refusals explicitly,
@@ -30,7 +57,19 @@ the Runtime tool ledger. See `docs/email.md`.
 
 Inspect `retrieval/contracts.py`, `retrieval/vector_stores.py`, and `docs/rag.md`. Preserve tenant
 filters, source provenance, score semantics, query/context limits, and prompt-injection boundaries.
-Keep the backend SDK behind an optional extra.
+Keep the backend SDK behind an optional extra. A store that is not one of the built-in `retrieval:`
+types reaches a container through a plugin, `context.retrievers.register(name, store, **options)`,
+which also registers its `retrieval.<name>` context builder.
+
+## Guardrail policy and analytical handler
+
+A project's own guardrail policy (`name`, `category`, `enforcement_mode`, `applies_to`,
+`evaluate`) is registered with `context.policies.register(policy)`; the startup check fails when an
+agent names a policy nothing registered, because the policy engine would otherwise skip it. The
+analytical node kinds are fixed: a plugin supplies the deployment's `semantic_query` or
+`model_call` handler with `context.analytical_nodes.register(kind, handler)` and cannot replace a
+built-in handler. Adding a node kind is a Runtime change to `AnalyticalNodeKind`, the engine,
+`describe` and the docs together.
 
 ## Persistence store
 

@@ -94,6 +94,9 @@ class PlannerRegistry:
     def register(self, planner: Planner) -> None:
         self._items[planner.name] = planner
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._items))
+
     def get(self, name: str) -> Planner:
         try:
             return self._items[name]

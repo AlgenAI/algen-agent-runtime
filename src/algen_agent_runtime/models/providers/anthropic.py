@@ -96,11 +96,11 @@ def anthropic_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     return translated
 
 
-def _usage(usage: Mapping[str, Any]) -> tuple[int, int]:
-    """The whole prompt's input tokens, and the part of them read from the cache."""
+def _usage(usage: Mapping[str, Any]) -> tuple[int, int, int]:
+    """The whole prompt's input tokens, and the parts of them read from and written to the cache."""
     read = int(usage.get("cache_read_input_tokens") or 0)
     written = int(usage.get("cache_creation_input_tokens") or 0)
-    return int(usage.get("input_tokens") or 0) + written + read, read
+    return int(usage.get("input_tokens") or 0) + written + read, read, written
 
 
 def _merge_extensions(payload: dict[str, Any], extensions: Mapping[str, Any]) -> None:
@@ -243,7 +243,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
             for item in data.get("content", ())
             if item.get("type") == "tool_use"
         )
-        input_tokens, cached_tokens = _usage(data.get("usage") or {})
+        input_tokens, cached_tokens, cache_write_tokens = _usage(data.get("usage") or {})
         return ModelResponse(
             id=data.get("id", "unknown"),
             message=Message.text(Role.ASSISTANT, text),
@@ -255,6 +255,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
                 input_tokens=input_tokens,
                 output_tokens=(data.get("usage") or {}).get("output_tokens", 0),
                 cached_tokens=cached_tokens,
+                cache_write_tokens=cache_write_tokens,
             ),
             latency_ms=(time.monotonic() - started) * 1000,
             model=data.get("model", self._default_model),
@@ -296,9 +297,13 @@ class AnthropicProvider(OpenAICompatibleProvider):
                         message = data.get("message", {})
                         response_id = message.get("id", response_id)
                         model = message.get("model", model)
-                        input_tokens, cached_tokens = _usage(message.get("usage") or {})
+                        input_tokens, cached_tokens, written = _usage(message.get("usage") or {})
                         usage = usage.model_copy(
-                            update={"input_tokens": input_tokens, "cached_tokens": cached_tokens}
+                            update={
+                                "input_tokens": input_tokens,
+                                "cached_tokens": cached_tokens,
+                                "cache_write_tokens": written,
+                            }
                         )
                     elif event_type == "content_block_start":
                         block = data.get("content_block", {})

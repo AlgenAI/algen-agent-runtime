@@ -29,6 +29,9 @@ class ResponseComposerRegistry:
     def register(self, composer: ResponseComposer) -> None:
         self._items[composer.name] = composer
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._items))
+
     def get(self, name: str) -> ResponseComposer:
         try:
             return self._items[name]

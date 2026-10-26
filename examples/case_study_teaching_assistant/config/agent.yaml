@@ -104,6 +104,8 @@ agents:
       - teaching.build_study_plan
       - teaching.get_case_evidence
       - teaching.lookup_learning_policy
+    domain_plugins:
+      - examples.case_study_teaching_assistant.application.plugin:TeachingPlugin
     tool_permissions:
       - learning.plan.read
       - learning.case.read
@@ -198,6 +200,7 @@ api:
   cors_allowed_origins: []
 
 security:
+  trusted_plugin_prefixes: [examples.case_study_teaching_assistant]
   max_request_bytes: 65536
   max_artifact_bytes: 1048576
   allow_private_networks: false

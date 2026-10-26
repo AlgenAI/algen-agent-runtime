@@ -40,6 +40,11 @@ class ToolDefinition(BaseModel):
     max_concurrency: int = Field(default=10, ge=1)
     max_result_bytes: int = Field(default=1_048_576, ge=1)
     audit_metadata: dict[str, str] = Field(default_factory=dict)
+    requires_approval: bool = Field(
+        default=False,
+        description="Always ask for the Runtime's approval before a call, whatever the agent's "
+        "approval policy. It can only add approval, never waive it.",
+    )
 
 
 class ToolContext(BaseModel):

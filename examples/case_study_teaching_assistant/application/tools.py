@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
@@ -9,10 +9,13 @@ from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolDefinition,
 )
-from algen_agent_runtime.tools.registry import ToolRegistry
 
 
-def register_teaching_tools(registry: ToolRegistry) -> None:
+class ToolSink(Protocol):
+    def register(self, tool: Tool) -> None: ...
+
+
+def register_teaching_tools(registry: ToolSink) -> None:
     """Register deterministic demo tools through the normal Runtime tool SDK."""
 
     registry.register(

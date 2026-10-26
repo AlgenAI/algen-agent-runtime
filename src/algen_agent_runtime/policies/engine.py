@@ -212,7 +212,11 @@ class SideEffectPolicy:
         if point == "plan_tool" and definition and approval_policy:
             side_effect = definition.side_effect
             required = (
-                approval_policy.require_for_destructive and side_effect == SideEffect.DESTRUCTIVE
+                definition.requires_approval
+                or (
+                    approval_policy.require_for_destructive
+                    and side_effect == SideEffect.DESTRUCTIVE
+                )
             ) or (
                 approval_policy.require_for_side_effects
                 and side_effect in {SideEffect.WRITE, SideEffect.EXTERNAL, SideEffect.DESTRUCTIVE}

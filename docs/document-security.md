@@ -7,7 +7,7 @@ the full `text`, a `sanitized_text` holding only what a reader would see, per-sp
 
 | Format | Extractor | Extra |
 |---|---|---|
-| PDF | `PdfDocumentExtractor` | `hiring` (PyMuPDF) |
+| PDF | `PdfDocumentExtractor` | `documents` (PyMuPDF) |
 | DOCX | `DocxDocumentExtractor` | none (standard library) |
 | TXT, Markdown | `PlainTextDocumentExtractor` | none |
 

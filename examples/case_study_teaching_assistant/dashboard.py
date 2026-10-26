@@ -15,7 +15,6 @@ from examples.case_study_teaching_assistant.application import (
     AcademicIntegrityPolicy,
     EducationalEquityPolicy,
     TeachingAssistantConversationHandler,
-    register_teaching_tools,
 )
 
 
@@ -23,12 +22,8 @@ def build_dashboard_app() -> object:
     extra_config = os.getenv("TEACHING_ASSISTANT_CONFIG")
     files = (CONFIG_PATH, Path(extra_config)) if extra_config else (CONFIG_PATH,)
     settings = load_settings(files)
+    # The declared TeachingPlugin registers the teaching tools and both education policies.
     container = build_container(settings)
-    register_teaching_tools(container.tools)
-    integrity = AcademicIntegrityPolicy()
-    equity = EducationalEquityPolicy()
-    container.runtime.policies.register(integrity)
-    container.runtime.policies.register(equity)
     run = container.observability.govern(
         AlgenAgentRuntimeClient(container.runtime).run,
         agent_id="virtual-teaching-assistant",
@@ -37,8 +32,8 @@ def build_dashboard_app() -> object:
     container.conversations.handlers.register(
         TeachingAssistantConversationHandler(
             run,
-            academic_integrity=integrity,
-            educational_equity=equity,
+            academic_integrity=AcademicIntegrityPolicy(),
+            educational_equity=EducationalEquityPolicy(),
         )
     )
     app = create_app(settings, container)

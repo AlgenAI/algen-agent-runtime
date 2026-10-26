@@ -246,6 +246,13 @@ algen-agent-runtime new my-workflow-agent --template workflow
 cd my-agent
 python app.py
 pytest
+
+# List every component the settings register (tools, planners, providers, ...) and its source,
+# without running any of them; --path adds a directory for plugin imports
+algen-agent-runtime describe --config agent.yaml --path src --json
+
+# Validate the project as Studio will and warn about code Studio cannot run
+algen-agent-runtime check agent.yaml --path src
 ```
 
 ## Run the HTTP service
@@ -379,6 +386,7 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Providers | [Provider extension](docs/providers.md) and [compatibility](docs/provider-compatibility.md) |
 | MCP tools | [Model Context Protocol (MCP)](docs/mcp.md) |
 | HTTP API tools | [HTTP API tools](docs/http-tools.md) |
+| Code components | [Plugins and the component inventory](docs/plugins.md), [writing agent tools](docs/tool-authoring.md) and [Studio compatibility](docs/studio-compatibility.md) |
 | Agent tool behaviour | [Errors, declines, guardrails, parallel calls, memory](docs/agent-tooling.md) |
 | Framework adapters | [Framework adapters](docs/framework-adapters.md) |
 | Retrieval | [RAG](docs/rag.md) |

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -94,7 +95,15 @@ from algen_agent_runtime.observability.traccia_adapter import (
     ObservabilityAdapter,
     observability_adapter,
 )
+from algen_agent_runtime.observability.trace_levels import TraceLevelTracer
 from algen_agent_runtime.orchestration.maintenance import MaintenanceService
+from algen_agent_runtime.orchestration.validation import (
+    AvailableComponents,
+    ComponentProblem,
+    mcp_tool_prefix,
+    unknown_agent_components,
+    unknown_mcp_tools,
+)
 from algen_agent_runtime.persistence.memory import (
     InMemoryArtifactStore,
     InMemoryMemoryStore,
@@ -112,6 +121,8 @@ from algen_agent_runtime.persistence.retention import PostgresRetentionSweeper
 from algen_agent_runtime.persistence.s3 import S3ArtifactStore
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.planning.planners import PlannerRegistry
+from algen_agent_runtime.plugins.registration import RuntimePluginContext
+from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.retrieval.ingestion import TextChunker
@@ -132,7 +143,7 @@ from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
-from algen_agent_runtime.tools.http_api import http_api_tool
+from algen_agent_runtime.tools.http_api import SecretResolver, http_api_tool
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import ModelCapabilities
 from algen_agent_runtime.types.interfaces import (
@@ -150,6 +161,8 @@ from algen_agent_runtime.workflows import (
     PostgresWorkflowCheckpointStore,
     WorkflowCheckpointStore,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -185,6 +198,9 @@ class Container:
     shutdown_grace_seconds: float = 10.0
     maintenance: MaintenanceService | None = None
     run_maintenance_in_background: bool = False
+    plugins: tuple[PluginManifest, ...] = ()
+    component_sources: dict[str, dict[str, str]] = field(default_factory=dict)
+    component_check: Literal["error", "warn"] = "error"
 
     async def astart(self) -> None:
         self.observability.start()
@@ -207,6 +223,15 @@ class Container:
                             f"failed to discover required MCP server {server_name!r}: {exc}"
                         ) from exc
                     self.degraded_dependencies[f"mcp.{server_name}"] = str(exc)
+                    continue
+                _report_unknown_components(
+                    unknown_mcp_tools(
+                        self.agents.list(),
+                        mcp_tool_prefix(config.name, config.prefix),
+                        (tool.definition.name for tool in tools),
+                    ),
+                    self.component_check,
+                )
         if self.recover_incomplete_runs:
             await self.runtime.recover(self.recovery_limit)
             await self.conversations.recover(self.recovery_limit)
@@ -281,6 +306,85 @@ def _resolve_environment_reference(
     return resolved
 
 
+DEFAULT_PROVIDER_API_KEYS: dict[str, str] = {
+    "openai": "env://OPENAI_API_KEY",
+    "azure_openai": "env://AZURE_OPENAI_API_KEY",
+    "anthropic": "env://ANTHROPIC_API_KEY",
+    "deepseek": "env://DEEPSEEK_API_KEY",
+    "mistral": "env://MISTRAL_API_KEY",
+    "huggingface_inference": "env://HF_TOKEN",
+}
+"""The secret a provider type reads when its ``api_key`` is not configured."""
+
+SUPPORTED_PROVIDER_TYPES: frozenset[str] = frozenset(
+    {
+        *DEFAULT_PROVIDER_API_KEYS,
+        "ollama",
+        "local_transformers",
+        "openai_compatible",
+        "mock",
+    }
+)
+
+
+def base_tools(
+    settings: AppSettings,
+    *,
+    secrets: SecretResolver,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[Tool, ...]:
+    """The tools every container registers before plugins: core tools and manifest http_tools."""
+    return (
+        http_tool(
+            allowed_hosts=settings.security.allowed_http_hosts,
+            allow_private_networks=settings.security.allow_private_networks,
+            client=http_client,
+        ),
+        subprocess_tool(enabled=settings.security.allow_subprocess_tools),
+        *(
+            http_api_tool(
+                declared,
+                allowed_hosts=settings.security.allowed_http_hosts,
+                allow_private_networks=settings.security.allow_private_networks,
+                secrets=secrets,
+            )
+            for declared in settings.http_tools
+        ),
+    )
+
+
+def _report_unknown_components(
+    problems: Sequence[ComponentProblem], mode: Literal["error", "warn"]
+) -> None:
+    if not problems:
+        return
+    message = "; ".join(problem.message for problem in problems)
+    if mode == "warn":
+        logger.warning("unregistered agent components: %s", message)
+        return
+    raise ConfigurationError(f"unregistered agent components: {message}")
+
+
+def declared_plugin_names(settings: AppSettings) -> tuple[str, ...]:
+    """Every agent's ``domain_plugins``, in declaration order, each named once."""
+    return tuple(
+        dict.fromkeys(name for definition in settings.agents for name in definition.domain_plugins)
+    )
+
+
+def load_declared_plugins(
+    settings: AppSettings, context: RuntimePluginContext
+) -> tuple[PluginManifest, ...]:
+    names = declared_plugin_names(settings)
+    loader = PluginLoader(settings.security.trusted_plugin_prefixes)
+    loader.authorize(names)
+    manifests = []
+    for name in names:
+        with context.registering(name):
+            manifests.append(loader.load_one(name, context))
+    return tuple(manifests)
+
+
 def build_container(
     settings: AppSettings,
     *,
@@ -302,42 +406,8 @@ def build_container(
         agents.register(definition)
     tools = ToolRegistry()
     http_client = httpx.AsyncClient(follow_redirects=False)
-    tools.register(
-        http_tool(
-            allowed_hosts=settings.security.allowed_http_hosts,
-            allow_private_networks=settings.security.allow_private_networks,
-            client=http_client,
-        )
-    )
-    tools.register(subprocess_tool(enabled=settings.security.allow_subprocess_tools))
-    for declared in settings.http_tools:
-        tools.register(
-            http_api_tool(
-                declared,
-                allowed_hosts=settings.security.allowed_http_hosts,
-                allow_private_networks=settings.security.allow_private_networks,
-                secrets=secret_provider.get,
-            )
-        )
-    for tool in additional_tools:
+    for tool in base_tools(settings, secrets=secret_provider.get, http_client=http_client):
         tools.register(tool)
-    combined_mcp_servers: list[MCPServerConfigBase] = list(settings.mcp_servers)
-    existing_mcp_names = {s.name for s in combined_mcp_servers}
-    for s in mcp_servers:
-        if s.name in existing_mcp_names:
-            raise ConflictError(f"MCP server {s.name!r} already declared in settings")
-        combined_mcp_servers.append(s)
-        existing_mcp_names.add(s.name)
-
-    mcp_manager: MCPClientManager | None = None
-    if combined_mcp_servers:
-        from algen_agent_runtime.mcp.client import MCPClientManager
-
-        mcp_manager = MCPClientManager(
-            combined_mcp_servers,
-            environment=environment,
-            security=settings.security,
-        )
     frameworks = FrameworkAdapterRegistry()
     for adapter in framework_adapters:
         frameworks.register(adapter)
@@ -435,6 +505,7 @@ def build_container(
     )
     analytical_methods = AnalyticalMethodRegistry()
     model_services = ModelServiceRegistry()
+    semantics = SemanticLayerRegistry()
     query_governance = QueryGovernanceEngine(
         QueryGovernancePolicy.model_validate(settings.query_governance.model_dump())
     )
@@ -510,14 +581,14 @@ def build_container(
         provider: ModelProvider
         if provider_config.type == "openai":
             provider = OpenAIProvider(
-                provider_config.api_key or "env://OPENAI_API_KEY",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["openai"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
         elif provider_config.type == "azure_openai":
             provider = AzureOpenAIProvider(
                 provider_config.base_url or "",
-                provider_config.api_key or "env://AZURE_OPENAI_API_KEY",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["azure_openai"],
                 provider_config.default_model,
                 provider_config.api_version or "2024-10-21",
                 secret_provider=secret_provider,
@@ -525,20 +596,20 @@ def build_container(
             )
         elif provider_config.type == "anthropic":
             provider = AnthropicProvider(
-                provider_config.api_key or "env://ANTHROPIC_API_KEY",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["anthropic"],
                 secret_provider=secret_provider,
                 prompt_caching=provider_config.prompt_caching,
                 **kwargs,
             )
         elif provider_config.type == "deepseek":
             provider = DeepSeekProvider(
-                provider_config.api_key or "env://DEEPSEEK_API_KEY",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["deepseek"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
         elif provider_config.type == "mistral":
             provider = MistralProvider(
-                provider_config.api_key or "env://MISTRAL_API_KEY",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["mistral"],
                 base_url=provider_config.base_url or "https://api.mistral.ai/v1",
                 capabilities=(
                     provider_config.capabilities
@@ -555,7 +626,7 @@ def build_container(
             )
         elif provider_config.type == "huggingface_inference":
             provider = HuggingFaceInferenceProvider(
-                provider_config.api_key or "env://HF_TOKEN",
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["huggingface_inference"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
@@ -682,7 +753,54 @@ def build_container(
                 cache=cache,
             )
         )
-    executor = ToolExecutor(tools, policies, executions, cache=cache)
+    combined_mcp_servers: list[MCPServerConfigBase] = list(settings.mcp_servers)
+    plugin_context = RuntimePluginContext(
+        tools=tools,
+        planners=planners,
+        contexts=contexts,
+        verifiers=verifiers,
+        composers=composers,
+        semantics=semantics,
+        methods=analytical_methods,
+        model_services=model_services,
+        router=router,
+        mcp_servers=combined_mcp_servers,
+        policies=policies,
+        analytical_nodes=analytical_node_registry,
+        retrievers=retrievers,
+        memory=memory,
+        cache=cache,
+        secrets=secret_provider.get,
+    )
+    plugin_manifests = load_declared_plugins(settings, plugin_context)
+    for tool in additional_tools:
+        tools.register(tool)
+    existing_mcp_names = {s.name for s in combined_mcp_servers}
+    for s in mcp_servers:
+        if s.name in existing_mcp_names:
+            raise ConflictError(f"MCP server {s.name!r} already declared in settings")
+        combined_mcp_servers.append(s)
+        existing_mcp_names.add(s.name)
+
+    mcp_manager: MCPClientManager | None = None
+    if combined_mcp_servers:
+        from algen_agent_runtime.mcp.client import MCPClientManager
+
+        mcp_manager = MCPClientManager(
+            combined_mcp_servers,
+            environment=environment,
+            security=settings.security,
+        )
+    executor = ToolExecutor(
+        tools,
+        policies,
+        executions,
+        cache=cache,
+        # The adapter's tracer, filtered by trace level like the Runtime's own spans.
+        tracer=TraceLevelTracer(
+            observability.tracer("algen_agent_runtime.tools"), settings.telemetry.trace_level
+        ),
+    )
     runtime = AgentRuntime(
         agents=agents,
         router=router,
@@ -709,6 +827,24 @@ def build_container(
         telemetry_include_content=settings.telemetry.include_content,
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,
+    )
+    _report_unknown_components(
+        unknown_agent_components(
+            settings.agents,
+            AvailableComponents(
+                tools=frozenset(tool.definition.name for tool in tools.list()),
+                planners=frozenset(planners.names()),
+                response_composers=frozenset(composers.names()),
+                verifiers=frozenset(verifiers.names()),
+                context_builders=frozenset(contexts.names()),
+                providers=frozenset(router.registration_ids()),
+                policies=frozenset(policies.list()),
+                deferred_tool_prefixes=tuple(
+                    mcp_tool_prefix(server.name, server.prefix) for server in combined_mcp_servers
+                ),
+            ),
+        ),
+        settings.runtime.component_check,
     )
     conversation_store = (
         PostgresConversationStore(database)
@@ -785,6 +921,7 @@ def build_container(
                 artifacts if storage.artifact_store == "s3" else None,
                 http_client,
                 mcp_manager,
+                *plugin_context.resources,
             )
             if resource is not None
         )
@@ -802,6 +939,7 @@ def build_container(
         workflow_checkpoints=workflow_checkpoints,
         cache=cache,
         retrievers=retrievers,
+        semantics=semantics,
         frameworks=frameworks,
         observability=observability,
         analytical_graphs=analytical_graphs,
@@ -823,4 +961,7 @@ def build_container(
             PostgresRetentionSweeper(database) if database is not None else None,
         ),
         run_maintenance_in_background=settings.maintenance.enabled,
+        plugins=plugin_manifests,
+        component_sources=plugin_context.sources.as_dict(),
+        component_check=settings.runtime.component_check,
     )

@@ -55,6 +55,17 @@ def test_scaffold_default_agent_template(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
 
+    # The generated plugin declares the tool the agent enables, so the project passes check
+    check = subprocess.run(
+        [sys.executable, "-m", "algen_agent_runtime.cli", "check", "agent.yaml", "--path", "."],
+        cwd=str(dest),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert check.returncode == 0, f"STDOUT:\n{check.stdout}\nSTDERR:\n{check.stderr}"
+    assert (dest / "my_agent_plugin.py").exists()
+
 
 def test_scaffold_approval_template(tmp_path: Path) -> None:
     dest = tmp_path / "my-approval"

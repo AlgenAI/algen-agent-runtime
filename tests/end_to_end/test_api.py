@@ -70,6 +70,15 @@ async def test_rest_create_and_read_run() -> None:
         assert events.status_code == 200
         assert "event: run.completed" in events.text
         assert "event: model.completed" in events.text
+        narrative = await client.get(f"/v1/runs/{run_id}/narrative", headers=headers)
+        assert narrative.status_code == 200
+        body = narrative.json()
+        assert body["status"] == "completed" and body["model_calls"] == 1
+        assert [entry["kind"] for entry in body["entries"]][-1] == "outcome"
+        other_tenant = await client.get(
+            f"/v1/runs/{run_id}/narrative", headers={**headers, "x-tenant-id": "other"}
+        )
+        assert other_tenant.status_code == 404
 
 
 async def test_api_enforces_tenant_identity() -> None:

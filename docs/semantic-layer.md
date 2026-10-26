@@ -29,7 +29,8 @@ from algen_agent_runtime.semantics import (
 
 container = build_container(settings)
 sales = SemanticLayer.from_yaml("semantic_layer.yaml")
-container.semantics.register(sales)
+container.semantics.register(sales)  # a deployment registers it from its plugin instead:
+# context.semantics.register(SemanticLayer.from_yaml(...)), so describe and Studio see it
 
 query = MetricQuery(
     metrics=("revenue",),

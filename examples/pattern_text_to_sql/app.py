@@ -65,11 +65,19 @@ class ReadOnlyAnalyticsDatabase:
     """Small SQLite adapter that enforces read-only, allowlisted query execution."""
 
     def __init__(self, schema_path: Path = EXAMPLE_DIR / "schema.sql") -> None:
-        self._connection = sqlite3.connect(":memory:", check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(schema_path.read_text(encoding="utf-8"))
-        self._connection.set_authorizer(self._authorize)
+        self._schema_path = schema_path
+        self._connection: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
+
+    def _connect(self) -> sqlite3.Connection:
+        # Connect on first use, so constructing the adapter (as a plugin does) opens nothing.
+        if self._connection is None:
+            connection = sqlite3.connect(":memory:", check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+            connection.executescript(self._schema_path.read_text(encoding="utf-8"))
+            connection.set_authorizer(self._authorize)
+            self._connection = connection
+        return self._connection
 
     @staticmethod
     def _authorize(
@@ -107,7 +115,7 @@ class ReadOnlyAnalyticsDatabase:
             return await asyncio.to_thread(self._execute, bounded_query, parameters)
 
     def _execute(self, statement: str, parameters: dict[str, Any]) -> dict[str, Any]:
-        cursor = self._connection.execute(statement, parameters)
+        cursor = self._connect().execute(statement, parameters)
         rows = cursor.fetchmany(MAX_ROWS + 1)
         truncated = len(rows) > MAX_ROWS
         visible_rows = rows[:MAX_ROWS]
@@ -120,7 +128,9 @@ class ReadOnlyAnalyticsDatabase:
         }
 
     def close(self) -> None:
-        self._connection.close()
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
 
 def create_query_tool(database: ReadOnlyAnalyticsDatabase) -> Tool:
@@ -178,10 +188,9 @@ def create_query_tool(database: ReadOnlyAnalyticsDatabase) -> Tool:
 
 
 async def ask(question: str, provider: ProviderName = "openai") -> str:
-    settings = load_settings((EXAMPLE_DIR / "agent.yaml",))
-    container = build_container(settings)
-    database = ReadOnlyAnalyticsDatabase()
-    container.tools.register(create_query_tool(database))
+    # The settings declare AnalyticsPlugin (plugin.py), which registers analytics.query and
+    # hands its database to the container to close.
+    container = build_container(load_settings((EXAMPLE_DIR / "agent.yaml",)))
     try:
         result = await AlgenAgentRuntimeClient(container.runtime).run(
             RunRequest(
@@ -192,10 +201,7 @@ async def ask(question: str, provider: ProviderName = "openai") -> str:
             )
         )
     finally:
-        try:
-            database.close()
-        finally:
-            container.close()
+        await container.aclose()
     if result.error:
         raise RuntimeError(result.error)
     return result.output or ""

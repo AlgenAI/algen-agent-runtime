@@ -10,7 +10,6 @@ from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.types.contracts import RunRequest
 from examples.pattern_text_to_sql.advanced.knowledge import TENANT_ID, schema_documents
-from examples.pattern_text_to_sql.app import ReadOnlyAnalyticsDatabase, create_query_tool
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -25,8 +24,6 @@ async def index_schema() -> int:
 
 async def ask(question: str) -> str:
     container = build_container(load_settings((EXAMPLE_DIR / "agent.yaml",)))
-    database = ReadOnlyAnalyticsDatabase()
-    container.tools.register(create_query_tool(database))
     try:
         result = await AlgenAgentRuntimeClient(container.runtime).run(
             RunRequest(
@@ -37,7 +34,6 @@ async def ask(question: str) -> str:
             )
         )
     finally:
-        database.close()
         await container.aclose()
     if result.error:
         raise RuntimeError(result.error)

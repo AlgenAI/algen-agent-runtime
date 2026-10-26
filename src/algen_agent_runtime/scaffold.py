@@ -81,7 +81,40 @@ agents:
       model: deterministic
     planning_strategy: direct
     max_steps: 5
+    enabled_tools: [{ident}.word_count]
+    tool_permissions: [{ident}.read]
+    # Code components (tools, planners, providers, ...) come from declared plugins, so
+    # Studio and `algen-agent-runtime describe` can see them.
+    domain_plugins: ["{ident}_plugin:Plugin"]
+
+security:
+  trusted_plugin_prefixes: [{ident}_plugin]
 """
+
+    plugin_py = f'''"""The {slug} agent's code components, registered by the plugin agent.yaml declares."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from algen_agent_runtime.plugins.sdk import PluginManifest, plugin
+from algen_agent_runtime.tools.authoring import Toolkit, read
+
+toolkit = Toolkit("{ident}")
+
+
+@toolkit.tool(read())
+def word_count(text: str) -> int:
+    """Count the whitespace-separated words in a text."""
+    return len(text.split())
+
+
+@plugin(PluginManifest(name="{slug}", version="1.0.0", publisher="{slug}"))
+class Plugin:
+    def register(self, context: Any) -> None:
+        # Construct and register only; open clients in a toolkit client factory.
+        toolkit.register(context)
+'''
 
     app_py = f'''from __future__ import annotations
 
@@ -129,16 +162,27 @@ if __name__ == "__main__":
     main()
 '''
 
-    test_py = """from __future__ import annotations
+    test_py = f"""from __future__ import annotations
 
 import pytest
 from app import run
+from {ident}_plugin import toolkit
+
+from algen_agent_runtime.tools.testing import assert_tool_contract, fake_tool_context
 
 
 @pytest.mark.asyncio
 async def test_agent_runs_offline() -> None:
     output = await run("Hello")
     assert output
+
+
+@pytest.mark.asyncio
+async def test_tools_meet_the_contract() -> None:
+    for tool in toolkit.tools:
+        assert_tool_contract(tool)
+    [word_count] = toolkit.tools
+    assert await word_count.execute({{"text": "one two"}}, fake_tool_context(word_count)) == 2
 """
 
     readme_md = f"""# {slug}
@@ -157,7 +201,15 @@ python app.py "Hello, what can you do?"
 
 ```bash
 pytest
+algen-agent-runtime check agent.yaml --path .
 ```
+
+## Adding tools
+
+Write each tool as a typed function in `{ident}_plugin.py` with `@toolkit.tool(read())`,
+`write(approval=True)` or another preset, and enable it in `agent.yaml`. The plugin is the only
+place code components are registered: never pass them to `build_container` or register them on
+the built container, since Studio cannot see either.
 
 ## Production Deployment
 
@@ -174,6 +226,7 @@ providers:
     return {
         "agent.yaml": agent_yaml,
         "app.py": app_py,
+        f"{ident}_plugin.py": plugin_py,
         "test_agent.py": test_py,
         "README.md": readme_md,
         ".gitignore": _gitignore_content(),
