@@ -251,7 +251,7 @@ async def test_anthropic_native_messages_contract() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-api-key"] == "test-key"
         body = __import__("json").loads(request.content)
-        assert body["system"] == "system"
+        assert [block["text"] for block in body["system"]] == ["system"]
         return httpx.Response(
             200,
             json={

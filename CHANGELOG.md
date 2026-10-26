@@ -6,6 +6,18 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Changed
+
+- The Anthropic adapter uses prompt caching by default: an explicit cache breakpoint at the end of
+  the system prompt, and automatic caching for the growing conversation. An agent loop's later calls
+  read the tools, instructions and earlier turns from the cache (about a tenth of the input price)
+  instead of paying for them again. Pass `prompt_caching=False` to `AnthropicProvider` for a
+  gateway that rejects `cache_control`.
+- Anthropic usage reports the whole prompt as `input_tokens` (uncached, written to the cache and
+  read from it; Anthropic's own `input_tokens` is only the uncached part), and the part read from
+  the cache as `cached_tokens`, as the OpenAI adapters do. Token budgets and metering that read
+  `input_tokens` stay correct with caching on.
+
 ## [0.1.0a9] - 2026-10-24
 
 ### Added

@@ -4,6 +4,16 @@ Thinking blocks are read for nothing and never sent back. Current Claude models 
 thinking block to the exact conversation that produced it, and the runtime's guardrails may
 rewrite history between turns; replaying a block after such a rewrite is rejected, while
 omitting it is always accepted. The model then reasons afresh on each turn.
+
+Prompt caching is on by default. An agent loop re-sends the whole conversation on every call,
+so without it each call pays full price for the tools, the instructions and every earlier turn.
+The end of the system prompt carries an explicit cache breakpoint (tools and instructions are
+read back on every call), and the request asks for automatic caching, which places a second
+breakpoint on the last block and moves it forward as the conversation grows. Anthropic reports
+``input_tokens`` as the uncached remainder only; usage here reports the whole prompt (uncached,
+written to the cache and read from it) as ``input_tokens``, as other providers do, and the part
+read from the cache as ``cached_tokens``. Pass ``prompt_caching=False`` for a gateway that
+rejects the ``cache_control`` fields.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ _UNSUPPORTED_SCHEMA_KEYWORDS = frozenset(
 _SUPPORTED_STRING_FORMATS = frozenset(
     {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
 )
+_CACHE = {"type": "ephemeral"}
 _FINISH_REASONS = {
     "end_turn": FinishReason.STOP,
     "stop_sequence": FinishReason.STOP,
@@ -85,6 +96,13 @@ def anthropic_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     return translated
 
 
+def _usage(usage: Mapping[str, Any]) -> tuple[int, int]:
+    """The whole prompt's input tokens, and the part of them read from the cache."""
+    read = int(usage.get("cache_read_input_tokens") or 0)
+    written = int(usage.get("cache_creation_input_tokens") or 0)
+    return int(usage.get("input_tokens") or 0) + written + read, read
+
+
 def _merge_extensions(payload: dict[str, Any], extensions: Mapping[str, Any]) -> None:
     # Profiles set e.g. ``output_config: {effort: low}``; keep the response format beside it.
     for key, value in extensions.items():
@@ -103,8 +121,11 @@ class AnthropicProvider(OpenAICompatibleProvider):
         api_key_reference: str,
         default_model: str,
         base_url: str = "https://api.anthropic.com/v1",
+        *,
+        prompt_caching: bool = True,
         **kwargs: Any,
     ) -> None:
+        self._prompt_caching = prompt_caching
         super().__init__(
             "anthropic",
             base_url,
@@ -182,8 +203,12 @@ class AnthropicProvider(OpenAICompatibleProvider):
             "max_tokens": request.max_output_tokens or 1024,
             "stream": request.stream,
         }
-        if system:
+        if system and self._prompt_caching:
+            payload["system"] = [{"type": "text", "text": system, "cache_control": dict(_CACHE)}]
+        elif system:
             payload["system"] = system
+        if self._prompt_caching:
+            payload["cache_control"] = dict(_CACHE)
         if request.temperature is not None:
             payload["temperature"] = request.temperature
         if request.tools:
@@ -218,7 +243,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
             for item in data.get("content", ())
             if item.get("type") == "tool_use"
         )
-        usage = data.get("usage") or {}
+        input_tokens, cached_tokens = _usage(data.get("usage") or {})
         return ModelResponse(
             id=data.get("id", "unknown"),
             message=Message.text(Role.ASSISTANT, text),
@@ -227,8 +252,9 @@ class AnthropicProvider(OpenAICompatibleProvider):
             if calls
             else _FINISH_REASONS.get(str(data.get("stop_reason")), FinishReason.STOP),
             usage=TokenUsage(
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=(data.get("usage") or {}).get("output_tokens", 0),
+                cached_tokens=cached_tokens,
             ),
             latency_ms=(time.monotonic() - started) * 1000,
             model=data.get("model", self._default_model),
@@ -270,8 +296,9 @@ class AnthropicProvider(OpenAICompatibleProvider):
                         message = data.get("message", {})
                         response_id = message.get("id", response_id)
                         model = message.get("model", model)
+                        input_tokens, cached_tokens = _usage(message.get("usage") or {})
                         usage = usage.model_copy(
-                            update={"input_tokens": message.get("usage", {}).get("input_tokens", 0)}
+                            update={"input_tokens": input_tokens, "cached_tokens": cached_tokens}
                         )
                     elif event_type == "content_block_start":
                         block = data.get("content_block", {})
