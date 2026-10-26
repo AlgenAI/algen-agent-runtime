@@ -6,10 +6,12 @@ from typing import Any
 import httpx
 import pytest
 
+from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.models.providers.anthropic import (
     AnthropicProvider,
     anthropic_json_schema,
 )
+from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.types.contracts import (
     FinishReason,
     Message,
@@ -29,6 +31,7 @@ def _provider(
     sent: list[dict[str, Any]] | None = None,
     *,
     stream_lines: list[str] | None = None,
+    prompt_caching: bool = True,
 ) -> AnthropicProvider:
     def respond(request: httpx.Request) -> httpx.Response:
         if sent is not None:
@@ -42,6 +45,7 @@ def _provider(
         "claude-sonnet-5-5",
         secret_provider=_Secrets(),
         client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        prompt_caching=prompt_caching,
     )
 
 
@@ -199,3 +203,97 @@ async def test_streamed_stop_reason_is_reported() -> None:
     assert completed is not None
     assert completed.finish_reason == FinishReason.LENGTH
     assert completed.usage.output_tokens == 9
+
+
+_CONVERSATION = (
+    Message.text(Role.SYSTEM, "You are a careful assistant."),
+    Message.text(Role.USER, "q"),
+)
+
+
+async def test_prompt_caching_marks_the_instructions_and_the_conversation() -> None:
+    sent: list[dict[str, Any]] = []
+    await _provider(sent=sent).generate(ModelRequest(messages=_CONVERSATION))
+
+    [body] = sent
+    # Tools and instructions are read back on every call; the tail moves with the conversation.
+    assert body["system"] == [
+        {
+            "type": "text",
+            "text": "You are a careful assistant.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert body["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_prompt_caching_can_be_turned_off_for_a_gateway() -> None:
+    sent: list[dict[str, Any]] = []
+    await _provider(sent=sent, prompt_caching=False).generate(ModelRequest(messages=_CONVERSATION))
+
+    [body] = sent
+    assert body["system"] == "You are a careful assistant." and "cache_control" not in body
+
+
+async def test_usage_counts_the_whole_prompt_and_reports_what_was_cached() -> None:
+    usage = {
+        "input_tokens": 50,
+        "cache_creation_input_tokens": 200,
+        "cache_read_input_tokens": 9_000,
+        "output_tokens": 7,
+    }
+    response = await _provider(_reply(usage=usage)).generate(ModelRequest(messages=_CONVERSATION))
+
+    # Anthropic's input_tokens is only the uncached remainder; budgets and credits need it all.
+    assert response.usage.input_tokens == 9_250
+    assert response.usage.cached_tokens == 9_000
+    assert response.usage.output_tokens == 7
+
+
+async def test_streamed_usage_counts_the_whole_prompt() -> None:
+    start_usage = {
+        "input_tokens": 5,
+        "cache_creation_input_tokens": 40,
+        "cache_read_input_tokens": 3_000,
+    }
+    events = [
+        {"type": "message_start", "message": {"id": "m", "usage": start_usage}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "x"}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 2},
+        },
+    ]
+    provider = _provider(stream_lines=[f"data: {json.dumps(event)}" for event in events])
+
+    streamed = [
+        event async for event in provider.stream(ModelRequest(messages=_CONVERSATION, stream=True))
+    ]
+
+    completed = streamed[-1].response
+    assert completed is not None
+    assert (completed.usage.input_tokens, completed.usage.cached_tokens) == (3_045, 3_000)
+    assert completed.usage.output_tokens == 2
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, True), (False, False)])
+def test_prompt_caching_setting_reaches_the_adapter(
+    configured: bool | None, expected: bool
+) -> None:
+    entry = {"type": "anthropic", "default_model": "claude-haiku-5-5"}
+    settings = AppSettings.model_validate(
+        {
+            "providers": {
+                "claude": {
+                    **entry,
+                    **({} if configured is None else {"prompt_caching": configured}),
+                }
+            }
+        }
+    )
+
+    provider = build_container(settings).runtime.router._providers["claude"]
+
+    assert isinstance(provider, AnthropicProvider)
+    assert provider._prompt_caching is expected

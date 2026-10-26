@@ -527,6 +527,7 @@ def build_container(
             provider = AnthropicProvider(
                 provider_config.api_key or "env://ANTHROPIC_API_KEY",
                 secret_provider=secret_provider,
+                prompt_caching=provider_config.prompt_caching,
                 **kwargs,
             )
         elif provider_config.type == "deepseek":
