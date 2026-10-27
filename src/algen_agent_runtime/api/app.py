@@ -34,6 +34,7 @@ from algen_agent_runtime.api.rate_limiting import (
     InMemoryApiRateLimiter,
     RouteLimitPolicy,
 )
+from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import ConversationEvent, ConversationStatus
 from algen_agent_runtime.conversations.feedback import FeedbackRating
@@ -53,6 +54,7 @@ from algen_agent_runtime.types.contracts import (
     RunRequest,
     utc_now,
 )
+from algen_agent_runtime.workflows.service import WorkflowService
 
 
 class CreateRunBody(BaseModel):
@@ -138,6 +140,8 @@ def create_app(
     identity_dependency = Depends(authenticate)
     configure_logging()
 
+    workflows = WorkflowService(resolved, dependencies)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         dependencies.observability.start()
@@ -147,6 +151,7 @@ def create_app(
             await dependencies.astart()
             yield
         finally:
+            await workflows.aclose()
             await dependencies.aclose()
 
     app = FastAPI(title="Algen Agent Runtime", version=__version__, lifespan=lifespan)
@@ -279,6 +284,8 @@ def create_app(
         return JSONResponse(
             status_code=400, content={"detail": str(exc), "kind": exc.error_kind.value}
         )
+
+    add_workflow_routes(app, workflows, identity_dependency)
 
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(

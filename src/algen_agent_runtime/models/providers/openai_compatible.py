@@ -135,6 +135,15 @@ def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], visit(normalized))
 
 
+# A wire alias's hash suffix: an underscore and twelve hexadecimal digits.
+_HASHED = re.compile(r"_[0-9a-f]{12}$")
+
+
+def _fits(name: str) -> bool:
+    """Whether a provider accepts ``name`` as a function name."""
+    return len(name) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", name) is not None
+
+
 class OpenAICompatibleProvider:
     # Ask for token usage on streamed calls; servers that reject ``stream_options`` turn it off
     # with the provider setting ``stream_usage: false``.
@@ -183,15 +192,21 @@ class OpenAICompatibleProvider:
         """Map namespaced Runtime names to the common provider wire format.
 
         Runtime tool names intentionally support namespaces such as
-        ``teaching.build_study_plan``. OpenAI-compatible APIs generally limit
+        ``teaching.build_study_plan``. OpenAI-compatible APIs and Anthropic limit
         function names to 64 ASCII letters, digits, underscores, and hyphens.
-        The hash suffix prevents collisions while the instance maps responses
-        back to the stable Runtime name.
+        A name that fits is sent as it is. A dotted name is sent readable when it
+        can be (``teaching__build_study_plan``): models copy a readable name
+        exactly, where they shorten one with a hash suffix. Only when the readable
+        form does not fit or is taken is a hash suffix added. Either way the
+        instance maps responses back to the stable Runtime name.
         """
         if cached := self._wire_tool_names.get(name):
             return cached
-        if len(name) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        readable = name.replace(".", "__")
+        if _fits(name) and self._runtime_tool_names.get(name, name) == name:
             alias = name
+        elif _fits(readable) and readable not in self._runtime_tool_names:
+            alias = readable
         else:
             stem = re.sub(r"[^A-Za-z0-9_-]", "_", name).strip("_-") or "tool"
             digest = sha256(name.encode("utf-8")).hexdigest()[:12]
@@ -204,7 +219,21 @@ class OpenAICompatibleProvider:
         return alias
 
     def _runtime_tool_name(self, name: str) -> str:
-        return self._runtime_tool_names.get(name, name)
+        """The Runtime name for a tool name a model returned.
+
+        A model sometimes drops an alias's hash suffix (``hr_find_people`` for
+        ``hr_find_people_0a1b2c3d4e5f``) or writes the Runtime name itself. Such a
+        name maps back when exactly one tool matches it; any other name is returned
+        as it is, for the Runtime to report as unknown.
+        """
+        if name in self._runtime_tool_names:
+            return self._runtime_tool_names[name]
+        matches = {
+            runtime
+            for alias, runtime in self._runtime_tool_names.items()
+            if runtime == name or _HASHED.sub("", alias) == name
+        }
+        return matches.pop() if len(matches) == 1 else name
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         messages = []

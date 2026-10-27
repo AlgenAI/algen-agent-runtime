@@ -88,3 +88,14 @@ from `algen_agent_runtime.workflows`:
 Use `examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
 `pattern_child_workflow`, `pattern_governed_research`, and the reference applications as current
 examples.
+
+## Running workflows from other systems
+
+A deployed project's service runs its `settings.workflows` over HTTP (docs/multi-agent-workflows.md,
+"Running workflows over HTTP"): `POST /v1/workflows/{name}/runs` starts one, `GET
+/v1/workflows/runs/{id}` follows it, and `.../approval` or `.../input` answers a waiting step.
+Give the trigger (a mail worker, a scheduler) a `workflow_id` per item it handles, so a retry
+finds the run it started. For approvals that people give in another system's inbox, configure
+`workflow_notifications` (an https webhook, signed with an `env://` secret) and have that system
+answer through `.../approval`; do not build a separate approval service. Hook modules must be
+under `security.trusted_plugin_prefixes`, as plugins are.

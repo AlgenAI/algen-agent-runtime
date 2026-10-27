@@ -145,11 +145,33 @@ async def test_unknown_and_invalid_calls_are_reported_to_the_model_too() -> None
     )
     result = await runtime.run(_request())
     assert result.status == RunStatus.COMPLETED
-    not_enabled, invalid = _tool_messages(provider)
-    assert not_enabled["error"]["type"] == "PolicyDeniedError"
-    assert "not enabled" in not_enabled["error"]["message"]
+    unknown, invalid = _tool_messages(provider)
+    assert unknown["error"] == {
+        "type": "UnknownTool",
+        "message": "unknown tool 'files.missing'; available: files.read",
+    }
     assert invalid["error"]["type"] == "ToolExecutionError"
     assert "invalid input" in invalid["error"]["message"]
+
+
+async def test_an_unknown_tool_is_reported_and_the_run_continues_by_default() -> None:
+    """A model that miswrites a tool's name hears which tools it has, whatever on_error says;
+    a tool that exists but is not enabled for the agent stays a policy breach."""
+    provider = MockModelProvider([tool_call_response("hr_find_people", {}), "Found nobody."])
+    runtime = make_runtime(provider, make_agent(enabled_tools=frozenset({"hr.find_people"})))
+    runtime.tools.register(_tool("hr.find_people", lambda a, c: {"people": []}))
+    result = await runtime.run(_request())
+    assert result.status == RunStatus.COMPLETED and result.output == "Found nobody."
+    [unknown] = _tool_messages(provider)
+    assert unknown["error"]["type"] == "UnknownTool"
+    assert "available: hr.find_people" in unknown["error"]["message"]
+
+    denied = make_runtime(
+        MockModelProvider([tool_call_response("files.read", {}), "never"]),
+        make_agent(enabled_tools=frozenset()),
+    )
+    denied.tools.register(_tool("files.read", lambda a, c: {"ok": True}))
+    assert (await denied.run(_request())).status == RunStatus.FAILED
 
 
 # R2: declining an approval

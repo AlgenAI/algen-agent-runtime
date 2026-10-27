@@ -191,6 +191,10 @@ class _ToolCallOutcome:
     memory_receipt: MemoryReceipt | None = None
 
 
+class _UnknownToolError(Exception):
+    """A model called a tool that does not exist; it is told so instead of the run failing."""
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -1583,6 +1587,16 @@ class AgentRuntime:
     ) -> None:
         try:
             tool = await self._admit_tool_call(state, agent, action)
+        except _UnknownToolError as exc:
+            # A name no tool has is the model's slip, not a policy breach: it hears which
+            # tools it has and carries on, whatever the agent's on_error.
+            await self._finish_tool_call_without_result(
+                state,
+                action,
+                {"error": {"type": "UnknownTool", "message": str(exc)}},
+                status="failed",
+            )
+            return
         except Exception as exc:
             await self._tool_call_failed(state, agent, action, exc)
             return
@@ -1598,12 +1612,27 @@ class AgentRuntime:
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
 
+    def _registered(self, name: str) -> bool:
+        """Whether any tool, or a tool the Runtime runs itself, has this name."""
+        if name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS}:
+            return True
+        try:
+            self.tools.get(name)
+        except NotFoundError:
+            return False
+        return True
+
     async def _admit_tool_call(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> Tool | None:
         """The tool to run, or None when the run paused for approval first."""
         call_id = action.id.removeprefix("tool-")
         if action.tool_name not in agent.enabled_tools:
+            if not self._registered(action.tool_name or ""):
+                available = ", ".join(sorted(agent.enabled_tools)[:50]) or "none"
+                raise _UnknownToolError(
+                    f"unknown tool {action.tool_name!r}; available: {available}"
+                )
             raise PolicyDeniedError(f"tool {action.tool_name!r} is not enabled for this agent")
         if action.tool_name in {WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS}:
             self._validate_context_policy(agent)

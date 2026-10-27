@@ -92,7 +92,7 @@ async def test_openai_maps_namespaced_tool_names_at_provider_boundary() -> None:
         )
     )
 
-    assert observed_name.startswith("teaching_build_study_plan_")
+    assert observed_name == "teaching__build_study_plan"
     assert response.tool_calls[0].name == "teaching.build_study_plan"
 
 
