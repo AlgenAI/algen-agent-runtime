@@ -6,6 +6,20 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- Document inspection for Excel (`XlsxDocumentExtractor`), PowerPoint (`PptxDocumentExtractor`)
+  and HTML (`HtmlDocumentExtractor`), and CSV/TSV through the plain-text extractor;
+  `extractor_for` returns them for `.xlsx`, `.pptx`, `.html`/`.htm`, `.csv` and `.tsv`. Standard
+  library only. Hidden sheets, rows, columns, slides, shapes and HTML elements are kept out of
+  the sanitized text and reported as `hidden_text.*` findings; Office packages get the DOCX
+  limits (part count, size, compression ratio, no DTD) and the macro and remote-content findings.
+  The shared package checks are in `security/ooxml.py`. See docs/document-security.md.
+
+### Changed
+
+- `extractor_for` names every supported format in its `ValueError` for an unknown suffix.
+
 ## [0.1.0a13] - 2026-10-27
 
 ### Added
