@@ -405,10 +405,33 @@ class DistributedExecutionSettings(StrictSettings):
     worker_concurrency: int = Field(default=4, ge=1, le=128)
 
 
+class WorkflowNotificationSettings(StrictSettings):
+    """Where the workflow service reports runs that wait for someone, or end."""
+
+    webhook_url: str = Field(min_length=8, max_length=2048)
+    # env:// reference to the key that signs each event (X-Algen-Signature: sha256=<hex>).
+    signing_secret: str | None = None
+    events: tuple[str, ...] = (
+        "workflow.awaiting_approval",
+        "workflow.awaiting_input",
+        "workflow.completed",
+        "workflow.failed",
+    )
+
+    @model_validator(mode="after")
+    def secure(self) -> WorkflowNotificationSettings:
+        if not self.webhook_url.startswith("https://"):
+            raise ValueError("workflow_notifications.webhook_url must be an https URL")
+        if self.signing_secret and not self.signing_secret.startswith("env://"):
+            raise ValueError("workflow_notifications.signing_secret must be an env:// reference")
+        return self
+
+
 class AppSettings(StrictSettings):
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     agents: tuple[AgentDefinition, ...] = ()
     workflows: dict[str, WorkflowManifest] = Field(default_factory=dict)
+    workflow_notifications: WorkflowNotificationSettings | None = None
     storage: StorageSettings = Field(default_factory=StorageSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     retrieval: dict[str, RetrievalSettings] = Field(default_factory=dict)

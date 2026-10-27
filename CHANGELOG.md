@@ -6,6 +6,26 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- Workflows over HTTP: `GET /v1/workflows`, `POST /v1/workflows/{name}/runs`,
+  `GET /v1/workflows/runs/{id}`, and `.../approval` and `.../input` to answer a waiting step, so
+  another system can start a deployed project's workflows and decide their approvals. Hook code
+  loads only from `security.trusted_plugin_prefixes`. `workflow_notifications` posts a signed
+  event when a run waits or ends. See docs/multi-agent-workflows.md.
+
+### Fixed
+
+- A dotted tool name no longer ends a run when a model shortens it. Providers that cannot take
+  dots in function names (Anthropic, OpenAI-compatible) now get a readable alias
+  (`hr.find_people` is sent as `hr__find_people`) when it fits and no other tool has it, and the
+  hash-suffixed alias only otherwise. A name a model returns maps back when it is the Runtime name
+  itself, or a hashed alias without its suffix, and exactly one tool matches.
+- A call to a tool that does not exist is answered with a tool error naming the agent's tools
+  (`UnknownTool`), and the run continues, whatever the agent's `tool_policy.on_error`. Before, the
+  run failed with `PolicyDeniedError`. A tool that exists but is not enabled for the agent is
+  still a policy breach.
+
 ## [0.1.0a12] - 2026-10-27
 
 ### Removed

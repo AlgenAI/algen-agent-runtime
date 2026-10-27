@@ -303,6 +303,39 @@ recovery. Interrupted nodes retry only when their manifest explicitly declares
 `recovery_policy: retry`; all others fail closed. Runtime owns these recovery semantics, while the
 host owns trusted hook construction and deciding which application workflows to activate.
 
+## Running workflows over HTTP
+
+The service (`algen-agent-runtime serve`) runs `settings.workflows` for other systems: a mail
+worker that starts a screening per application, a scheduler, an HR system that shows approvals in
+its own inbox.
+
+| Route | Scope | What it does |
+|---|---|---|
+| `GET /v1/workflows` | `runs:read` | The configured workflows, their input schema, and whether each can run |
+| `POST /v1/workflows/{name}/runs` | `runs:write` | Starts a run with `input` (text) or `inputs` (an object); a `workflow_id` you choose makes a retried start find the run it started |
+| `GET /v1/workflows/runs/{workflow_id}` | `runs:read` | Where the run stands: status, each step, what a waiting step asks (`pause`), and the result (`output`, from the manifest's `output_key`) |
+| `POST /v1/workflows/runs/{workflow_id}/approval` | `runs:write` | Answers the approval step it waits on: `approved`, `rejected`, or `modified` with `modified_parameters` |
+| `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write` | Answers the question a paused step asked, with `values` |
+
+Runs execute in the background with the container's checkpoint store, so with
+`storage.workflow_store: postgres` a waiting run survives a restart. Every call sees only the
+caller's tenant. A workflow's hook code is imported only from modules under
+`security.trusted_plugin_prefixes`; a workflow whose `hook_provider` is elsewhere is listed as not
+available and cannot be started.
+
+`workflow_notifications` sends a JSON event when a run waits for an approval or input, or
+completes or fails:
+
+```yaml
+workflow_notifications:
+  webhook_url: https://hr.example.com/hooks/algen   # its host must be in security.allowed_http_hosts
+  signing_secret: env://HR_WEBHOOK_KEY              # X-Algen-Signature: sha256=<HMAC of the body>
+```
+
+The event carries the run's id, workflow, tenant, and what the waiting step asks (its prompt,
+review fields and redacted parameters), never the run's values. A failed delivery is logged and
+does not affect the run.
+
 ## Runnable examples and Studio import
 
 Runtime ships the example package in both its source and wheel distributions. Studio can import any
