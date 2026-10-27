@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a11">v0.1.0a11 · latest</option>
+                    <option value="0.1.0a12">v0.1.0a12 · latest</option>
+                    <option value="0.1.0a11">v0.1.0a11</option>
                     <option value="0.1.0a10">v0.1.0a10</option>
                     <option value="0.1.0a9">v0.1.0a9</option>
                     <option value="0.1.0a8">v0.1.0a8</option>
@@ -1387,7 +1388,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a11</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a12</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1407,7 +1408,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a11 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a12 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1464,7 +1465,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2078,9 +2079,9 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                     <a class="doc-link" href="document-security.md" data-version-min="0.1.0a9"><strong>Untrusted
                             documents →</strong><span>PDF and DOCX inspection, hidden text, and
                             dispositions.</span></a>
-                    <a class="doc-link" href="email.md" data-version-min="0.1.0a9"><strong>Email and Gmail
-                            →</strong><span>Governed sending, the Gmail mailbox, and the application
-                            boundary.</span></a>
+                    <a class="doc-link" href="email.md" data-version-min="0.1.0a9"><strong>Email (deprecated)
+                            →</strong><span>The SMTP contracts until 0.2; connectors now live in
+                            algen-agent-tools.</span></a>
                     <a class="doc-link" href="provider-compatibility.md" data-version-min="0.1.0a9"><strong>Provider
                             compatibility →</strong><span>Capabilities, streamed usage, and Anthropic
                             notes.</span></a>
@@ -2094,7 +2095,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a11</span>.</footer>
+                    data-version-field="version">0.1.0a12</span>.</footer>
         </main>
     </div>
 
@@ -2220,9 +2221,41 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11'];
-        const LATEST_VERSION = '0.1.0a11';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12'];
+        const LATEST_VERSION = '0.1.0a12';
         const RELEASES = {
+            '0.1.0a12': {
+                date: '2026-10-27',
+                kind: 'Connectors move out',
+                title: 'Connectors move to algen-agent-tools, email tools pass the pii guardrail, and a smaller wheel',
+                summary: 'The built-in email and database connectors move to the algen-agent-tools package: communications and database_tool are deprecated and the Gmail adapter is removed. Email tools now run under the default pii guardrail, @tool refuses undeclared arguments on direct calls, and the wheel no longer ships the domain case studies.',
+                fields: {
+                    tag: 'v0.1.0a12',
+                    package: '0.1.0a12 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a12',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Removed', items: [
+                            '<strong>Gmail adapter.</strong> <code>GmailMailboxClient</code>, <code>gmail_inbox_tool</code> and their models are gone; it reported Bcc recipients as accepted although they were never delivered. Use <code>gmail_toolkit</code> from <code>algen-agent-tools[gmail]</code>, which delivers Bcc.',
+                            '<strong>Domain case studies in the wheel.</strong> <code>case_study_responsible_hiring</code> and <code>pattern_text_to_sql</code> stay in the repository and sdist only; the other examples still ship.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            '<strong>Email under default guardrails.</strong> A tool argument whose schema declares <code>format: email</code> and holds exactly one address is no longer redacted by <code>pii</code>; every other argument still is. See <a href="agent-tooling.md">agent tooling</a>.',
+                            '<strong>Undeclared arguments.</strong> A direct <code>Tool.execute</code> on a <code>@tool</code> tool refuses fields its schema does not declare, as the executor already did.'
+                        ]
+                    },
+                    {
+                        kind: 'Deprecated', items: [
+                            '<code>communications</code> (message contracts, <code>SmtpEmailSender</code>, <code>email_tool</code>) and <code>tools.adapters.database_tool</code> warn on use and are removed in 0.2. Use <code>algen_agent_tools.mail</code>, <code>.smtp</code> and <code>PostgresToolkit</code>; see <a href="email.md">email</a>.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a11': {
                 date: '2026-10-27',
                 kind: 'Code components and traces',
@@ -2231,7 +2264,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a11',
                     package: '0.1.0a11 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a12',
                     version: '0.1.0a11',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },

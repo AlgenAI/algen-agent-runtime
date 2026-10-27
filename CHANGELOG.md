@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a12] - 2026-10-27
+
 ### Removed
 
 - The Gmail adapter: `communications.gmail`, `GmailMailboxClient`, `GmailMailboxPage`,
@@ -678,7 +680,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a11...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a12...HEAD
+[0.1.0a12]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a11...v0.1.0a12
 [0.1.0a11]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a10...v0.1.0a11
 [0.1.0a10]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a9...v0.1.0a10
 [0.1.0a9]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a8...v0.1.0a9
