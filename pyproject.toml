@@ -99,10 +99,13 @@ Changelog = "https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.
 path = "src/algen_agent_runtime/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/algen_agent_runtime"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"examples" = "examples"
+packages = ["src/algen_agent_runtime", "examples"]
+# Studio imports the generic examples' workflow hooks from the installed wheel. Domain case studies
+# stay in the repository and sdist only (tests/unit/test_package_metadata.py checks this).
+exclude = [
+  "examples/case_study_responsible_hiring",
+  "examples/pattern_text_to_sql",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -120,6 +123,12 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# The deprecated connectors keep their own tests until they are removed in 0.2;
+# tests/unit/test_deprecations.py asserts the warnings themselves.
+filterwarnings = [
+  "ignore:algen_agent_runtime.communications is deprecated:DeprecationWarning",
+  "ignore:database_tool is deprecated:DeprecationWarning",
+]
 markers = [
   "live: tests requiring external credentials",
   "integration: tests requiring external or behavioral storage/network integration",

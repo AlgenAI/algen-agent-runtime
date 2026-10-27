@@ -14,7 +14,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol, overload
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, create_model
+import jsonschema
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import ConfigurationError
@@ -228,6 +229,23 @@ def _signature(function: Callable[..., Any]) -> _Signature:
     return _Signature(model, None, tuple(fields), context_parameter, output)
 
 
+def _undeclared_fields(
+    validator: Any, arguments: dict[str, Any]
+) -> list[tuple[tuple[str | int, ...], Any]]:
+    """Each argument, at any depth, that sits in an object the schema closes but does not list."""
+    found: list[tuple[tuple[str | int, ...], Any]] = []
+    for error in validator.iter_errors(arguments):
+        if error.validator != "additionalProperties" or not isinstance(error.instance, dict):
+            continue
+        declared = error.schema.get("properties", {})
+        found.extend(
+            ((*error.absolute_path, key), value)
+            for key, value in error.instance.items()
+            if key not in declared
+        )
+    return found
+
+
 def _description(function: Callable[..., Any], description: str | None) -> str:
     text = description or inspect.getdoc(function)
     if not text:
@@ -285,8 +303,23 @@ def build_tool(
         requires_approval=preset.requires_approval,
     )
 
+    # The advertised schema closes every object, but a caller's Pydantic model may ignore unknown
+    # fields; refuse them here too so a direct ``execute`` matches the executor.
+    input_validator = jsonschema.validators.validator_for(definition.input_schema)(
+        definition.input_schema
+    )
+
     async def run(arguments: dict[str, Any], context: ToolContext) -> Any:
         validated = signature.input_model.model_validate(arguments)
+        undeclared = _undeclared_fields(input_validator, arguments)
+        if undeclared:
+            raise ValidationError.from_exception_data(
+                signature.input_model.__name__,
+                [
+                    {"type": "extra_forbidden", "loc": loc, "input": value}
+                    for loc, value in undeclared
+                ],
+            )
         if signature.whole_model is not None:
             keyword_arguments: dict[str, Any] = {signature.whole_model: validated}
         else:

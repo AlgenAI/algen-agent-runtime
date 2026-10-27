@@ -93,10 +93,14 @@ jobs:
                   "algen_agent_runtime/persistence/migrations/001_initial.sql",
                   "algen_agent_runtime/tools/starter/__init__.py",
                   "algen_agent_runtime/mcp/__init__.py",
+                  "examples/quickstart_approval/__init__.py",
               }
               missing = required - names
               if missing:
                   raise SystemExit(f"wheel missing required files: {sorted(missing)}")
+              domain = ("examples/case_study_responsible_hiring/", "examples/pattern_text_to_sql/")
+              if any(name.startswith(domain) for name in names):
+                  raise SystemExit("wheel contains domain case studies (see tests/unit/test_wheel_contents.py)")
               if any("__pycache__" in name or name.endswith(".pyc") for name in names):
                   raise SystemExit("wheel contains Python cache files")
           with tarfile.open(sdist) as archive:

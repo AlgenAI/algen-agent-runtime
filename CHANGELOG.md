@@ -6,6 +6,52 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Removed
+
+- The Gmail adapter: `communications.gmail`, `GmailMailboxClient`, `GmailMailboxPage`,
+  `GmailOAuthSettings`, `InboundEmailAttachment`, `InboundEmailSummary` and `gmail_inbox_tool`.
+  Its receipts listed Bcc recipients as accepted although they were never delivered. The Gmail
+  connector now lives in `algen-agent-tools` (`algen_agent_tools.gmail`), which delivers Bcc.
+  Importing a removed name from `communications` raises an `ImportError` that names the
+  replacement.
+- The `case_study_responsible_hiring` and `pattern_text_to_sql` examples are no longer installed
+  with the wheel. They stay in the repository and sdist; the other examples, which Studio imports,
+  are unchanged.
+
+### Fixed
+
+- `@tool` tools refuse undeclared arguments when called directly through `Tool.execute`. The
+  advertised input schema already closed every object and the executor enforced it, but a direct
+  call let a Pydantic model that ignores unknown fields drop them silently.
+- The default `pii` guardrail no longer refuses every email tool. A tool argument whose schema
+  declares `"format": "email"` and holds exactly one address is left as is; all other arguments
+  are still redacted. The deprecated `EmailAddress` declares the format, so `email_tool` works
+  under default guardrails.
+
+### Deprecated
+
+- `algen_agent_runtime.communications` (`EmailMessage` and the other message contracts,
+  `SmtpEmailSender`, `SmtpSettings`, `email_tool`, `GmailMailboxClient`, `gmail_inbox_tool`) moved
+  to the `algen-agent-tools` package and now raises a `DeprecationWarning` on import, attributed
+  to the importing module. It keeps working until it is removed in 0.2.
+- `tools.adapters.database_tool`, which took a raw statement from the model, raises a
+  `DeprecationWarning`; declare typed queries with `algen_agent_tools.postgres.PostgresToolkit`.
+  `remote_tool` and `mcp_tool` stay: they are the Runtime's HTTP and MCP adapters.
+
+### Upgrade notes
+
+- Gmail users: `pip install "algen-agent-tools[gmail]"` and use `gmail_toolkit` (plugin
+  `algen_agent_tools.gmail`); the tools are `gmail.list_messages` and `gmail.send_email`.
+- Agents that set `guardrail_policy.tool_policies` without `pii` only so email tools could run
+  can put `pii` back once their email tools declare `"format": "email"` on recipient fields.
+- Code that imported `examples.case_study_responsible_hiring` or `examples.pattern_text_to_sql`
+  from the installed package must run them from a repository checkout.
+- `pip install "algen-agent-tools[smtp]"` (or `[gmail]`, `[postgres]`) and follow its
+  `docs/migrating-from-runtime.md`. The transports and message models keep their names under
+  `algen_agent_tools.mail`, `.smtp` and `.gmail`; the new `send_email` tools are named
+  `smtp.send_email` / `gmail.send_email` with permissions `smtp.write` / `gmail.write`, take the
+  sender from deployment configuration and accept no custom headers.
+
 ## [0.1.0a11] - 2026-10-27
 
 ### Added

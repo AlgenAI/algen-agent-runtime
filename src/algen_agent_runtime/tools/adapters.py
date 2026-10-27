@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
@@ -72,6 +73,18 @@ def database_tool(
     read_only: bool = True,
     timeout_seconds: float = 30,
 ) -> Tool:
+    """Deprecated: a tool that takes a raw statement from the model.
+
+    Use ``algen_agent_tools.postgres.PostgresToolkit.query`` from the ``algen-agent-tools``
+    package, which declares each query as a typed tool. Removed in 0.2.
+    """
+    warnings.warn(
+        "database_tool is deprecated and will be removed in 0.2: declare typed queries with "
+        "algen_agent_tools.postgres.PostgresToolkit.query from the algen-agent-tools package",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:
         return await handler(arguments["statement"], arguments.get("parameters", {}), context)
 

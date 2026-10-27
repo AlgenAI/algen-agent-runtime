@@ -59,22 +59,27 @@ redirects across trust boundaries, propagate the idempotency key, and bound resp
 
 ## Email
 
-Use `communications.email.EmailMessage` and `email_tool` rather than creating an application-local
-send contract. Addresses, headers, recipients, subject/body size, attachments, and provider receipts
-are validated and content-minimal. Attachments are tenant-authorized Runtime artifact references;
-never accept arbitrary filesystem paths. The first adapter, `SmtpEmailSender`, requires TLS by
-default, expects credentials resolved by the deployment secret boundary, keeps BCC out of message
-headers, and derives a stable Message-ID from the Runtime idempotency key.
+Use the `algen-agent-tools` package: declare `algen_agent_tools.smtp` or `algen_agent_tools.gmail`
+in `domain_plugins` (trusted prefix `algen_agent_tools`), or build `smtp_toolkit(...)` /
+`gmail_toolkit(...)` in the project's plugin. Their `send_email` tools are external, keyed and
+single-attempt, take the sender from deployment configuration rather than the model, refuse custom
+headers, accept attachments only as tenant-authorized Runtime artifact references, and can bound
+recipients with `allowed_domains`. `algen_agent_runtime.communications` (`email_tool`,
+`SmtpEmailSender`) is deprecated and removed in 0.2, and its Gmail adapter is already gone; do not
+use it in new projects.
 
 Email is an external keyed side effect. Keep Runtime's durable tool-execution ledger enabled in
 production. A provider timeout after submission is indeterminate and must be reconciled rather than
-automatically replayed. Delivery approval, suppression, bounce/complaint handling, reply ingestion,
-provider OAuth, and campaign policy remain application or connector responsibilities.
+automatically replayed. Delivery approval, suppression, bounce/complaint handling, reply ingestion
+and campaign policy remain application responsibilities.
 
 ## Databases and query sources
 
-Use `database_tool` with a deployment-owned async handler. Prefer read-only, parameterized queries
-and a database credential restricted at the server. For analytical workflows, declare a secret-safe
+Declare each query the agent needs as a typed tool with
+`algen_agent_tools.postgres.PostgresToolkit.query` from the `algen-agent-tools` package: the model
+fills typed parameters and never writes SQL, reads run read-only under a statement timeout and row
+limit, and writes can bind the idempotency key. Use a database credential restricted at the server.
+`database_tool`, which took a raw statement, is deprecated and removed in 0.2. For analytical workflows, declare a secret-safe
 `query_source` and a node resource with `kind: query_source`. SQL generation, validation, execution,
 repair, and verification remain separate bounded stages.
 

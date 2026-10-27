@@ -1,5 +1,13 @@
 # Email tool and SMTP adapter
 
+> [!WARNING]
+> **Deprecated.** `algen_agent_runtime.communications` moved to the
+> [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools) package and warns on import;
+> it will be removed in 0.2. Use `algen_agent_tools.mail` for the message contracts and
+> `smtp_toolkit` or `gmail_toolkit` (plugins `algen_agent_tools.smtp`, `algen_agent_tools.gmail`)
+> for the tools. The new `send_email` tools fix the sender in deployment configuration and do not
+> accept custom headers from the model. See its `docs/migrating-from-runtime.md`.
+
 Algen Agent Runtime provides provider-neutral outbound email contracts, a governed Runtime tool, and
 a first SMTP adapter. Applications own templates, recipient policy, consent/suppression rules,
 provider credentials, inbound mail, and delivery-event reconciliation.
@@ -49,13 +57,10 @@ application reconciliation process must query the provider or inspect delivery e
 
 ## Gmail
 
-`GmailMailboxClient(GmailOAuthSettings(...))` sends through the Gmail API with an OAuth refresh
-token and reads bounded inbox metadata: `list_messages(query=..., max_results=...)` returns
-`InboundEmailSummary` rows (sender, subject, snippet, labels and attachment descriptors) and
-`download_attachment(message_id, attachment_id)` fetches one attachment within
-`max_attachment_bytes`. `gmail_inbox_tool(mailbox)` exposes the listing as the read-only tool
-`communications.email.inbox`. Secrets are `SecretStr` values resolved by the application; they never
-appear in manifests or model context.
+The Gmail adapter (`GmailMailboxClient`, `gmail_inbox_tool`) was removed in 0.1.0a12. Use
+`gmail_toolkit` from [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools)
+(`pip install "algen-agent-tools[gmail]"`, plugin `algen_agent_tools.gmail`), which provides
+`gmail.list_messages` and `gmail.send_email`.
 
 ## Application boundary
 

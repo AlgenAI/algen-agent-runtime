@@ -28,8 +28,9 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
   predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
   lifecycle events; compose exact-version child workflows without duplicating their topology.
 - **Governed communications:** send validated, idempotency-aware email through a provider-neutral
-  contract, TLS-first SMTP, or OAuth Gmail adapter; read bounded Gmail metadata while keeping
-  attachments behind Runtime artifact references.
+  contract and TLS-first SMTP adapter, keeping attachments behind Runtime artifact references.
+  Gmail, SMTP and database connectors live in
+  [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools).
 - **Typed System One decisions:** use the optional TypeSafe Jev client for fast Choice, Score, and
   Noul routing gates while keeping generative work in model providers and deterministic work in code.
 - **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
@@ -404,6 +405,8 @@ The source and wheel distributions include the `examples` package so portable wo
 providers remain importable by Algen Agent Studio. Import an example directory—or its `agent.yaml`
 or `config/agent.yaml`—and Studio preserves the Runtime `WorkflowManifest` exactly. Credential-free
 examples use deterministic mock providers; service-backed case studies retain explicit prerequisites.
+The domain case studies `case_study_responsible_hiring` and `pattern_text_to_sql` ship only in
+the repository and sdist, not the wheel; run them from a checkout.
 
 The workflow examples cover first-class approve/modify/reject checkpoints, human clarification,
 bounded repair, exact-version parent/child dispatch, dynamic fan-out,
