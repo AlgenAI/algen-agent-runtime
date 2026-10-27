@@ -1,5 +1,5 @@
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyPoint
-from algen_agent_runtime.policies.engine import CompositePolicyEngine
+from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedactionPolicy
 from algen_agent_runtime.types.contracts import Message, Role
 
 
@@ -135,3 +135,76 @@ async def test_secret_redaction_preserves_role_enum() -> None:
     )
 
     assert decision.value[0].role is Role.SYSTEM
+
+
+_RECIPIENT = {"type": "string", "format": "email"}
+_SEND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "to": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"address": _RECIPIENT, "name": {"type": "string"}},
+            },
+        },
+        "reply_to": {"anyOf": [{"$ref": "#/$defs/Address"}, {"type": "null"}]},
+        "body": {"type": "string"},
+    },
+    "$defs": {"Address": {"type": "object", "properties": {"address": _RECIPIENT}}},
+}
+
+
+def _tool(schema: dict[str, object]) -> object:
+    return type("Definition", (), {"input_schema": schema})()
+
+
+async def test_pii_leaves_declared_email_arguments_alone() -> None:
+    arguments = {
+        "to": [{"address": "kim@example.com", "name": "Kim"}],
+        "reply_to": {"address": "desk@example.org"},
+        "body": "Your order shipped.",
+    }
+
+    for point in (PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL):
+        decision = await PIIRedactionPolicy().evaluate(
+            point, arguments, {"tool": _tool(_SEND_SCHEMA)}
+        )
+        assert decision.action == PolicyAction.ALLOW, point
+
+
+async def test_pii_still_redacts_everything_else_in_the_call() -> None:
+    arguments = {
+        "to": [{"address": "kim@example.com", "name": "Kim lee@example.net"}],
+        "body": "Call 9876543210 or write to ops@example.com",
+    }
+
+    decision = await PIIRedactionPolicy().evaluate(
+        PolicyPoint.BEFORE_TOOL, arguments, {"tool": _tool(_SEND_SCHEMA)}
+    )
+
+    assert decision.action == PolicyAction.REDACT
+    assert decision.value["to"][0]["address"] == "kim@example.com"
+    assert decision.value["to"][0]["name"] == "Kim [REDACTED_EMAIL]"
+    assert decision.value["body"] == "Call [REDACTED_PHONE] or write to [REDACTED_EMAIL]"
+
+
+async def test_pii_exempts_only_a_single_address_in_a_declared_field() -> None:
+    smuggled = {"to": [{"address": "kim@example.com 9876543210"}]}
+    undeclared = {"body": "kim@example.com"}
+
+    for arguments in (smuggled, undeclared):
+        decision = await PIIRedactionPolicy().evaluate(
+            PolicyPoint.BEFORE_TOOL, arguments, {"tool": _tool(_SEND_SCHEMA)}
+        )
+        assert decision.action == PolicyAction.REDACT, arguments
+
+
+async def test_pii_ignores_tool_schemas_outside_tool_arguments() -> None:
+    decision = await PIIRedactionPolicy().evaluate(
+        PolicyPoint.AFTER_TOOL,
+        {"to": [{"address": "kim@example.com"}]},
+        {"tool": _tool(_SEND_SCHEMA)},
+    )
+
+    assert decision.action == PolicyAction.REDACT

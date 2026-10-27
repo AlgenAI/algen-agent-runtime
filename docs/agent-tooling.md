@@ -16,6 +16,13 @@ contain secret-like text, run independent tool calls together, and remember what
 
 ## Behaviour changes
 
+- The `pii` guardrail no longer redacts a tool argument whose input schema declares
+  `"format": "email"` when the value is exactly one email address: a recipient is the tool's
+  declared purpose, so email tools work under the default guardrails. Every other argument (a
+  name, subject or body) is still redacted, and a redaction still refuses the call. Mark an
+  address field with `Field(json_schema_extra={"format": "email"})`.
+- A tool built with `@tool` refuses arguments its input schema does not declare even when called
+  directly through `Tool.execute`, as the executor already did.
 - The tool executor now passes the agent to the policy engine, so an agent's
   `guardrail_policy.policies` decide which policies run at `before_tool` and `after_tool`, as
   they already did at every other boundary. Previously every registered policy ran there. Agents

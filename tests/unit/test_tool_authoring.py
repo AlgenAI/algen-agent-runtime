@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Literal
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.exceptions.errors import ConfigurationError
@@ -130,6 +130,34 @@ async def test_sync_and_async_handlers_run_through_the_executor() -> None:
         "domain": "acme.com",
         "address": {"city": "Pune", "postcode": None},
     }
+
+
+@tool(name="crm.move")
+async def move(account_id: str, address: Address) -> str:
+    """Move an account to a new address."""
+    return f"{account_id}:{address.city}"
+
+
+@pytest.mark.parametrize(
+    ("item", "arguments"),
+    [
+        (update_owner, {"account_id": "a1", "owner": "kim", "admin": True}),
+        (move, {"account_id": "a1", "address": {"city": "Pune", "admin": True}}),
+    ],
+)
+async def test_a_direct_call_refuses_fields_the_schema_does_not_declare(
+    item: Tool, arguments: dict[str, Any]
+) -> None:
+    # Address and OwnerChange ignore unknown fields, but the advertised schema closes them.
+    with pytest.raises(ValidationError, match=r"admin\n  Extra inputs are not permitted"):
+        await item.execute(arguments, fake_tool_context(item))
+
+    assert (
+        await move.execute(
+            {"account_id": "a1", "address": {"city": "Pune"}}, fake_tool_context(move)
+        )
+        == "a1:Pune"
+    )
 
 
 def test_presets_reproduce_the_governed_tool_rules() -> None:

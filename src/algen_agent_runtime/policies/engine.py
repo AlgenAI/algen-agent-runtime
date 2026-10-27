@@ -93,11 +93,75 @@ class SecretRedactionPolicy:
         return value, False
 
 
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
+_TOOL_ARGUMENT_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL})
+
+
+class _SchemaNode:
+    """A position in a tool's JSON Schema, following ``properties``, ``items``, local
+    ``$ref`` and ``anyOf``/``oneOf``/``allOf`` alternatives."""
+
+    def __init__(self, nodes: tuple[Mapping[str, Any], ...], root: Mapping[str, Any]) -> None:
+        self._nodes = nodes
+        self._root = root
+
+    @classmethod
+    def root(cls, schema: Any) -> _SchemaNode | None:
+        if not isinstance(schema, Mapping):
+            return None
+        return cls((schema,), schema)._expand()
+
+    def _resolve(self, node: Mapping[str, Any], depth: int = 0) -> list[Mapping[str, Any]]:
+        if depth > 16:
+            return []
+        reference = node.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/"):
+            target: Any = self._root
+            for part in reference[2:].split("/"):
+                target = target.get(part) if isinstance(target, Mapping) else None
+            if isinstance(target, Mapping):
+                return self._resolve(target, depth + 1)
+            return []
+        resolved = [node]
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            for branch in node.get(keyword) or ():
+                if isinstance(branch, Mapping):
+                    resolved.extend(self._resolve(branch, depth + 1))
+        return resolved
+
+    def _expand(self) -> _SchemaNode | None:
+        nodes = tuple(item for node in self._nodes for item in self._resolve(node))
+        return _SchemaNode(nodes, self._root) if nodes else None
+
+    def _children(self, keyword: str, name: str | None = None) -> _SchemaNode | None:
+        found: list[Mapping[str, Any]] = []
+        for node in self._nodes:
+            child = node.get(keyword)
+            if name is not None:
+                child = child.get(name) if isinstance(child, Mapping) else None
+            if isinstance(child, Mapping):
+                found.append(child)
+        return _SchemaNode(tuple(found), self._root)._expand() if found else None
+
+    def property(self, name: Any) -> _SchemaNode | None:
+        return self._children("properties", str(name))
+
+    def items(self) -> _SchemaNode | None:
+        return self._children("items")
+
+    def is_email(self) -> bool:
+        return any(node.get("format") == "email" for node in self._nodes)
+
+
 class PIIRedactionPolicy:
     """Redact common direct identifiers before they cross an agent boundary.
 
     The patterns are deliberately conservative. Deployments can register a specialised
     DLP policy for jurisdiction- or institution-specific identifiers.
+
+    A tool argument whose input schema declares ``"format": "email"`` and whose value is
+    exactly one email address is the tool's declared purpose (a recipient, say), so it is
+    left as is; every other argument, such as a subject or body, is still redacted.
     """
 
     name = "pii"
@@ -105,7 +169,7 @@ class PIIRedactionPolicy:
     enforcement_mode = "warn"
     applies_to = _CONTENT_BOUNDARIES
     _patterns = (
-        ("email", re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)),
+        ("email", _EMAIL),
         (
             "phone",
             re.compile(r"(?<!\d)(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?!\d)"),
@@ -119,7 +183,10 @@ class PIIRedactionPolicy:
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
     ) -> PolicyDecision:
-        transformed, labels = self._redact(payload)
+        schema: Any = None
+        if point in _TOOL_ARGUMENT_POINTS:
+            schema = getattr(context.get("tool"), "input_schema", None)
+        transformed, labels = self._redact(payload, _SchemaNode.root(schema))
         if labels:
             return PolicyDecision(
                 action=PolicyAction.REDACT,
@@ -132,10 +199,12 @@ class PIIRedactionPolicy:
             action=PolicyAction.ALLOW, reason_code="pii.clear", reason="No PII detected."
         )
 
-    def _redact(self, value: Any) -> tuple[Any, set[str]]:
+    def _redact(self, value: Any, schema: _SchemaNode | None = None) -> tuple[Any, set[str]]:
         if isinstance(value, Enum):
             return value, set()
         if isinstance(value, str):
+            if schema is not None and schema.is_email() and _EMAIL.fullmatch(value):
+                return value, set()
             transformed = value
             labels: set[str] = set()
             for label, pattern in self._patterns:
@@ -147,7 +216,9 @@ class PIIRedactionPolicy:
             updates: dict[str, Any] = {}
             model_labels: set[str] = set()
             for name in type(value).model_fields:
-                item, item_labels = self._redact(getattr(value, name))
+                item, item_labels = self._redact(
+                    getattr(value, name), schema.property(name) if schema else None
+                )
                 updates[name] = item
                 model_labels.update(item_labels)
             return value.model_copy(update=updates) if model_labels else value, model_labels
@@ -155,7 +226,9 @@ class PIIRedactionPolicy:
             transformed_mapping: dict[Any, Any] = {}
             mapping_labels: set[str] = set()
             for key, item in value.items():
-                transformed_item, item_labels = self._redact(item)
+                transformed_item, item_labels = self._redact(
+                    item, schema.property(key) if schema else None
+                )
                 transformed_mapping[key] = transformed_item
                 mapping_labels.update(item_labels)
             return transformed_mapping if mapping_labels else value, mapping_labels
@@ -163,7 +236,9 @@ class PIIRedactionPolicy:
             transformed_items = []
             sequence_labels: set[str] = set()
             for item in value:
-                transformed_item, item_labels = self._redact(item)
+                transformed_item, item_labels = self._redact(
+                    item, schema.items() if schema else None
+                )
                 transformed_items.append(transformed_item)
                 sequence_labels.update(item_labels)
             if not sequence_labels:

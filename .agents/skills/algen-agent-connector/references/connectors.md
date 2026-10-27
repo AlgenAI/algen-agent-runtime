@@ -65,8 +65,8 @@ in `domain_plugins` (trusted prefix `algen_agent_tools`), or build `smtp_toolkit
 single-attempt, take the sender from deployment configuration rather than the model, refuse custom
 headers, accept attachments only as tenant-authorized Runtime artifact references, and can bound
 recipients with `allowed_domains`. `algen_agent_runtime.communications` (`email_tool`,
-`gmail_inbox_tool`, `SmtpEmailSender`) is deprecated and removed in 0.2; do not use it in new
-projects.
+`SmtpEmailSender`) is deprecated and removed in 0.2, and its Gmail adapter is already gone; do not
+use it in new projects.
 
 Email is an external keyed side effect. Keep Runtime's durable tool-execution ledger enabled in
 production. A provider timeout after submission is indeterminate and must be reconciled rather than
