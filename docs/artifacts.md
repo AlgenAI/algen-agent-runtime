@@ -127,6 +127,28 @@ Run a credential-free paging example with:
 python -m examples.context_offloading
 ```
 
+## Shortened older tool results
+
+Packing keeps the newest messages that fit `max_estimated_tokens` and drops older tool exchanges
+whole. On a long run the model then forgets what it already retrieved and may call the same
+tools again. Opt in to keep those exchanges in shortened form instead:
+
+```yaml
+context_policy:
+  shorten_older_tool_results: true
+  shortened_tool_result_chars: 1200 # 64 to 16384
+```
+
+When an older tool exchange no longer fits, each text result longer than
+`shortened_tool_result_chars` is cut to that length and ends with a note that it was shortened
+and already retrieved. The tool call stays with its results, so the exchange stays valid for every
+provider. Packing continues with older exchanges while the shortened versions fit and stops at the
+first that does not. Recent results, required messages and non-text blocks are never changed,
+and nothing is stored or rewritten in the run history: shortening happens only in the request
+sent to the model. The default and retrieval builders honour the policy; it is off by default.
+It works alongside `offload_tool_results` (an offloaded reference is already short) and
+`compact_history` (which summarises before packing).
+
 ## Recoverable history compaction
 
 Built-in context builders retain execution messages in `RunState.context_history`, separately from

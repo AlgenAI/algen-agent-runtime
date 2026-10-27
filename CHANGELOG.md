@@ -6,6 +6,16 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `context_policy.shorten_older_tool_results` (off by default) with
+  `shortened_tool_result_chars` (1200): when an older tool exchange no longer fits the context
+  budget, its long text results are cut to their opening and marked as shortened instead of the
+  exchange being dropped, so a long run keeps a record of what it already looked up. The call
+  stays with its results; only the request sent to the model changes. `pack_messages` takes the
+  matching `shorten_tool_results_to` keyword, and `DefaultContextBuilder.pack` an optional
+  `ContextPolicy`. See docs/artifacts.md.
+
 ## [0.1.0a13] - 2026-10-27
 
 ### Added

@@ -222,6 +222,10 @@ class ContextPolicy(StrictModel):
     compaction_keep_recent_groups: int = Field(default=6, ge=1)
     compaction_max_input_tokens: int = Field(default=8_000, ge=256)
     compaction_max_output_tokens: int = Field(default=1_024, ge=64)
+    # Older tool results that no longer fit are cut to their opening instead of being dropped, so a
+    # long run still knows what it already retrieved and does not look it up again.
+    shorten_older_tool_results: bool = False
+    shortened_tool_result_chars: int = Field(default=1_200, ge=64, le=16_384)
 
     @model_validator(mode="after")
     def archive_requires_compaction(self) -> ContextPolicy:
