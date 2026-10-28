@@ -89,10 +89,13 @@ from algen_agent_runtime.models.providers.adapters import (
     AnthropicProvider,
     AzureOpenAIProvider,
     DeepSeekProvider,
+    GeminiProvider,
+    GroqProvider,
     HuggingFaceInferenceProvider,
     MistralProvider,
     OllamaProvider,
     OpenAIProvider,
+    XAIProvider,
 )
 from algen_agent_runtime.models.providers.local_transformers import LocalTransformersProvider
 from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
@@ -371,6 +374,9 @@ DEFAULT_PROVIDER_API_KEYS: dict[str, str] = {
     "deepseek": "env://DEEPSEEK_API_KEY",
     "mistral": "env://MISTRAL_API_KEY",
     "huggingface_inference": "env://HF_TOKEN",
+    "gemini": "env://GEMINI_API_KEY",
+    "xai": "env://XAI_API_KEY",
+    "groq": "env://GROQ_API_KEY",
 }
 """The secret a provider type reads when its ``api_key`` is not configured."""
 
@@ -687,6 +693,23 @@ def build_container(
         elif provider_config.type == "ollama":
             provider = OllamaProvider(
                 base_url=provider_config.base_url or "http://127.0.0.1:11434/v1",
+                **kwargs,
+            )
+        elif provider_config.type in {"gemini", "xai", "groq"}:
+            hosted = {"gemini": GeminiProvider, "xai": XAIProvider, "groq": GroqProvider}
+            provider_class = hosted[provider_config.type]
+            hosted_kwargs: dict[str, Any] = {}
+            if provider_config.base_url:
+                hosted_kwargs["base_url"] = provider_config.base_url
+            provider = provider_class(
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS[provider_config.type],
+                capabilities=(
+                    provider_config.capabilities
+                    if "capabilities" in provider_config.model_fields_set
+                    else None
+                ),
+                secret_provider=secret_provider,
+                **hosted_kwargs,
                 **kwargs,
             )
         elif provider_config.type == "huggingface_inference":

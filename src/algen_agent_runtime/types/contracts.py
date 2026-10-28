@@ -168,7 +168,7 @@ class ModelProfile(StrictModel):
     quality_tier: int = Field(default=1, ge=0, le=5)
     max_cost_per_1k_tokens: float | None = Field(default=None, ge=0)
     max_latency_ms: float | None = Field(default=None, ge=0)
-    routing_preference: Literal["balanced", "local_first", "cloud_first"] = "balanced"
+    routing_preference: Literal["balanced", "local_first", "cloud_first", "ordered"] = "balanced"
     context_window_tokens: int | None = Field(default=None, ge=1)
     context_safety_margin_tokens: int = Field(default=256, ge=0)
     extensions: dict[str, Any] = Field(default_factory=dict)

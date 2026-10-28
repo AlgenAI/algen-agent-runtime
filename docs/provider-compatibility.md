@@ -9,6 +9,9 @@ Capabilities depend on the selected model and server. These adapter defaults are
 | Anthropic | yes | yes | yes | yes | no | yes | Messages |
 | DeepSeek | yes | yes | model-dependent | no strict guarantee | endpoint-dependent | no | OpenAI-compatible |
 | Mistral AI | yes | yes | model-dependent | model-dependent | yes | model-dependent | Mistral Chat/Embeddings |
+| Google Gemini | yes | yes | yes | yes | yes | yes | OpenAI-compatible (Gemini API) |
+| xAI Grok | yes | yes | yes | yes | no | model-dependent | OpenAI-compatible |
+| Groq | yes | yes | model-dependent | model-dependent | no | no | OpenAI-compatible |
 | Ollama | yes | yes | model-dependent | model-dependent | yes | model-dependent | OpenAI-compatible |
 | Hugging Face Inference | yes | yes | model-dependent | no guarantee | endpoint-dependent | model-dependent | OpenAI-compatible router |
 | Local Transformers | yes | completion only | no | no | no | no | in-process |
@@ -23,6 +26,15 @@ OpenAI-style adapters ask for token usage on streamed calls (`stream_options.inc
 budgets and metering count them. A server that rejects the field is configured with
 `stream_usage: false` on its provider entry; Mistral defaults to off because its API reports usage
 unasked. `stream_options` from profile extensions are kept.
+
+## Gemini notes
+
+- `type: gemini` calls `https://generativelanguage.googleapis.com/v1beta/openai`; set `base_url` to
+  use another endpoint. Thinking models accept `reasoning_effort` (`low`, `medium`, `high`) as a
+  profile extension; without it, a small `max_output_tokens` can be spent on hidden reasoning.
+- The endpoint keeps only the last system message, so the adapter merges every system message
+  (agent instructions, retrieved evidence, compaction summaries), in order, into one.
+- Embedding models (`gemini-embedding-*`) report `chat: false, embeddings: true`.
 
 ## Anthropic notes
 
