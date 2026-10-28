@@ -272,6 +272,13 @@ class TelemetrySettings(StrictSettings):
     service_name: str = "algen-agent-runtime"
     trace_level: Literal["minimal", "standard", "detailed"] = "detailed"
     otlp_endpoint: str | None = None
+    otlp_metrics_endpoint: str | None = Field(
+        default=None,
+        description="OTLP/HTTP metrics endpoint, e.g. https://collector:4318/v1/metrics. Unset: "
+        "the Runtime's metrics are exported only by a meter provider installed elsewhere, such "
+        "as Traccia's.",
+    )
+    otlp_metrics_export_interval_seconds: int = Field(default=60, ge=1, le=3_600)
     include_content: bool = False
     include_conversation_content: bool = False
     max_content_chars: int = Field(default=16_384, ge=256, le=1_048_576)

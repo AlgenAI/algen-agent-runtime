@@ -814,6 +814,9 @@ telemetry:
   max_content_chars: 16384
   # Optional second exporter for dual delivery to another OTLP backend:
   # otlp_endpoint: https://otel-collector.example.com/v1/traces
+  # Runtime metrics (cache, governance, auth, worker counters...) to an OTLP collector:
+  # otlp_metrics_endpoint: https://otel-collector.example.com/v1/metrics
+  # otlp_metrics_export_interval_seconds: 60
   traccia:
     enabled: true
     api_key: env://TRACCIA_API_KEY
@@ -928,6 +931,17 @@ Other OpenTelemetry deployments can use `install_runtime_trace_filter(provider)`
 **Resumed runs.** A run stores its first `agent.run` span in `RunState.trace_parent`; when it resumes
 after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one
 trace even across processes.
+
+**Metrics.** The Runtime records OpenTelemetry metrics (cache operations and latency,
+governance decisions, authentication attempts, analytical nodes, distributed work items, method
+and model-service calls). Set `telemetry.otlp_metrics_endpoint` to an OTLP/HTTP metrics endpoint
+to export them: the Runtime installs a meter provider with a periodic reader
+(`otlp_metrics_export_interval_seconds`, default 60). `otlp_endpoint` alone exports traces only,
+and no meter provider is installed, so an application can install its own. Traccia's metrics
+(`traccia.enable_metrics`, `traccia.metrics_endpoint`) are configured by the Traccia SDK. A meter
+provider installed before the Runtime applies its telemetry settings, by Traccia or by the
+application, is kept, and `otlp_metrics_endpoint` is then ignored with a warning, because a
+provider's readers are fixed when it is built.
 
 To export the same spans to Traccia and another OTLP backend, also set `telemetry.otlp_endpoint`. Algen Agent Runtime attaches the standard OTLP processor to Traccia's OpenTelemetry provider. Leave it unset when Traccia is the only destination to prevent duplicate delivery.
 
