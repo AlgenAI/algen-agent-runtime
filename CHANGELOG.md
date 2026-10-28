@@ -125,6 +125,14 @@ contracts are explicitly marked experimental during the `0.x` series.
   `token_revocation.store: postgres`.
 - Compensation runs only on an operator's request. HTTP API, email and MCP tools have no
   reconcile hook yet, and workflow tool steps do not pause for reconciliation.
+- `MarkdownChunker` and `retrieval.<name>.chunker: markdown` (default `text`, unchanged). It
+  splits Markdown at its headings, never inside fenced code; keeps paragraphs, lists, tables and
+  code blocks whole where they fit (a split code block is re-fenced, a split table repeats its
+  header); and records `heading_path`, `heading`, `heading_level` and a unique GitHub-style
+  `anchor` in each chunk's metadata. A chunk's `uri` becomes `<document uri>#<anchor>`, so
+  citations link to the section. `Chunker`, the protocol both chunkers satisfy, types the
+  `chunker=` argument of the in-memory retriever and the vector stores. See
+  docs/rag.md#markdown-chunking.
 
 ## [0.1.0a16] - 2026-10-28
 

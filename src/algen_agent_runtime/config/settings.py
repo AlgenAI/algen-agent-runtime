@@ -206,6 +206,11 @@ class RetrievalSettings(StrictSettings):
     max_query_chars: int = Field(default=4_096, ge=128, le=100_000)
     max_retrieval_tokens: int = Field(default=4_000, ge=128)
     max_context_tokens: int = Field(default=16_000, ge=256)
+    chunker: Literal["text", "markdown"] = Field(
+        default="text",
+        description="'markdown' splits documents at their headings and records each chunk's "
+        "heading path and anchor; 'text' collapses whitespace and splits by size.",
+    )
     chunk_size: int = Field(default=1_200, ge=64)
     chunk_overlap: int = Field(default=200, ge=0)
     embedding_provider: str | None = None
