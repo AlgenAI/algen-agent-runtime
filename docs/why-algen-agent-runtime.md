@@ -57,6 +57,8 @@ solutions and acts as the reference implementation for Traccia instrumentation. 
 OpenAI Agents SDK, AutoGen, and CrewAI graphs/agents can be registered via the trusted
 Application Registration pattern (`build_container(framework_adapters=(...))`), wrapping the outer
 execution in standard tenant, timeout, and trace envelopes (see [Framework adapters](framework-adapters.md)).
+LangGraph and the OpenAI Agents SDK are supported adapters; AutoGen and CrewAI are experimental, and
+AutoGen is archived upstream in favour of Microsoft Agent Framework, which has no adapter yet.
 
 ### Reusable agent products
 
