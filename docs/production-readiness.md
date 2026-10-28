@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-28 (Runtime `0.1.0a15`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -57,41 +57,82 @@ status and unreleased changes are tracked separately in `CHANGELOG.md`.
   installation smoke tests, artifact checksums, dependency review, CodeQL, Bandit, Gitleaks, and
   container vulnerability scanning.
 
+Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
+
+- Tool-call guards kept in checkpointed run state: arguments checked against the tool's input schema
+  and an optional `Tool.precheck` before any approval is created, per-tool refusal limits, a repeat
+  guard, per-tool call limits, and a wrap-up notice near the step or token budget.
+- A `UsageMeter` around every model dispatch (steps, retries, fallbacks, repairs, streams,
+  compaction) that is told the tenant, user, run, provider and model of each call (`MeterCall`);
+  refusals end the run without retry, fallback or provider blame.
+- Per-run caller credentials for tools, held in memory only, cleared when a run pauses or ends, and
+  never written to run state, stores, events, audits, spans, logs, caches or exception text.
+- OAuth for remote MCP servers with PKCE, single-use flow state, per-tenant or per-user tokens, and an
+  AES-256-GCM-encrypted PostgreSQL token store.
+- Declared plugins loaded only from `security.trusted_plugin_prefixes` matched on module boundaries,
+  with a startup component check and a static `check`/`describe` inventory.
+- Hidden-content and prompt-injection inspection for PDF, DOCX, XLSX, PPTX, HTML, CSV and text
+  documents.
+- Traccia receives only traces the Runtime started; foreign HTTP and instrumentor spans are dropped by
+  default.
+
 ## P0 before a hardened single-node production claim
+
+None of these is complete. Each item states what is done and what remains as of 2026-10-28.
 
 1. **Close persistence validation gaps.** CI runs storage integration tests against live PostgreSQL 16,
    including schema migrations, run state, optimistic conflicts, artifacts, tool deduplication, and
    workflow checkpoints. CI also runs the Redis run, memory, and cache stores against live Redis 7
-   through `REDIS_URL`, including WATCH-conflict handling.
-   Complete startup, restart recovery, concurrent approval, backup/restore, database-unavailability,
-   failover, and soak drills against supported deployment topologies.
+   through `REDIS_URL`, including WATCH-conflict handling. Restart recovery, approval pause and resume
+   across a new runtime instance, and workflow recovery are covered by unit tests on in-memory stores.
+   *Remaining:* startup, restart recovery, concurrent approval, backup/restore,
+   database-unavailability, failover, and soak drills against live stores in supported deployment
+   topologies.
 2. **Harden policy distribution and coverage.** Workflow approval and clarification outcomes are
-   implemented. Add signed policy bundles, explicit fail-open/fail-closed behavior at every remaining
-   policy boundary, and adversarial tests for prompt injection, data loss, PII, secrets, and
-   cross-tenant access.
-3. **Complete side-effect operations.** Add reconciliation APIs, operator resolution of indeterminate
-   calls, compensation execution, and transactional coupling between tool records and run checkpoints
-   where the backing system permits it.
+   implemented. Tool calls are now refused before approval when their arguments fail the input schema
+   or a precheck, and documents in seven formats are inspected for hidden content and injection.
+   Store-level tenant isolation is tested for PostgreSQL, Redis, retrieval, cache, workflow
+   checkpoints, MCP OAuth tokens and the API. *Remaining:* signed policy bundles, explicit
+   fail-open/fail-closed behavior at every remaining policy boundary, and an adversarial suite for
+   prompt injection, data loss, PII, secrets, and cross-tenant access through agent behavior rather
+   than store calls.
+3. **Complete side-effect operations.** The ledger records `indeterminate` calls, and retention keeps
+   runs with unresolved side effects. `Tool` accepts a `compensation` handler, but the Runtime never
+   calls it. *Remaining:* reconciliation APIs, operator resolution of indeterminate calls, compensation
+   execution, and transactional coupling between tool records and run checkpoints where the backing
+   system permits it.
 4. **Finish authentication options.** Add OIDC/JWKS rotation and caching, mTLS/service identity hooks,
    authorization policy mapping, token-revocation strategy, and authentication audit events. Header
-   identity mode must remain explicitly development-only.
+   identity mode must remain explicitly development-only (it binds only to a loopback host). No
+   progress since the last review: inbound JWT verification still uses one static `env://` key. MCP
+   OAuth (`0.1.0a14`) authenticates the Runtime to remote MCP servers, not callers to the Runtime.
 5. **Harden network, plugins, and local execution.** Keep outbound redirects disabled; if redirect
    support is introduced, validate and pin every hop. Add egress proxy hooks, sandbox subprocess and
    MCP stdio tools (which currently execute as trusted, unsandboxed host code under minimal environment
    filtering), add stronger remote service identity where required, verify plugin signatures, and
-   prevent untrusted in-process plugin loading.
+   prevent untrusted in-process plugin loading. Done: redirects stay disabled; plugins and workflow
+   hooks load only from allowlisted module prefixes matched on module boundaries, checked before
+   import. *Remaining:* egress proxy hooks (there is no deployment setting for one, and a `proxy`
+   passed to `create_safe_http_client` is not validated against IP pinning), subprocess and stdio
+   MCP sandboxing, stronger remote service identity, and verification of `PluginManifest.signature`,
+   which is declared but never checked.
 6. **Strengthen readiness and lifecycle.** The baseline probes model providers and health-capable
    registered resources. Make mandatory dependency declarations explicit; cover every required store,
    retriever, model, MCP server, and telemetry exporter; expose degradation reasons; wire
    application-owned workflow recovery into each service lifecycle; expire paused workflow approvals
    without user traffic (paused agent runs are expired by the maintenance sweep); and test repeated
-   start/drain cycles.
+   start/drain cycles. Done: an MCP server can be marked `required`, and an optional server that fails
+   at startup is recorded in `Container.degraded_dependencies`. *Remaining:* readiness does not yet
+   report `degraded_dependencies`; container start recovers agent runs and conversations but not
+   workflows; the maintenance sweep does not expire paused workflow approvals; and there is no
+   repeated start/drain test.
 7. **Bound every resource.** Request wire sizes, artifact sizes, API request rates, and in-flight
    run-creation requests are bounded for single-node deployments. The opt-in maintenance sweep purges
    expired memory and artifacts and deletes terminal runs (with events, approvals, and tool records)
-   and audit events past configured retention windows. Add per-run limits for model responses and
-   event counts, per-tenant storage quotas, and retention for conversations, workflow checkpoints,
-   analytical graphs, and work items.
+   and audit events past configured retention windows. Within a run, `max_calls_per_tool`, the repeat
+   guard and the wrap-up notice bound tool use, and a host `UsageMeter` can enforce per-tenant model
+   quotas. *Remaining:* per-run limits for model responses and event counts, per-tenant storage quotas,
+   and retention for conversations, workflow checkpoints, analytical graphs, and work items.
 
 ## Remaining for hardened multi-worker or horizontally scaled use
 
@@ -106,6 +147,9 @@ Hardened multi-worker operation still requires:
 - Distributed rate limits, circuit breakers, concurrency limits, and cancellation delivery.
 - Leader election for recovery and maintenance work.
 - Distributed workflow claims/fencing so only one replica can drive a recoverable workflow at a time.
+- The PostgreSQL MCP OAuth token store for any deployment with more than one worker (the in-memory
+  store cannot see a flow started on another worker); caller credentials are per process, so a run
+  resumed on another worker needs them passed to `resume` again.
 - Live S3-compatible target testing with fault injection, multipart/large-object strategy, lifecycle
   reconciliation, and restore drills.
 
