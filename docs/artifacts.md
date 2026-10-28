@@ -149,6 +149,15 @@ sent to the model. The default and retrieval builders honour the policy; it is o
 It works alongside `offload_tool_results` (an offloaded reference is already short) and
 `compact_history` (which summarises before packing).
 
+The policy applies to the context builder's budget (`max_estimated_tokens`). When a model profile
+sets `context_window_tokens`, the request is packed once more against that window just before the
+call, and that final packing drops older exchanges whole. To keep shortening in effect, set the
+builder budget at or below the model's message allowance, so the final packing has nothing left
+to drop.
+
+Builders that override `pack(self, messages)` keep working: `build()` passes the policy to `pack`
+only when shortening is on.
+
 ## Recoverable history compaction
 
 Built-in context builders retain execution messages in `RunState.context_history`, separately from

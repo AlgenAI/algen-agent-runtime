@@ -4,7 +4,7 @@ import pytest
 from conftest import make_agent
 from pydantic import ValidationError
 
-from algen_agent_runtime.context.builder import DefaultContextBuilder
+from algen_agent_runtime.context.builder import DefaultContextBuilder, RetrievalContextBuilder
 from algen_agent_runtime.context.packing import (
     SHORTENED_TOOL_RESULT_NOTE,
     pack_messages,
@@ -117,3 +117,49 @@ async def test_agent_context_policy_turns_shortening_on() -> None:
 def test_shortened_length_is_bounded(chars: int) -> None:
     with pytest.raises(ValidationError):
         ContextPolicy(shorten_older_tool_results=True, shortened_tool_result_chars=chars)
+
+
+def run_state(history: list[Message]) -> RunState:
+    state = RunState(
+        request=RunRequest(
+            agent="test-agent", input="compare three records", tenant_id="tenant", user_id="u"
+        ),
+        session_id="session",
+    )
+    state.messages = history
+    return state
+
+
+async def test_builders_overriding_pack_with_one_argument_still_build() -> None:
+    # Subclasses written before the policy argument existed override ``pack(self, messages)``.
+    class LegacyBuilder(DefaultContextBuilder):
+        def pack(self, messages):  # type: ignore[override]
+            self.packed = len(messages)
+            return super().pack(messages)
+
+    history = transcript()[1:]
+    builder = LegacyBuilder(InMemoryMemoryStore(), 100_000)
+    built = await builder.build(run_state(history), make_agent())
+    assert builder.packed == len(built) == len(history) + 1
+
+
+async def test_retrieval_builder_honours_the_policy() -> None:
+    class NoEvidence:
+        async def retrieve(self, query):
+            return []
+
+    history = transcript()[1:]
+    budget = budget_for([*transcript()[:2], *history[-4:]]) + 400
+    builder = RetrievalContextBuilder(
+        "evidence", InMemoryMemoryStore(), NoEvidence(), max_context_tokens=budget
+    )
+    agent = make_agent(
+        context_policy=ContextPolicy(
+            shorten_older_tool_results=True, shortened_tool_result_chars=200
+        )
+    )
+    plain = await builder.build(run_state(history), make_agent())
+    shortening = await builder.build(run_state(history), agent)
+    assert len([m for m in shortening if m.role == Role.TOOL]) > len(
+        [m for m in plain if m.role == Role.TOOL]
+    )

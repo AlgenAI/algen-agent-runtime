@@ -14,7 +14,9 @@ contracts are explicitly marked experimental during the `0.x` series.
   exchange being dropped, so a long run keeps a record of what it already looked up. The call
   stays with its results; only the request sent to the model changes. `pack_messages` takes the
   matching `shorten_tool_results_to` keyword, and `DefaultContextBuilder.pack` an optional
-  `ContextPolicy`. See docs/artifacts.md.
+  `ContextPolicy`, passed by `build()` only when shortening is on so existing
+  `pack(self, messages)` overrides keep working. The final packing against a model's
+  `context_window_tokens` does not shorten. See docs/artifacts.md.
 
 ## [0.1.0a13] - 2026-10-27
 
