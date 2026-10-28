@@ -42,6 +42,20 @@ contracts are explicitly marked experimental during the `0.x` series.
 - The `ApprovalService` protocol adds `list(...)` and an optional keyword-only `agent` argument to
   `create`. A host's own implementation should add both; the runtime now passes `agent=` when it
   creates a request. No migration: the new fields live in the stored JSON.
+- `http_tools[].auth.type: caller`: a declared HTTP tool sends the calling user's credential for
+  the run (`ToolContext.credentials[credential]`, default `authorization`) as `header_name`
+  (default `Authorization`), with an optional `scheme` prefix. Without the credential the call
+  fails with `authentication required` before any request. The credential goes only to the
+  declared origin: link-header pagination to another origin fails the call. Cookie, Host,
+  Proxy-Authorization and framing headers are refused, as are control characters in the value.
+  See docs/http-tools.md#calling-the-api-as-the-signed-in-user and docs/threat-model.md.
+
+### Changed
+
+- A tool call whose context carries caller credentials is never served from, or stored in, the
+  tool-result cache (`cache.policies.tool_results`): its result can depend on who is calling,
+  and the cache's scope is shared beyond one caller. Calls without credentials are cached as
+  before.
 
 ## [0.1.0a17] - 2026-10-28
 

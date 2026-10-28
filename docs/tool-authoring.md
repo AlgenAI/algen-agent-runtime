@@ -130,6 +130,9 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
 - Workflow tool steps and the agent runs a workflow starts get none: the workflow API takes no
   credentials. The HTTP API's run endpoints pass none either; a host that needs them calls the
   Runtime itself.
+- A declared HTTP tool can forward one of them without code: `auth.type: caller` in
+  [HTTP API tools](http-tools.md#calling-the-api-as-the-signed-in-user).
+- A call that carries credentials is never served from, or stored in, the tool-result cache.
 - `ToolContext.secrets` is different: static deployment configuration, the same for every run.
 
 ## Unknown outcomes: reconcile and compensation
