@@ -8,6 +8,19 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- `MarkdownChunker` and `retrieval.<name>.chunker: markdown` (default `text`, unchanged). It
+  splits Markdown at its headings, never inside fenced code; keeps paragraphs, lists, tables and
+  code blocks whole where they fit (a split code block is re-fenced, a split table repeats its
+  header); and records `heading_path`, `heading`, `heading_level` and a unique GitHub-style
+  `anchor` in each chunk's metadata. A chunk's `uri` becomes `<document uri>#<anchor>`, so
+  citations link to the section. `Chunker`, the protocol both chunkers satisfy, types the
+  `chunker=` argument of the in-memory retriever and the vector stores. See
+  docs/rag.md#markdown-chunking.
+
+## [0.1.0a17] - 2026-10-28
+
+### Added
+
 - `api.auth_mode: oidc`: bearer JWTs verified against OpenID Connect issuers' JWKS
   (`api.oidc.issuers`). Keys are discovered from `/.well-known/openid-configuration` or a
   configured `jwks_url`, fetched through the SSRF-safe client from the issuer host only (plus
@@ -67,14 +80,6 @@ contracts are explicitly marked experimental during the `0.x` series.
   `ToolExecutor.executions`.
 - Migration `014_tool_execution_reconciliation.sql`: a `NOT VALID` check constraint on ledger
   statuses and an index on `(tenant_id, status, updated_at)`.
-- `MarkdownChunker` and `retrieval.<name>.chunker: markdown` (default `text`, unchanged). It
-  splits Markdown at its headings, never inside fenced code; keeps paragraphs, lists, tables and
-  code blocks whole where they fit (a split code block is re-fenced, a split table repeats its
-  header); and records `heading_path`, `heading`, `heading_level` and a unique GitHub-style
-  `anchor` in each chunk's metadata. A chunk's `uri` becomes `<document uri>#<anchor>`, so
-  citations link to the section. `Chunker`, the protocol both chunkers satisfy, types the
-  `chunker=` argument of the in-memory retriever and the vector stores. See
-  docs/rag.md#markdown-chunking.
 
 ### Changed
 
@@ -99,6 +104,16 @@ contracts are explicitly marked experimental during the `0.x` series.
 ### Security
 
 - `api.jwt_algorithms` may no longer include `none`.
+
+### Known limitations
+
+- Token introspection (RFC 7662) is not supported; revocation uses the `jti` denylist and the
+  per-subject cutoff. mTLS terminated by the Runtime itself is not mapped to principals; use the
+  trusted-proxy identity hook.
+- The in-memory revocation store is per process: deployments with more than one worker need
+  `token_revocation.store: postgres`.
+- Compensation runs only on an operator's request. HTTP API, email and MCP tools have no
+  reconcile hook yet, and workflow tool steps do not pause for reconciliation.
 
 ## [0.1.0a16] - 2026-10-28
 
@@ -1079,7 +1094,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a16...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a17...HEAD
+[0.1.0a17]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a16...v0.1.0a17
 [0.1.0a16]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a15...v0.1.0a16
 [0.1.0a15]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...v0.1.0a15
 [0.1.0a14]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a13...v0.1.0a14
