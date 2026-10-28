@@ -35,6 +35,39 @@ contracts are explicitly marked experimental during the `0.x` series.
   `draining`, `stopped`); `/health/ready` returns 503 with `status: draining` from the start of
   shutdown.
 - Repeated start/run/drain/restart cycle tests on in-memory stores and on live PostgreSQL.
+- Conversation turns stream, pause for approval or input, and resume (#50).
+  - The `runtime` conversation handler streams a turn's run when every model the agent may use can
+    stream, and forwards text deltas as `assistant.message.delta` events (`{message_id, delta}`),
+    coalesced to at most one per `conversation_streaming.delta_interval_ms` (default 50) and at
+    most `delta_max_chars` (default 2048) characters each. Deltas are not audited. A non-streaming
+    model gives only the final message, as before.
+  - A turn whose run awaits an approval or a clarification pauses: the assistant message moves to
+    the new `awaiting_approval` or `awaiting_input` status, with a `pending` action (approval id,
+    tool, proposed action, risk, expiry, options, redacted parameters, the tool's parameters
+    schema, or the question) in the message and in `assistant.message.awaiting_approval` /
+    `assistant.message.awaiting_input` events. No raw tool arguments are exposed.
+  - `ConversationService.respond(conversation_id, turn_id, tenant_id, user_id, response, *,
+    credentials=None)` with `ConversationApprovalDecision` (approved, rejected, modified) or
+    `ConversationInputAnswer`, and the routes `POST /v1/conversations/{id}/turns/{turn_id}/approval`
+    and `.../input` (scope `conversations:write`). The answer resumes the run and keeps streaming
+    into the same assistant message (`assistant.message.resumed`, with `decided_by`).
+  - New `expired` message status and `assistant.message.expired` event for a turn whose approval or
+    clarification expired. Cancelling a pending turn (`DELETE .../active-response`) cancels its
+    run.
+  - Pending turns survive a restart: they are stored on the assistant message, `recover()` keeps
+    them waiting, and `ConversationService.reconcile_pending_turns()` (also run by the maintenance
+    sweep, reported as `reconciled_pending_turns`) ends turns whose run ended while they waited and
+    follows, never re-runs, a run that was resumed just before a restart.
+  - `ConversationService.submit(..., credentials=...)` and `respond(..., credentials=...)` pass the
+    caller's credentials to the turn's run, in memory only, as for `Runtime.start` and `resume`.
+    The HTTP routes do not forward headers.
+  - `ConversationPendingAction`, `ConversationApprovalDecision`, `ConversationInputAnswer`,
+    `ConversationTurnResponse`, `PendingTurnExpiredError` and `ResumableConversationHandler`
+    exported from `algen_agent_runtime.conversations`; `ConversationTurnResult` takes the outcomes
+    `awaiting_approval`, `awaiting_input`, `cancelled` and `expired` with `pending`.
+  - `ModelRouter.supports_streaming(profiles, allowlist)`.
+  - `conversation_streaming` settings (`enabled`, `delta_interval_ms`, `delta_max_chars`).
+  - See docs/operations.md#conversation-turns-streaming-approvals-and-input.
 
 ### Changed
 
@@ -50,6 +83,15 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Upgrade note: workflow runs started through the HTTP API before this release have no owner, so
   they are neither recovered on start nor expired by the sweep; decide or answer them through the
   API, or recover them once with `executor.recover`.
+- Conversation turns of the `runtime` handler stream by default (`stream=True` on their runs) when
+  the agent's models can stream, so they now emit `assistant.message.delta` events, and their
+  model calls bypass the model-response cache as streaming runs always have. Set
+  `conversation_streaming.enabled: false` to keep the previous behaviour.
+- A conversation turn whose run pauses for approval or clarification now waits in
+  `awaiting_approval` / `awaiting_input` instead of completing with an empty message, and a new
+  message on that conversation gets `409` until the turn is answered or cancelled. A turn whose
+  run is rejected ends `failed` with the Runtime's "Proposed action was rejected." text, and one
+  whose run is cancelled ends `cancelled`.
 
 ## [0.1.0a15] - 2026-10-28
 

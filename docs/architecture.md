@@ -28,6 +28,36 @@ Handlers are plugins: the core has no analytics, SQL, or dashboard-specific beha
 conversation responses are marked retryable rather than automatically replayed, because a generic
 handler may own externally visible side effects whose idempotency is unknown.
 
+A turn can stream and pause. The built-in `runtime` handler starts its run with `stream` when every
+model the agent may use can stream, and forwards the run's `model.delta` events as coalesced
+`assistant.message.delta` conversation events. When the run pauses for an approval or a
+clarification, the turn returns a `pending` action; the service stores it on the assistant message
+(`awaiting_approval` or `awaiting_input`) and refuses new messages until the turn is answered or
+cancelled. `ConversationService.respond` (and the `.../turns/{turn_id}/approval|input` routes)
+applies the answer with `Runtime.resume` and follows the same run into the same assistant message.
+Because the pending action lives in the conversation store and the paused run in the run store, a
+restart loses neither and nothing re-runs: recovery leaves paused turns waiting and only follows or
+settles runs that already moved on. A handler opts in by implementing
+`ResumableConversationHandler` (`resume`, `follow`, `settle`, `pending_state`, `cancel_pending`).
+
+```mermaid
+sequenceDiagram
+    participant UI as Dashboard
+    participant S as ConversationService
+    participant H as Runtime handler
+    participant R as Agent runtime
+    UI->>S: POST message (credentials via Python API only)
+    S->>H: handle
+    H->>R: start(stream) and follow events
+    R-->>S: model.delta → assistant.message.delta
+    R-->>H: paused (approval.required)
+    H-->>S: pending action
+    S-->>UI: assistant.message.awaiting_approval
+    UI->>S: POST turns/{turn_id}/approval
+    S->>H: resume → Runtime.resume, then follow
+    S-->>UI: deltas, then assistant.message.completed (same message)
+```
+
 ## Boundaries
 
 `types` owns normalized contracts. `runtime` owns legal transitions and termination. `planning`, `context`, `policies`, `verification`, `responses`, and `tools` are independent strategies. `models/providers`, `persistence`, and `api` are adapters. `orchestration/container.py` is the only default composition root.

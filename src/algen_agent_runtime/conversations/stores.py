@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from algen_agent_runtime.conversations.contracts import (
+    AWAITING_MESSAGE_STATUSES,
     Conversation,
     ConversationEvent,
     ConversationMessage,
@@ -109,6 +110,18 @@ class InMemoryConversationStore:
             ]
         pending.sort(key=lambda item: item.created_at)
         return tuple(pending[:limit])
+
+    async def awaiting_messages(self, limit: int = 1000) -> Sequence[ConversationMessage]:
+        """Assistant messages whose turn waits for an approval or input, oldest first."""
+        async with self._lock:
+            awaiting = [
+                item.model_copy(deep=True)
+                for messages in self._messages.values()
+                for item in messages
+                if item.role.value == "assistant" and item.status in AWAITING_MESSAGE_STATUSES
+            ]
+        awaiting.sort(key=lambda item: item.created_at)
+        return tuple(awaiting[:limit])
 
 
 class InMemoryConversationEventBus:
@@ -301,6 +314,17 @@ class PostgresConversationStore:
             "SELECT message FROM algen_agent_runtime_conversation_messages "
             "WHERE message->>'role'='assistant' "
             "AND message->>'status' IN ('accepted','streaming') ORDER BY created_at LIMIT $1",
+            limit,
+        )
+        return tuple(ConversationMessage.model_validate_json(row["message"]) for row in rows)
+
+    async def awaiting_messages(self, limit: int = 1000) -> Sequence[ConversationMessage]:
+        """Assistant messages whose turn waits for an approval or input, oldest first."""
+        rows = await self._database.fetch(
+            "SELECT message FROM algen_agent_runtime_conversation_messages "
+            "WHERE message->>'role'='assistant' "
+            "AND message->>'status' IN ('awaiting_approval','awaiting_input') "
+            "ORDER BY created_at LIMIT $1",
             limit,
         )
         return tuple(ConversationMessage.model_validate_json(row["message"]) for row in rows)
