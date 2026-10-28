@@ -930,7 +930,15 @@ def build_container(
         technical_details_expanded=(settings.conversation_presentation.technical_details_expanded),
     )
     conversation_handlers = ConversationHandlerRegistry()
-    conversation_handlers.register(RuntimeConversationHandler(runtime, presentation))
+    conversation_handlers.register(
+        RuntimeConversationHandler(
+            runtime,
+            presentation,
+            stream=settings.conversation_streaming.enabled,
+            delta_interval_seconds=settings.conversation_streaming.delta_interval_ms / 1000,
+            delta_max_chars=settings.conversation_streaming.delta_max_chars,
+        )
+    )
     conversations = ConversationService(
         conversation_store,
         conversation_events,
@@ -1008,6 +1016,7 @@ def build_container(
             artifacts,
             settings.maintenance,
             PostgresRetentionSweeper(database) if database is not None else None,
+            conversations=conversations,
         ),
         run_maintenance_in_background=settings.maintenance.enabled,
         plugins=plugin_manifests,

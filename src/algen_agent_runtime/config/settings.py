@@ -459,6 +459,27 @@ class ConversationFollowupSettings(StrictSettings):
     maximum_length: int = Field(default=240, ge=20, le=500)
 
 
+class ConversationStreamingSettings(StrictSettings):
+    """How conversation turns stream model text as ``assistant.message.delta`` events."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Stream turns whose agent's models can all stream; off gives only the final message",
+    )
+    delta_interval_ms: int = Field(
+        default=50,
+        ge=0,
+        le=5_000,
+        description="At most one delta event per interval per turn; smaller deltas are coalesced",
+    )
+    delta_max_chars: int = Field(
+        default=2_048,
+        ge=16,
+        le=65_536,
+        description="Largest delta event; a fuller buffer is sent at once, in pieces of this size",
+    )
+
+
 class AnalyticalExecutionSettings(StrictSettings):
     graph_store: Literal["memory", "postgres"] = "memory"
     maximum_concurrency: int = Field(default=8, ge=1, le=128)
@@ -555,6 +576,9 @@ class AppSettings(StrictSettings):
     )
     conversation_followups: ConversationFollowupSettings = Field(
         default_factory=ConversationFollowupSettings
+    )
+    conversation_streaming: ConversationStreamingSettings = Field(
+        default_factory=ConversationStreamingSettings
     )
     analytical_execution: AnalyticalExecutionSettings = Field(
         default_factory=AnalyticalExecutionSettings

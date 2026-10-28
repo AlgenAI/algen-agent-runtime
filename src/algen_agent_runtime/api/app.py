@@ -37,7 +37,12 @@ from algen_agent_runtime.api.rate_limiting import (
 )
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.config.settings import AppSettings, load_settings
-from algen_agent_runtime.conversations.contracts import ConversationEvent, ConversationStatus
+from algen_agent_runtime.conversations.contracts import (
+    ConversationApprovalDecision,
+    ConversationEvent,
+    ConversationInputAnswer,
+    ConversationStatus,
+)
 from algen_agent_runtime.conversations.feedback import FeedbackRating
 from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
 from algen_agent_runtime.exceptions.errors import (
@@ -616,6 +621,39 @@ def create_app(
             raise NotFoundError(f"conversation {conversation_id!r} not found")
         await dependencies.conversations.cancel(conversation_id, identity.tenant_id)
         return {"status": "cancellation_requested"}
+
+    @app.post(
+        "/v1/conversations/{conversation_id}/turns/{turn_id}/approval",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def decide_conversation_turn(
+        conversation_id: str,
+        turn_id: str,
+        body: ConversationApprovalDecision,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        # The decider is the authenticated user; credentials are never taken from headers.
+        require_scope(identity, "conversations:write")
+        message = await dependencies.conversations.respond(
+            conversation_id, turn_id, identity.tenant_id, identity.user_id, body
+        )
+        return {"turn_id": turn_id, "assistant_message_id": message.id, "status": message.status}
+
+    @app.post(
+        "/v1/conversations/{conversation_id}/turns/{turn_id}/input",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def answer_conversation_turn(
+        conversation_id: str,
+        turn_id: str,
+        body: ConversationInputAnswer,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        require_scope(identity, "conversations:write")
+        message = await dependencies.conversations.respond(
+            conversation_id, turn_id, identity.tenant_id, identity.user_id, body
+        )
+        return {"turn_id": turn_id, "assistant_message_id": message.id, "status": message.status}
 
     @app.put("/v1/conversations/{conversation_id}/messages/{message_id}/feedback")
     async def put_conversation_feedback(

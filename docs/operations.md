@@ -56,6 +56,10 @@ conversation_presentation:
   error_audience: business
   show_technical_details: false
   technical_details_expanded: false
+conversation_streaming:
+  enabled: true          # stream turns whose models can all stream
+  delta_interval_ms: 50  # at most one assistant.message.delta per interval per turn
+  delta_max_chars: 2048  # largest delta event
 analytical_execution:
   graph_store: postgres
 query_governance:
@@ -341,6 +345,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Paused approvals | on (`expire_paused_runs`) | A run awaiting approval becomes `timed_out` with a `run.failed` event (`reason: approval_expired`) once its approval request has expired or is missing. |
 | Paused clarifications | off | With `clarification_timeout_seconds` set, a run awaiting clarification longer than that becomes `timed_out` (`reason: clarification_expired`). |
 | Paused workflow waits | on (`expire_paused_workflows`) | For runs the HTTP workflow service started: an approval wait past its `expires_at` fails its approval node (`workflow.approval.expired`), and, with `clarification_timeout_seconds` set, an input wait older than that fails its node (`workflow.input.expired`). The engine's own expiry path does this, so rejection policies, dependents and checkpoints behave as for a late decision, and the webhook is notified of the outcome. Each run is handled in its own tenant; runs already being driven are skipped and saves are version-checked, so repeated or concurrent sweeps expire a wait once. At most `batch_size × max_batches_per_sweep` unfinished runs, oldest first, are looked at per sweep. Reports `expired_workflow_pauses`. Runs only in the serving process (`maintenance.enabled`); the `maintenance` command does not drive workflows. |
+| Pending conversation turns | with the paused-run task | A conversation turn whose run the sweep just expired (or that ended otherwise while it waited) ends as `expired`, `cancelled` or `failed`. Reports `reconciled_pending_turns`. |
 | Expired memory | on | Deletes PostgreSQL memory rows past `memory_retention_seconds`; readers already ignore them. |
 | Expired learned memory | on | Clears content and evidence; retains revisions and replay receipts. Reports `purged_learned_memory`. |
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
@@ -406,6 +411,72 @@ Conversation responses that were in progress during a process restart are marked
 retryable; Algen Agent Runtime does not blindly replay a generic conversation handler because the
 handler may own non-idempotent external effects. Dashboard clients reload persisted messages and
 reconnect to SSE with `Last-Event-ID`. Use fetch-based SSE when bearer authentication is enabled.
+
+### Conversation turns: streaming, approvals and input
+
+A conversation turn is one user message and the assistant message that answers it. The built-in
+`runtime` handler runs one agent run per turn and:
+
+- **streams** the run when `conversation_streaming.enabled` is true (the default) and every model
+  the agent may use reports streaming. Text deltas reach `GET /v1/conversations/{id}/events` as
+  `assistant.message.delta`. A turn sends at most one delta event per `delta_interval_ms` (smaller
+  deltas are coalesced), except that a buffer reaching `delta_max_chars` is sent at once; each event
+  carries at most `delta_max_chars` characters. Deltas are provisional and may include text the
+  model wrote before a tool call: the `assistant.message.completed` message is the record. A turn
+  whose models cannot stream produces only the final message. Streamed model calls bypass the
+  model-response cache, as streaming runs always have; set `enabled: false` to keep caching turns.
+  Delta events carry only model text, never tool arguments or results, and are not audited.
+- **pauses** when its run awaits an approval or a clarification. The assistant message moves to
+  `awaiting_approval` or `awaiting_input` and its `pending` field (also in the event) carries what a
+  UI needs: `turn_id`, `run_id`, `approval_id`, `tool`, `proposed_action`, `side_effect_summary`,
+  `risk`, `expires_at`, `options`, `redacted_parameters` (as in the run's `approval.required`
+  event; never raw arguments) and the tool's `parameters_schema`, or the `question` to answer.
+- **resumes** into the same assistant message when the user answers:
+
+  | Route | Body | Scope |
+  | --- | --- | --- |
+  | `POST /v1/conversations/{id}/turns/{turn_id}/approval` | `{"decision": "approved" \| "rejected" \| "modified", "modified_parameters": {...}, "reason": "..."}` | `conversations:write` |
+  | `POST /v1/conversations/{id}/turns/{turn_id}/input` | `{"text": "..."}` | `conversations:write` |
+
+  `turn_id` is the user message id (`pending.turn_id`). The authenticated user is recorded as
+  `decided_by`. Both return `202` with the assistant message id and `streaming`; another tenant or
+  user gets `404`; an answer of the wrong kind, a second answer, or an answer to a turn that no
+  longer waits gets `409`; an answer after the approval expired ends the turn as `expired` and
+  gets `409`. In Python, call `ConversationService.respond(conversation_id, turn_id, tenant_id,
+  user_id, ConversationApprovalDecision(...) | ConversationInputAnswer(...), credentials=...)`.
+
+Only one turn per conversation can wait. A new message while one waits is refused with `409`
+naming the waiting turn id; answer it or cancel it with `DELETE .../active-response`, which also
+cancels the paused run. Deleting the conversation cancels it too.
+
+Each pending turn is stored on its assistant message, so it survives a restart: `recover()` leaves
+it waiting and the turn resumes after the restart. If the run was resumed but the process stopped
+before the message was updated, recovery follows the run to its end instead of running it again; if
+the run ended while the turn waited, the turn ends with that outcome. The maintenance sweep does the
+same for turns whose paused run it expires.
+
+`submit(..., credentials=...)` and `respond(..., credentials=...)` pass the caller's credentials to
+the turn's run for its tools (see [tool authoring](tool-authoring.md#credentials-of-the-caller)).
+They are held in memory only, never stored, emitted, audited or logged; a turn that pauses drops
+them, so pass them again when answering. The HTTP routes never forward request headers as
+credentials. A custom handler takes them by accepting a `credentials` keyword argument in `handle`;
+passing credentials to a handler that does not is a `ConfigurationError`.
+
+| Message status | Meaning | Event |
+| --- | --- | --- |
+| `accepted`, `streaming` | queued, running (also after an answer) | `assistant.message.started`, `assistant.message.delta`, `assistant.message.resumed` |
+| `awaiting_approval` | the run waits for an approval decision | `assistant.message.awaiting_approval` |
+| `awaiting_input` | the run asked the user a question | `assistant.message.awaiting_input` |
+| `completed` | answered | `assistant.message.completed` |
+| `failed` | failed, or the action was rejected (`metadata.reason: approval_rejected`) | `assistant.message.failed` |
+| `cancelled` | cancelled by the user or with its run | `assistant.message.cancelled` |
+| `expired` | the approval or answer did not come in time | `assistant.message.expired` |
+
+`assistant.message.delta` data is `{message_id, delta}`. `assistant.message.resumed` data is
+`{turn_id, kind, decided_by}` plus `approval_id` and `decision` for approvals or the answer `text`
+for input. The awaiting, completed, failed and expired events carry the assistant message, with
+`turn_id` on awaiting events. A resumed turn opens a new `conversation.turn` span with
+`conversation.turn.resumed=true`; its agent run continues the run's original trace.
 
 Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
 

@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +23,7 @@ class MaintenanceReport(BaseModel):
     expired_paused_runs: int = 0
     # Service-owned workflow runs whose approval or input wait was expired in this sweep.
     expired_workflow_pauses: int = 0
+    reconciled_pending_turns: int = 0
     purged_artifacts: int = 0
     purged_learned_memory: int = 0
     deleted: dict[str, int] = Field(default_factory=dict)
@@ -43,8 +44,11 @@ class MaintenanceService:
         artifacts: ArtifactStore,
         settings: MaintenanceSettings,
         sweeper: RetentionSweeper | None = None,
+        conversations: Any | None = None,
     ) -> None:
         self._runtime = runtime
+        # Ends conversation turns whose paused run the sweep just expired.
+        self._conversations = conversations
         self._artifacts = artifacts
         self._settings = settings
         self._sweeper = sweeper
@@ -79,6 +83,15 @@ class MaintenanceService:
                 )
 
             await self._guard("paused_runs", expire, report)
+            conversations = self._conversations
+            if conversations is not None:
+
+                async def reconcile_turns() -> None:
+                    report.reconciled_pending_turns = await conversations.reconcile_pending_turns(
+                        settings.batch_size * settings.max_batches_per_sweep
+                    )
+
+                await self._guard("pending_turns", reconcile_turns, report)
         workflows = self._workflows
         if settings.expire_paused_workflows and workflows is not None:
 

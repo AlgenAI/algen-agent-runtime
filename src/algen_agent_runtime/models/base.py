@@ -342,6 +342,24 @@ class ModelRouter:
     def registration_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
 
+    async def supports_streaming(
+        self, profiles: Sequence[ModelProfile], allowlist: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether every candidate ``stream`` could pick for these profiles can stream.
+
+        ``stream`` never falls back to ``generate``, so a caller that streams only when it can
+        (such as a conversation turn) asks this first and otherwise generates.
+        """
+        candidates = await self.candidates(profiles, allowlist)
+        if not candidates:
+            return False
+        for provider, profile in candidates:
+            rid = profile.provider or self._registration_id_for(provider)
+            capabilities = await self._capabilities(rid, provider, profile.model or "")
+            if not capabilities.streaming:
+                return False
+        return True
+
     async def stream(
         self,
         request: ModelRequest,
