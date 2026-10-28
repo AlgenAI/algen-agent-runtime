@@ -150,12 +150,18 @@ retrieval:
   code is re-fenced in each piece and a table repeats its header and delimiter rows. Only a single
   line longer than a chunk is cut at spaces, with `chunk_overlap`; blocks are not overlapped.
 - Starts each chunk with its heading path, such as `Guide > Install`, so a chunk can be understood
-  and retrieved on its own. With `include_heading_path=False`, the first chunk of each section
-  keeps its heading line instead.
+  and retrieved on its own. The prefix is part of the chunk text, and so of what is embedded. With
+  `include_heading_path=False`, the first chunk of each section keeps its heading line instead.
+- Follows CommonMark for ATX headings (an optional closing `#` sequence is dropped, `#tag` and
+  seven `#`s are not headings) and GitHub's slugs for anchors: inline code, links and emphasis
+  markers are removed, but an underscore inside a word stays (`set_config()` -> `set_config`). An
+  empty heading (`#` alone) starts a section without adding to `heading_path` or getting an anchor.
+- Runs in time linear in the document's length, whatever its lines contain, so it is safe on
+  uploaded documents.
 
 Chunk IDs stay `<document id>:<index>`, so re-ingesting a document replaces its chunks as before.
-Changing the chunker of an existing persistent index changes chunk boundaries: re-ingest the
-documents.
+Changing the chunker of an existing persistent index, or `include_heading_path`, changes chunk
+boundaries or text: re-ingest the documents.
 
 ## Retrieval behavior
 
