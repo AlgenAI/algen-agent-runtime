@@ -48,7 +48,7 @@ missing or invented source identifiers.
 
 ```mermaid
 flowchart LR
-    D[Source documents] --> C[TextChunker]
+    D[Source documents] --> C[Chunker: text or Markdown]
     C --> E[Embedder]
     E --> I[DocumentIndexer]
     Q[Run request] --> P[Input policy]
@@ -88,6 +88,7 @@ retrieval:
     max_context_tokens: 16000
     chunk_size: 1200
     chunk_overlap: 200
+    chunker: text # or markdown: split at headings, see below
     # Optional: use a configured model provider instead of local hashing.
     # embedding_provider: openai
     # embedding_model: text-embedding-3-small
@@ -116,6 +117,45 @@ Configuration documents are useful for examples and small static knowledge bases
 can ingest and replace documents at runtime through the `DocumentIndexer` contract. Re-ingesting
 a document replaces chunks with the same stable IDs. Tenant deletion only removes chunks owned
 by that tenant.
+
+## Markdown chunking
+
+The default `text` chunker collapses whitespace and cuts by size, so headings, lists, tables and
+code lose their structure. Set `chunker: markdown` for Markdown sources (handbooks, course notes,
+READMEs, exported wikis):
+
+```yaml
+retrieval:
+  handbook:
+    chunker: markdown
+    chunk_size: 1200
+    chunk_overlap: 200
+```
+
+`MarkdownChunker` (in `algen_agent_runtime.retrieval.ingestion`, usable directly as
+`InMemoryRetriever(chunker=MarkdownChunker())` or with any vector store's `chunker=`):
+
+- Splits the document at its headings: ATX (`#` to `######`) and setext (`===`, `---` under a
+  one-line paragraph). Lines inside fenced code blocks are never read as headings.
+- Records, in each chunk's `metadata`, `heading_path` (the heading titles from the top down),
+  `heading`, `heading_level` and `anchor`: the GitHub-style slug of the heading, made unique within
+  the document (`install`, then `install-1`). Text before the first heading has none of these keys.
+  The values are plain metadata, so `filters: {anchor: install}` and `retrieval_filter.heading`
+  narrow results like any other field. Chunker keys replace document metadata keys of the same name.
+- When the document has a `uri` without a fragment, sets each chunk's `uri` to `<uri>#<anchor>`.
+  Citations carry the chunk's `uri`, so they link to the section. Pass `link_anchors=False` to keep
+  the document URI.
+- Packs whole blocks (paragraphs, lists, tables and fenced code) into chunks of at most
+  `chunk_size` characters, preserving their line breaks. A larger block is split at line ends: fenced
+  code is re-fenced in each piece and a table repeats its header and delimiter rows. Only a single
+  line longer than a chunk is cut at spaces, with `chunk_overlap`; blocks are not overlapped.
+- Starts each chunk with its heading path, such as `Guide > Install`, so a chunk can be understood
+  and retrieved on its own. With `include_heading_path=False`, the first chunk of each section
+  keeps its heading line instead.
+
+Chunk IDs stay `<document id>:<index>`, so re-ingesting a document replaces its chunks as before.
+Changing the chunker of an existing persistent index changes chunk boundaries: re-ingest the
+documents.
 
 ## Retrieval behavior
 

@@ -128,7 +128,7 @@ from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
-from algen_agent_runtime.retrieval.ingestion import TextChunker
+from algen_agent_runtime.retrieval.ingestion import Chunker, MarkdownChunker, TextChunker
 from algen_agent_runtime.retrieval.memory import (
     HashingEmbedder,
     InMemoryRetriever,
@@ -717,7 +717,11 @@ def build_container(
             if retrieval_config.embedding_provider
             else HashingEmbedder(retrieval_config.embedding_dimensions)
         )
-        chunker = TextChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+        chunker: Chunker = (
+            MarkdownChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+            if retrieval_config.chunker == "markdown"
+            else TextChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+        )
         if retrieval_config.type == "memory":
             retriever = InMemoryRetriever(
                 source_documents=retrieval_config.documents,

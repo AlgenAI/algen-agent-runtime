@@ -15,7 +15,7 @@ from algen_agent_runtime.retrieval.contracts import (
     RetrievedDocument,
     SourceDocument,
 )
-from algen_agent_runtime.retrieval.ingestion import TextChunker
+from algen_agent_runtime.retrieval.ingestion import Chunker, TextChunker
 from algen_agent_runtime.retrieval.memory import Embedder
 
 _IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -80,7 +80,7 @@ def _from_payload(payload: Mapping[str, Any], score: float) -> RetrievedDocument
 
 
 class _VectorStoreBase:
-    def __init__(self, embedder: Embedder, chunker: TextChunker | None = None) -> None:
+    def __init__(self, embedder: Embedder, chunker: Chunker | None = None) -> None:
         self._embedder = embedder
         self._chunker = chunker or TextChunker()
 
@@ -133,7 +133,7 @@ class PgVectorRetriever(_VectorStoreBase):
         *,
         dimensions: int,
         table: str = "algen_agent_runtime_documents",
-        chunker: TextChunker | None = None,
+        chunker: Chunker | None = None,
         pool: Any | None = None,
         initialize_schema: bool = True,
     ) -> None:
@@ -294,7 +294,7 @@ class ChromaRetriever(_VectorStoreBase):
         collection_name: str = "algen_agent_runtime_documents",
         path: str | None = None,
         client: Any | None = None,
-        chunker: TextChunker | None = None,
+        chunker: Chunker | None = None,
     ) -> None:
         super().__init__(embedder, chunker)
         if client is None:
@@ -382,7 +382,7 @@ class FaissRetriever(_VectorStoreBase):
         *,
         dimensions: int,
         path: str | Path | None = None,
-        chunker: TextChunker | None = None,
+        chunker: Chunker | None = None,
     ) -> None:
         super().__init__(embedder, chunker)
         try:
@@ -495,7 +495,7 @@ class QdrantRetriever(_VectorStoreBase):
         url: str = "http://localhost:6333",
         api_key: str | None = None,
         client: Any | None = None,
-        chunker: TextChunker | None = None,
+        chunker: Chunker | None = None,
     ) -> None:
         super().__init__(embedder, chunker)
         try:

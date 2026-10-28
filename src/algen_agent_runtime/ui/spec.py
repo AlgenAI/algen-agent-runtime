@@ -267,6 +267,7 @@ def extract_agent_manifest_spec(
                 "embedding_provider": r.embedding_provider,
                 "embedding_model": r.embedding_model,
                 "embedding_dimensions": r.embedding_dimensions,
+                "chunker": r.chunker,
                 "chunk_size": r.chunk_size,
                 "chunk_overlap": r.chunk_overlap,
                 "collection_name": r.collection_name,
