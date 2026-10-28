@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a14] - 2026-10-28
+
 ### Added
 
 - Tool-call guards from the Algen Agent Harness, kept in `RunState` so they survive an approval
@@ -824,7 +826,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a13...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...HEAD
+[0.1.0a14]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a13...v0.1.0a14
 [0.1.0a13]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a12...v0.1.0a13
 [0.1.0a12]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a11...v0.1.0a12
 [0.1.0a11]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a10...v0.1.0a11
