@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -63,6 +64,8 @@ from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
     ConflictError,
+    MCPNotConnectedError,
+    MeterRefusedError,
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
@@ -87,10 +90,26 @@ from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
 from algen_agent_runtime.policies.engine import looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
+from algen_agent_runtime.runtime.guards import (
+    REPEATED,
+    call_key,
+    over_limit,
+    read_only,
+    refusal_note,
+    schema_problem,
+    tool_calls_left,
+    wrap_up_note,
+)
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.security.redaction import redact
-from algen_agent_runtime.tools.contracts import Tool, ToolContext, ToolResult
+from algen_agent_runtime.tools.contracts import (
+    EarlierCall,
+    Tool,
+    ToolContext,
+    ToolDefinition,
+    ToolResult,
+)
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
@@ -189,6 +208,16 @@ class _ToolCallOutcome:
     working_update: WorkingState | None = None
     skill_update: LoadedSkills | None = None
     memory_receipt: MemoryReceipt | None = None
+
+
+@dataclass(frozen=True)
+class _HeldCall:
+    """A tool call a guard answers without running it: refused, repeated or over its limit."""
+
+    payload: dict[str, Any]
+    status: str
+    reason_code: str
+    details: dict[str, Any]
 
 
 class _UnknownToolError(Exception):
@@ -661,6 +690,25 @@ class AgentRuntime:
             elif current.status not in TERMINAL_STATUSES:
                 await self._transition(current, RunStatus.CANCELLED)
                 await self._emit(current, "run.cancelled", {})
+        except MeterRefusedError as exc:
+            # The deployment's usage meter declined a model call: end the run with its reason,
+            # without retrying or counting it against the provider.
+            current = await self._require_state(run_id, tenant_id)
+            trace.get_current_span().set_attribute("budget.refused", True)
+            if current.status not in TERMINAL_STATUSES:
+                current.error = self._safe_error(exc)
+                await self._emit(current, "budget.refused", {"reason": current.error})
+                await self._audit(
+                    current,
+                    "budget.refused",
+                    "refused",
+                    current.agent_key or current.request.agent,
+                    {"reason": current.error},
+                )
+                await self._transition(current, RunStatus.FAILED)
+                await self._emit(
+                    current, "run.failed", {"error": current.error, "reason": "budget_refused"}
+                )
         except Exception as exc:
             current = await self._require_state(run_id, tenant_id)
             self._logger.exception(
@@ -1273,18 +1321,25 @@ class AgentRuntime:
                     completed = None
                     stream_started = time.monotonic()
                     first_chunk = True
-                    async for event in self.router.stream(request, profiles, agent.model_allowlist):
-                        if first_chunk and (event.delta or event.tool_call):
-                            first_chunk = False
-                            trace.get_current_span().set_attribute(
-                                "llm.time_to_first_token_ms",
-                                round((time.monotonic() - stream_started) * 1000, 3),
-                            )
-                        if event.delta:
-                            text_parts.append(event.delta)
-                            await self._emit(state, "model.delta", {"delta": event.delta}, step_id)
-                        if event.response:
-                            completed = event.response
+                    # Closing the stream on every exit lets the router release a metered call
+                    # that an error or cancellation interrupted here, not only in the provider.
+                    async with aclosing(
+                        self.router.stream(request, profiles, agent.model_allowlist)
+                    ) as events:
+                        async for event in events:
+                            if first_chunk and (event.delta or event.tool_call):
+                                first_chunk = False
+                                trace.get_current_span().set_attribute(
+                                    "llm.time_to_first_token_ms",
+                                    round((time.monotonic() - stream_started) * 1000, 3),
+                                )
+                            if event.delta:
+                                text_parts.append(event.delta)
+                                await self._emit(
+                                    state, "model.delta", {"delta": event.delta}, step_id
+                                )
+                            if event.response:
+                                completed = event.response
                     if completed is None:
                         raise ProviderError(
                             "stream ended without a completed response", retryable=True
@@ -1595,6 +1650,7 @@ class AgentRuntime:
                 action,
                 {"error": {"type": "UnknownTool", "message": str(exc)}},
                 status="failed",
+                agent=agent,
             )
             return
         except Exception as exc:
@@ -1625,7 +1681,8 @@ class AgentRuntime:
     async def _admit_tool_call(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> Tool | None:
-        """The tool to run, or None when the run paused for approval first."""
+        """The tool to run, or None when the run paused for approval first or a guard answered
+        the call without running it."""
         call_id = action.id.removeprefix("tool-")
         if action.tool_name not in agent.enabled_tools:
             if not self._registered(action.tool_name or ""):
@@ -1643,10 +1700,14 @@ class AgentRuntime:
             state,
             {"tool": tool.definition, "approval_policy": agent.approval_policy},
         )
-        if (
-            decision.action == PolicyAction.REQUIRE_APPROVAL
-            and call_id not in state.approved_tool_call_ids
-        ):
+        approved = call_id in state.approved_tool_call_ids
+        if not approved:
+            # Checked before anyone is asked; an approved call passed them when it was planned.
+            held = await self._guard_tool_call(state, agent, action, tool)
+            if held is not None:
+                await self._hold_tool_call(state, agent, action, held)
+                return None
+        if decision.action == PolicyAction.REQUIRE_APPROVAL and not approved:
             approval = await self.approvals.create(
                 state.id,
                 action.id,
@@ -1671,7 +1732,169 @@ class AgentRuntime:
             await self._transition(state, RunStatus.AWAITING_APPROVAL)
             await self._emit(state, "approval.required", state.pause_payload, action.id)
             return None
+        self._count_tool_call(state, agent, tool.definition)
         return tool
+
+    async def _guard_tool_call(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        action: PlannedAction,
+        tool: Tool,
+        earlier: Sequence[EarlierCall] = (),
+        batch_keys: set[str] | None = None,
+    ) -> _HeldCall | None:
+        """How a guard answers this call instead of running it, or None to let it run.
+
+        Arguments that do not fit the tool's input schema, or a call its precheck refuses, are
+        refused; a read repeated with nothing changed since, or a call past the tool's limit,
+        is held back. ``batch_keys`` holds the reads admitted earlier in the same parallel reply.
+        """
+        definition = tool.definition
+        name = definition.name
+        policy = agent.tool_policy
+        reason_code = "tool.schema_invalid"
+        problem = schema_problem(definition, action.arguments)
+        if problem is not None and policy.on_error != "return_to_model":
+            # The run fails on a bad call as it did when the executor found it, but before an
+            # approval is asked for.
+            raise ToolExecutionError(problem)
+        if problem is None and not read_only(definition):
+            reason_code = "tool.precheck_refused"
+            problem = await tool.check(action.arguments, earlier)
+        if problem is not None:
+            count = state.tool_refusals.get(name, 0) + 1
+            state.tool_refusals[name] = count
+            limit = policy.max_refusals_per_tool
+            return _HeldCall(
+                payload={"ok": False, "error": problem, "note": refusal_note(count, limit)},
+                status="refused",
+                reason_code=reason_code,
+                details={
+                    "refusal_count": count,
+                    "refusal_limit_reached": limit is not None and count >= limit,
+                },
+            )
+        call_limit = policy.max_calls_per_tool.get(name)
+        if call_limit is not None and state.tool_call_counts.get(name, 0) >= call_limit:
+            return _HeldCall(
+                payload={"ok": False, "repeated": True, "error": over_limit(name, call_limit)},
+                status="over_limit",
+                reason_code="tool.call_limit",
+                details={"call_limit": call_limit},
+            )
+        if policy.repeat_guard and read_only(definition) and not definition.volatile:
+            key = call_key(name, action.arguments)
+            if key in state.seen_read_calls or (batch_keys is not None and key in batch_keys):
+                return _HeldCall(
+                    payload={"ok": False, "repeated": True, "error": REPEATED},
+                    status="repeated",
+                    reason_code="tool.repeated",
+                    details={},
+                )
+            if batch_keys is not None:
+                batch_keys.add(key)
+        return None
+
+    @staticmethod
+    def _count_tool_call(
+        state: RunState, agent: AgentDefinition, definition: ToolDefinition
+    ) -> None:
+        """Count a call about to run against its tool's ``max_calls_per_tool``."""
+        if definition.name in agent.tool_policy.max_calls_per_tool:
+            state.tool_call_counts[definition.name] = (
+                state.tool_call_counts.get(definition.name, 0) + 1
+            )
+
+    @staticmethod
+    def _remember_tool_call(
+        state: RunState, agent: AgentDefinition, definition: ToolDefinition, arguments: Any
+    ) -> None:
+        """A successful read is remembered for the repeat guard; a successful change forgets
+        every read, since looking again may now show something new."""
+        if not agent.tool_policy.repeat_guard or definition.volatile:
+            return
+        if read_only(definition):
+            state.seen_read_calls.add(call_key(definition.name, arguments))
+        else:
+            state.seen_read_calls.clear()
+
+    async def _hold_tool_call(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        action: PlannedAction,
+        held: _HeldCall,
+        *,
+        settle: bool = True,
+    ) -> None:
+        """Answer a call a guard held back with the guard's note, and record why."""
+        name = action.tool_name or ""
+        with self._tracer.start_as_current_span(
+            "agent.tool.call", attributes=self._span_attributes(state, action.id)
+        ) as span:
+            span.set_attribute("span.type", "tool")
+            span.set_attribute("tool.name", name)
+            span.set_attribute("agent.tool.name", name)
+            span.set_attribute("gen_ai.tool.name", name)
+            span.set_attribute("gen_ai.tool.call.id", action.id.removeprefix("tool-"))
+            span.set_attribute("tool.argument_keys", tuple(sorted(action.arguments)))
+            span.set_attribute("tool.status", held.status)
+            span.set_attribute("tool.guard.reason_code", held.reason_code)
+            for key, value in held.details.items():
+                span.set_attribute(f"tool.guard.{key}", value)
+            await self._emit(
+                state,
+                "tool.refused" if held.status == "refused" else "tool.repeated",
+                {"tool": name, "reason_code": held.reason_code, **held.details},
+                action.id,
+            )
+            await self._audit(
+                state,
+                "tool.call",
+                held.status,
+                name,
+                {"step_id": action.id, "reason_code": held.reason_code, **held.details},
+            )
+            await self._finish_tool_call_without_result(
+                state, action, held.payload, status=held.status, settle=settle, agent=agent
+            )
+
+    async def _wrap_up_blocks(
+        self, state: RunState, agent: AgentDefinition, action: PlannedAction
+    ) -> tuple[TextBlock, ...]:
+        """The wrap-up notice for a tool result, when the run is nearly out of room to answer.
+
+        It is a separate block beside the result, so it works whatever the result's type.
+        """
+        policy = agent.wrap_up_policy
+        if not policy.enabled:
+            return ()
+        continuation = agent.continuation_policy
+        if continuation.enabled and state.continuation_count < continuation.automatic_extensions:
+            # The limit is not final yet: the run will be extended without asking anyone.
+            return ()
+        calls = tool_calls_left(self._step_limit(state, agent), state.step_count)
+        reason = "steps"
+        share = state.summary.usage.total_tokens / self._token_limit(state, agent)
+        if share >= policy.token_answer_share:
+            calls, reason = 0, "tokens"
+        elif share >= policy.token_wrap_up_share and calls > policy.tool_calls_left:
+            calls, reason = policy.tool_calls_left, "tokens"
+        if calls > policy.tool_calls_left:
+            return ()
+        trace.get_current_span().set_attribute("agent.wrap_up.tool_calls_left", calls)
+        await self._emit(
+            state, "tool.wrap_up", {"tool_calls_left": calls, "reason": reason}, action.id
+        )
+        await self._audit(
+            state,
+            "run.wrap_up",
+            "notified",
+            state.id,
+            {"step_id": action.id, "tool_calls_left": calls, "reason": reason},
+        )
+        return (TextBlock(text=wrap_up_note(calls)),)
 
     async def _run_tool_call(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction, tool: Tool
@@ -1822,12 +2045,16 @@ class AgentRuntime:
         call_id = action.id.removeprefix("tool-")
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
+        self._remember_tool_call(state, agent, tool.definition, action.arguments)
         state.append_message(
             Message(
                 role=Role.TOOL,
                 name=tool.definition.name,
                 tool_call_id=call_id,
-                content=(TextBlock(text=tool_text),),
+                content=(
+                    TextBlock(text=tool_text),
+                    *await self._wrap_up_blocks(state, agent, action),
+                ),
             )
         )
         state.output_text = None
@@ -1946,6 +2173,20 @@ class AgentRuntime:
             ):
                 return False
             tools.append(tool)
+        # Guards judge each call after the ones the model sent before it that will run.
+        held: list[_HeldCall | None] = []
+        earlier: list[EarlierCall] = []
+        batch_keys: set[str] = set()
+        for action, tool in zip(actions, tools, strict=True):
+            hold = None
+            if action.id.removeprefix("tool-") not in state.approved_tool_call_ids:
+                hold = await self._guard_tool_call(
+                    state, agent, action, tool, tuple(earlier), batch_keys
+                )
+            held.append(hold)
+            if hold is None:
+                earlier.append((tool.definition, action.arguments))
+                self._count_tool_call(state, agent, tool.definition)
         state.step_count += len(actions)
         for action in actions:
             await self._emit(state, "step.started", {"action": action.type.value}, action.id)
@@ -1962,20 +2203,28 @@ class AgentRuntime:
         ) as span:
             span.set_attribute("agent.step.type", "tool_batch")
             span.set_attribute("agent.step.tool_count", len(actions))
-            outcomes = await asyncio.gather(
-                *(run_one(action, tool) for action, tool in zip(actions, tools, strict=True)),
+            ran = await asyncio.gather(
+                *(
+                    run_one(action, tool)
+                    for action, tool, hold in zip(actions, tools, held, strict=True)
+                    if hold is None
+                ),
                 return_exceptions=True,
             )
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
-                raise outcome
+        for failure in ran:
+            if isinstance(failure, BaseException) and not isinstance(failure, Exception):
+                raise failure
         if agent.tool_policy.on_error != "return_to_model":
-            for outcome in outcomes:
-                if isinstance(outcome, Exception):
-                    raise outcome
+            for failure in ran:
+                if isinstance(failure, Exception):
+                    raise failure
+        results = iter(ran)
+        outcomes = [hold if hold is not None else next(results) for hold in held]
         # Recorded in the order the model asked for them, as if they had run one by one.
         for action, tool, outcome in zip(actions, tools, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
+            if isinstance(outcome, _HeldCall):
+                await self._hold_tool_call(state, agent, action, outcome, settle=False)
+            elif isinstance(outcome, BaseException):
                 assert isinstance(outcome, Exception)
                 await self._tool_call_failed(state, agent, action, outcome, settle=False)
             else:
@@ -1993,6 +2242,11 @@ class AgentRuntime:
         settle: bool = True,
     ) -> None:
         """Fail the run, or, when the agent asks for it, tell the model the call failed."""
+        if isinstance(exc, MCPNotConnectedError):
+            # A missing OAuth connection is the user's to fix, not a crash: the model hears it
+            # and the UI gets what it needs for a Connect button, whatever the agent's on_error.
+            await self._mcp_not_connected(state, action, exc, settle=settle)
+            return
         if agent.tool_policy.on_error != "return_to_model":
             raise exc
         message = self._safe_error(exc)
@@ -2002,6 +2256,7 @@ class AgentRuntime:
             {"error": {"type": type(exc).__name__, "message": message}},
             status="failed",
             settle=settle,
+            agent=agent,
         )
         await self._audit(
             state,
@@ -2009,6 +2264,30 @@ class AgentRuntime:
             "failed",
             action.tool_name or "",
             {"step_id": action.id, "error_type": type(exc).__name__},
+        )
+
+    async def _mcp_not_connected(
+        self,
+        state: RunState,
+        action: PlannedAction,
+        exc: MCPNotConnectedError,
+        *,
+        settle: bool,
+    ) -> None:
+        await self._finish_tool_call_without_result(
+            state,
+            action,
+            {"error": {"type": "MCPNotConnected", "message": str(exc), "server": exc.server}},
+            status="failed",
+            settle=settle,
+        )
+        await self._emit(state, "mcp.auth_required", exc.details(), action.id)
+        await self._audit(
+            state,
+            "tool.call",
+            "not_connected",
+            action.tool_name or "",
+            {"step_id": action.id, "mcp_server": exc.server},
         )
 
     async def _finish_tool_call_without_result(
@@ -2019,8 +2298,12 @@ class AgentRuntime:
         *,
         status: str,
         settle: bool = True,
+        agent: AgentDefinition | None = None,
     ) -> None:
-        """Answer a tool call the model made with ``payload`` instead of the tool's result."""
+        """Answer a tool call the model made with ``payload`` instead of the tool's result.
+
+        With ``agent``, the answer carries the agent's wrap-up notice when it applies.
+        """
         call_id = action.id.removeprefix("tool-")
         name = action.tool_name or ""
         if state.status == RunStatus.PLANNING:
@@ -2032,7 +2315,10 @@ class AgentRuntime:
                 role=Role.TOOL,
                 name=name,
                 tool_call_id=call_id,
-                content=(TextBlock(text=json.dumps(payload, default=str)),),
+                content=(
+                    TextBlock(text=json.dumps(payload, default=str)),
+                    *(await self._wrap_up_blocks(state, agent, action) if agent else ()),
+                ),
             )
         )
         state.output_text = None

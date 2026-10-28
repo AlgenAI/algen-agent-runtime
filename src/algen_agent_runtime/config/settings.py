@@ -81,6 +81,35 @@ class StorageSettings(StrictSettings):
     postgres_min_pool_size: int = Field(default=1, ge=1)
     postgres_max_pool_size: int = Field(default=10, ge=1)
     memory_retention_seconds: int = Field(default=86_400, ge=0)
+    mcp_oauth_token_store: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Where MCP OAuth tokens live. 'postgres' encrypts them at rest and needs "
+        "mcp_oauth_encryption_key and the encryption extra.",
+    )
+    mcp_oauth_encryption_key: str | None = Field(
+        default=None,
+        description="env:// reference to a base64 32-byte AES-256-GCM key for stored MCP OAuth "
+        "tokens.",
+    )
+    mcp_oauth_previous_encryption_keys: tuple[str, ...] = Field(
+        default=(),
+        description="env:// references to retired keys that may still decrypt stored tokens "
+        "during a key rotation.",
+    )
+
+    @model_validator(mode="after")
+    def validate_mcp_oauth_storage(self) -> StorageSettings:
+        for reference in (self.mcp_oauth_encryption_key, *self.mcp_oauth_previous_encryption_keys):
+            if reference is not None and not reference.startswith("env://"):
+                raise ValueError("MCP OAuth encryption keys must be env:// secret references")
+        if self.mcp_oauth_token_store == "postgres":
+            if not self.postgres_dsn:
+                raise ValueError("postgres-backed stores require postgres_dsn")
+            if not self.mcp_oauth_encryption_key:
+                raise ValueError(
+                    "mcp_oauth_token_store 'postgres' requires mcp_oauth_encryption_key"
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_backends(self) -> StorageSettings:
@@ -216,6 +245,12 @@ class TracciaSettings(StrictSettings):
     )
     run_export_max_spans: int = Field(default=2_000, ge=1, le=100_000)
     run_export_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+    export_foreign_traces: bool = Field(
+        default=False,
+        description="Also export traces the Runtime did not start, such as the HTTP request spans "
+        "a web framework or instrumentor creates through the global OpenTelemetry provider. By "
+        "default Traccia receives only traces opened by a Runtime root.",
+    )
 
     @model_validator(mode="after")
     def validate_api_key_reference(self) -> TracciaSettings:

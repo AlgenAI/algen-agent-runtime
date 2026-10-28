@@ -100,6 +100,8 @@ def clock_tool(now_fn: Callable[[], datetime] | None = None) -> Tool:
             },
             side_effect=SideEffect.NONE,
             idempotency=Idempotency.IDEMPOTENT if is_deterministic else Idempotency.NON_IDEMPOTENT,
+            # The time changes on its own: asking again is never a repeat.
+            volatile=not is_deterministic,
         ),
         execute,
     )

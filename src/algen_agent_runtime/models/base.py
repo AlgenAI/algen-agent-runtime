@@ -3,18 +3,19 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
 import structlog
 
 from algen_agent_runtime.cache import CacheContext, CacheService
-from algen_agent_runtime.context.budget import prepare_model_request
+from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_model_request
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     CapabilityError,
     ProviderError,
 )
+from algen_agent_runtime.models.metering import DEFAULT_RESERVED_OUTPUT_TOKENS, UsageMeter
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     ModelCapabilities,
@@ -96,6 +97,7 @@ class ModelRouter:
         circuit_failure_threshold: int = 5,
         circuit_reset_seconds: float = 30,
         cache: CacheService | None = None,
+        usage_meter: UsageMeter | None = None,
     ) -> None:
         self._providers: dict[str, ModelProvider] = {}
         self._profiles: dict[str, ModelProfile] = {}
@@ -111,6 +113,8 @@ class ModelRouter:
         self._threshold = circuit_failure_threshold
         self._reset_seconds = circuit_reset_seconds
         self._cache = cache
+        # Reserves before and settles after every provider dispatch; see models/metering.py.
+        self._usage_meter = usage_meter
 
     async def _capabilities(
         self,
@@ -273,9 +277,12 @@ class ModelRouter:
                 errors.append(f"{rid}/{profile.model}: configured context budget exceeded")
                 continue
             await self._limits[rid].acquire()
+            # A refusal is not a ProviderError: it skips the fallbacks below and leaves health
+            # untouched.
+            ticket = await self._reserve(candidate_request)
             started = time.monotonic()
             try:
-                response = await provider.generate(candidate_request)
+                response = await self._dispatch(provider, candidate_request, ticket)
                 health = self._health[rid]
                 health.consecutive_failures = 0
                 health.opened_at = None
@@ -285,13 +292,16 @@ class ModelRouter:
                     response.usage.input_tokens * input_cost
                     + response.usage.output_tokens * output_cost
                 ) / 1000
-                return response.model_copy(
+                priced = response.model_copy(
                     update={
                         "usage": response.usage.model_copy(
                             update={"estimated_cost_usd": estimated_cost}
                         )
                     }
                 )
+                if self._usage_meter is not None:
+                    await self._usage_meter.settle(ticket, priced.usage)
+                return priced
             except ProviderError as exc:
                 errors.append(f"{rid}: {exc}")
                 failures.append(exc)
@@ -319,7 +329,7 @@ class ModelRouter:
         request: ModelRequest,
         profiles: Sequence[ModelProfile],
         allowlist: frozenset[str] = frozenset(),
-    ) -> AsyncIterator[ModelStreamEvent]:
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
         candidates = await self.candidates(profiles, allowlist)
         if not candidates:
             raise CapabilityError("no healthy allowed streaming model is available")
@@ -341,22 +351,55 @@ class ModelRouter:
         if not capabilities.streaming:
             raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
         await self._limits[rid].acquire()
-        async for event in provider.stream(candidate_request.model_copy(update={"stream": True})):
-            if event.response:
-                input_cost, output_cost = self._costs[rid]
-                usage = event.response.usage
-                estimated_cost = (
-                    usage.input_tokens * input_cost + usage.output_tokens * output_cost
-                ) / 1000
-                event = event.model_copy(
-                    update={
-                        "response": event.response.model_copy(
-                            update={
-                                "usage": usage.model_copy(
-                                    update={"estimated_cost_usd": estimated_cost}
-                                )
-                            }
-                        )
-                    }
-                )
-            yield event
+        ticket = await self._reserve(candidate_request)
+        settled = False
+        try:
+            async for event in provider.stream(
+                candidate_request.model_copy(update={"stream": True})
+            ):
+                if event.response:
+                    input_cost, output_cost = self._costs[rid]
+                    usage = event.response.usage
+                    estimated_cost = (
+                        usage.input_tokens * input_cost + usage.output_tokens * output_cost
+                    ) / 1000
+                    event = event.model_copy(
+                        update={
+                            "response": event.response.model_copy(
+                                update={
+                                    "usage": usage.model_copy(
+                                        update={"estimated_cost_usd": estimated_cost}
+                                    )
+                                }
+                            )
+                        }
+                    )
+                    if self._usage_meter is not None and not settled:
+                        assert event.response is not None
+                        await self._usage_meter.settle(ticket, event.response.usage)
+                        settled = True
+                yield event
+        finally:
+            # An error, cancellation or a consumer that stops early ends the stream unsettled.
+            if self._usage_meter is not None and not settled:
+                await self._usage_meter.release(ticket)
+
+    async def _reserve(self, request: ModelRequest) -> object:
+        """Reserve a call's most cost with the meter, or nothing without one."""
+        if self._usage_meter is None:
+            return None
+        return await self._usage_meter.reserve(
+            max_input_tokens=estimate_request_tokens(request),
+            max_output_tokens=request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS,
+        )
+
+    async def _dispatch(
+        self, provider: ModelProvider, request: ModelRequest, ticket: object
+    ) -> ModelResponse:
+        if self._usage_meter is None:
+            return await provider.generate(request)
+        try:
+            return await provider.generate(request)
+        except BaseException:
+            await self._usage_meter.release(ticket)
+            raise

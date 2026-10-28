@@ -19,7 +19,7 @@ from algen_agent_runtime.context.builder import ContextBuilderRegistry, DefaultC
 from algen_agent_runtime.context.skills import skill_load_tool
 from algen_agent_runtime.context.working_state import working_state_tool
 from algen_agent_runtime.exceptions.errors import ConfigurationError
-from algen_agent_runtime.mcp.contracts import MCPServerConfigBase
+from algen_agent_runtime.mcp.contracts import MCPServerConfigBase, oauth_config
 from algen_agent_runtime.memory.service import LearnedMemoryService
 from algen_agent_runtime.memory.store import InMemoryLearnedMemoryStore
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
@@ -71,6 +71,7 @@ class ToolDescription(_Description):
     timeout_seconds: float
     max_attempts: int
     requires_approval: bool
+    volatile: bool = False
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     env: tuple[str, ...] = ()
@@ -83,6 +84,17 @@ class ProviderDescription(_Description):
     env: tuple[str, ...] = ()
 
 
+class MCPAuthDescription(_Description):
+    """How an MCP server authenticates; secrets appear only as env:// variable names."""
+
+    type: str
+    token_scope: str
+    client: str
+    scopes: tuple[str, ...] = ()
+    redirect_uri: str
+    discovery: str
+
+
 class MCPServerDescription(_Description):
     name: str
     transport: str
@@ -91,6 +103,21 @@ class MCPServerDescription(_Description):
     required: bool
     source: str
     env: tuple[str, ...] = ()
+    auth: MCPAuthDescription | None = None
+
+
+def _mcp_auth(server: MCPServerConfigBase) -> MCPAuthDescription | None:
+    auth = oauth_config(server)
+    if auth is None:
+        return None
+    return MCPAuthDescription(
+        type=auth.type,
+        token_scope=auth.token_scope.value,
+        client="public (PKCE)" if auth.public_client else "confidential",
+        scopes=auth.scopes,
+        redirect_uri=auth.redirect_uri,
+        discovery="configured endpoints" if auth.token_endpoint else "metadata discovery",
+    )
 
 
 class PluginDescription(_Description):
@@ -207,6 +234,7 @@ def _tool(tool: Tool, source: str, env: tuple[str, ...]) -> ToolDescription:
         timeout_seconds=definition.timeout_seconds,
         max_attempts=definition.retry_policy.max_attempts,
         requires_approval=definition.requires_approval,
+        volatile=definition.volatile,
         input_schema=definition.input_schema,
         output_schema=definition.output_schema,
         env=env,
@@ -350,6 +378,7 @@ def describe_components(settings: AppSettings) -> ComponentInventory:
                 required=server.required,
                 source=mcp_sources.get(server.name, MANIFEST),
                 env=env_references(server),
+                auth=_mcp_auth(server),
             )
             for server in sorted(mcp_servers, key=lambda item: item.name)
         ),

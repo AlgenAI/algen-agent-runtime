@@ -20,6 +20,13 @@ from algen_agent_runtime.observability.run_export import (
     RunScopedExportProcessor,
     install_run_scoped_export,
 )
+from algen_agent_runtime.observability.runtime_traces import (
+    RUNTIME_ROOT_ATTRIBUTE,
+    RuntimeTraceFilterProcessor,
+    in_runtime_trace,
+    install_runtime_trace_filter,
+    runtime_trace_context,
+)
 from algen_agent_runtime.observability.trace_levels import TraceLevel
 
 
@@ -222,6 +229,7 @@ class TracciaObservabilityAdapter:
         self._module: ModuleType | Any | None = None
         self._started = False
         self._run_export: RunScopedExportProcessor | None = None
+        self._trace_filter: RuntimeTraceFilterProcessor | None = None
 
     def tracer(self, name: str) -> Any:
         return _TracciaTracer(self, name)
@@ -274,6 +282,13 @@ class TracciaObservabilityAdapter:
             )
             if self._run_export is not None:
                 provider.add_span_processor(_RunSpanCountEnricher(self._run_export))
+        # Installed after the run-scoped export so it sits in front of it and decides first.
+        if (
+            not self._settings.export_foreign_traces
+            and self._trace_filter is None
+            and otel_provider
+        ):
+            self._trace_filter = install_runtime_trace_filter(otel_provider)
         self._module = module
         self._started = True
 
@@ -350,6 +365,11 @@ class TracciaObservabilityAdapter:
         Raw OpenTelemetry children still inherit this span. A managed root is
         required for Traccia's guardrail detector to attach the trace-level
         ``guardrail.summary`` consumed by Guardrail Posture.
+
+        A span that opens a Runtime trace in this process carries ``algen.runtime.root``. When
+        foreign traces are not exported, a span that would otherwise join a live span the Runtime
+        did not start (an HTTP request's, say) opens its own trace instead, so it is not dropped
+        with that request.
         """
         self.start()
         module = self._module
@@ -357,13 +377,24 @@ class TracciaObservabilityAdapter:
 
         @contextmanager
         def scope() -> Any:
-            token = otel_context.attach(Context()) if root else None
+            current = trace.get_current_span()
+            opens_trace = root or (
+                not self._settings.export_foreign_traces
+                and current.is_recording()
+                and not in_runtime_trace()
+            )
+            span_attributes = dict(attributes)
+            # No live local parent: the first span, or a resumed run under its stored parent.
+            if opens_trace or not current.is_recording():
+                span_attributes[RUNTIME_ROOT_ATTRIBUTE] = True
+            token = otel_context.attach(
+                runtime_trace_context(Context() if opens_trace else otel_context.get_current())
+            )
             try:
-                with module.span(name, attributes=dict(attributes)) as span:
+                with module.span(name, attributes=span_attributes) as span:
                     yield span
             finally:
-                if token is not None:
-                    otel_context.detach(token)
+                otel_context.detach(token)
 
         return scope()
 

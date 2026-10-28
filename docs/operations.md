@@ -160,6 +160,47 @@ unversioned agent name in `agent.id` and `gen_ai.agent.id`; `agent.version` and
 `name@version` key for reproducibility. Policies and long-lived dashboards should scope by
 `agent.id`, never by `agent.definition.id`.
 
+## Usage metering
+
+A deployment that bills or rations model use passes a `UsageMeter` to
+`build_container(settings, usage_meter=...)`. The model router reserves before every provider
+dispatch and settles afterwards, so agent steps, retries, fallbacks, schema repairs, streamed calls
+and history compaction are all charged; a cached model response makes no call and is not charged.
+See [Agent tool behaviour](agent-tooling.md#metering-model-calls) for the protocol and an example.
+
+| Signal | Where | Meaning |
+| --- | --- | --- |
+| `budget.refused` event | run events | The meter raised `MeterRefusedError`; `data.reason` is its message. |
+| `run.failed` event with `reason: budget_refused` | run events | The run that the refusal ended; `data.error` repeats the reason, which is also `RunState.error`. |
+| `budget.refused` audit record | audit log | Outcome `refused`, the agent as resource, and the reason. |
+| `budget.refused = true` | `agent.run` span | Set on the run root whose drive the refusal ended. |
+
+A refusal is not a provider error: it is not retried, the router does not try a fallback model, and
+it does not count towards the provider's circuit breaker or latency. The run ends `failed`. Alert on
+`budget.refused` separately from provider failures. A meter must not raise any other exception from
+`reserve` to mean "no": that is treated as an internal error.
+
+## Tool-call guards
+
+The guards in [Agent tool behaviour](agent-tooling.md#tool-call-guards) answer a tool call
+without running it, or add a notice to its result. Each leaves a record:
+
+| Guard | Run event | `tool.completed` status | Audit (`action`, `outcome`) | Span |
+| --- | --- | --- | --- | --- |
+| Schema check | `tool.refused` (`reason_code: tool.schema_invalid`) | `refused` | `tool.call`, `refused` | `agent.tool.call` with `tool.status=refused` |
+| Precheck | `tool.refused` (`reason_code: tool.precheck_refused`) | `refused` | `tool.call`, `refused` | `agent.tool.call` with `tool.status=refused` |
+| Repeat guard | `tool.repeated` (`reason_code: tool.repeated`) | `repeated` | `tool.call`, `repeated` | `agent.tool.call` with `tool.status=repeated` |
+| Call limit | `tool.repeated` (`reason_code: tool.call_limit`) | `over_limit` | `tool.call`, `over_limit` | `agent.tool.call` with `tool.status=over_limit` |
+| Wrap-up notice | `tool.wrap_up` (`tool_calls_left`, `reason: steps\|tokens`) | unchanged | `run.wrap_up`, `notified` | `agent.wrap_up.tool_calls_left` on the `agent.step` span (`agent.run` for a parallel reply) |
+
+`tool.refused` also carries `refusal_count` (refusals of that tool so far in the run) and
+`refusal_limit_reached` (the note told the model to stop); `tool.repeated` for a call limit
+carries `call_limit`. The same values are on the span as `tool.guard.reason_code`,
+`tool.guard.refusal_count`, `tool.guard.refusal_limit_reached` and `tool.guard.call_limit`, and in
+the audit metadata beside `step_id`. None of them carries argument values. The run narrative lists
+the three events. Alert on runs whose `refusal_limit_reached` is true or with many
+`tool.repeated` events: the model is stuck on a tool's contract or its instructions.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
@@ -285,6 +326,7 @@ telemetry:
     export_whole_runs: true        # send each run's spans together (default)
     run_export_max_spans: 2000     # flush a run early past this many spans
     run_export_max_seconds: 300    # or once it has been open this long
+    export_foreign_traces: false   # send only traces the Runtime started (default)
 ```
 
 Set `TRACCIA_API_KEY` through the deployment secret manager. Alternatively, omit `api_key` here and let the Traccia SDK load `TRACCIA_API_KEY` or `traccia.toml`. Never put a literal key in YAML.
@@ -348,6 +390,31 @@ run past `run_export_max_spans` spans or open longer than `run_export_max_second
 the rest follows its root. The root records `agent.run.span_count`, the number of spans the run
 emitted, so a backend can tell a whole trace from a partial one. Other OpenTelemetry deployments can
 use `install_run_scoped_export(provider)` from `algen_agent_runtime.observability.run_export`.
+
+**Foreign traces.** Traccia's provider is the process-global one, so a library that traces through
+the global provider (FastAPI's request tracing, an httpx or SQLAlchemy instrumentor) reaches the same
+exporters, with no agent identity; Traccia files those spans under `unknown-agent-name`. With
+`export_foreign_traces: false` (the default), the adapter puts a `RuntimeTraceFilterProcessor` in front
+of the export processors present when Traccia starts (in front of the whole-run processor when that is
+on): a trace is exported only when the span that opened it in this process is a Runtime root, and
+every other trace is dropped whole, including spans that end after its root. A Runtime root is either:
+
+- a span carrying `algen.runtime.root=true`: `conversation.turn`, an `agent.run` that opens its trace
+  (a standalone run, or a resumed run under its stored parent; a run inside a turn is the turn's
+  child and is not marked), or
+- a span created by a Runtime tracer (instrumentation scope `algen_agent_runtime.*`), so Runtime spans
+  that start without a run, such as `model_service.invoke`, `conversation.feedback` or
+  `distributed_work.execute`, keep reaching Traccia.
+
+A run started while an HTTP request span is current, as when a FastAPI handler starts it, opens its
+own trace instead of becoming the request's child, so it is exported whole and not dropped with the
+request. A Runtime component span created inside an application's request span, outside any run,
+belongs to the request's trace and is dropped with it. Set `export_foreign_traces: true`
+(`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__EXPORT_FOREIGN_TRACES=true`) to send everything as before,
+with runs as children of the request that started them, when an application wants its own spans in
+Traccia. An exporter added after Traccia starts, such as `telemetry.otlp_endpoint`, is not filtered.
+Other OpenTelemetry deployments can use `install_runtime_trace_filter(provider)` from
+`algen_agent_runtime.observability.runtime_traces`.
 
 **Resumed runs.** A run stores its first `agent.run` span in `RunState.trace_parent`; when it resumes
 after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one
@@ -437,6 +504,25 @@ Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model 
 
 4. **Production Defense in Depth:**
    - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
+
+## MCP OAuth connections
+
+OAuth MCP servers (docs/mcp.md, "OAuth for remote MCP servers") add this telemetry. None of it
+carries a token, a refresh token, a PKCE verifier, an authorization code or a state.
+
+| Kind | Name | Data |
+| --- | --- | --- |
+| Run event | `mcp.auth_required` | `code: mcp_not_connected`, `server`, `token_scope`, `start_path`. Emitted when a tool call finds no connection; the call's `tool.completed` has status `failed`. |
+| Audit | `tool.call`, outcome `not_connected` | `step_id`, `mcp_server`. |
+| Audit | `mcp.oauth.connect`, outcome `completed` | `mcp_server`, `token_scope`; actor is the user who completed the flow. |
+| Audit | `mcp.oauth.revoke`, outcome `completed` | `mcp_server`, `removed`, `provider_revoked`. |
+
+Run more than one API worker only with `storage.mcp_oauth_token_store: postgres`: the in-memory
+store cannot see a flow started on another worker. Back up `mcp_oauth_encryption_key` with the
+database; without it stored connections cannot be read and users must connect again. Refreshes
+are serialized within a process. Across workers, a refresh the provider rejects first re-reads
+the store and keeps another worker's newer token; only when none has been stored yet can a race
+on a rotating refresh token disconnect the user, who then connects again.
 
 ## API Admission Rate Limiting and Concurrency Quotas
 

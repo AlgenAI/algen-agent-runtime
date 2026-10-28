@@ -272,6 +272,24 @@ class ToolPolicy(StrictModel):
     # Run the tool calls one model reply requests concurrently when none needs approval.
     parallel_calls: bool = False
     max_parallel_calls: int = Field(default=4, ge=1, le=16)
+    max_refusals_per_tool: int | None = Field(
+        default=None,
+        ge=1,
+        description="Refused calls to one tool in a run (a failed precheck or arguments that do "
+        "not fit its input schema) after which the refusal tells the model to stop calling it and "
+        "tell the user what was refused and why. None always says to fix the call and try again.",
+    )
+    repeat_guard: bool = Field(
+        default=False,
+        description="A read-only call identical to an earlier one in the run, with no successful "
+        "state-changing call since, returns a note instead of running. Tools marked volatile are "
+        "never held back.",
+    )
+    max_calls_per_tool: dict[str, Annotated[int, Field(ge=1)]] = Field(
+        default_factory=dict,
+        description="The most times each named tool may run in one run; past it, a call returns "
+        "a note to answer from what the tool already returned.",
+    )
 
 
 SkillName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
@@ -335,6 +353,43 @@ class ContinuationPolicy(StrictModel):
     approval_expires_seconds: int = Field(default=3600, ge=1)
 
 
+class WrapUpPolicy(StrictModel):
+    """Room to answer: tell the model to stop calling tools while it can still answer.
+
+    A run that uses its last step or token on a tool call ends without an answer. When enabled,
+    every tool result in a run that can afford at most ``tool_calls_left`` more tool calls carries
+    a notice to wrap up and answer. The token budget shortens that: from ``token_wrap_up_share``
+    of it the run gets at most ``tool_calls_left`` more calls, from ``token_answer_share`` none.
+    """
+
+    enabled: bool = Field(default=False, description="Append the wrap-up notice to tool results.")
+    tool_calls_left: int = Field(
+        default=2,
+        ge=0,
+        le=100,
+        description="Warn once the run can afford this many more tool calls (each with the model "
+        "call that reads its result) or fewer before it must answer.",
+    )
+    token_wrap_up_share: float = Field(
+        default=0.75,
+        gt=0,
+        le=1,
+        description="Share of the token budget from which the run wraps up.",
+    )
+    token_answer_share: float = Field(
+        default=0.9,
+        gt=0,
+        le=1,
+        description="Share of the token budget from which the model must answer at once.",
+    )
+
+    @model_validator(mode="after")
+    def shares_in_order(self) -> WrapUpPolicy:
+        if self.token_wrap_up_share > self.token_answer_share:
+            raise ValueError("token_wrap_up_share cannot exceed token_answer_share")
+        return self
+
+
 class AgentDefinition(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
@@ -358,6 +413,7 @@ class AgentDefinition(StrictModel):
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
     tool_policy: ToolPolicy = Field(default_factory=ToolPolicy)
     continuation_policy: ContinuationPolicy = Field(default_factory=ContinuationPolicy)
+    wrap_up_policy: WrapUpPolicy = Field(default_factory=WrapUpPolicy)
     response_composer: str = "default"
     budget: Budget = Field(default_factory=Budget)
     max_steps: int = Field(default=16, ge=1, le=1000)
@@ -562,6 +618,20 @@ class RunState(BaseModel):
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)
+    # Tool guards, checkpointed so they survive an approval pause and a restart.
+    tool_refusals: dict[str, int] = Field(
+        default_factory=dict,
+        description="Calls refused per tool in this run (precheck or input schema).",
+    )
+    tool_call_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Calls run per tool named in tool_policy.max_calls_per_tool.",
+    )
+    seen_read_calls: set[str] = Field(
+        default_factory=set,
+        description="Digests of read-only calls run since the last successful state-changing "
+        "call, kept when tool_policy.repeat_guard is on.",
+    )
     output_text: str | None = None
     error: str | None = None
     pause_payload: dict[str, Any] | None = None
