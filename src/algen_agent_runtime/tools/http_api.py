@@ -2,8 +2,8 @@
 
 Each ``http_tools`` entry names one operation: method, a URL template with ``{param}``
 placeholders, query, header and body templates, the parameters (JSON Schema) the model fills
-in, authentication by ``env://`` secret reference, pagination, limits and how to pick the part
-of the response the model sees. Calls go through ``create_safe_http_client``: the URL's host
+in, authentication (``env://`` secret references, or the caller's per-run credentials),
+pagination, limits and how to pick the part of the response the model sees. Calls go through ``create_safe_http_client``: the URL's host
 must be in ``security.allowed_http_hosts``, private networks stay blocked unless allowed, and
 redirects are never followed. A non-2xx response is returned to the model as ``ok: false``,
 not raised, so it can react to it.
@@ -36,6 +36,19 @@ _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _WHOLE_PLACEHOLDER = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _LINK_NEXT = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?', re.IGNORECASE)
 _KEPT_HEADERS = frozenset({"content-type", "etag", "x-ratelimit-remaining", "retry-after"})
+# Headers a caller credential may never be sent as.
+_RESERVED_HEADERS = frozenset(
+    {
+        "cookie",
+        "set-cookie",
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "proxy-authorization",
+    }
+)
+_HEADER_VALUE = re.compile(r"^[\x20-\x7e\t]+$")
 
 
 class _Strict(BaseModel):
@@ -43,15 +56,36 @@ class _Strict(BaseModel):
 
 
 class HttpToolAuth(_Strict):
-    type: Literal["none", "bearer", "basic", "header"] = "none"
+    """How a declared HTTP tool authenticates.
+
+    ``bearer``, ``basic`` and ``header`` read ``env://`` secret references: the same credential
+    for every run. ``caller`` forwards the calling user's credential for this run: the value under
+    ``credential`` in ``ToolContext.credentials`` (what the host passed to ``Runtime.run``,
+    ``start`` or ``resume``), sent as ``header_name`` (default ``Authorization``), prefixed with
+    ``scheme`` when one is set. A call without that credential fails before any request is sent.
+    """
+
+    type: Literal["none", "bearer", "basic", "header", "caller"] = "none"
     # env:// references only; resolved when the tool is called, never stored in settings.
     token: str | None = None
     username: str | None = None
     password: str | None = None
     header_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{1,64}$")
+    # caller: the key in ToolContext.credentials, and an optional scheme such as "Bearer".
+    credential: str = Field(default="authorization", pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    scheme: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9-]{0,31}$")
 
     @model_validator(mode="after")
     def complete_and_referenced(self) -> HttpToolAuth:
+        if self.type == "caller":
+            for field in ("token", "username", "password"):
+                if getattr(self, field):
+                    raise ValueError(f"caller authentication takes no {field}")
+            if self.header_name and self.header_name.lower() in _RESERVED_HEADERS:
+                raise ValueError(f"caller authentication cannot be sent as {self.header_name!r}")
+            return self
+        if self.scheme is not None:
+            raise ValueError("scheme applies to caller authentication only")
         needed = {
             "none": (),
             "bearer": ("token",),
@@ -165,12 +199,17 @@ def http_api_tool(
         follow_redirects=False,
     )
 
+    caller_auth = config.auth.type == "caller"
+    origin = _origin(config.url)
+
     async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        del context
         url = _render_url(config.url, arguments)
         query = _render_mapping(config.query, arguments)
         headers = {"Accept": "application/json", **_render_mapping(config.headers, arguments)}
-        headers.update(await _auth_headers(config.auth, secrets))
+        if caller_auth:
+            headers.update(_caller_headers(config.name, config.auth, context))
+        else:
+            headers.update(await _auth_headers(config.auth, secrets))
         body = _render_value(config.body, arguments) if config.body is not None else None
         collected: list[Any] = []
         data: Any = None
@@ -187,6 +226,13 @@ def http_api_tool(
             await validate_outbound_url(next_url, allowed_hosts, allow_private_networks)
             # A Link header's next URL already carries its own query.
             following_link = config.pagination.type == "link_header" and next_url != url
+            if caller_auth and following_link and _origin(next_url) != origin:
+                # The user's credential goes only to the declared origin, never to another host
+                # a response points at, even an allowlisted one.
+                raise ToolExecutionError(
+                    f"{config.name}: the next page is on another origin; the caller's credential "
+                    "is not sent there"
+                )
             response = await http_client.request(
                 config.method,
                 next_url,
@@ -279,6 +325,31 @@ def http_api_tool(
         ),
         execute,
     )
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    return parts.scheme, (parts.hostname or "").lower(), port
+
+
+def _caller_headers(name: str, auth: HttpToolAuth, context: ToolContext) -> dict[str, str]:
+    """The header carrying the caller's credential; never echoes the credential in errors."""
+    value = context.credentials.get(auth.credential)
+    if not value:
+        raise ToolExecutionError(
+            f"{name}: authentication required: the caller's {auth.credential!r} credential was "
+            "not passed for this run; sign in again and retry"
+        )
+    value = value.strip()
+    if auth.scheme:
+        prefix = f"{auth.scheme} "
+        if value[: len(prefix)].lower() == prefix.lower():
+            value = value[len(prefix) :].strip()
+        value = prefix + value
+    if not _HEADER_VALUE.fullmatch(value):
+        raise ToolExecutionError(f"{name}: the caller's credential is not a valid header value")
+    return {auth.header_name or "Authorization": value}
 
 
 async def _auth_headers(auth: HttpToolAuth, secrets: SecretResolver) -> dict[str, str]:

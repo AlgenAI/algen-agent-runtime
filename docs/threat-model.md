@@ -133,6 +133,30 @@ JWKS:
   tenant go to the `_authentication` audit tenant, so unverified claims cannot write into a
   tenant's trail, and a per-minute cap keeps a credential flood from flooding the audit store.
 
+### HTTP tools that forward the caller's credential
+
+A declared HTTP tool with `auth.type: caller` sends the calling user's credential for the run to an
+operator-declared API. The threats are a credential sent somewhere it should not go, a credential
+that outlives its request, one user's response shown to another, and header injection. Controls:
+
+- **Destination.** The URL, host and path template are operator configuration, never model
+  arguments, and the host must be in `security.allowed_http_hosts`; private networks stay blocked
+  and redirects are never followed. A paginated call sends the credential only to the declared
+  origin and fails when a response's `Link` header points elsewhere, even to an allowlisted host.
+- **What is sent.** Only the one named credential, in the one configured header. Cookies and other
+  caller headers are never forwarded, and the header cannot be `Cookie`, `Host`,
+  `Proxy-Authorization` or a framing header. Control characters are refused, so a value cannot add
+  headers.
+- **Lifetime.** The credential is read from `ToolContext.credentials` at call time and follows its
+  rules: memory only, gone when the run pauses or ends, and never in state, stores, events, audits,
+  spans, logs or errors. Without it the call fails closed with `authentication required`; it never
+  falls back to an unauthenticated request or to a deployment secret.
+- **Cross-user results.** A call that carries caller credentials bypasses the tool-result cache,
+  whose scope (tenant by default) is shared by several users.
+- **Response content.** The result keeps only a fixed set of response headers, so `Set-Cookie` and
+  authentication challenges do not reach the model. The response body is the API's answer for that
+  user and is treated like any tool result: untrusted data for the model.
+
 ## Deployment checklist
 
 - Use `oidc` (or `jwt`) authentication outside loopback development; require short-lived tokens

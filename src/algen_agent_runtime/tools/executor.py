@@ -147,6 +147,9 @@ class ToolExecutor:
             cache is not None
             and definition.side_effect in {SideEffect.NONE, SideEffect.READ}
             and definition.idempotency == Idempotency.IDEMPOTENT
+            # A call made with the caller's credentials may return what only that caller may
+            # see: it is never served from, or stored in, a cache shared beyond the call.
+            and not context.credentials
         )
         cache_context = CacheContext(
             tenant_id=context.tenant_id,
