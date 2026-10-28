@@ -1,7 +1,7 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — pre-release (`0.1.0a15`)  
+Status: Active tracking — pre-release (`0.1.0a17`)  
 Last reviewed: 2026-10-28
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
@@ -52,10 +52,10 @@ A breaking change after `0.2.0b1` restarts the stability window.
 - [ ] All seven P0 items in [production readiness](production-readiness.md) are complete:
   - [ ] 1. Persistence drills against live stores.
   - [ ] 2. Policy distribution and adversarial coverage.
-  - [ ] 3. Side-effect reconciliation, operator resolution and compensation.
-  - [ ] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit).
+  - [x] 3. Side-effect reconciliation, operator resolution and compensation (`0.1.0a17`).
+  - [x] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit) (`0.1.0a17`).
   - [ ] 5. Network, plugin and local-execution hardening.
-  - [ ] 6. Readiness and lifecycle.
+  - [x] 6. Readiness and lifecycle (`0.1.0a16`).
   - [ ] 7. Resource bounds and retention.
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated

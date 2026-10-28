@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-28 (Runtime `0.1.0a15`)
+Last reviewed: 2026-10-28 (Runtime `0.1.0a17`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -78,7 +78,8 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-None of these is complete. Each item states what is done and what remains as of 2026-10-28.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`; each lists what is left
+for later. Items 1, 2, 5 and 7 remain open.
 
 1. **Close persistence validation gaps.** CI runs storage integration tests against live PostgreSQL 16,
    including schema migrations, run state, optimistic conflicts, artifacts, tool deduplication, and
@@ -96,16 +97,27 @@ None of these is complete. Each item states what is done and what remains as of 
    fail-open/fail-closed behavior at every remaining policy boundary, and an adversarial suite for
    prompt injection, data loss, PII, secrets, and cross-tenant access through agent behavior rather
    than store calls.
-3. **Complete side-effect operations.** The ledger records `indeterminate` calls, and retention keeps
-   runs with unresolved side effects. `Tool` accepts a `compensation` handler, but the Runtime never
-   calls it. *Remaining:* reconciliation APIs, operator resolution of indeterminate calls, compensation
-   execution, and transactional coupling between tool records and run checkpoints where the backing
-   system permits it.
-4. **Finish authentication options.** Add OIDC/JWKS rotation and caching, mTLS/service identity hooks,
-   authorization policy mapping, token-revocation strategy, and authentication audit events. Header
-   identity mode must remain explicitly development-only (it binds only to a loopback host). No
-   progress since the last review: inbound JWT verification still uses one static `env://` key. MCP
-   OAuth (`0.1.0a14`) authenticates the Runtime to remote MCP servers, not callers to the Runtime.
+3. **Complete side-effect operations.** *Done (`0.1.0a17`):* a tenant-scoped reconciliation API
+   (`runtime.reconciliation`, `/v1/tool-executions`, scope `tools:reconcile`) lists indeterminate and
+   stale started calls; operators resolve them as completed or failed with actor and reason, audited
+   and announced; an optional `Tool.reconcile` hook serves operator reconciliation and replay-time
+   reconciliation; `Tool.compensation` runs only on an explicit operator request, at most once
+   (`compensating` to `compensated` or `compensation_failed`, migration 014); the opt-in
+   `tool_policy.on_indeterminate: pause` resumes a run once its call is settled; and the
+   ledger-before-checkpoint write order is documented and covered by crash-between-writes tests on
+   in-memory and PostgreSQL stores. *Later:* reconcile hooks for built-in HTTP, email and MCP tools;
+   reconciliation pauses for workflow tool steps; a configurable stale threshold; single-transaction
+   coupling if the executor and run store ever share a connection.
+4. **Finish authentication options.** *Done (`0.1.0a17`):* `auth_mode: oidc` verifies bearer JWTs
+   against issuer JWKS (discovery or `jwks_url`, fetched through the SSRF-safe client from
+   allowlisted hosts, TTL cache, rate-limited refresh on an unknown `kid`, last good keys kept,
+   asymmetric algorithms bound to the key type, bounded skew, optional maximum token lifetime);
+   per-issuer claim mapping to tenant and scopes that fails closed; tenant-scoped revocation (`jti`
+   denylist and per-subject cutoff, memory or PostgreSQL, admin routes); a trusted-proxy
+   client-certificate identity hook, off by default; and content-minimal authentication audit
+   records, metric and log. Header identity remains loopback-only development mode. *Later:* token
+   introspection (RFC 7662); mTLS terminated by the Runtime itself mapped to principals; purging
+   expired revocations in the maintenance sweep.
 5. **Harden network, plugins, and local execution.** Keep outbound redirects disabled; if redirect
    support is introduced, validate and pin every hop. Add egress proxy hooks, sandbox subprocess and
    MCP stdio tools (which currently execute as trusted, unsandboxed host code under minimal environment
@@ -116,16 +128,17 @@ None of these is complete. Each item states what is done and what remains as of 
    passed to `create_safe_http_client` is not validated against IP pinning), subprocess and stdio
    MCP sandboxing, stronger remote service identity, and verification of `PluginManifest.signature`,
    which is declared but never checked.
-6. **Strengthen readiness and lifecycle.** The baseline probes model providers and health-capable
-   registered resources. Make mandatory dependency declarations explicit; cover every required store,
-   retriever, model, MCP server, and telemetry exporter; expose degradation reasons; wire
-   application-owned workflow recovery into each service lifecycle; expire paused workflow approvals
-   without user traffic (paused agent runs are expired by the maintenance sweep); and test repeated
-   start/drain cycles. Done: an MCP server can be marked `required`, and an optional server that fails
-   at startup is recorded in `Container.degraded_dependencies`. *Remaining:* readiness does not yet
-   report `degraded_dependencies`; container start recovers agent runs and conversations but not
-   workflows; the maintenance sweep does not expire paused workflow approvals; and there is no
-   repeated start/drain test.
+6. **Strengthen readiness and lifecycle.** *Done (`0.1.0a16`):* `/health/ready` reports every store,
+   cache, model provider, retriever, MCP server, telemetry exporter and health-capable resource with
+   required, status and a content-minimal reason, plus `degraded_dependencies`, and fails only when
+   a required dependency is down or the service drains (`runtime.readiness`); container start
+   recovers the workflow runs the HTTP workflow service owns, with the exact manifest and trusted
+   hooks; the maintenance sweep expires paused workflow approval and input waits through the
+   engine's expiry path; shutdown drains workflows, conversations and runs and leaves interrupted
+   work recoverable; repeated start/drain/restart cycles are tested on in-memory stores and live
+   PostgreSQL. *Later:* exporter health probes (OTLP and Traccia report `unknown`); a
+   `maintenance --workflows` CLI option; HTTP model services in readiness; a closed database that
+   refuses reuse.
 7. **Bound every resource.** Request wire sizes, artifact sizes, API request rates, and in-flight
    run-creation requests are bounded for single-node deployments. The opt-in maintenance sweep purges
    expired memory and artifacts and deletes terminal runs (with events, approvals, and tool records)
