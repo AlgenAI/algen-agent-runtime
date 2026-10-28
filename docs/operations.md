@@ -158,7 +158,7 @@ characters with URLs, DSNs and credential-like values removed. Every probe is bo
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `model_providers` | `any` | `any`: at least one registered provider must be healthy (`failing: ["provider.*"]` otherwise); `all`: every provider is required (the behavior before 0.2.0b1); `none`: providers are only reported. With no providers registered, the rule is met. |
+| `model_providers` | `any` | `any`: at least one registered provider must be healthy (`failing: ["provider.*"]` otherwise); `all`: every provider is required (the behavior before 0.1.0a16); `none`: providers are only reported. With no providers registered, the rule is met. |
 | `require_durable_stores` | `true` | Require every `store.*` and `resource.*` dependency. |
 | `required` | `[]` | Further dependencies that must be up. A name that nothing registers is reported `down` with `not registered`. |
 | `optional` | `[]` | Dependencies to report without requiring them. A name cannot be both required and optional. |
