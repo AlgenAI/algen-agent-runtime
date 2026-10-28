@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from fastapi import HTTPException, Request
 
+from algen_agent_runtime.auth.authenticator import ApiAuthenticator
+from algen_agent_runtime.auth.contracts import AuthenticationFailure
+from algen_agent_runtime.auth.revocation import TokenRevocationStore
 from algen_agent_runtime.config.settings import ApiSettings
-from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.types.interfaces import AuditLog
 
 
 @dataclass(frozen=True)
@@ -37,50 +40,60 @@ def require_any_scope(identity: Principal, *scopes: str) -> None:
         raise HTTPException(status_code=403, detail=f"missing one of scopes: {', '.join(scopes)}")
 
 
-def principal_dependency(settings: ApiSettings) -> Any:
+_AUTH_RESULT_STATE = "algen_agent_runtime_auth_result"
+
+
+def principal_dependency(
+    settings: ApiSettings,
+    *,
+    audits: AuditLog | None = None,
+    revocations: TokenRevocationStore | None = None,
+    oidc_transport: httpx.AsyncBaseTransport | None = None,
+) -> Any:
+    """The FastAPI dependency that authenticates a request into a ``Principal``.
+
+    ``development_headers`` trusts the identity headers (loopback development only). ``jwt``
+    and ``oidc`` verify a bearer token through ``ApiAuthenticator``, optionally accept a
+    trusted-proxy service identity, check revocation when enabled and record authentication
+    audits into ``audits``. The result is cached on the request, so the rate-limit middleware
+    and the route authenticate (and audit) a request once.
+    """
     if settings.auth_mode == "development_headers":
         return principal
 
-    try:
-        import jwt
-    except ImportError as exc:
-        raise ConfigurationError(
-            "install algen-agent-runtime[auth] for JWT authentication"
-        ) from exc
-    key_name = (settings.jwt_key or "").removeprefix("env://")
-    key = os.getenv(key_name)
-    if not key:
-        raise ConfigurationError(
-            f"JWT verification key environment variable {key_name!r} is not set"
-        )
+    authenticator = ApiAuthenticator(
+        settings, audits=audits, revocations=revocations, oidc_transport=oidc_transport
+    )
+    proxy_header = authenticator.proxy.header if authenticator.proxy is not None else None
 
-    async def jwt_principal(request: Request) -> Principal:
-        authorization = request.headers.get("authorization", "")
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            raise HTTPException(status_code=401, detail="bearer token is required")
-        options: dict[str, Any] = {
-            "algorithms": list(settings.jwt_algorithms),
-            "options": {"require": ["exp", "sub", settings.tenant_claim]},
-        }
-        if settings.jwt_issuer:
-            options["issuer"] = settings.jwt_issuer
-        if settings.jwt_audience:
-            options["audience"] = settings.jwt_audience
+    async def verified_principal(request: Request) -> Principal:
+        cached = getattr(request.state, _AUTH_RESULT_STATE, None)
+        if isinstance(cached, Principal):
+            return cached
+        if isinstance(cached, HTTPException):
+            raise cached
         try:
-            claims = jwt.decode(token, key, **options)
-        except jwt.PyJWTError as exc:
-            raise HTTPException(status_code=401, detail="invalid bearer token") from exc
-        tenant_id = str(claims.get(settings.tenant_claim, "")).strip()
-        user_id = str(claims.get("sub", "")).strip()
-        raw_scopes = claims.get(settings.scopes_claim, "")
-        scopes = (
-            frozenset(str(item) for item in raw_scopes)
-            if isinstance(raw_scopes, list)
-            else frozenset(str(raw_scopes).split())
-        )
-        if not tenant_id or not user_id:
-            raise HTTPException(status_code=401, detail="token identity claims are incomplete")
-        return Principal(tenant_id, user_id, scopes)
+            identity = await authenticator.authenticate(
+                authorization=request.headers.get("authorization", ""),
+                proxy_identity=(
+                    request.headers.getlist(proxy_header) if proxy_header is not None else ()
+                ),
+                peer=request.client.host if request.client is not None else None,
+            )
+        except AuthenticationFailure as failure:
+            headers = (
+                {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+                if failure.status_code == 401
+                else None
+            )
+            error = HTTPException(
+                status_code=failure.status_code, detail=failure.detail, headers=headers
+            )
+            setattr(request.state, _AUTH_RESULT_STATE, error)
+            raise error from None
+        result = Principal(identity.tenant_id, identity.user_id, identity.scopes)
+        setattr(request.state, _AUTH_RESULT_STATE, result)
+        return result
 
-    return jwt_principal
+    verified_principal.authenticator = authenticator  # type: ignore[attr-defined]
+    return verified_principal

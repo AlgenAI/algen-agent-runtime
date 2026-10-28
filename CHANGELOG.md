@@ -6,6 +6,56 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `api.auth_mode: oidc`: bearer JWTs verified against OpenID Connect issuers' JWKS
+  (`api.oidc.issuers`). Keys are discovered from `/.well-known/openid-configuration` or a
+  configured `jwks_url`, fetched through the SSRF-safe client from the issuer host only (plus
+  `additional_allowed_hosts`), cached for `jwks_cache_ttl_seconds`, refreshed on an unknown `kid`
+  at most once per `jwks_min_refresh_interval_seconds`, and kept when a refresh fails. Only
+  asymmetric algorithms bound to the key type are accepted; `iss`, `aud`, `exp`, `nbf`, `iat`
+  are validated with bounded `leeway_seconds`; `max_token_lifetime_seconds` and
+  `required_claims` are optional. See docs/operations.md#api-authentication.
+- Claim mapping per issuer (`claims`): subject claim, tenant claim or `fixed_tenant`,
+  `allowed_tenants`, `scope`/`scp` scope claims, and `role_claims` + `role_scopes` mapping roles
+  or groups to Runtime scopes. Nested (`realm_access.roles`) and namespaced claim names work. A
+  missing tenant fails closed; a token's own `*` scope is dropped.
+- Optional token revocation (`api.token_revocation`) for `jwt` and `oidc`: a tenant-scoped `jti`
+  denylist and a per-subject "revoked before" cutoff, in memory or PostgreSQL (migration
+  `013_token_revocation.sql`). Revoke through `POST /v1/auth/revocations/tokens` and
+  `POST /v1/auth/revocations/subjects` (scope `auth:revoke`) or `Container.token_revocations`.
+  Token introspection (RFC 7662) is not implemented.
+- Trusted-proxy service identity (`api.trusted_proxy_identity`, off by default): a client
+  certificate identity forwarded in a header by a TLS-terminating proxy is honoured only from
+  configured proxy CIDRs and mapped to a configured tenant, user and scopes; the header from any
+  other peer is refused and audited.
+- Authentication audit records `auth.authenticate` (every failure; successes with
+  `api.authentication_audit.record_success`), `auth.audit.suppressed`, `auth.token.revoked` and
+  `auth.subject.revoked`, the `algen_agent_runtime.auth.attempts` metric, and an
+  `authentication failed` log. They carry at most the method, reason, issuer, key id and
+  verified subject, never the token.
+- `algen_agent_runtime.auth` package: `ApiAuthenticator`, `OidcVerifier`, `JwksCache`,
+  `TokenRevocationStore` with `InMemoryTokenRevocationStore` and `PostgresTokenRevocationStore`,
+  `TrustedProxyIdentity`, `AuthenticationAuditor`. `principal_dependency` takes keyword-only
+  `audits`, `revocations` and `oidc_transport`; `Container` has `token_revocations` and
+  `oidc_transport`.
+
+### Changed
+
+- With `auth_mode: jwt`, authentication failures are now recorded as `auth.authenticate` audit
+  records (under tenant `_authentication`, capped at 600 per minute per process) and 401
+  responses carry `WWW-Authenticate: Bearer error="invalid_token"`. Response bodies and the
+  verification itself are unchanged. Set `api.authentication_audit.record_failures: false` to keep
+  the previous audit volume.
+- A request is now authenticated once even when API rate limiting authenticates it before the
+  route.
+- `algen-agent-runtime serve` disables uvicorn's `X-Forwarded-For` peer rewriting when
+  `api.trusted_proxy_identity` is enabled.
+
+### Security
+
+- `api.jwt_algorithms` may no longer include `none`.
+
 ## [0.1.0a16] - 2026-10-28
 
 ### Added
