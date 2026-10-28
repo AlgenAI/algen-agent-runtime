@@ -11,13 +11,28 @@ service objectives. This checklist tracks what must be true before that promise 
 
 ## Release path
 
+P0 and conversation streaming ship on the `0.1` line first, in small reviewed batches, while the
+Runtime's internal users adopt each alpha. `0.2` marks a frozen public API candidate, so it waits for
+production evidence rather than for the feature list.
+
 | Release | Purpose | Exit condition |
 | --- | --- | --- |
-| `0.1.0aN` | Feature work on the current line | — |
-| `0.2.0b1` … `0.2.0bN` | Beta: P0 items, conversation streaming and approval pauses ([#50](https://github.com/AlgenAI/algen-agent-runtime/issues/50)), deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
+| `0.1.0a16` | Conversation streaming and approval pauses ([#50](https://github.com/AlgenAI/algen-agent-runtime/issues/50)); P0-6 readiness and lifecycle | Released; internal users start adopting |
+| `0.1.0a17` | P0-4 authentication options; P0-3 side-effect operations, each reviewed on its own | Released |
+| `0.1.0a18`+ | Remaining P0 items: network and plugin hardening, resource bounds, policy hardening, persistence drills | All P0 items complete |
+| `0.2.0b1` … `0.2.0bN` | Beta: deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
 | `1.0.0` | General availability | Every box below is checked |
+
+Entry criteria for `0.2.0b1`:
+
+- [ ] Every P0 item in [production readiness](production-readiness.md) is complete.
+- [ ] Algen Agent Studio, the HRMS agents and the Traccia azAI service have run the latest `0.1` alpha
+      in production for about two weeks.
+- [ ] The last two or three alphas introduced no new deprecations.
+- [ ] No internal user still depends on an interface scheduled for removal in `0.2` (Studio's usage
+      meter uses `reserve(..., call=...)`; nothing imports `communications` or `database_tool`).
 
 A breaking change after `0.2.0b1` restarts the stability window.
 
