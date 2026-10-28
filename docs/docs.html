@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a16">v0.1.0a16 · latest</option>
+                    <option value="0.1.0a17">v0.1.0a17 · latest</option>
+                    <option value="0.1.0a16">v0.1.0a16</option>
                     <option value="0.1.0a15">v0.1.0a15</option>
                     <option value="0.1.0a14">v0.1.0a14</option>
                     <option value="0.1.0a13">v0.1.0a13</option>
@@ -1392,7 +1393,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a16</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a17</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1412,7 +1413,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a16 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a17 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1469,7 +1470,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a17 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2099,7 +2100,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a16</span>.</footer>
+                    data-version-field="version">0.1.0a17</span>.</footer>
         </main>
     </div>
 
@@ -2225,9 +2226,37 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16'];
-        const LATEST_VERSION = '0.1.0a16';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17'];
+        const LATEST_VERSION = '0.1.0a17';
         const RELEASES = {
+            '0.1.0a17': {
+                date: '2026-10-28',
+                kind: 'Identity and side effects',
+                title: 'OIDC authentication, token revocation, and operator reconciliation of tool side effects',
+                summary: 'The service verifies callers against OpenID Connect issuers, maps their claims to tenants and scopes, can revoke tokens, and audits failed sign-ins. Operators can list, resolve, reconcile and compensate tool calls whose outcome is unknown, and a run can wait until they do.',
+                fields: {
+                    tag: 'v0.1.0a17',
+                    package: '0.1.0a17 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a17',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>OIDC authentication.</strong> <code>auth_mode: oidc</code> verifies bearer tokens against issuers\' JWKS (discovery or <code>jwks_url</code>, cached, rotated, fetched only from allowlisted hosts), maps claims to tenant and scopes, and fails closed without a tenant.',
+                            '<strong>Revocation and service identity.</strong> Tenant-scoped <code>jti</code> denylist and per-subject cutoff (memory or PostgreSQL, <code>/v1/auth/revocations</code>), a trusted-proxy client-certificate hook, and content-minimal authentication audit records.',
+                            '<strong>Side-effect operations.</strong> <code>/v1/tool-executions</code> lists, resolves, reconciles and compensates tool calls with unknown outcomes; an optional <code>Tool.reconcile</code> hook; <code>tool_policy.on_indeterminate: pause</code> waits for the operator.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            'In <code>jwt</code> mode, authentication failures are audited, 401 responses carry <code>WWW-Authenticate</code>, and <code>none</code> is rejected in <code>jwt_algorithms</code>.',
+                            'Migrations <code>013_token_revocation.sql</code> and <code>014_tool_execution_reconciliation.sql</code> run on startup.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a16': {
                 date: '2026-10-28',
                 kind: 'Conversation turns',
@@ -2236,7 +2265,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a16',
                     package: '0.1.0a16 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a17',
                     version: '0.1.0a16',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
