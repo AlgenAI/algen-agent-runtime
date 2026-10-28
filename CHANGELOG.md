@@ -6,6 +6,10 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Changed
+
+- Allow structlog 26 (`structlog>=24.4,<27`). structlog 26 drops only Python 3.8 and 3.9 support.
+
 ## [0.1.0a14] - 2026-10-28
 
 ### Added
