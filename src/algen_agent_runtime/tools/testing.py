@@ -21,11 +21,13 @@ def fake_tool_context(
     step_id: str = "test-step",
     idempotency_key: str | None = None,
     secrets: Mapping[str, str] | None = None,
+    credentials: Mapping[str, str] | None = None,
 ) -> ToolContext:
     """A :class:`ToolContext` for calling a tool directly in a test.
 
     With ``tool`` and no ``permissions``, the context holds exactly the permissions the tool
-    requires. Each call gets a fresh idempotency key unless one is given.
+    requires. Each call gets a fresh idempotency key unless one is given. ``credentials`` stand
+    for the caller's, as a host passes them to ``Runtime.run``; the tool sees a read-only copy.
     """
     granted = (
         frozenset(permissions)
@@ -40,6 +42,7 @@ def fake_tool_context(
         permissions=granted,
         idempotency_key=idempotency_key or f"{run_id}:{uuid.uuid4().hex}",
         secrets=dict(secrets or {}),
+        credentials=credentials or {},
     )
 
 

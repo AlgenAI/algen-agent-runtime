@@ -49,7 +49,14 @@ class MeterRefusedError(AlgenAgentRuntimeError):
     Raised by a deployment's ``UsageMeter.reserve``. The runtime does not retry it, does not
     fall back to another model, and does not count it against provider health; the run fails
     with this message as its error.
+
+    The router fills ``provider`` (its registration id) and ``model`` with the candidate it was
+    reserving before the error leaves it, so the ``budget.refused`` event and audit can name
+    the refused model. A meter does not need to set them.
     """
+
+    provider: str | None = None
+    model: str | None = None
 
 
 class VerificationError(AlgenAgentRuntimeError):

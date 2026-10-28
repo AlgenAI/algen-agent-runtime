@@ -97,6 +97,43 @@ Use `examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
 `pattern_text_to_sql` as current working references. Copy concepts, not stale versions of internal
 classes.
 
+## Tool-heavy and acting agents
+
+An agent with many tools, long runs or writes should turn on the Runtime's guards in `agent.yaml`
+instead of telling the model in its instructions (docs/agent-tooling.md, "Tool-call guards"). They
+are off by default and keep their state in the run, so it survives an approval pause:
+
+```yaml
+agents:
+  - name: my-agent
+    tool_policy:
+      on_error: return_to_model     # refusals and held calls reach the model as notes
+      max_refusals_per_tool: 3      # then: stop calling it and tell the user why
+      repeat_guard: true            # an identical read with nothing changed returns a note
+      max_calls_per_tool:
+        crm.search_accounts: 5      # a search the model could keep rephrasing
+    wrap_up_policy:
+      enabled: true                 # warn when only room to answer is left
+    context_policy:
+      shorten_older_tool_results: true   # keep old results shortened, not dropped
+```
+
+- Arguments are always checked against the tool's input schema before the call runs or is put to
+  the user, so keep schemas strict rather than validating again in the handler.
+- Give a write tool a `precheck` (`@tool(write(approval=True), precheck=...)`) when it can say why a
+  change would fail before anyone is asked to approve it.
+- Mark reads of state that changes on its own (a job status, a clock) `volatile=True` (or
+  `http_tools[].volatile: true`) so the repeat guard never holds them back.
+- A tool that acts as the signed-in user reads `context.credentials` (for example
+  `context.credentials["authorization"]`). The host passes them with
+  `runtime.run(request, credentials=...)` and again on every `resume`; they are kept in memory only.
+  Never put credentials in `RunRequest.metadata`, tool arguments or the agent's instructions:
+  metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
+  tools an empty mapping, so return an "authentication required" tool error then.
+- Usage metering is a deployment setting, not an agent field: the host passes a `UsageMeter` to
+  `build_container(usage_meter=...)`, and its `reserve` receives a `MeterCall` naming the tenant,
+  user, run and model (docs/agent-tooling.md, "Metering model calls").
+
 ## Importability
 
 The project configuration—not Studio metadata—is the source of truth. Browser-folder import uploads

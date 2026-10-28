@@ -71,29 +71,50 @@ streamed calls and history compaction. A call that fails, or a stream that error
 cancelled before it completes, is released without charge. Without a meter nothing changes.
 
 ```python
-from algen_agent_runtime import MeterRefusedError, UsageMeter
+from dataclasses import dataclass
+
+from algen_agent_runtime import MeterCall, MeterRefusedError, UsageMeter
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.types.contracts import TokenUsage
 
+# Credits per token, by model; anything else costs 1.
+MODEL_WEIGHTS = {"gpt-4.1": 4.0, "gpt-4.1-mini": 1.0}
+
+
+@dataclass(frozen=True)
+class Hold:
+    account: str
+    call: MeterCall  # kept for settle, which receives only the ticket
+    hold_id: str
+
 
 class CreditMeter:  # satisfies UsageMeter
-    def __init__(self, wallet) -> None:
-        self._wallet = wallet
+    def __init__(self, wallets) -> None:
+        self._wallets = wallets
 
-    async def reserve(self, *, max_input_tokens: int, max_output_tokens: int) -> object:
-        hold = await self._wallet.hold(max_input_tokens + max_output_tokens)
-        if hold is None:
+    async def reserve(
+        self, *, max_input_tokens: int, max_output_tokens: int, call: MeterCall
+    ) -> object:
+        # Charge the workspace when the host passed one in RunRequest.metadata, else the tenant.
+        account = call.metadata.get("account_id") or call.tenant_id or "unattributed"
+        weight = MODEL_WEIGHTS.get(call.model, 1.0)
+        hold_id = await self._wallets.hold(account, (max_input_tokens + max_output_tokens) * weight)
+        if hold_id is None:
             raise MeterRefusedError("You have used this month's model allowance.")
-        return hold
+        return Hold(account=account, call=call, hold_id=hold_id)
 
     async def settle(self, ticket: object, usage: TokenUsage) -> None:
-        await self._wallet.charge(ticket, usage.input_tokens + usage.output_tokens)
+        assert isinstance(ticket, Hold)
+        weight = MODEL_WEIGHTS.get(ticket.call.model, 1.0)
+        tokens = (usage.input_tokens + usage.output_tokens) * weight
+        await self._wallets.charge(ticket.account, ticket.hold_id, tokens)
 
     async def release(self, ticket: object) -> None:
-        await self._wallet.cancel(ticket)
+        assert isinstance(ticket, Hold)
+        await self._wallets.cancel(ticket.account, ticket.hold_id)
 
 
-container = build_container(settings, usage_meter=CreditMeter(wallet))
+container = build_container(settings, usage_meter=CreditMeter(wallets))
 ```
 
 `max_input_tokens` is the router's estimate of the request sent to the chosen model
@@ -101,10 +122,40 @@ container = build_container(settings, usage_meter=CreditMeter(wallet))
 `max_output_tokens` is the request's output cap. `settle` receives the provider's reported
 usage, with `estimated_cost_usd` filled in when the provider has configured rates.
 
+`call` is a frozen `MeterCall` that says whose call it is and which model is being tried. One
+router serves every tenant and run, so a multi-tenant meter charges from it rather than from
+host context variables, which do not survive a pause or a restart. `settle` and `release` get
+only the ticket, so keep the `MeterCall` in the ticket when you need it there.
+
+| Field | Value |
+| --- | --- |
+| `tenant_id`, `user_id` | From the run request. |
+| `run_id`, `session_id` | The run and its session. |
+| `parent_run_id`, `conversation_id`, `turn_id` | From the run request, when set. |
+| `agent`, `agent_version` | The agent's name and the version that runs. |
+| `step_id` | The step that makes the call; `None` for compaction. |
+| `purpose` | `"step"` for agent steps (retries and schema repairs included), `"compaction"` for history compaction, `"other"` for a call made on `ModelRouter` directly. |
+| `attempt` | The retry attempt, from 0. A fallback to another model within one attempt keeps the attempt. |
+| `provider` | The provider registration id (the `providers:` key) of the candidate being tried. |
+| `model` | The model of the candidate being tried; a fallback reports its own. |
+| `streaming` | Whether the call is streamed. |
+| `metadata` | A read-only copy of `RunRequest.metadata`, for an account id such as a workspace. The runtime never puts these values in events, audits or spans. |
+
+The run fields come from the persisted run, so a run resumed after an approval pause, or
+recovered by `Runtime.recover()` after a restart, reports the same tenant, user and run as
+before. A cached model response makes no call, so the meter never sees it. A call made on
+`ModelRouter.generate` or `ModelRouter.stream` directly gets a `MeterCall` with only `provider`,
+`model`, `streaming` and `purpose="other"`; pass `meter_call=` to supply the rest.
+
+**The 0.1.0a14 form.** A meter whose `reserve` has no `call` parameter (and no `**kwargs`) still
+works: the router inspects `reserve` once, when it is built, and then calls it without `call`. It
+emits one `DeprecationWarning` per meter, attributed to the meter's module. That form is removed
+in 0.2: add `call: MeterCall` to `reserve`; nothing else changes.
+
 To refuse, raise `MeterRefusedError`. The runtime does not retry the call, does not try a
 fallback model and does not count it against the provider's health; the run ends `failed` with
-the message as its error, a `budget.refused` event and a `budget.refused` attribute on the
-`agent.run` span (see [Operations](operations.md#usage-metering)). The meter holds its own
+the message as its error, a `budget.refused` event naming the refused provider and model, and
+a `budget.refused` attribute on the `agent.run` span (see [Operations](operations.md#usage-metering)). The meter holds its own
 state, so a run paused for approval is charged again only for the calls it makes after it
 resumes.
 

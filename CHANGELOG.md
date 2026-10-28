@@ -6,9 +6,56 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `MeterCall`, exported from `algen_agent_runtime`: what a usage meter is told about each model
+  call. It carries the tenant, user, run, parent run, session, conversation, turn, agent and
+  agent version, the step id, the `purpose` (`step`, `compaction` or `other`), the retry
+  `attempt`, the `provider` and `model` of the candidate being tried, whether it is
+  `streaming`, and a read-only copy of `RunRequest.metadata`. The runtime builds it from the
+  persisted run, so resumed and recovered runs report the same tenant, user and run. See
+  docs/agent-tooling.md#metering-model-calls.
+- `ModelRouter.generate(..., meter_call=...)` and `ModelRouter.stream(..., meter_call=...)`.
+  The router fills in `provider`, `model` and `streaming` for each candidate, so a fallback
+  reports the model it tries. Without `meter_call`, the meter gets `purpose="other"` and no run
+  fields.
+- `provider` and `model` in the `budget.refused` event data and audit record, and as
+  attributes of `MeterRefusedError`, which the router fills before re-raising.
+- Per-run tool credentials. `Runtime.start`, `run` and `resume` take a keyword-only
+  `credentials: Mapping[str, str] | None`, and tools read them from the new
+  `ToolContext.credentials`: a read-only private copy, empty by default. They are kept in memory
+  only, while the run executes, and dropped when it pauses or ends; they never reach run state,
+  checkpoints, stores, events, audits, spans, logs, caches or the model, and are left out of
+  `ToolContext`'s `repr`, `model_dump`, equality and hashing. A resumed run sees only the
+  credentials passed to `resume`; one resumed without them or recovered after a restart sees none.
+  `core.subagent` passes the parent's credentials to its child run. Workflow tool steps and the
+  HTTP API pass none. `fake_tool_context(credentials=...)` sets them in tests. See
+  docs/tool-authoring.md#credentials-of-the-caller and docs/threat-model.md.
+
 ### Changed
 
 - Allow structlog 26 (`structlog>=24.4,<27`). structlog 26 drops only Python 3.8 and 3.9 support.
+- `UsageMeter.reserve` takes `call: MeterCall` as a keyword argument. `settle` and `release` are
+  unchanged; keep the `MeterCall` in the ticket to use it when settling.
+- The `Runtime` protocol (`types.interfaces.Runtime`) adds the optional `credentials` keyword to
+  `start`, `run` and `resume`. A host's own implementation of the protocol should accept it.
+- `ToolContext` validation errors no longer echo the rejected input, and `ToolContext` is now
+  hashable (from its identifiers; secrets and credentials take no part).
+
+- The bundled agent skills (`.agents/skills`) cover 0.1.0a14 and 0.1.0a15: tool-call guards,
+  shortened older tool results, caller credentials, MCP OAuth and `streamable_http`, document
+  inspection, the Traccia default and usage metering with `MeterCall`, so agents built with
+  them use these features.
+
+### Deprecated
+
+- The 0.1.0a14 `UsageMeter.reserve(*, max_input_tokens, max_output_tokens)` form, without
+  `call`. The router still calls such a meter, without `call`, and emits one
+  `DeprecationWarning` per meter, attributed to the meter's module. Removed in 0.2.
+
+### Upgrade notes
+
+- Usage meters: add `call: MeterCall` to `reserve`; nothing else changes.
 
 ## [0.1.0a14] - 2026-10-28
 

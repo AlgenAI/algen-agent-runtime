@@ -27,6 +27,14 @@ Use the applicable sections; do not force irrelevant work into a small change.
   dispatch, bounded parent concurrency, pre-child-creation failure, and recovery without duplicate
   children tested?
 - Does core remain usable without a new optional integration installed?
+- For a new model call site, does it go through `ModelRouter` with a `meter_call` built by
+  `_meter_call`, so the usage meter sees it with its run context?
+- For changes to the tool-call path, does any guard or run-scoped state live in `RunState` (so it
+  survives a pause, restart and resume), and does a checkpoint without the new fields still load?
+  Are refusals and held calls finished through `_finish_tool_call_without_result`?
+- For changes that touch `ToolContext`, scheduling or run state, do caller credentials stay out of
+  `RunState`, stores, events, audits, spans, logs, caches and exception text, and are they cleared
+  when the run pauses or ends (`tests/unit/test_tool_credentials.py`)?
 - For artifact changes, are staged pre-run inputs, checksums, lifecycle state, expiry, tenant-scoped
   list/read/delete, PostgreSQL migration, and large-object boundaries covered?
 - For object storage, are partial failure compensation, retry-safe deletion, encryption, checksum

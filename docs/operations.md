@@ -170,9 +170,9 @@ See [Agent tool behaviour](agent-tooling.md#metering-model-calls) for the protoc
 
 | Signal | Where | Meaning |
 | --- | --- | --- |
-| `budget.refused` event | run events | The meter raised `MeterRefusedError`; `data.reason` is its message. |
+| `budget.refused` event | run events | The meter raised `MeterRefusedError`; `data.reason` is its message, `data.provider` the provider registration id and `data.model` the model whose reservation it refused. Never `RunRequest.metadata` values. |
 | `run.failed` event with `reason: budget_refused` | run events | The run that the refusal ended; `data.error` repeats the reason, which is also `RunState.error`. |
-| `budget.refused` audit record | audit log | Outcome `refused`, the agent as resource, and the reason. |
+| `budget.refused` audit record | audit log | Outcome `refused`, the agent as resource, and `reason`, `provider` and `model` as in the event. |
 | `budget.refused = true` | `agent.run` span | Set on the run root whose drive the refusal ended. |
 
 A refusal is not a provider error: it is not retried, the router does not try a fallback model, and

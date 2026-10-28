@@ -1364,6 +1364,8 @@ class MultiAgentWorkflowExecutor:
 
         The tool's own permissions are granted: the workflow author declared the call. A step
         whose tool changes things should follow an approval node; agent approvals do not apply.
+        The workflow API takes no caller credentials, so ``ToolContext.credentials`` is empty
+        here; agent steps' runs have none either.
         """
         name = (node.handler or "").removeprefix(TOOL_HANDLER_PREFIX)
         executor = getattr(self._runtime, "tool_executor", None)
