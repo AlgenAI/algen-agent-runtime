@@ -5,7 +5,7 @@ import hashlib
 import inspect
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
@@ -112,6 +112,12 @@ class WorkflowRegistry:
         return tuple(self._entries[key][0] for key in sorted(self._entries))
 
 
+def _retrieve_outcome(task: asyncio.Future[Any]) -> None:
+    """Mark a shielded agent call's outcome as seen when nobody waits for it any more."""
+    if not task.cancelled():
+        task.exception()
+
+
 class MultiAgentWorkflowExecutor:
     """Runtime-owned DAG scheduler for typed agent, mapped-agent, and domain-handler nodes."""
 
@@ -124,8 +130,16 @@ class MultiAgentWorkflowExecutor:
         store: WorkflowCheckpointStore | None = None,
         workflow_registry: WorkflowRegistry | None = None,
         maximum_workflow_depth: int = 8,
+        interrupted: Callable[[], bool] | None = None,
     ) -> None:
+        """``interrupted`` tells a cancelled run apart from a service drain.
+
+        When it returns true as a run is cancelled, the run's checkpoint is left as it was (still
+        running), like a process that stopped, so ``recover`` continues it after a restart.
+        Otherwise a cancelled run ends ``cancelled``.
+        """
         self._runtime = runtime
+        self._interrupted = interrupted
         self._hooks = hooks
         self._agent_runner = agent_runner
         self._store = store or InMemoryWorkflowCheckpointStore()
@@ -152,6 +166,7 @@ class MultiAgentWorkflowExecutor:
         workflow_depth: int = 0,
         workflow_ancestry: tuple[str, ...] = (),
         emit: WorkflowEventSink | None = None,
+        owner: str | None = None,
     ) -> WorkflowExecutionState:
         if workflow_depth > self._maximum_workflow_depth:
             raise ConfigurationError(
@@ -173,6 +188,7 @@ class MultiAgentWorkflowExecutor:
             root_workflow_id=root_workflow_id or state_id,
             workflow_depth=workflow_depth,
             workflow_ancestry=workflow_ancestry or (f"{manifest.name}@{manifest.version}",),
+            owner=owner,
             deadline_at=utc_now() + timedelta(seconds=manifest.timeout_seconds),
             values=dict(values),
             nodes={node.id: WorkflowNodeExecution(node_id=node.id) for node in manifest.nodes},
@@ -367,6 +383,7 @@ class MultiAgentWorkflowExecutor:
             store=self._store,
             workflow_registry=self._workflow_registry,
             maximum_workflow_depth=self._maximum_workflow_depth,
+            interrupted=self._interrupted,
         )
         if decision is None:
             child = await child_executor.resume(
@@ -503,12 +520,100 @@ class MultiAgentWorkflowExecutor:
         await self._emit(emit, "workflow.recovered", state, None)
         return await self._drive(manifest, state, emit, validate_input=False)
 
+    async def expire_pause(
+        self,
+        manifest: WorkflowManifest,
+        workflow_id: str,
+        *,
+        tenant_id: str,
+        input_timeout_seconds: float | None = None,
+        emit: WorkflowEventSink | None = None,
+    ) -> WorkflowExecutionState:
+        """Expire the run's wait if it is past its expiry, then carry the run on.
+
+        An approval wait expires at its ``expires_at``, exactly as a late decision would find it:
+        the approval node fails with ``workflow approval expired`` and the run continues under the
+        node's failure and rejection policies. An input (clarification) wait expires only when
+        ``input_timeout_seconds`` is given and it has waited that long; the asking node fails with
+        ``workflow input expired``. A wait inside a child workflow is expired in the child and the
+        parent consumes the child's outcome. A run that is not waiting, or whose wait has not
+        expired, is returned unchanged. Saves are version-checked, so a decision that lands at
+        the same time wins or loses cleanly with a ``ConflictError``.
+        """
+        state = await self._require_state(workflow_id, tenant_id)
+        self._validate_manifest_identity(manifest, state)
+        if not self._pause_is_expired(state, input_timeout_seconds):
+            return state
+        nodes = {node.id: node for node in manifest.nodes}
+        node = nodes.get(str((state.pause or {}).get("node_id") or ""))
+        if node is None:
+            raise ConfigurationError("workflow checkpoint pause references an unknown node")
+        if (state.pause or {}).get("kind") == "child_workflow":
+            if node.kind is not WorkflowNodeKind.WORKFLOW:
+                raise ConfigurationError(
+                    "workflow checkpoint pause references an invalid child node"
+                )
+            child_id = str((state.pause or {}).get("child_workflow_id") or "")
+            if not child_id:
+                raise ConfigurationError("child workflow pause is missing its checkpoint identity")
+            paused = await self._recover_child_workflow(
+                state, node, child_id, emit, expire_input_after=input_timeout_seconds, expire=True
+            )
+            if paused:
+                return state
+            state.status = WorkflowStatus.RUNNING
+            state.pause = None
+            return await self._drive(manifest, state, emit, validate_input=False)
+        if state.status is WorkflowStatus.AWAITING_APPROVAL:
+            await self._expire_approval(state, node, emit)
+        else:
+            await self._expire_input(state, node, emit)
+        return await self._drive(manifest, state, emit, validate_input=False)
+
+    @classmethod
+    def pause_expired(
+        cls, state: WorkflowExecutionState, input_timeout_seconds: float | None = None
+    ) -> bool:
+        """Whether ``expire_pause`` would expire the run's current wait."""
+        return cls._pause_is_expired(state, input_timeout_seconds)
+
+    @classmethod
+    def manifest_matches(cls, manifest: WorkflowManifest, state: WorkflowExecutionState) -> bool:
+        """Whether the checkpoint was written by exactly this manifest (name, version, content)."""
+        try:
+            cls._validate_manifest_identity(manifest, state)
+        except ConflictError:
+            return False
+        return True
+
+    @classmethod
+    def _pause_is_expired(
+        cls, state: WorkflowExecutionState, input_timeout_seconds: float | None
+    ) -> bool:
+        if state.status is WorkflowStatus.AWAITING_APPROVAL:
+            return cls._approval_is_expired(state)
+        if state.status is not WorkflowStatus.AWAITING_INPUT or input_timeout_seconds is None:
+            return False
+        requested_at = (state.pause or {}).get("requested_at")
+        if not isinstance(requested_at, str):
+            return True
+        try:
+            asked = datetime.fromisoformat(requested_at)
+        except ValueError:
+            return True
+        if asked.tzinfo is None:
+            return True
+        return asked + timedelta(seconds=input_timeout_seconds) <= utc_now()
+
     async def _recover_child_workflow(
         self,
         state: WorkflowExecutionState,
         node: WorkflowNode,
         child_id: str,
         emit: WorkflowEventSink | None,
+        *,
+        expire_input_after: float | None = None,
+        expire: bool = False,
     ) -> bool:
         if self._workflow_registry is None:
             raise ConfigurationError("child workflow recovery requires a WorkflowRegistry")
@@ -541,9 +646,20 @@ class MultiAgentWorkflowExecutor:
             store=self._store,
             workflow_registry=self._workflow_registry,
             maximum_workflow_depth=self._maximum_workflow_depth,
+            interrupted=self._interrupted,
         )
         recorded_child = await self._store.get(child_id, state.tenant_id)
-        if recorded_child is None:
+        if expire:
+            if recorded_child is None:
+                return True
+            child = await child_executor.expire_pause(
+                child_manifest,
+                child_id,
+                tenant_id=state.tenant_id,
+                input_timeout_seconds=expire_input_after,
+                emit=child_event,
+            )
+        elif recorded_child is None:
             child_values = state.nodes[node.id].child_workflow_inputs.get(child_id)
             if child_values is None:
                 raise ConfigurationError(
@@ -647,6 +763,10 @@ class MultiAgentWorkflowExecutor:
                         contract="output",
                     )
         except asyncio.CancelledError:
+            if self._interrupted is not None and self._interrupted():
+                # A drain, not a cancellation: keep the last checkpoint for recovery.
+                self._checkpoint_locks.pop(state.id, None)
+                raise
             state.status = WorkflowStatus.CANCELLED
             manifest_nodes = {node.id: node for node in manifest.nodes}
             for node_id, execution in state.nodes.items():
@@ -1067,6 +1187,7 @@ class MultiAgentWorkflowExecutor:
             store=self._store,
             workflow_registry=self._workflow_registry,
             maximum_workflow_depth=self._maximum_workflow_depth,
+            interrupted=self._interrupted,
         )
         child = await child_executor.run(
             child_manifest,
@@ -1237,6 +1358,36 @@ class MultiAgentWorkflowExecutor:
             {"error": execution.error},
         )
 
+    async def _run_agent(self, request: RunRequest) -> Any:
+        if self._interrupted is None:
+            return await self._runtime.run(request)
+        # Cancelling this workflow must not cancel the agent run it waits on: on a drain the
+        # runtime drains that run itself and keeps it recoverable.
+        task = asyncio.ensure_future(self._runtime.run(request))
+        task.add_done_callback(_retrieve_outcome)
+        return await asyncio.shield(task)
+
+    async def _expire_input(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        emit: WorkflowEventSink | None,
+    ) -> None:
+        execution = state.nodes[node.id]
+        execution.status = WorkflowNodeStatus.FAILED
+        execution.error = "workflow input expired"
+        execution.completed_at = utc_now()
+        state.values.pop(node.output_key, None)
+        state.pause = None
+        state.status = WorkflowStatus.RUNNING
+        await self._emit(
+            emit,
+            "workflow.input.expired",
+            state,
+            node,
+            {"error": execution.error},
+        )
+
     async def _execute_agent(
         self,
         state: WorkflowExecutionState,
@@ -1312,7 +1463,7 @@ class MultiAgentWorkflowExecutor:
                 result = (
                     await self._agent_runner(request, hook_context)
                     if self._agent_runner
-                    else await self._runtime.run(request)
+                    else await self._run_agent(request)
                 )
             state.nodes[node.id].run_ids.append(result.run_id)
             parent_run_id = result.run_id

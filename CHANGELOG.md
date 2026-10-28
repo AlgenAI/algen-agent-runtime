@@ -6,6 +6,51 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- Explicit readiness dependencies. `/health/ready` now reports every dependency under
+  `dependencies` (`store.<kind>` for each configured store, `cache.redis`, `provider.<id>`,
+  `retriever.<name>`, `mcp.<server>`, `telemetry.otlp`/`telemetry.traccia`, and
+  `resource.<TypeName>` for plugin resources), each with `kind`, `required`, `status`
+  (`up`/`down`/`unknown`), `backend` for stores and a content-minimal `reason`, plus
+  `degraded_dependencies`, `failing`, `ready` and `lifecycle`. The `status`, `providers` and
+  `stores` keys stay. Probes run concurrently and are bounded by a timeout. See
+  docs/operations.md#readiness-and-lifecycle.
+- `runtime.readiness` settings: `model_providers` (`any`, `all` or `none`),
+  `require_durable_stores`, `required`, `optional` and `probe_timeout_seconds`.
+- Workflow recovery in the service lifecycle. Runs started through the HTTP workflow API record
+  `owner: "workflow_service"` (new optional `WorkflowExecutionState.owner`), and container start
+  recovers the interrupted ones with the exact configured manifest and trusted hooks
+  (`runtime.recover_service_workflows`, default `true`). `WorkflowService.recover`,
+  `expire_paused`, `drain` and `idle`; `Container.attach_workflows`.
+- `MultiAgentWorkflowExecutor.expire_pause(...)` expires an approval wait past its `expires_at`,
+  or an input wait older than `input_timeout_seconds`, through the engine's own expiry path,
+  including waits inside child workflows; new event `workflow.input.expired`. Also
+  `MultiAgentWorkflowExecutor.pause_expired`, `manifest_matches`, the `interrupted` constructor
+  argument and `run(..., owner=...)`.
+- The maintenance sweep expires paused workflow approval and input waits of service-owned runs
+  (`maintenance.expire_paused_workflows`, default `true`; input waits only with
+  `clarification_timeout_seconds`), reported as `expired_workflow_pauses`.
+- Container lifecycle phases (`Container.lifecycle.phase`: `created`, `starting`, `ready`,
+  `draining`, `stopped`); `/health/ready` returns 503 with `status: draining` from the start of
+  shutdown.
+- Repeated start/run/drain/restart cycle tests on in-memory stores and on live PostgreSQL.
+
+### Changed
+
+- `/health/ready` returns 503 only when a required dependency is down. By default at least one
+  model provider must be healthy (previously every provider), and a Redis cache, retrievers,
+  optional MCP servers and telemetry exporters no longer fail readiness (they make it 200 with
+  `status: degraded`). Set `runtime.readiness.model_providers: all` to keep requiring every
+  provider, and list other dependencies under `runtime.readiness.required`.
+- Shutdown drains the workflow service for `shutdown_grace_seconds` before the runtime, and leaves
+  unfinished service workflow runs recoverable instead of marking them `cancelled`; the agent run a
+  workflow step waits on is drained by the runtime rather than cancelled. Starting or answering a
+  workflow run during shutdown returns 409.
+- Upgrade note: workflow runs started through the HTTP API before this release have no owner, so
+  they are neither recovered on start nor expired by the sweep; decide or answer them through the
+  API, or recover them once with `executor.recover`.
+
 ## [0.1.0a15] - 2026-10-28
 
 ### Added

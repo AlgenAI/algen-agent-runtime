@@ -10,6 +10,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.config.settings import MaintenanceSettings
+from algen_agent_runtime.orchestration.lifecycle import OwnedWorkflows
 from algen_agent_runtime.persistence.retention import RetentionPolicy, RetentionSweeper
 from algen_agent_runtime.types.interfaces import ArtifactStore
 
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 class MaintenanceReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expired_paused_runs: int = 0
+    # Service-owned workflow runs whose approval or input wait was expired in this sweep.
+    expired_workflow_pauses: int = 0
     purged_artifacts: int = 0
     purged_learned_memory: int = 0
     deleted: dict[str, int] = Field(default_factory=dict)
@@ -48,6 +51,11 @@ class MaintenanceService:
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._logger = structlog.get_logger("algen_agent_runtime.maintenance")
+        self._workflows: OwnedWorkflows | None = None
+
+    def attach_workflows(self, workflows: OwnedWorkflows) -> None:
+        """Expire the waits of the workflow runs this service owns on every sweep."""
+        self._workflows = workflows
 
     @property
     def policy(self) -> RetentionPolicy:
@@ -71,6 +79,16 @@ class MaintenanceService:
                 )
 
             await self._guard("paused_runs", expire, report)
+        workflows = self._workflows
+        if settings.expire_paused_workflows and workflows is not None:
+
+            async def expire_workflows() -> None:
+                report.expired_workflow_pauses = await workflows.expire_paused(
+                    limit=settings.batch_size * settings.max_batches_per_sweep,
+                    input_timeout_seconds=settings.clarification_timeout_seconds,
+                )
+
+            await self._guard("paused_workflows", expire_workflows, report)
 
         async def purge_artifacts() -> None:
             for _ in range(settings.max_batches_per_sweep):

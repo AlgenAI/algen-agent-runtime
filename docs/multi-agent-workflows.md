@@ -124,8 +124,9 @@ manifest choice to relax.
 `skip_dependents` is the safe rejection default: descendants do not execute. Choose `continue`
 only when the downstream branch explicitly consumes a rejection as a valid business outcome. Joins
 may converge rejected and skipped branches. Expired approvals fail closed when a decision or
-recovery is attempted; deployment-owned maintenance must actively recover paused workflows if
-expiry must be enforced without user or startup traffic.
+recovery is attempted. For runs started through the HTTP workflow service, the maintenance sweep
+expires them without user traffic (see [Operations](operations.md#readiness-and-lifecycle)); an
+application that drives its own executor calls `executor.expire_pause(...)` on its own schedule.
 
 Approval review values and parameters are persisted in the workflow checkpoint and exposed to an
 authorized host. Declare only deliberately reviewable, secret-free state paths. Never put
@@ -285,7 +286,8 @@ workflow language in Runtime while domain code remains securely governed in appl
 
 The executor emits `workflow.started`, node started/repairing/completed/skipped/failed/rejected
 events, `workflow.input.required`, `workflow.approval.required`,
-`workflow.approval.decided`, `workflow.approval.expired`, and one terminal workflow event. Payloads contain workflow and node
+`workflow.approval.decided`, `workflow.approval.expired`, `workflow.input.expired`, and one
+terminal workflow event. Payloads contain workflow and node
 identity rather than prompts, model reasoning, credentials, or unrestricted outputs. The returned
 `WorkflowExecutionState` contains node attempts, child Runtime run IDs, timestamps, outputs, pause
 state, and terminal error information.
@@ -302,6 +304,19 @@ and unexpired awaiting-approval workflows remain paused; expired approvals fail 
 recovery. Interrupted nodes retry only when their manifest explicitly declares
 `recovery_policy: retry`; all others fail closed. Runtime owns these recovery semantics, while the
 host owns trusted hook construction and deciding which application workflows to activate.
+
+`executor.expire_pause(manifest, workflow_id, tenant_id=..., input_timeout_seconds=...)` ends a
+wait that is past its expiry through the same path a late decision takes: an expired approval
+fails its node (`workflow.approval.expired`), an input wait older than `input_timeout_seconds`
+fails its node with `workflow input expired` (`workflow.input.expired`), and a wait inside a child
+workflow is expired in the child and consumed by the parent. The run then continues under its
+failure and rejection policies. A run that is not waiting, or not yet expired, is returned
+unchanged.
+
+Runs started through the HTTP workflow service record `owner: workflow_service` in their
+checkpoint. The service recovers those runs on start, expires their waits in the maintenance
+sweep, and on shutdown leaves unfinished runs recoverable rather than cancelled; runs an
+application starts with its own executor have no owner and are never touched by the service.
 
 ## Running workflows over HTTP
 

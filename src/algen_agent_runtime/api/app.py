@@ -142,6 +142,8 @@ def create_app(
     configure_logging()
 
     workflows = WorkflowService(resolved, dependencies)
+    # The container recovers, expires and drains the runs this service starts.
+    dependencies.attach_workflows(workflows)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -152,8 +154,9 @@ def create_app(
             await dependencies.astart()
             yield
         finally:
-            await workflows.aclose()
+            # Drains the workflow service first (attach_workflows), then the runtime.
             await dependencies.aclose()
+            await workflows.aclose()
 
     app = FastAPI(title="Algen Agent Runtime", version=__version__, lifespan=lifespan)
     app.state.container = dependencies
@@ -736,18 +739,12 @@ def create_app(
 
     @app.get("/health/ready")
     async def readiness(response: Response) -> dict[str, Any]:
-        providers = {}
-        for provider in dependencies.runtime.router.providers():
-            providers[provider.provider_id] = await provider.health()
-        stores = await dependencies.resource_health()
-        ready = all((*providers.values(), *stores.values()))
+        # 503 only when a required dependency is down or the service drains; see
+        # orchestration/readiness.py and runtime.readiness.
+        ready, body = await dependencies.readiness_report()
         if not ready:
             response.status_code = 503
-        return {
-            "status": "ready" if ready else "degraded",
-            "providers": providers,
-            "stores": stores,
-        }
+        return body
 
     ui_path = resolved.api.agent_ui_path.rstrip("/")
     if not ui_path.startswith("/"):
