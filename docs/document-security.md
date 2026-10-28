@@ -18,7 +18,12 @@ Any other suffix raises `ValueError`. Legacy binary `.doc`, `.xls` and `.ppt` fi
 supported.
 
 XLSX text is one line per row (cells joined by ` | `) under a `--- Sheet: <name> ---` heading, and
-a formula contributes the value Excel last calculated, never the formula. PPTX text is one line per
+a formula contributes the value Excel last calculated, never the formula. Numbers whose cell style
+uses a date or time format (built-in formats 14 to 22, or a custom format with day, month, year,
+hour or second codes) come out in ISO form: `2023-11-01`, `2023-11-01T12:00:00` or `09:30:00`,
+counting from 1904 when the workbook says so. Elapsed durations such as `[h]:mm` stay numbers. A
+sheet is read up to `max_rows_per_sheet` rows (5,000 by default); a longer sheet is cut there and
+reported as `document.truncated` (`medium`, so the document needs review). PPTX text is one line per
 paragraph under `--- Slide <n> ---`; speaker notes and comments are not extracted. HTML text is the
 visible body: scripts, styles, templates, the head and comments are never extracted.
 
@@ -40,8 +45,19 @@ visible body: scripts, styles, templates, the head and comments are never extrac
   are refused (entity expansion), macro projects are `critical`, and relationships that load remote
   templates or objects when the file opens are `high`. Ordinary external hyperlinks are allowed.
   Comments, tracked deletions and field codes are never extracted.
-- **Images without text** raise `document.ocr_required`; the Runtime does not run OCR.
+- **Images without text** raise `document.ocr_required`; the Runtime does not run OCR. A deck
+  counts as having text when any visible text was extracted, even text flagged as an instruction.
 
 `classify_findings` derives the disposition: any `high` or `critical` finding quarantines the
 document, any other finding asks for review. `redact_pii` removes contact details, configured
 identity strings, address lines and demographic lines before content reaches a model.
+
+## Known limitations
+
+These ways of hiding content are not detected yet:
+
+- **XLSX:** the `;;;` number format, and a font colour that matches the cell fill. Both hide a
+  cell's value while it stays in the sanitized text.
+- **HTML:** `font-size: 0 !important`, `opacity: .0`, `color: transparent`, and off-screen
+  positioning such as `position: absolute; left: -9999px` or `text-indent: -9999px`.
+- **PPTX:** images linked from outside the file are not flagged. DOCX behaves the same way today.

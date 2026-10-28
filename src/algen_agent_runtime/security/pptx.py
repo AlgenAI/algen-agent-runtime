@@ -106,7 +106,8 @@ class PptxDocumentExtractor:
             raise ValueError(f"PPTX exceeds {self._max_characters} extracted character limit")
         sanitized, visible_findings = sanitize_untrusted_text("\n\n".join(blocks))
         findings.extend(visible_findings)
-        if not any(not span.suspicious for span in spans) and image_count:
+        # Visible text flagged as injection is still text: OCR is for decks with none at all.
+        if not blocks and image_count:
             findings.append(
                 DocumentSecurityFinding(
                     kind="document.ocr_required",
