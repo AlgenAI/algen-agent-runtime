@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a15] - 2026-10-28
+
 ### Added
 
 - `MeterCall`, exported from `algen_agent_runtime`: what a usage meter is told about each model
@@ -56,6 +58,15 @@ contracts are explicitly marked experimental during the `0.x` series.
 ### Upgrade notes
 
 - Usage meters: add `call: MeterCall` to `reserve`; nothing else changes.
+
+### Known limitations
+
+- Workflow tool steps get no credentials, and the HTTP run and resume endpoints do not forward
+  any: hosts pass `credentials=` through the Python API.
+- Credentials are kept in memory only, so a run recovered after a restart, or resumed without
+  them, gives its tools an empty mapping.
+- A child run inherits credentials only through `core.subagent`; a host's own delegation tool
+  passes `credentials=context.credentials`.
 
 ## [0.1.0a14] - 2026-10-28
 
@@ -877,7 +888,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a15...HEAD
+[0.1.0a15]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...v0.1.0a15
 [0.1.0a14]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a13...v0.1.0a14
 [0.1.0a13]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a12...v0.1.0a13
 [0.1.0a12]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a11...v0.1.0a12
