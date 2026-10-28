@@ -104,6 +104,8 @@ class HttpToolConfig(_Strict):
     side_effect: SideEffect | None = None
     idempotency: Idempotency | None = None
     required_permissions: frozenset[str] = frozenset()
+    # Reads state that changes on its own (a job's status): never held back as a repeat.
+    volatile: bool = False
 
     @model_validator(mode="after")
     def consistent(self) -> HttpToolConfig:
@@ -273,6 +275,7 @@ def http_api_tool(
             idempotency=idempotency,
             timeout_seconds=config.timeout_seconds + 5,
             max_result_bytes=config.max_result_bytes + 4096,
+            volatile=config.volatile,
         ),
         execute,
     )

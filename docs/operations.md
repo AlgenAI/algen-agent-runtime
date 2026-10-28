@@ -180,6 +180,27 @@ it does not count towards the provider's circuit breaker or latency. The run end
 `budget.refused` separately from provider failures. A meter must not raise any other exception from
 `reserve` to mean "no": that is treated as an internal error.
 
+## Tool-call guards
+
+The guards in [Agent tool behaviour](agent-tooling.md#tool-call-guards) answer a tool call
+without running it, or add a notice to its result. Each leaves a record:
+
+| Guard | Run event | `tool.completed` status | Audit (`action`, `outcome`) | Span |
+| --- | --- | --- | --- | --- |
+| Schema check | `tool.refused` (`reason_code: tool.schema_invalid`) | `refused` | `tool.call`, `refused` | `agent.tool.call` with `tool.status=refused` |
+| Precheck | `tool.refused` (`reason_code: tool.precheck_refused`) | `refused` | `tool.call`, `refused` | `agent.tool.call` with `tool.status=refused` |
+| Repeat guard | `tool.repeated` (`reason_code: tool.repeated`) | `repeated` | `tool.call`, `repeated` | `agent.tool.call` with `tool.status=repeated` |
+| Call limit | `tool.repeated` (`reason_code: tool.call_limit`) | `over_limit` | `tool.call`, `over_limit` | `agent.tool.call` with `tool.status=over_limit` |
+| Wrap-up notice | `tool.wrap_up` (`tool_calls_left`, `reason: steps\|tokens`) | unchanged | `run.wrap_up`, `notified` | `agent.wrap_up.tool_calls_left` on the `agent.step` span (`agent.run` for a parallel reply) |
+
+`tool.refused` also carries `refusal_count` (refusals of that tool so far in the run) and
+`refusal_limit_reached` (the note told the model to stop); `tool.repeated` for a call limit
+carries `call_limit`. The same values are on the span as `tool.guard.reason_code`,
+`tool.guard.refusal_count`, `tool.guard.refusal_limit_reached` and `tool.guard.call_limit`, and in
+the audit metadata beside `step_id`. None of them carries argument values. The run narrative lists
+the three events. Alert on runs whose `refusal_limit_reached` is true or with many
+`tool.repeated` events: the model is stuck on a tool's contract or its instructions.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused

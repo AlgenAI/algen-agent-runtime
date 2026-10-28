@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -44,6 +44,11 @@ class ToolDefinition(BaseModel):
         default=False,
         description="Always ask for the Runtime's approval before a call, whatever the agent's "
         "approval policy. It can only add approval, never waive it.",
+    )
+    volatile: bool = Field(
+        default=False,
+        description="Reads state that changes on its own (a job's status, the time), so the "
+        "repeat guard never holds an identical call back.",
     )
 
 
@@ -97,6 +102,14 @@ class ToolExecutionStore(Protocol):
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any] | Any]
 CompensationHandler = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
 ReplayValidator = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
+# A call planned before the one being checked, in the same model reply: it runs first.
+EarlierCall = tuple[ToolDefinition, Mapping[str, Any]]
+# Why a call would be refused, or None. It runs before any approval is asked for, so a call that
+# cannot succeed goes back to the model instead of to the user.
+Precheck = Callable[
+    [ToolDefinition, Mapping[str, Any], Sequence[EarlierCall]],
+    Awaitable[str | None] | str | None,
+]
 
 
 class Tool:
@@ -107,11 +120,24 @@ class Tool:
         compensation: CompensationHandler | None = None,
         *,
         replay_validator: ReplayValidator | None = None,
+        precheck: Precheck | None = None,
     ) -> None:
         self.definition = definition
         self.handler = handler
         self.compensation = compensation
         self.replay_validator = replay_validator
+        self.precheck = precheck
+
+    async def check(
+        self, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall] = ()
+    ) -> str | None:
+        """The precheck's problem with this call, judged after ``earlier``, or None."""
+        if self.precheck is None:
+            return None
+        problem = self.precheck(self.definition, arguments, earlier)
+        if inspect.isawaitable(problem):
+            problem = await problem
+        return problem
 
     async def validate_replay(self, result: ToolResult, context: ToolContext) -> None:
         if self.replay_validator is not None:

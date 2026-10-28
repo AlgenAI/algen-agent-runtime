@@ -21,6 +21,7 @@ from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
+    Precheck,
     SideEffect,
     Tool,
     ToolContext,
@@ -267,8 +268,14 @@ def build_tool(
     max_result_bytes: int = 1_048_576,
     cost_usd: float = 0,
     audit_metadata: dict[str, str] | None = None,
+    volatile: bool = False,
+    precheck: Precheck | None = None,
 ) -> Tool:
-    """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this."""
+    """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this.
+
+    ``volatile`` marks a read of state that changes on its own, which the repeat guard never
+    holds back; ``precheck`` refuses a call before anyone is asked to approve it.
+    """
     preset = preset or read()
     tool_name = name or function.__name__
     signature = _signature(function)
@@ -301,6 +308,7 @@ def build_tool(
         max_result_bytes=max_result_bytes,
         audit_metadata=metadata,
         requires_approval=preset.requires_approval,
+        volatile=volatile,
     )
 
     # The advertised schema closes every object, but a caller's Pydantic model may ignore unknown
@@ -340,7 +348,7 @@ def build_tool(
             ApprovalRequest(definition, arguments, context), lambda: run(arguments, context)
         )
 
-    tool = Tool(definition, handler)
+    tool = Tool(definition, handler, precheck=precheck)
     tool.__doc__ = function.__doc__
     return tool
 

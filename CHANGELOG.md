@@ -8,6 +8,31 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Added
 
+- Tool-call guards from the Algen Agent Harness, kept in `RunState` so they survive an approval
+  pause and a restart (`tool_refusals`, `tool_call_counts`, `seen_read_calls`; a checkpoint
+  without them still loads). All but the schema check are off by default. See
+  docs/agent-tooling.md#tool-call-guards and, for events, audits and spans,
+  docs/operations.md#tool-call-guards.
+  - `Tool(..., precheck=...)` and `@tool(..., precheck=...)`:
+    `async (definition, arguments, earlier) -> str | None`, run for every call that is not
+    read-only, before any approval is asked for. A refused call never runs and nobody is asked; it
+    is answered with `{"ok": false, "error", "note"}` and status `refused`, with a `tool.refused`
+    event, a `tool.call`/`refused` audit and an `agent.tool.call` span. `earlier` holds the calls
+    planned before it in the same parallel reply that will run.
+  - Arguments are checked against the tool's `input_schema` before the call runs or is put to
+    the user, for every tool (`tool.schema_invalid`).
+  - `tool_policy.max_refusals_per_tool`: from that many refusals of one tool in a run, the note
+    tells the model to stop calling it and tell the user what was refused and why.
+  - `tool_policy.repeat_guard` and `tool_policy.max_calls_per_tool`: a read repeated with no
+    successful change since, or a call past the tool's limit, returns a note instead of running
+    (`tool.repeated` event, statuses `repeated` and `over_limit`). `ToolDefinition.volatile`
+    (also `@tool(volatile=True)` and `http_tools[].volatile`; the live `starter.clock` sets it)
+    marks reads that are never held back.
+  - `wrap_up_policy` (`enabled`, `tool_calls_left`, `token_wrap_up_share`,
+    `token_answer_share`): near the end of the run's steps or token budget, each tool message
+    carries a wrap-up notice as a separate text block (`tool.wrap_up` event,
+    `agent.wrap_up.tool_calls_left` span attribute). No notice while automatic continuation
+    extensions are left.
 - `context_policy.shorten_older_tool_results` (off by default) with
   `shortened_tool_result_chars` (1200): when an older tool exchange no longer fits the context
   budget, its long text results are cut to their opening and marked as shortened instead of the
@@ -57,6 +82,33 @@ contracts are explicitly marked experimental during the `0.x` series.
   the previous behaviour. Works with and without `export_whole_runs`. See docs/operations.md.
   **Upgrade note:** apps that turned off FastAPI's request tracing to keep it out of Traccia
   (`FastAPI(telemetry={...: False})`) can remove that workaround after upgrading.
+- A tool call whose arguments do not fit the tool's input schema is now refused before it runs
+  or any approval is created. With `tool_policy.on_error: return_to_model` the model gets
+  `{"ok": false, "error": "Invalid arguments for <tool>: ...", "note": ...}` (status `refused`)
+  instead of a `ToolExecutionError`; a `fail_run` agent still fails, without first pausing for an
+  approval of a call that cannot run.
+
+### Upgrading from the Algen Agent Harness
+
+- `prechecks.py` → `Tool.precheck`, the built-in schema check (Studio's `schema_problem` can be
+  dropped from its precheck) and `tool_policy.max_refusals_per_tool: 3` (the harness's
+  `MAX_REFUSED`). `Refusals.planned`/`unplan` and the serial lock are not needed: the Runtime runs
+  calls that need approval one at a time, in the model's order, and passes a parallel reply's
+  earlier calls as `earlier`. The precheck now also runs for non-read calls that need no approval.
+- `policies.py` `ApprovalRules` → the existing `approval_policy` and the `side_effects` policy at
+  `plan_tool`: set `require_for_side_effects`/`require_for_destructive` and mark the tools that
+  must ask with `ToolDefinition.requires_approval` (or `write(approval=True)`); a refusal is no
+  longer smuggled through as an `ALLOW` decision.
+- `repeats.py` → `tool_policy.repeat_guard`, `tool_policy.max_calls_per_tool` (was
+  `turn_call_limits`) and `ToolDefinition.volatile` (was `repeatable_tools`).
+- `allowance.py` → `wrap_up_policy`. The notice is a second text block on the tool message, not
+  `tool_calls_left`/`wrap_up` keys merged into a dict result.
+- `metering.py` `CreditMeter` + `MeteredProvider` → `UsageMeter` passed to
+  `build_container(usage_meter=...)`. The router meters every call it dispatches, so there is no
+  provider to wrap. A meter refuses by raising `MeterRefusedError` (not its own exception), and
+  the reason is on `RunState.error` and the `budget.refused` event (was `MeteredProvider.refusal`).
+- Counts are per run, which is one turn of a Studio conversation; the notes keep the harness's
+  "in this turn" wording.
 
 ## [0.1.0a13] - 2026-10-27
 

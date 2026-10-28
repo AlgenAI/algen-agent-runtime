@@ -71,6 +71,7 @@ class ToolDescription(_Description):
     timeout_seconds: float
     max_attempts: int
     requires_approval: bool
+    volatile: bool = False
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     env: tuple[str, ...] = ()
@@ -207,6 +208,7 @@ def _tool(tool: Tool, source: str, env: tuple[str, ...]) -> ToolDescription:
         timeout_seconds=definition.timeout_seconds,
         max_attempts=definition.retry_policy.max_attempts,
         requires_approval=definition.requires_approval,
+        volatile=definition.volatile,
         input_schema=definition.input_schema,
         output_schema=definition.output_schema,
         env=env,

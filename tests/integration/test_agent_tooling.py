@@ -150,8 +150,12 @@ async def test_unknown_and_invalid_calls_are_reported_to_the_model_too() -> None
         "type": "UnknownTool",
         "message": "unknown tool 'files.missing'; available: files.read",
     }
-    assert invalid["error"]["type"] == "ToolExecutionError"
-    assert "invalid input" in invalid["error"]["message"]
+    # Arguments that do not fit the schema are refused before the tool runs (or anyone is asked).
+    assert invalid == {
+        "ok": False,
+        "error": "Invalid arguments for files.read: path: 7 is not of type 'string'",
+        "note": "Nothing was changed and the user was not asked. Fix it and try again.",
+    }
 
 
 async def test_an_unknown_tool_is_reported_and_the_run_continues_by_default() -> None:

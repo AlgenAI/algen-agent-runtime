@@ -117,6 +117,15 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
             kind = "tool"
             result = f", {data['result_chars']} result chars" if "result_chars" in data else ""
             summary = f"{data.get('tool') or 'Tool'} {data.get('status', 'completed')}{result}"
+        case "tool.refused":
+            kind = "tool"
+            summary = f"{data.get('tool') or 'Tool'} call refused before it ran ({data.get('reason_code')})"
+        case "tool.repeated":
+            kind = "tool"
+            summary = f"{data.get('tool') or 'Tool'} call held back ({data.get('reason_code')})"
+        case "tool.wrap_up":
+            kind = "tool"
+            summary = f"Told the model to wrap up: {data.get('tool_calls_left')} tool calls left"
         case "approval.required":
             kind = "approval"
             subject = data.get("tool") or data.get("reason") or data.get("kind") or "an action"
