@@ -29,6 +29,7 @@ storage:
   conversation_store: postgres
   workflow_store: postgres
   postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  # postgres_schema: agent_runtime  # optional; see "Sharing a database" below
   initialize_schema: true
   postgres_min_pool_size: 1
   postgres_max_pool_size: 10
@@ -108,6 +109,41 @@ automatic replay (see [Resolving indeterminate tool calls](#resolving-indetermin
 Approval and clarification waits remain paused across restarts until a maintenance sweep expires
 them (see [Maintenance and data retention](#maintenance-and-data-retention)); reconciliation waits
 remain paused until an operator settles the call.
+
+### Sharing a database: `postgres_schema`
+
+By default the Runtime creates its tables (`algen_agent_runtime_*`) wherever the server's
+`search_path` puts them, normally `public`. To keep them apart from an application's own tables in
+the same database, set `storage.postgres_schema`:
+
+```yaml
+storage:
+  postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  postgres_schema: agent_runtime
+```
+
+- Every connection of the Runtime's pool starts with `search_path` set to that schema alone (an
+  asyncpg startup parameter), so the migrations, the migration history table and every PostgreSQL
+  store (runs, events, audits, approvals, memory, learned memory, artifacts, tool executions,
+  conversations, workflow checkpoints, analytical graphs, the work queue and MCP OAuth tokens) use
+  it. A table missing from the schema is never looked up in `public`. Two Runtimes, or a Runtime and
+  its tests, can share one database with different schemas.
+- With `initialize_schema: true` the schema is created when missing (`CREATE SCHEMA`, which needs
+  the `CREATE` privilege on the database). With `false` it must exist, and start-up fails if it does
+  not. The database role needs `USAGE` and `CREATE` on the schema to migrate.
+- The name must be 1 to 63 lowercase letters, digits or underscores, start with a letter or
+  underscore, and not start with `pg_`; it is always quoted as an identifier. Settings validation
+  refuses anything else.
+- At start-up the Runtime checks `current_schema()` and refuses to start if the schema is not in
+  effect. A connection pooler in transaction mode may drop the `search_path` startup parameter:
+  with PgBouncer 1.20 or later add `search_path` to `track_extra_parameters`, or use session pooling.
+- Unset (the default), nothing changes: no `search_path` is sent and existing deployments keep their
+  tables. Moving an existing deployment into a schema is a database operation
+  (`ALTER TABLE ... SET SCHEMA` for each `algen_agent_runtime_*` table, including
+  `algen_agent_runtime_schema_migrations`) done while the Runtime is stopped; the Runtime does not
+  move tables itself.
+- The pgvector retriever opens its own connection and keeps its table in `retrieval.<name>.table_name`;
+  this setting does not apply to it.
 
 ## Readiness and lifecycle
 

@@ -20,6 +20,7 @@ from algen_agent_runtime.config.authentication import (
 )
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
+from algen_agent_runtime.persistence.postgres import check_schema_name
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.tools.http_api import HttpToolConfig
@@ -75,6 +76,11 @@ class StorageSettings(StrictSettings):
     tool_execution_store: Literal["memory", "postgres"] = "memory"
     conversation_store: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str | None = None
+    postgres_schema: str | None = Field(
+        default=None,
+        description="PostgreSQL schema for the Runtime's tables, created when missing if "
+        "initialize_schema is true. Unset: the server's search_path (normally public).",
+    )
     redis_url: str | None = None
     artifact_s3_bucket: str | None = None
     artifact_s3_prefix: str = "algen-agent-runtime/artifacts"
@@ -141,6 +147,11 @@ class StorageSettings(StrictSettings):
                 raise ValueError(f"{field_name} must be an env:// secret reference")
         if self.postgres_min_pool_size > self.postgres_max_pool_size:
             raise ValueError("postgres_min_pool_size cannot exceed postgres_max_pool_size")
+        if self.postgres_schema is not None:
+            try:
+                check_schema_name(self.postgres_schema)
+            except ConfigurationError as exc:
+                raise ValueError(str(exc)) from None
         if self.artifact_store == "s3" and not (self.artifact_s3_bucket or "").strip():
             raise ValueError("s3 artifact store requires artifact_s3_bucket")
         if self.artifact_store == "s3" and not self.artifact_s3_prefix.strip("/"):

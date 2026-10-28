@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -10,7 +11,7 @@ from typing import Any
 
 import structlog
 
-from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -28,8 +29,33 @@ from algen_agent_runtime.types.contracts import (
 _logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
 
 
+_SCHEMA_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def check_schema_name(schema: str) -> str:
+    """``schema`` if it is a usable PostgreSQL schema name for the Runtime's tables.
+
+    Only lowercase letters, digits and underscores, starting with a letter or underscore, at
+    most 63 characters, and not a system schema: the name is put in ``search_path`` and in
+    ``CREATE SCHEMA`` as a quoted identifier, so it must never need escaping.
+    """
+    if not _SCHEMA_NAME.fullmatch(schema) or schema.startswith("pg_"):
+        raise ConfigurationError(
+            "postgres_schema must be 1-63 lowercase letters, digits or underscores, start with a "
+            "letter or underscore, and not start with pg_"
+        )
+    if schema == "information_schema":
+        raise ConfigurationError("postgres_schema cannot be information_schema")
+    return schema
+
+
 class PostgresDatabase:
-    """Lazily initialized asyncpg pool shared by all PostgreSQL stores."""
+    """Lazily initialized asyncpg pool shared by all PostgreSQL stores.
+
+    With ``schema``, every connection of the pool has ``search_path`` set to that schema alone,
+    so the migrations and every store create and use their tables there. With
+    ``initialize_schema`` the schema is created if it is missing.
+    """
 
     def __init__(
         self,
@@ -38,13 +64,20 @@ class PostgresDatabase:
         initialize_schema: bool = True,
         min_pool_size: int = 1,
         max_pool_size: int = 10,
+        schema: str | None = None,
     ) -> None:
         self._dsn = dsn
         self._initialize_schema = initialize_schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
+        self._schema = check_schema_name(schema) if schema is not None else None
         self._pool: Any | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def schema(self) -> str | None:
+        """The schema the Runtime's tables live in, or ``None`` for the server's search_path."""
+        return self._schema
 
     async def start(self) -> None:
         if self._pool is not None:
@@ -56,14 +89,46 @@ class PostgresDatabase:
                 import asyncpg
             except ImportError as exc:
                 raise ImportError("install algen-agent-runtime[postgres]") from exc
+            options: dict[str, Any] = {}
+            if self._schema is not None:
+                # A startup parameter, so it is the session default that survives the RESET ALL
+                # asyncpg runs when a connection returns to the pool. Only this schema: a table
+                # missing from it must never resolve to another schema's table of the same name.
+                options["server_settings"] = {"search_path": f'"{self._schema}"'}
             pool = await asyncpg.create_pool(
                 self._dsn,
                 min_size=self._min_pool_size,
                 max_size=self._max_pool_size,
+                **options,
             )
+            try:
+                if self._schema is not None:
+                    await self._use_schema(pool, self._schema)
+            except BaseException:
+                await pool.close()
+                raise
             self._pool = pool
             if self._initialize_schema:
                 await self._migrate(pool)
+
+    async def _use_schema(self, pool: Any, schema: str) -> None:
+        exists = await pool.fetchval(
+            "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1", schema
+        )
+        if not exists:
+            if not self._initialize_schema:
+                raise ConfigurationError(
+                    f"PostgreSQL schema {schema!r} does not exist and initialize_schema is false"
+                )
+            # The name was validated by check_schema_name and is quoted as an identifier.
+            await pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        current = await pool.fetchval("SELECT current_schema()")
+        if current != schema:
+            raise ConfigurationError(
+                f"PostgreSQL connections use schema {current!r}, not postgres_schema {schema!r}: "
+                "the search_path startup parameter was not applied (a connection pooler may "
+                "drop it)"
+            )
 
     async def _migrate(self, pool: Any) -> None:
         # Preserve the applied-migration history when upgrading from the former

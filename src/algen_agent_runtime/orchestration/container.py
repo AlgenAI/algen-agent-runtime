@@ -499,6 +499,7 @@ def build_container(
             initialize_schema=storage.initialize_schema,
             min_pool_size=storage.postgres_min_pool_size,
             max_pool_size=storage.postgres_max_pool_size,
+            schema=storage.postgres_schema,
         )
         if "postgres" in selected_backends
         else None

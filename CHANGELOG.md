@@ -19,6 +19,14 @@ contracts are explicitly marked experimental during the `0.x` series.
   Runtime metric was recorded and silently dropped, and the process-global provider was taken,
   so an application could not install its own afterwards. Metrics are exported when
   `otlp_metrics_endpoint` is set, as above.
+- `storage.postgres_schema` (and `PostgresDatabase(..., schema=...)`): an optional PostgreSQL
+  schema for the Runtime's tables, so they can share a database with an application's own. Every
+  pooled connection starts with `search_path` set to that schema alone, so migrations and all
+  PostgreSQL stores use it; with `initialize_schema` it is created when missing. Start-up fails if
+  the schema is missing (without `initialize_schema`) or not in effect, for example behind a pooler
+  that drops the startup parameter. The name is validated as a plain lowercase identifier. Unset
+  by default: no change for existing deployments. See
+  docs/operations.md#sharing-a-database-postgres_schema.
 
 ## [0.1.0a17] - 2026-10-28
 
