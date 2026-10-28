@@ -505,6 +505,25 @@ Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model 
 4. **Production Defense in Depth:**
    - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
 
+## MCP OAuth connections
+
+OAuth MCP servers (docs/mcp.md, "OAuth for remote MCP servers") add this telemetry. None of it
+carries a token, a refresh token, a PKCE verifier, an authorization code or a state.
+
+| Kind | Name | Data |
+| --- | --- | --- |
+| Run event | `mcp.auth_required` | `code: mcp_not_connected`, `server`, `token_scope`, `start_path`. Emitted when a tool call finds no connection; the call's `tool.completed` has status `failed`. |
+| Audit | `tool.call`, outcome `not_connected` | `step_id`, `mcp_server`. |
+| Audit | `mcp.oauth.connect`, outcome `completed` | `mcp_server`, `token_scope`; actor is the user who completed the flow. |
+| Audit | `mcp.oauth.revoke`, outcome `completed` | `mcp_server`, `removed`, `provider_revoked`. |
+
+Run more than one API worker only with `storage.mcp_oauth_token_store: postgres`: the in-memory
+store cannot see a flow started on another worker. Back up `mcp_oauth_encryption_key` with the
+database; without it stored connections cannot be read and users must connect again. Refreshes
+are serialized within a process. Across workers, a refresh the provider rejects first re-reads
+the store and keeps another worker's newer token; only when none has been stored yet can a race
+on a rotating refresh token disconnect the user, who then connects again.
+
 ## API Admission Rate Limiting and Concurrency Quotas
 
 To prevent run, approval, artifact, and conversation floods, the runtime supports tenant-aware admission rate limiting and in-flight concurrency quotas:

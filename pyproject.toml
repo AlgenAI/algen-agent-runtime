@@ -55,6 +55,8 @@ documents = ["PyMuPDF>=1.24,<2"]
 redis = ["redis>=5,<6"]
 auth = ["PyJWT[crypto]>=2.9,<3"]
 mcp = ["mcp>=1.30.0,<2"]
+# AES-256-GCM for secrets kept at rest, such as MCP OAuth tokens in PostgreSQL.
+encryption = ["cryptography>=42,<51"]
 transformers = ["transformers>=4.44,<5", "torch>=2.4,<3"]
 traccia = ["traccia>=0.1.28,<0.2"]
 chroma = ["chromadb>=1.0,<2"]
@@ -150,5 +152,5 @@ strict = true
 packages = ["algen_agent_runtime"]
 
 [[tool.mypy.overrides]]
-module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "fitz", "boto3", "botocore", "botocore.*", "mcp", "mcp.*"]
+module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "fitz", "boto3", "botocore", "botocore.*", "mcp", "mcp.*", "cryptography", "cryptography.*"]
 ignore_missing_imports = true

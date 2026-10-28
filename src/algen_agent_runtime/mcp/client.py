@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,7 @@ import httpx
 
 if TYPE_CHECKING:
     from algen_agent_runtime.config.settings import SecuritySettings
+    from algen_agent_runtime.mcp.oauth import MCPOAuthManager
 from algen_agent_runtime.exceptions.errors import (
     ConfigurationError,
     ConflictError,
@@ -24,7 +26,9 @@ from algen_agent_runtime.mcp.contracts import (
     MCPStdioServerConfig,
     MCPStreamableHttpServerConfig,
     MCPTransportType,
+    oauth_config,
 )
+from algen_agent_runtime.mcp.tokens import MCPTokenKey
 from algen_agent_runtime.security.network import DNSResolver, create_safe_http_client
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
@@ -73,6 +77,14 @@ def _make_http_client_factory(
     return factory
 
 
+async def _close_quietly(conn: MCPConnection) -> None:
+    try:
+        await conn.close()
+    except Exception:
+        # A transport that already broke has nothing left to release.
+        pass
+
+
 class MCPConnection:
     """Manages an active connection and session to an external MCP server."""
 
@@ -90,6 +102,54 @@ class MCPConnection:
         await self.exit_stack.aclose()
 
 
+class _OwnedConnection(MCPConnection):
+    """A session opened and closed by its own task.
+
+    The SDK transports hold anyio task groups that must be exited by the task that entered
+    them. OAuth sessions open during a tool call and close on revoke or shutdown, in other
+    tasks, so a dedicated task owns each one for its whole life.
+    """
+
+    def __init__(self, config: MCPServerConfigBase, session: Any, closing: asyncio.Event) -> None:
+        super().__init__(config=config, exit_stack=AsyncExitStack(), session=session)
+        self._closing = closing
+        self._task: asyncio.Task[None] | None = None
+
+    @classmethod
+    async def open(
+        cls, config: MCPServerConfigBase, opener: Callable[[AsyncExitStack], Awaitable[Any]]
+    ) -> _OwnedConnection:
+        ready: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        closing = asyncio.Event()
+
+        async def own() -> None:
+            try:
+                async with AsyncExitStack() as stack:
+                    ready.set_result(await opener(stack))
+                    await closing.wait()
+            except BaseException as exc:
+                if not ready.done():
+                    ready.set_exception(exc)
+                elif not isinstance(exc, Exception):
+                    raise
+
+        task = asyncio.create_task(own(), name=f"mcp-oauth-session-{config.name}")
+        try:
+            session = await ready
+        except BaseException:
+            closing.set()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        conn = cls(config, session, closing)
+        conn._task = task
+        return conn
+
+    async def close(self) -> None:
+        self._closing.set()
+        if self._task is not None:
+            await asyncio.gather(self._task, return_exceptions=True)
+
+
 class MCPClientManager:
     """Manager for external Model Context Protocol (MCP) servers and tools."""
 
@@ -102,6 +162,8 @@ class MCPClientManager:
         dns_resolver: DNSResolver | None = None,
         session_factory: Any | None = None,
         http_client_factory: Any | None = None,
+        oauth: MCPOAuthManager | None = None,
+        max_oauth_connections: int = 256,
     ) -> None:
         self._configs: dict[str, MCPServerConfigBase] = {}
         for s in servers:
@@ -115,10 +177,24 @@ class MCPClientManager:
         self._discovered_tools: dict[str, Tool] = {}
         self._session_factory = session_factory
         self._http_client_factory = http_client_factory
+        # OAuth servers get one session per token key (tenant, user or None, server), opened on
+        # first use and closed when the connection is revoked or the cap evicts it.
+        self.oauth = oauth
+        self._oauth_connections: OrderedDict[MCPTokenKey, MCPConnection] = OrderedDict()
+        self._oauth_connect_locks: dict[MCPTokenKey, asyncio.Lock] = {}
+        self._max_oauth_connections = max_oauth_connections
+        self._discovered_servers: set[str] = set()
+        if oauth is not None:
+            oauth.on_disconnect(self._drop_oauth_connection)
 
     @property
     def server_names(self) -> tuple[str, ...]:
         return tuple(self._configs.keys())
+
+    @property
+    def discovered_servers(self) -> frozenset[str]:
+        """Servers whose tools have been listed."""
+        return frozenset(self._discovered_servers)
 
     def add_server(self, config: MCPServerConfigBase) -> None:
         if config.name in self._configs:
@@ -130,12 +206,20 @@ class MCPClientManager:
             raise NotFoundError(f"MCP server {name!r} not configured")
         return self._configs[name]
 
-    async def connect(self, server_name: str) -> MCPConnection:
-        """Connect to an MCP server, establishing transport and initialized session."""
+    async def connect(
+        self, server_name: str, *, tenant_id: str | None = None, user_id: str | None = None
+    ) -> MCPConnection:
+        """Connect to an MCP server, establishing transport and initialized session.
+
+        An OAuth server connects as a tenant (or user): ``tenant_id`` and ``user_id`` pick the
+        stored token, and without them the server's discovery principal is used, if any.
+        """
+        config = self.get_server(server_name)
+        if oauth_config(config) is not None:
+            return await self._connect_oauth(config, tenant_id, user_id)
         if server_name in self._connections:
             return self._connections[server_name]
 
-        config = self.get_server(server_name)
         stack = AsyncExitStack()
 
         try:
@@ -167,66 +251,14 @@ class MCPClientManager:
                 read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
-            elif config.transport == MCPTransportType.STREAMABLE_HTTP:
-                assert isinstance(config, MCPStreamableHttpServerConfig)
+            elif isinstance(config, (MCPStreamableHttpServerConfig, MCPSseServerConfig)):
                 headers = dict(config.headers)
                 if config.auth_token_ref:
                     token = _resolve_secret(config.auth_token_ref, self._environment)
                     headers["Authorization"] = f"Bearer {token}"
                 for h_name, h_ref in config.secret_headers.items():
                     headers[h_name] = _resolve_secret(h_ref, self._environment)
-
-                try:
-                    from mcp import ClientSession
-                    from mcp.client.streamable_http import streamablehttp_client
-                except ImportError as exc:
-                    raise PolicyDeniedError(
-                        "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
-                    ) from exc
-
-                http_factory = self._http_client_factory or _make_http_client_factory(
-                    self._security, self._dns_resolver
-                )
-                read_stream, write_stream, _ = await stack.enter_async_context(
-                    streamablehttp_client(
-                        config.url,
-                        headers=headers,
-                        timeout=config.timeout_seconds,
-                        httpx_client_factory=http_factory,
-                    )
-                )
-                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-                await session.initialize()
-            elif config.transport == MCPTransportType.SSE:
-                assert isinstance(config, MCPSseServerConfig)
-                headers = dict(config.headers)
-                if config.auth_token_ref:
-                    token = _resolve_secret(config.auth_token_ref, self._environment)
-                    headers["Authorization"] = f"Bearer {token}"
-                for h_name, h_ref in config.secret_headers.items():
-                    headers[h_name] = _resolve_secret(h_ref, self._environment)
-
-                try:
-                    from mcp import ClientSession
-                    from mcp.client.sse import sse_client
-                except ImportError as exc:
-                    raise PolicyDeniedError(
-                        "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
-                    ) from exc
-
-                http_factory = self._http_client_factory or _make_http_client_factory(
-                    self._security, self._dns_resolver
-                )
-                read_stream, write_stream = await stack.enter_async_context(
-                    sse_client(
-                        config.url,
-                        headers=headers,
-                        timeout=config.timeout_seconds,
-                        httpx_client_factory=http_factory,
-                    )
-                )
-                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-                await session.initialize()
+                session = await self._open_http_session(config, stack, headers, None)
             else:
                 raise ConfigurationError(f"unsupported MCP transport: {config.transport}")
 
@@ -237,15 +269,108 @@ class MCPClientManager:
             await stack.aclose()
             raise
 
+    async def _open_http_session(
+        self,
+        config: MCPStreamableHttpServerConfig | MCPSseServerConfig,
+        stack: AsyncExitStack,
+        headers: dict[str, str],
+        auth: httpx.Auth | None,
+    ) -> Any:
+        """An initialized session over streamable HTTP or SSE. Secrets are already resolved."""
+        if self._session_factory is not None and auth is not None:
+            return await self._session_factory(config, stack, auth=auth)
+        try:
+            from mcp import ClientSession
+            from mcp.client.sse import sse_client
+            from mcp.client.streamable_http import streamablehttp_client
+        except ImportError as exc:
+            raise PolicyDeniedError(
+                "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
+            ) from exc
+
+        http_factory = self._http_client_factory or _make_http_client_factory(
+            self._security, self._dns_resolver
+        )
+        if isinstance(config, MCPStreamableHttpServerConfig):
+            read_stream, write_stream, _ = await stack.enter_async_context(
+                streamablehttp_client(
+                    config.url,
+                    headers=headers,
+                    timeout=config.timeout_seconds,
+                    httpx_client_factory=http_factory,
+                    auth=auth,
+                )
+            )
+        else:
+            read_stream, write_stream = await stack.enter_async_context(
+                sse_client(
+                    config.url,
+                    headers=headers,
+                    timeout=config.timeout_seconds,
+                    httpx_client_factory=http_factory,
+                    auth=auth,
+                )
+            )
+        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+        await session.initialize()
+        return session
+
+    async def _connect_oauth(
+        self, config: MCPServerConfigBase, tenant_id: str | None, user_id: str | None
+    ) -> MCPConnection:
+        if self.oauth is None:
+            raise ConfigurationError(
+                f"MCP server {config.name!r} uses OAuth but no MCP OAuth manager is configured"
+            )
+        if tenant_id is None:
+            principal = self.oauth.discovery_principal(config.name)
+            if principal is None:
+                raise self.oauth.not_connected(config.name)
+            tenant_id, user_id = principal
+        key = self.oauth.key_for(config.name, tenant_id, user_id)
+        # Fails with MCPNotConnectedError before anything is opened, and refreshes when due.
+        await self.oauth.access_token(config.name, tenant_id, key.user_id)
+        async with self._oauth_connect_locks.setdefault(key, asyncio.Lock()):
+            existing = self._oauth_connections.get(key)
+            if existing is not None:
+                self._oauth_connections.move_to_end(key)
+                return existing
+            assert isinstance(config, (MCPStreamableHttpServerConfig, MCPSseServerConfig))
+            headers = dict(config.headers)
+            for h_name, h_ref in config.secret_headers.items():
+                headers[h_name] = _resolve_secret(h_ref, self._environment)
+            from algen_agent_runtime.mcp.oauth import StoredTokenAuth
+
+            auth = StoredTokenAuth(self.oauth, config.name, tenant_id, key.user_id)
+            conn = await _OwnedConnection.open(
+                config, lambda stack: self._open_http_session(config, stack, headers, auth)
+            )
+            self._oauth_connections[key] = conn
+            while len(self._oauth_connections) > self._max_oauth_connections:
+                _, oldest = self._oauth_connections.popitem(last=False)
+                await _close_quietly(oldest)
+            return conn
+
+    async def _drop_oauth_connection(self, key: MCPTokenKey) -> None:
+        conn = self._oauth_connections.pop(key, None)
+        if conn is not None:
+            await _close_quietly(conn)
+
     async def disconnect(self, server_name: str) -> None:
         conn = self._connections.pop(server_name, None)
         if conn:
             await conn.close()
+        for key in [key for key in self._oauth_connections if key.server == server_name]:
+            await self._drop_oauth_connection(key)
 
     async def close(self) -> None:
         """Close all active MCP server connections."""
         for name in list(self._connections.keys()):
             await self.disconnect(name)
+        for key in list(self._oauth_connections):
+            await self._drop_oauth_connection(key)
+        if self.oauth is not None:
+            await self.oauth.aclose()
 
     async def aclose(self) -> None:
         await self.close()
@@ -256,13 +381,25 @@ class MCPClientManager:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
 
-    async def discover_tools(self, server_name: str | None = None) -> tuple[Tool, ...]:
-        """Discover tools from one or all configured MCP servers."""
+    async def discover_tools(
+        self,
+        server_name: str | None = None,
+        *,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+    ) -> tuple[Tool, ...]:
+        """Discover tools from one or all configured MCP servers.
+
+        An OAuth server lists its tools once, through the given tenant's (or user's) connection
+        or its discovery principal; its tools then use each caller's own connection.
+        """
         target_names = [server_name] if server_name else list(self._configs.keys())
         discovered: list[Tool] = []
 
         for name in target_names:
-            conn = await self.connect(name)
+            if name in self._discovered_servers and oauth_config(self.get_server(name)):
+                continue
+            conn = await self.connect(name, tenant_id=tenant_id, user_id=user_id)
             config = conn.config
             session = conn.session
 
@@ -417,8 +554,35 @@ class MCPClientManager:
                 tool_instance = self._create_tool_instance(tool_def, config, tool_name, session)
                 self._discovered_tools[registered_name] = tool_instance
                 discovered.append(tool_instance)
+            self._discovered_servers.add(name)
 
         return tuple(discovered)
+
+    async def _caller_session(self, config: MCPServerConfigBase, context: ToolContext) -> Any:
+        """The session of the calling tenant (or user) for an OAuth server."""
+        try:
+            conn = await self.connect(
+                config.name, tenant_id=context.tenant_id, user_id=context.user_id
+            )
+        except (ToolExecutionError, PolicyDeniedError, ConfigurationError):
+            raise
+        except Exception as exc:
+            # Transport errors can carry URLs; the type is enough for the model.
+            raise ToolExecutionError(
+                f"could not connect to MCP server {config.name!r} ({type(exc).__name__})"
+            ) from exc
+        return conn.session
+
+    async def _forget_caller_session(
+        self, config: MCPServerConfigBase, context: ToolContext
+    ) -> None:
+        if self.oauth is None:
+            return
+        try:
+            key = self.oauth.key_for(config.name, context.tenant_id, context.user_id)
+        except Exception:
+            return
+        await self._drop_oauth_connection(key)
 
     def _create_tool_instance(
         self,
@@ -427,9 +591,14 @@ class MCPClientManager:
         remote_name: str,
         session: Any,
     ) -> Tool:
+        uses_oauth = oauth_config(config) is not None
+
         async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+            # An OAuth server's tool always runs on the caller's own connection, never on the
+            # one that listed the tools.
+            active = await self._caller_session(config, context) if uses_oauth else session
             try:
-                call_task = asyncio.create_task(session.call_tool(remote_name, arguments))
+                call_task = asyncio.create_task(active.call_tool(remote_name, arguments))
                 try:
                     async with asyncio.timeout(tool_def.timeout_seconds):
                         result = await asyncio.shield(call_task)
@@ -449,6 +618,9 @@ class MCPClientManager:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if uses_oauth:
+                    # A broken or rejected session is reopened, with a fresh token, next time.
+                    await self._forget_caller_session(config, context)
                 raise ToolExecutionError(
                     f"MCP tool {tool_def.name} execution error: {str(exc)[:200]}"
                 ) from exc

@@ -33,6 +33,24 @@ contracts are explicitly marked experimental during the `0.x` series.
     carries a wrap-up notice as a separate text block (`tool.wrap_up` event,
     `agent.wrap_up.tool_calls_left` span attribute). No notice while automatic continuation
     extensions are left.
+- OAuth for remote MCP servers (off by default): `auth: {type: oauth, ...}` on `streamable_http`
+  and `sse` servers (`OAuthClientAuth`) runs the authorization code flow with PKCE S256 through
+  `POST /v1/mcp/servers/{server}/oauth/start`, `GET /v1/mcp/oauth/callback`,
+  `GET .../oauth/status`, `GET /v1/mcp/oauth/servers` and `DELETE /v1/mcp/servers/{server}/oauth`
+  (scopes `mcp:read`, `mcp:connect`, and `mcp:admin` for tenant-wide connections). Endpoints come
+  from RFC 9728/8414 discovery or config; client secrets are `env://` references, and public
+  clients use PKCE alone. Tokens are kept per tenant (`token_scope: tenant`, the default) or per
+  user (`token_scope: user`, which fails closed without a `user_id`), refreshed before expiry and
+  once on a 401, and revoked at the provider (RFC 7009) when it offers that. A call with no
+  connection returns a clean `MCPNotConnected` tool error to the model whatever `on_error` says,
+  and emits an `mcp.auth_required` event with the start route for a Connect button. Storage is
+  `storage.mcp_oauth_token_store`: `memory`, or `postgres` (migration `012_mcp_oauth.sql`), which
+  encrypts tokens with AES-256-GCM bound to their tenant row and needs
+  `storage.mcp_oauth_encryption_key` and the new `encryption` extra (`cryptography`). New names
+  in `algen_agent_runtime.mcp` (`OAuthClientAuth`, `MCPOAuthTokenScope`, `MCPNotConnectedError`,
+  `MCPOAuthManager`, `MCPTokenStore`, `InMemoryMCPTokenStore`, `PostgresMCPTokenStore`) and
+  `algen_agent_runtime.security.encryption` (`SecretCipher`, `AesGcmCipher`). Servers without
+  `auth` are unchanged. Dynamic client registration is not supported yet. See docs/mcp.md.
 - `context_policy.shorten_older_tool_results` (off by default) with
   `shortened_tool_result_chars` (1200): when an older tool exchange no longer fits the context
   budget, its long text results are cut to their opening and marked as shortened instead of the

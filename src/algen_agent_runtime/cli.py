@@ -125,7 +125,8 @@ def _run_describe(
     for provider in inventory.providers:
         print(f"provider {provider.name} from {provider.source}")
     for server in inventory.mcp_servers:
-        print(f"mcp_server {server.name} from {server.source}")
+        auth = f" auth=oauth({server.auth.token_scope})" if server.auth else ""
+        print(f"mcp_server {server.name} from {server.source}{auth}")
     for kind in ("semantic_layers", "analytical_methods", "model_services"):
         for component in getattr(inventory, kind):
             print(f"{kind.removesuffix('s')} {component.name} from {component.source}")

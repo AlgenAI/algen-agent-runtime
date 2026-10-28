@@ -27,6 +27,7 @@ from algen_agent_runtime.api.dependencies import (
     require_any_scope,
     require_scope,
 )
+from algen_agent_runtime.api.mcp_oauth_routes import add_mcp_oauth_routes
 from algen_agent_runtime.api.rate_limiting import (
     ROUTE_CLASS_READ,
     ROUTE_CLASS_RUN_CREATE,
@@ -286,6 +287,7 @@ def create_app(
         )
 
     add_workflow_routes(app, workflows, identity_dependency)
+    add_mcp_oauth_routes(app, dependencies, identity_dependency)
 
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(

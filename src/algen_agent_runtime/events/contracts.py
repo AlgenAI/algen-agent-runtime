@@ -32,6 +32,7 @@ EventType = Literal[
     "memory.learned.updated",
     "clarification.required",
     "approval.required",
+    "mcp.auth_required",
     "run.continued",
     "run.completed",
     "run.failed",

@@ -219,7 +219,10 @@ class Container:
                     for tool in tools:
                         self.tools.register(tool)
                 except Exception as exc:
-                    if config.required:
+                    from algen_agent_runtime.exceptions.errors import MCPNotConnectedError
+
+                    # An OAuth server nobody has connected yet lists its tools on first connect.
+                    if config.required and not isinstance(exc, MCPNotConnectedError):
                         raise ConfigurationError(
                             f"failed to discover required MCP server {server_name!r}: {exc}"
                         ) from exc
@@ -430,6 +433,7 @@ def build_container(
         storage.conversation_store,
         settings.analytical_execution.graph_store,
         settings.distributed_execution.queue_backend,
+        storage.mcp_oauth_token_store,
     }
     if storage.artifact_store == "s3":
         selected_backends.add("postgres")
@@ -790,11 +794,19 @@ def build_container(
     mcp_manager: MCPClientManager | None = None
     if combined_mcp_servers:
         from algen_agent_runtime.mcp.client import MCPClientManager
+        from algen_agent_runtime.mcp.oauth import build_mcp_oauth_manager
 
         mcp_manager = MCPClientManager(
             combined_mcp_servers,
             environment=environment,
             security=settings.security,
+            oauth=build_mcp_oauth_manager(
+                combined_mcp_servers,
+                storage,
+                database=database,
+                environment=environment,
+                security=settings.security,
+            ),
         )
     executor = ToolExecutor(
         tools,

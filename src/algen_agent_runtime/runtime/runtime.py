@@ -64,6 +64,7 @@ from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
     ConflictError,
+    MCPNotConnectedError,
     MeterRefusedError,
     NotFoundError,
     PolicyDeniedError,
@@ -2241,6 +2242,11 @@ class AgentRuntime:
         settle: bool = True,
     ) -> None:
         """Fail the run, or, when the agent asks for it, tell the model the call failed."""
+        if isinstance(exc, MCPNotConnectedError):
+            # A missing OAuth connection is the user's to fix, not a crash: the model hears it
+            # and the UI gets what it needs for a Connect button, whatever the agent's on_error.
+            await self._mcp_not_connected(state, action, exc, settle=settle)
+            return
         if agent.tool_policy.on_error != "return_to_model":
             raise exc
         message = self._safe_error(exc)
@@ -2258,6 +2264,30 @@ class AgentRuntime:
             "failed",
             action.tool_name or "",
             {"step_id": action.id, "error_type": type(exc).__name__},
+        )
+
+    async def _mcp_not_connected(
+        self,
+        state: RunState,
+        action: PlannedAction,
+        exc: MCPNotConnectedError,
+        *,
+        settle: bool,
+    ) -> None:
+        await self._finish_tool_call_without_result(
+            state,
+            action,
+            {"error": {"type": "MCPNotConnected", "message": str(exc), "server": exc.server}},
+            status="failed",
+            settle=settle,
+        )
+        await self._emit(state, "mcp.auth_required", exc.details(), action.id)
+        await self._audit(
+            state,
+            "tool.call",
+            "not_connected",
+            action.tool_name or "",
+            {"step_id": action.id, "mcp_server": exc.server},
         )
 
     async def _finish_tool_call_without_result(
