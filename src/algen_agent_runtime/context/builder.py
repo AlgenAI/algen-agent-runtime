@@ -13,6 +13,7 @@ from algen_agent_runtime.retrieval.contracts import RetrievalMode, RetrievalQuer
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
     Citation,
+    ContextPolicy,
     Message,
     Role,
     RunState,
@@ -48,7 +49,12 @@ class DefaultContextBuilder:
         return 0
 
     async def build(self, state: RunState, agent: AgentDefinition) -> Sequence[Message]:
-        return self.pack(await self.assemble(state, agent))
+        messages = await self.assemble(state, agent)
+        # Pass the policy only when shortening is on, so subclasses that override
+        # ``pack(self, messages)`` keep working unchanged.
+        if agent.context_policy.shorten_older_tool_results:
+            return self.pack(messages, agent.context_policy)
+        return self.pack(messages)
 
     async def assemble(self, state: RunState, agent: AgentDefinition) -> list[Message]:
         await initialize_history(state, agent, self._memory)
@@ -66,8 +72,15 @@ class DefaultContextBuilder:
 
     estimate = staticmethod(estimate_message)
 
-    def pack(self, messages: Sequence[Message]) -> tuple[Message, ...]:
-        return pack_messages(messages, self._max_tokens)
+    def pack(
+        self, messages: Sequence[Message], policy: ContextPolicy | None = None
+    ) -> tuple[Message, ...]:
+        shorten = (
+            policy.shortened_tool_result_chars
+            if policy is not None and policy.shorten_older_tool_results
+            else None
+        )
+        return pack_messages(messages, self._max_tokens, shorten_tool_results_to=shorten)
 
 
 class ContextBuilderRegistry:
@@ -227,10 +240,15 @@ class RetrievalContextBuilder:
             candidate = list(base_messages)
             candidate.insert(1, Message.text(Role.SYSTEM, "\n\n".join(evidence)))
             try:
-                packed = self._base.pack(candidate)
+                packed = self._pack(candidate, agent)
             except BudgetExceededError:
                 selected.pop()
                 continue
             state.citations = citations
             return packed
-        return self._base.pack(base_messages)
+        return self._pack(base_messages, agent)
+
+    def _pack(self, messages: Sequence[Message], agent: AgentDefinition) -> tuple[Message, ...]:
+        if agent.context_policy.shorten_older_tool_results:
+            return self._base.pack(messages, agent.context_policy)
+        return self._base.pack(messages)
