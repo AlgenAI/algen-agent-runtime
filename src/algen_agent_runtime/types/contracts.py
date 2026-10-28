@@ -290,6 +290,14 @@ class ToolPolicy(StrictModel):
         description="The most times each named tool may run in one run; past it, a call returns "
         "a note to answer from what the tool already returned.",
     )
+    on_indeterminate: Literal["on_error", "pause"] = Field(
+        default="on_error",
+        description="What a side-effecting call whose outcome is unknown (recorded "
+        "indeterminate, or found still started when replayed) does to the run. ``on_error`` "
+        "treats it like any failed call, per ``on_error``. ``pause`` pauses the run in "
+        "``awaiting_reconciliation`` until an operator resolves the call; the run then continues "
+        "with the recorded result, or with a tool error when it did not take effect.",
+    )
 
 
 SkillName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
@@ -447,6 +455,9 @@ class RunStatus(StrEnum):
     PLANNING = "planning"
     AWAITING_CLARIFICATION = "awaiting_clarification"
     AWAITING_APPROVAL = "awaiting_approval"
+    # Paused on a tool call whose outcome is unknown until an operator settles it (only with
+    # ``ToolPolicy.on_indeterminate="pause"``).
+    AWAITING_RECONCILIATION = "awaiting_reconciliation"
     INVOKING_MODEL = "invoking_model"
     INVOKING_TOOL = "invoking_tool"
     VERIFYING = "verifying"
@@ -461,7 +472,13 @@ class RunStatus(StrEnum):
 TERMINAL_STATUSES = frozenset(
     {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT}
 )
-PAUSED_STATUSES = frozenset({RunStatus.AWAITING_CLARIFICATION, RunStatus.AWAITING_APPROVAL})
+PAUSED_STATUSES = frozenset(
+    {
+        RunStatus.AWAITING_CLARIFICATION,
+        RunStatus.AWAITING_APPROVAL,
+        RunStatus.AWAITING_RECONCILIATION,
+    }
+)
 
 
 class RunRequest(StrictModel):

@@ -132,6 +132,61 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   Runtime itself.
 - `ToolContext.secrets` is different: static deployment configuration, the same for every run.
 
+## Unknown outcomes: reconcile and compensation
+
+A call that changes something can fail without saying whether it took effect: the request left,
+then the connection dropped. The Runtime records it `indeterminate` and never runs it again by
+itself. Two optional hooks let an operator settle it (see
+[Resolving indeterminate tool calls](operations.md#resolving-indeterminate-tool-calls)):
+
+```python
+from algen_agent_runtime.tools.contracts import ReconcileOutcome, ToolExecutionRecord
+
+
+async def find_update(record: ToolExecutionRecord, context: ToolContext) -> ReconcileOutcome:
+    """Look the call up by its idempotency key."""
+    client = await crm.client()
+    change = await client.find_change(key=record.idempotency_key)
+    if change is None:
+        return ReconcileOutcome(status="unknown")  # or "failed" once the CRM says it never will
+    if change.rejected:
+        return ReconcileOutcome(status="failed", detail="rejected by the CRM")
+    return ReconcileOutcome(
+        status="completed", value=change.receipt(), result_reference=change.id
+    )
+
+
+async def undo_update(result: ToolResult, context: ToolContext) -> None:
+    """Put the previous owner back. ``result.value`` is None for an indeterminate call."""
+    client = await crm.client()
+    await client.revert_change(key=context.idempotency_key)
+
+
+@crm.tool(write(approval=True), reconcile=find_update, compensation=undo_update)
+async def update_owner(account_id: str, owner: str, context: ToolContext) -> Receipt:
+    ...
+```
+
+`Tool(definition, handler, compensation, reconcile=..., reconcile_on_replay=True)` takes the same
+hooks.
+
+- **`reconcile`** answers `completed` (with `value`, the call's result, which must fit the output
+  schema), `failed` (it did not and will not happen) or `unknown`. It must only read: it may run
+  more than once. An operator's auto-reconcile calls it, and so does the executor when a
+  recovered run replays a call that is still `started` or `indeterminate`, unless
+  `reconcile_on_replay=False`. It runs within the tool's timeout; an exception counts as unknown
+  at replay time. Keep `detail` short and free of arguments and secrets: it is stored and
+  audited.
+- **`compensation`** undoes the effect. It runs only when an operator asks for it, for a
+  `completed`, `indeterminate` or `compensation_failed` call, at most once per request, and never
+  automatically. For an indeterminate call it gets `ToolResult(value=None,
+  metadata={"execution_status": "indeterminate"})`, so it must cope with an effect that may never
+  have happened. Make it idempotent with the idempotency key: after a crash an operator may
+  request it again.
+- Both get the call's `ToolContext` (run, step, tenant, the run's user and agent permissions,
+  the idempotency key) without caller credentials, since an operator, not the user, starts them.
+- `describe` shows `reconcile: true` and `compensation: true` for tools that have them.
+
 ## Toolkits
 
 A `Toolkit` groups tools that share a client, configuration, `env://` secrets and a permission

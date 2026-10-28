@@ -102,6 +102,13 @@ result; an interrupted side-effecting call becomes `indeterminate` and requires 
 rather than automatic replay. Approval and clarification waits remain paused across restarts until a
 maintenance sweep expires them (see [Maintenance and data retention](#maintenance-and-data-retention)).
 
+recovers non-paused incomplete runs. Completed tool calls return their persisted result; an
+interrupted side-effecting call becomes `indeterminate` and requires reconciliation rather than
+automatic replay (see [Resolving indeterminate tool calls](#resolving-indeterminate-tool-calls)).
+Approval and clarification waits remain paused across restarts until a maintenance sweep expires
+them (see [Maintenance and data retention](#maintenance-and-data-retention)); reconciliation waits
+remain paused until an operator settles the call.
+
 ## Readiness and lifecycle
 
 ### Readiness contract
@@ -493,6 +500,147 @@ the audit metadata beside `step_id`. None of them carries argument values. The r
 the three events. Alert on runs whose `refusal_limit_reached` is true or with many
 `tool.repeated` events: the model is stuck on a tool's contract or its instructions.
 
+## Resolving indeterminate tool calls
+
+Every side-effecting tool call is reserved in the tool-execution ledger under its idempotency key
+(`<run_id>:<tool_call_id>`) before it runs. When a call fails without a clear outcome (a timeout or
+a dropped connection after the request left), the ledger records it `indeterminate`. When the
+process stops mid-call, the reservation stays `started`. Neither is ever retried automatically:
+someone has to find out whether the effect happened.
+
+### What happens to the run
+
+By default (`tool_policy.on_indeterminate: on_error`) an indeterminate call is handled like any
+failed call: the run fails, or with `on_error: return_to_model` the model hears that it failed.
+Settling the call later is record-keeping only; an ended run is never reopened, because its
+caller, conversation or parent workflow has already acted on the ending.
+
+With `on_indeterminate: pause`, the run pauses in `awaiting_reconciliation` instead, with a
+`tool.reconciliation_required` event and a `pause_payload` of `kind: tool_reconciliation`
+naming the tool, call and idempotency key (never the arguments). Settling the call continues the
+run: `completed` gives the model the recorded result (screened like any tool result), or a note
+that the call took effect when no result was recorded; `failed` gives it a `ToolCallNotApplied`
+tool error; a successful compensation gives it `ToolCallCompensated`. A paused run keeps its
+remaining deadline and is not expired by the maintenance sweep; cancel it to give up. In a
+parallel batch, the other calls are recorded first and the run pauses on the first unknown one.
+Read-only tools never pause a run. A resumed run has no caller credentials, as after recovery.
+
+```yaml
+agents:
+  - name: crm-assistant
+    tool_policy:
+      on_indeterminate: pause
+```
+
+### Runbook
+
+1. **Find the calls.** `GET /v1/tool-executions` lists the caller's tenant's `indeterminate` and
+   `started` calls, least recently changed first. Filter with `status` (repeatable; also
+   `completed`, `failed`, `compensating`, `compensated`, `compensation_failed`), `run_id`, `tool`,
+   `min_age_seconds` and `limit`. A `started` call younger than its tool's timeout may still be
+   running: use `min_age_seconds`. `GET /v1/tool-executions/{key}` reads one. Responses never carry
+   the result value, only `has_result` and `result_reference`, plus the error type and every
+   earlier decision (`resolutions`).
+2. **Ask the tool, if it can tell.** `POST /v1/tool-executions/{key}/reconcile` with
+   `{"reason": "..."}` calls the tool's `reconcile` hook, which looks the idempotency key up in the
+   external system. `completed` and `failed` are recorded; `unknown` changes nothing (outcome
+   `unknown`). A hook that raises or times out returns 400 and changes nothing. Tools without a hook
+   return 409.
+3. **Or state the outcome.** `POST /v1/tool-executions/{key}/resolve` with
+   `{"status": "completed" | "failed", "reason": "...", "result": {...}, "result_reference": "...",
+   "expected_status": "indeterminate"}`. `reason` is required. `result` is optional, only for
+   `completed`, and must fit the tool's output schema and size limit. `expected_status` makes the
+   request fail with 409 if someone changed the call since you looked.
+4. **Undo it, if it should not stand.** `POST /v1/tool-executions/{key}/compensate` with
+   `{"reason": "..."}` runs the tool's `compensation` for a `completed`, `indeterminate` or
+   `compensation_failed` call (see [Compensation](#compensation)).
+5. **Continue a stuck run.** If the Runtime stopped between settling a call and continuing its
+   run, `POST /v1/tool-executions/{key}/resume` continues a run still `awaiting_reconciliation`
+   on an already-settled call.
+
+`resolve`, `reconcile` and `compensate` take `"resume": false` to settle the call without
+continuing a waiting run. All responses are `{"outcome", "run_resumed", "execution"}`.
+
+Python: `runtime.reconciliation` (`ToolReconciliation`) has `list`, `get`, `resolve`,
+`auto_reconcile`, `compensate` and `resume` with the same rules; it returns full records,
+including results. `ToolReconciliation.stale_started_after` (default 10 minutes) is how long a
+`started` call must be unchanged before it may be resolved or auto-reconciled.
+
+### Rules
+
+- **Scope.** Every route needs `tools:reconcile` and acts only within the caller's tenant; another
+  tenant's key is 404. The caller's user id is recorded as the actor. Grant the scope only to
+  operators.
+- **Compare-and-set.** Each decision changes the ledger only if the status is still the one read,
+  so of two concurrent decisions exactly one wins and the other gets 409. A call that finishes
+  after an operator settled it cannot overwrite that decision: `complete` and `fail` only change a
+  `started` record, and the late outcome is logged as `tool_execution_late_outcome_ignored`.
+- **Record.** Each decision appends `{action, previous_status, status, actor_id, reason,
+  result_reference, at}` to the record's `resolutions`.
+- **Re-execution.** A call settled `failed` counts as not having happened: if a still-running run
+  replays it, it runs again, as any failed call does.
+
+### Compensation
+
+Compensation runs only when an operator asks for it; the Runtime never compensates by itself,
+not on run failure, cancellation or recovery. Automatic compensation is not offered: the Runtime
+cannot tell whether a run's failure makes its earlier effects wrong, a failure seen during
+recovery may be transient, and undoing an indeterminate call can itself cause a side effect when
+the original never happened. An operator, who can check the external system, decides.
+
+The ledger moves to `compensating` (compare-and-set) before the handler runs, so one request runs
+it at most once and concurrent requests get 409. Success records `compensated`; an exception
+records `compensation_failed` with the error type, and only that status may be compensated again.
+If the process stops while the handler runs, the call stays `compensating` and is never
+compensated again by itself: check the external system and settle it with `resolve` and
+`"status": "compensated"` or `"compensation_failed"`. The handler gets the recorded result, or
+for an indeterminate call an empty result whose metadata is
+`{"execution_status": "indeterminate"}`, and the call's context without caller credentials.
+
+### Replay-time reconciliation
+
+When a recovered run replays a call that is still `started` or `indeterminate`, and its tool has a
+`reconcile` hook (and did not set `reconcile_on_replay=False`), the executor asks the hook first.
+`completed` records the result (checked against the output schema and the `after_tool` policies)
+and the run continues with it without running the tool again; `failed` records `failed` and the
+call fails without running again; `unknown`, an error or a timeout leaves the record as it was,
+and the run fails or pauses as configured. The decision is recorded with actor `runtime`.
+
+### Events and audit records
+
+| Kind | Name | Data / metadata |
+| --- | --- | --- |
+| Run event | `tool.reconciliation_required` | `tool`, `idempotency_key`, `status` (`indeterminate` or `started`) |
+| Run event | `tool.reconciled` | `tool`, `idempotency_key`, `status`, `previous_status`, `method` (`operator`, `tool` or `replay`) |
+| Run event | `tool.compensation.started`, `tool.compensation.completed`, `tool.compensation.failed` | `tool`, `idempotency_key`, `status`; `error_type` on failure |
+| Run event | `tool.completed` | `status` `completed` or `failed`, with `reconciled: true`, when a waiting run continues |
+| Audit | `tool.call`, outcome `awaiting_reconciliation` | `step_id`, `idempotency_key` |
+| Audit | `tool.reconcile`, outcome `completed` / `failed` / `compensated` / `compensation_failed` / `unknown` / `error` / `resumed` | `run_id`, `step_id`, `idempotency_key`, `method`, `previous_status`, `reason`, `result_reference`, `error_type` |
+| Audit | `tool.compensation`, outcome `started` / `completed` / `failed` | `run_id`, `step_id`, `idempotency_key`, `previous_status`, `reason`, `error_type` |
+
+Events carry no arguments, results or reasons; reasons appear only in audit records and the
+ledger. Audit records name the operator as `actor_id` (`runtime` for replay-time reconciliation).
+
+### Ledger writes and run checkpoints
+
+The ledger and the run checkpoint are separate writes, even on one PostgreSQL database: the
+ledger completion happens inside the tool executor, and the checkpoint that records the answered
+call is saved later, after the result is screened, offloaded and announced. The order (ledger
+first, then checkpoint) is safe without a shared transaction:
+
+- a crash before the ledger completion leaves the reservation `started`; replay never runs the
+  call again, and it is reconciled as above;
+- a crash between the ledger completion and the checkpoint leaves the checkpoint with the call
+  still pending; recovery replays it, the ledger returns the recorded result (after the tool's
+  `replay_validator`), and the tool does not run again. The run state gets exactly one tool
+  message for the call. Run events and audit records written before the crash (`tool.completed`,
+  `tool.call`) may appear twice: treat them as at-least-once and deduplicate by `step_id`.
+
+`tests/unit/test_tool_reconciliation.py` and `tests/integration/test_tool_reconciliation_postgres.py`
+stop the process between the two writes and check this. Migration
+`014_tool_execution_reconciliation.sql` adds the new statuses as a `NOT VALID` check constraint
+and an index on `(tenant_id, status, updated_at)`.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
@@ -517,8 +665,9 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
 | Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |
 
-Terminal-run deletion is conservative. It keeps runs that still have a `started` or `indeterminate`
-tool execution, so operators can reconcile side effects first, and runs that belong to a workflow
+Terminal-run deletion is conservative. It keeps runs that still have a `started`, `indeterminate`,
+`compensating` or `compensation_failed` tool execution, so operators can reconcile side effects
+first, and runs that belong to a workflow
 that has not finished. Artifacts follow their own expiry; deleting a run clears their `run_id`.
 Conversations, workflow checkpoints, analytical graphs, and work items are not deleted by the sweep.
 

@@ -127,7 +127,11 @@ Key decisions:
 1. Runs use optimistic versioning. A resume or worker may update only the checkpoint version it loaded.
 2. Side-effecting calls carry `run_id:tool_call_id` idempotency keys. Approval and a tool-execution
    reservation persist before execution. Completed results are replayable; interrupted side effects
-   become indeterminate and require reconciliation.
+   become indeterminate and require reconciliation: a tool's `reconcile` hook or an operator
+   settles them through `ToolReconciliation` (compare-and-set on the ledger status), and a tool's
+   `compensation` runs only on an operator's request. The ledger is written before the run
+   checkpoint, and replay of a completed call returns its recorded result, so the two need no
+   shared transaction (see operations.md, "Resolving indeterminate tool calls").
 3. Plans are strict models with unique IDs and backward-only dependencies. The runtime executes only registered action kinds, enabled tools, and allowed models.
 4. Capability discovery happens before routing. Unhealthy, disallowed, or incapable models are excluded; the router then uses quality and observed latency.
 5. Paused states are durable. Active asyncio tasks are an optimization, not the durable source of

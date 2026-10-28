@@ -39,6 +39,34 @@ contracts are explicitly marked experimental during the `0.x` series.
   `TrustedProxyIdentity`, `AuthenticationAuditor`. `principal_dependency` takes keyword-only
   `audits`, `revocations` and `oidc_transport`; `Container` has `token_revocations` and
   `oidc_transport`.
+- Reconciliation of tool calls whose outcome is unknown. `runtime.reconciliation`
+  (`ToolReconciliation`) lists a tenant's `indeterminate` and stale `started` calls (by status,
+  run, tool and age), resolves one as `completed` (optionally with the result, checked against the
+  output schema, and an external `result_reference`) or `failed`, asks the tool's `reconcile` hook,
+  runs the tool's compensation, and resumes a run left waiting on a settled call. Each decision is
+  a compare-and-set on the ledger status, records who decided and why in the record's new
+  `resolutions`, writes a `tool.reconcile` or `tool.compensation` audit record and emits a
+  content-free `tool.reconciled` or `tool.compensation.*` run event. HTTP:
+  `GET /v1/tool-executions`, `GET /v1/tool-executions/{key}` and `POST .../resolve`,
+  `.../reconcile`, `.../compensate`, `.../resume`, all tenant-scoped and requiring the new
+  `tools:reconcile` scope; responses never carry result values. See
+  docs/operations.md#resolving-indeterminate-tool-calls.
+- `tool_policy.on_indeterminate: pause` (default `on_error`, unchanged behaviour): a
+  side-effecting call with an unknown outcome pauses the run in the new
+  `RunStatus.AWAITING_RECONCILIATION` (a paused status) with a `tool.reconciliation_required`
+  event; settling the call continues the run with the recorded result or a tool error.
+- `Tool(reconcile=..., reconcile_on_replay=True)` and `ReconcileOutcome`: an optional hook that asks
+  the external system, by idempotency key, whether a call took effect. Operators' auto-reconcile
+  uses it, and so does the executor before replaying a `started` or `indeterminate` call. `@tool`
+  and `build_tool` take `reconcile=` and `compensation=`; `describe` shows both.
+- `Tool.compensation` now runs, only on an operator's explicit request, at most once per request:
+  ledger statuses `compensating`, `compensated` and `compensation_failed`. Nothing is compensated
+  automatically.
+- `ReconcilableToolExecutionStore` (`get`, `find`, `transition`), implemented by the in-memory and
+  PostgreSQL ledgers; `ToolExecutionRecord.created_at`, `updated_at` and `resolutions`;
+  `ToolExecutor.executions`.
+- Migration `014_tool_execution_reconciliation.sql`: a `NOT VALID` check constraint on ledger
+  statuses and an index on `(tenant_id, status, updated_at)`.
 
 ### Changed
 
@@ -51,6 +79,14 @@ contracts are explicitly marked experimental during the `0.x` series.
   route.
 - `algen-agent-runtime serve` disables uvicorn's `X-Forwarded-For` peer rewriting when
   `api.trusted_proxy_identity` is enabled.
+- The ledger's `complete` and `fail` only change a `started` record, so a call that finishes after
+  an operator settled it cannot overwrite the decision (logged as
+  `tool_execution_late_outcome_ignored`). Every built-in path already called them on `started`
+  records only.
+- Retention also keeps runs with `compensating` or `compensation_failed` tool executions.
+- Upgrade note: custom `ToolExecutionStore` implementations keep working, but reconciliation needs
+  the `ReconcilableToolExecutionStore` methods. Clients that switch on `RunStatus` may see
+  `awaiting_reconciliation` once an agent opts into `on_indeterminate: pause`.
 
 ### Security
 

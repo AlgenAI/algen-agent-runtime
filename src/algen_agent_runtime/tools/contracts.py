@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from datetime import datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from algen_agent_runtime.types.contracts import RetryPolicy
+from algen_agent_runtime.types.contracts import RetryPolicy, utc_now
 
 
 class SideEffect(StrEnum):
@@ -180,6 +181,49 @@ class ToolExecutionStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     INDETERMINATE = "indeterminate"
+    # An operator asked for the tool's compensation; it is running, or the process stopped while
+    # it ran. It never runs again by itself: an operator settles it.
+    COMPENSATING = "compensating"
+    COMPENSATED = "compensated"
+    COMPENSATION_FAILED = "compensation_failed"
+
+
+# Statuses that still need an operator: the side effect may or may not have happened, or a
+# compensation has not been confirmed. Retention keeps their runs.
+UNRESOLVED_TOOL_EXECUTION_STATUSES = frozenset(
+    {
+        ToolExecutionStatus.STARTED,
+        ToolExecutionStatus.INDETERMINATE,
+        ToolExecutionStatus.COMPENSATING,
+        ToolExecutionStatus.COMPENSATION_FAILED,
+    }
+)
+
+
+class ToolExecutionResolution(BaseModel):
+    """One decision about a recorded tool call, kept in its ledger record."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    action: Literal["resolve", "reconcile", "compensate"] = Field(
+        description="``resolve``: an operator stated the outcome; ``reconcile``: the tool's "
+        "``reconcile`` hook reported it; ``compensate``: the tool's compensation was requested."
+    )
+    previous_status: ToolExecutionStatus = Field(description="The status before this decision.")
+    status: ToolExecutionStatus = Field(description="The status this decision set.")
+    actor_id: str = Field(
+        min_length=1,
+        max_length=256,
+        description="Who decided: the operator's user id, or ``runtime`` for a reconciliation "
+        "the Runtime made while replaying a call.",
+    )
+    reason: str = Field(default="", max_length=1000, description="Why, in the actor's words.")
+    result_reference: str | None = Field(
+        default=None,
+        max_length=512,
+        description="An identifier in the external system (an order or message id) that "
+        "records the outcome.",
+    )
+    at: datetime = Field(default_factory=utc_now, description="When the decision was recorded.")
 
 
 class ToolExecutionRecord(BaseModel):
@@ -192,6 +236,16 @@ class ToolExecutionRecord(BaseModel):
     status: ToolExecutionStatus
     result: ToolResult | None = None
     error: str | None = None
+    created_at: datetime | None = Field(
+        default=None, description="When the call was first reserved, as the store records it."
+    )
+    updated_at: datetime | None = Field(
+        default=None, description="When the status last changed, as the store records it."
+    )
+    resolutions: tuple[ToolExecutionResolution, ...] = Field(
+        default=(),
+        description="Operator, reconciliation and compensation decisions, oldest first.",
+    )
 
 
 class ToolExecutionStore(Protocol):
@@ -203,9 +257,74 @@ class ToolExecutionStore(Protocol):
     async def fail(self, idempotency_key: str, error: str, *, indeterminate: bool) -> None: ...
 
 
+@runtime_checkable
+class ReconcilableToolExecutionStore(ToolExecutionStore, Protocol):
+    """A ledger that operators can query and settle; both built-in stores implement it.
+
+    ``complete`` and ``fail`` only change a ``started`` record, so a late outcome from a call
+    still in flight never overwrites an operator's decision.
+    """
+
+    async def get(self, idempotency_key: str, tenant_id: str) -> ToolExecutionRecord | None:
+        """One tenant's record, or None."""
+        ...
+
+    async def find(
+        self,
+        tenant_id: str,
+        *,
+        statuses: Collection[ToolExecutionStatus],
+        run_id: str | None = None,
+        tool_name: str | None = None,
+        min_age: timedelta | None = None,
+        limit: int = 100,
+    ) -> Sequence[ToolExecutionRecord]:
+        """A tenant's records in ``statuses``, least recently changed first.
+
+        ``min_age`` keeps records whose status has not changed for at least that long.
+        """
+        ...
+
+    async def transition(
+        self, record: ToolExecutionRecord, *, expected: Collection[ToolExecutionStatus]
+    ) -> ToolExecutionRecord | None:
+        """Store ``record`` only if the stored one, in the same tenant, is in ``expected``.
+
+        Returns the stored record, or None when it is missing or another change won.
+        """
+        ...
+
+
+class ReconcileOutcome(BaseModel):
+    """What a tool's ``reconcile`` hook learned from the external system."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    status: Literal["completed", "failed", "unknown"] = Field(
+        description="``completed``: the effect happened; ``failed``: it did not and will not; "
+        "``unknown``: the external system cannot tell yet."
+    )
+    value: Any = Field(
+        default=None,
+        description="The call's result when completed; it must fit the tool's output schema.",
+    )
+    result_reference: str | None = Field(
+        default=None, max_length=512, description="The external system's id for the effect."
+    )
+    detail: str | None = Field(
+        default=None,
+        max_length=500,
+        description="A short, content-free note for the ledger and audit (no arguments, no "
+        "secrets).",
+    )
+
+
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any] | Any]
 CompensationHandler = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
 ReplayValidator = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
+# Ask the external system, by the record's idempotency key, whether the call took effect.
+Reconciler = Callable[
+    [ToolExecutionRecord, ToolContext], Awaitable[ReconcileOutcome] | ReconcileOutcome
+]
 # A call planned before the one being checked, in the same model reply: it runs first.
 EarlierCall = tuple[ToolDefinition, Mapping[str, Any]]
 # Why a call would be refused, or None. It runs before any approval is asked for, so a call that
@@ -225,12 +344,21 @@ class Tool:
         *,
         replay_validator: ReplayValidator | None = None,
         precheck: Precheck | None = None,
+        reconcile: Reconciler | None = None,
+        reconcile_on_replay: bool = True,
     ) -> None:
+        """``compensation`` undoes a call's effect and runs only when an operator asks for it
+        (``ToolReconciliation.compensate``). ``reconcile`` asks the external system whether a
+        call whose outcome is unknown took effect: an operator's auto-reconcile uses it, and so
+        does the executor when it replays such a call, unless ``reconcile_on_replay`` is False.
+        """
         self.definition = definition
         self.handler = handler
         self.compensation = compensation
         self.replay_validator = replay_validator
         self.precheck = precheck
+        self.reconcile = reconcile
+        self.reconcile_on_replay = reconcile_on_replay
 
     async def check(
         self, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall] = ()
@@ -248,6 +376,25 @@ class Tool:
             validation = self.replay_validator(result, context)
             if inspect.isawaitable(validation):
                 await validation
+
+    async def reconcile_call(
+        self, record: ToolExecutionRecord, context: ToolContext
+    ) -> ReconcileOutcome:
+        """The ``reconcile`` hook's answer; ``unknown`` when the tool has none."""
+        if self.reconcile is None:
+            return ReconcileOutcome(status="unknown")
+        outcome = self.reconcile(record, context)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
+        return ReconcileOutcome.model_validate(outcome)
+
+    async def compensate(self, result: ToolResult, context: ToolContext) -> None:
+        """Run the ``compensation`` handler; callers check that the tool has one."""
+        if self.compensation is None:
+            raise TypeError(f"tool {self.definition.name} has no compensation")
+        outcome = self.compensation(result, context)
+        if inspect.isawaitable(outcome):
+            await outcome
 
     async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
         result = self.handler(arguments, context)

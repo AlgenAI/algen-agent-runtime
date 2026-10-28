@@ -43,6 +43,14 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
             RunStatus.TIMED_OUT,
         }
     ),
+    RunStatus.AWAITING_RECONCILIATION: frozenset(
+        {
+            RunStatus.BUILDING_CONTEXT,
+            RunStatus.CANCELLED,
+            RunStatus.FAILED,
+            RunStatus.TIMED_OUT,
+        }
+    ),
     RunStatus.INVOKING_MODEL: frozenset(
         {
             RunStatus.PLANNING,
@@ -55,6 +63,7 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     ),
     RunStatus.INVOKING_TOOL: frozenset(
         {
+            RunStatus.AWAITING_RECONCILIATION,
             RunStatus.BUILDING_CONTEXT,
             RunStatus.PLANNING,
             RunStatus.RETRYING,

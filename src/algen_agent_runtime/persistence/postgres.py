@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
+
+import structlog
 
 from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.tools.contracts import (
@@ -21,6 +24,8 @@ from algen_agent_runtime.types.contracts import (
     Message,
     RunState,
 )
+
+_logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
 
 
 class PostgresDatabase:
@@ -391,6 +396,8 @@ class PostgresToolExecutionStore:
             raise ConflictError("tool execution record is not accessible to this tenant")
         current = ToolExecutionRecord.model_validate_json(row["record"])
         if current.status == ToolExecutionStatus.FAILED:
+            # A retry keeps the decisions recorded about earlier attempts.
+            record = record.model_copy(update={"resolutions": current.resolutions})
             changed = await self._database.execute(
                 "UPDATE algen_agent_runtime_tool_executions SET status='started', record=$1::jsonb, "
                 "updated_at=now() WHERE idempotency_key=$2 AND status='failed'",
@@ -413,6 +420,57 @@ class PostgresToolExecutionStore:
         status = ToolExecutionStatus.INDETERMINATE if indeterminate else ToolExecutionStatus.FAILED
         await self._update(current.model_copy(update={"status": status, "error": error}))
 
+    async def get(self, idempotency_key: str, tenant_id: str) -> ToolExecutionRecord | None:
+        row = await self._database.fetchrow(
+            f"SELECT {_TOOL_RECORD_COLUMNS} FROM algen_agent_runtime_tool_executions "
+            "WHERE idempotency_key=$1 AND tenant_id=$2",
+            idempotency_key,
+            tenant_id,
+        )
+        return _tool_record(row) if row else None
+
+    async def find(
+        self,
+        tenant_id: str,
+        *,
+        statuses: Collection[ToolExecutionStatus],
+        run_id: str | None = None,
+        tool_name: str | None = None,
+        min_age: timedelta | None = None,
+        limit: int = 100,
+    ) -> Sequence[ToolExecutionRecord]:
+        rows = await self._database.fetch(
+            f"SELECT {_TOOL_RECORD_COLUMNS} FROM algen_agent_runtime_tool_executions "
+            "WHERE tenant_id=$1 AND status = ANY($2::text[]) "
+            "AND ($3::text IS NULL OR run_id=$3) "
+            "AND ($4::text IS NULL OR tool_name=$4) "
+            "AND ($5::interval IS NULL OR updated_at <= now() - $5::interval) "
+            "ORDER BY updated_at ASC LIMIT $6",
+            tenant_id,
+            sorted(status.value for status in statuses),
+            run_id,
+            tool_name,
+            min_age,
+            limit,
+        )
+        return tuple(_tool_record(row) for row in rows)
+
+    async def transition(
+        self, record: ToolExecutionRecord, *, expected: Collection[ToolExecutionStatus]
+    ) -> ToolExecutionRecord | None:
+        # Compare-and-set on status: of two concurrent decisions, exactly one matches.
+        row = await self._database.fetchrow(
+            "UPDATE algen_agent_runtime_tool_executions SET status=$1, record=$2::jsonb, "
+            "updated_at=now() WHERE idempotency_key=$3 AND tenant_id=$4 "
+            f"AND status = ANY($5::text[]) RETURNING {_TOOL_RECORD_COLUMNS}",
+            record.status.value,
+            record.model_dump_json(exclude={"created_at", "updated_at"}),
+            record.idempotency_key,
+            record.tenant_id,
+            sorted(status.value for status in expected),
+        )
+        return _tool_record(row) if row else None
+
     async def _get(self, idempotency_key: str) -> ToolExecutionRecord:
         row = await self._database.fetchrow(
             "SELECT record FROM algen_agent_runtime_tool_executions WHERE idempotency_key=$1",
@@ -423,10 +481,31 @@ class PostgresToolExecutionStore:
         return ToolExecutionRecord.model_validate_json(row["record"])
 
     async def _update(self, record: ToolExecutionRecord) -> None:
-        await self._database.execute(
+        # Only the call's own outcome for a reservation still in flight: a late outcome never
+        # overwrites an operator's decision.
+        result = await self._database.execute(
             "UPDATE algen_agent_runtime_tool_executions SET status=$1, record=$2::jsonb, "
-            "updated_at=now() WHERE idempotency_key=$3",
+            "updated_at=now() WHERE idempotency_key=$3 AND status='started'",
             record.status.value,
             record.model_dump_json(),
             record.idempotency_key,
         )
+        if result == "UPDATE 0":
+            _logger.warning(
+                "tool_execution_late_outcome_ignored",
+                idempotency_key=record.idempotency_key,
+                tool=record.tool_name,
+                status=record.status.value,
+            )
+
+
+_TOOL_RECORD_COLUMNS = "record, created_at, updated_at"
+
+
+def _tool_record(row: Any) -> ToolExecutionRecord:
+    raw = row["record"]
+    payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    # The columns, not the JSON copy, say when the row was written.
+    payload["created_at"] = row["created_at"]
+    payload["updated_at"] = row["updated_at"]
+    return ToolExecutionRecord.model_validate(payload)
