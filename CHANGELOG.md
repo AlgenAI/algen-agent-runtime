@@ -27,6 +27,21 @@ contracts are explicitly marked experimental during the `0.x` series.
   `max_rows_per_sheet` is reported as `document.truncated`, and cells without an `r` reference
   follow the previous cell. Known gaps are listed under "Known limitations".
   The shared package checks are in `security/ooxml.py`. See docs/document-security.md.
+- Usage metering for every model call: `build_container(..., usage_meter=...)` (and
+  `ModelRouter(usage_meter=...)`) takes a `UsageMeter` (`reserve(*, max_input_tokens,
+  max_output_tokens) -> ticket`, `settle(ticket, usage)`, `release(ticket)`, all async; in
+  `algen_agent_runtime.models.metering` and exported from `algen_agent_runtime`). The router
+  reserves the request's `estimate_request_tokens` and output cap before each provider dispatch
+  and settles the reported usage after it, so steps, retries, fallbacks, repairs, streamed calls
+  and compaction are charged; a failed, errored or cancelled call is released. A meter refuses
+  by raising `MeterRefusedError`: it is not retried, not passed to a fallback model and not
+  counted against provider health, and the run fails with the reason on `RunState.error`, a
+  `budget.refused` event and audit record, `run.failed` with `reason: budget_refused`, and
+  `budget.refused` on the `agent.run` span. Without a meter nothing changes. Replaces the Algen
+  Agent Harness's `metering.py` (`CreditMeter` + `MeteredProvider`): pass the same meter object
+  to `build_container`, raise `MeterRefusedError` instead of any exception to refuse, and read
+  the reason from the run's `error` instead of `MeteredProvider.refusal`. See
+  docs/agent-tooling.md and docs/operations.md.
 
 ### Changed
 

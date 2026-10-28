@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -63,6 +64,7 @@ from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
     ConflictError,
+    MeterRefusedError,
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
@@ -661,6 +663,25 @@ class AgentRuntime:
             elif current.status not in TERMINAL_STATUSES:
                 await self._transition(current, RunStatus.CANCELLED)
                 await self._emit(current, "run.cancelled", {})
+        except MeterRefusedError as exc:
+            # The deployment's usage meter declined a model call: end the run with its reason,
+            # without retrying or counting it against the provider.
+            current = await self._require_state(run_id, tenant_id)
+            trace.get_current_span().set_attribute("budget.refused", True)
+            if current.status not in TERMINAL_STATUSES:
+                current.error = self._safe_error(exc)
+                await self._emit(current, "budget.refused", {"reason": current.error})
+                await self._audit(
+                    current,
+                    "budget.refused",
+                    "refused",
+                    current.agent_key or current.request.agent,
+                    {"reason": current.error},
+                )
+                await self._transition(current, RunStatus.FAILED)
+                await self._emit(
+                    current, "run.failed", {"error": current.error, "reason": "budget_refused"}
+                )
         except Exception as exc:
             current = await self._require_state(run_id, tenant_id)
             self._logger.exception(
@@ -1273,18 +1294,25 @@ class AgentRuntime:
                     completed = None
                     stream_started = time.monotonic()
                     first_chunk = True
-                    async for event in self.router.stream(request, profiles, agent.model_allowlist):
-                        if first_chunk and (event.delta or event.tool_call):
-                            first_chunk = False
-                            trace.get_current_span().set_attribute(
-                                "llm.time_to_first_token_ms",
-                                round((time.monotonic() - stream_started) * 1000, 3),
-                            )
-                        if event.delta:
-                            text_parts.append(event.delta)
-                            await self._emit(state, "model.delta", {"delta": event.delta}, step_id)
-                        if event.response:
-                            completed = event.response
+                    # Closing the stream on every exit lets the router release a metered call
+                    # that an error or cancellation interrupted here, not only in the provider.
+                    async with aclosing(
+                        self.router.stream(request, profiles, agent.model_allowlist)
+                    ) as events:
+                        async for event in events:
+                            if first_chunk and (event.delta or event.tool_call):
+                                first_chunk = False
+                                trace.get_current_span().set_attribute(
+                                    "llm.time_to_first_token_ms",
+                                    round((time.monotonic() - stream_started) * 1000, 3),
+                                )
+                            if event.delta:
+                                text_parts.append(event.delta)
+                                await self._emit(
+                                    state, "model.delta", {"delta": event.delta}, step_id
+                                )
+                            if event.response:
+                                completed = event.response
                     if completed is None:
                         raise ProviderError(
                             "stream ended without a completed response", retryable=True

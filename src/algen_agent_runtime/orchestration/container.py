@@ -79,6 +79,7 @@ from algen_agent_runtime.memory.store import InMemoryLearnedMemoryStore, Postgre
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
 from algen_agent_runtime.model_services import ModelServiceRegistry
 from algen_agent_runtime.models.base import ModelRouter
+from algen_agent_runtime.models.metering import UsageMeter
 from algen_agent_runtime.models.providers.adapters import (
     AnthropicProvider,
     AzureOpenAIProvider,
@@ -392,11 +393,15 @@ def build_container(
     additional_tools: Sequence[Tool] = (),
     mcp_servers: Sequence[MCPServerConfigBase] = (),
     framework_adapters: Sequence[FrameworkAdapter] = (),
+    usage_meter: UsageMeter | None = None,
 ) -> Container:
     """Build an isolated runtime container.
 
     ``environment`` supplies ephemeral, container-scoped values for ``env://``
     references. Values are never copied into settings or serialized manifests.
+
+    ``usage_meter`` reserves and settles the token cost of every model call the
+    router dispatches (see ``algen_agent_runtime.models.metering``).
     """
     environment = environment or {}
     secret_provider = _ScopedEnvironmentSecretProvider(environment)
@@ -572,7 +577,7 @@ def build_container(
         if storage.tool_execution_store == "postgres"
         else InMemoryToolExecutionStore()
     )
-    router = ModelRouter(cache=cache)
+    router = ModelRouter(cache=cache, usage_meter=usage_meter)
     for name, provider_config in settings.providers.items():
         kwargs: dict[str, Any] = {
             "default_model": provider_config.default_model,

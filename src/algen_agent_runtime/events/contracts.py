@@ -20,6 +20,7 @@ EventType = Literal[
     "model.delta",
     "model.completed",
     "model.retrying",
+    "budget.refused",
     "tool.started",
     "tool.completed",
     "verification.completed",

@@ -107,6 +107,9 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
                 "model",
                 f"Model call failed and is retried (attempt {data.get('next_attempt')})",
             )
+        case "budget.refused":
+            kind = "model"
+            summary = f"Usage meter refused the model call: {data.get('reason') or 'refused'}"
         case "tool.started":
             kind = "tool"
             summary = f"Called {data.get('tool')} with arguments: {_join(data.get('argument_keys') or [])}"

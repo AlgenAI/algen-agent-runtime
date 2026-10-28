@@ -51,3 +51,50 @@ AgentDefinition(
     max_steps=40,
 )
 ```
+
+## Metering model calls
+
+A usage meter is a deployment setting, not an agent one: there is no `agent.yaml` field. Pass
+a `UsageMeter` to `build_container` and every model call the runtime makes, for every agent,
+reserves its most cost before it reaches a provider and settles what the provider reported
+afterwards. That covers agent steps, retries, fallbacks to another model, schema repairs,
+streamed calls and history compaction. A call that fails, or a stream that errors or is
+cancelled before it completes, is released without charge. Without a meter nothing changes.
+
+```python
+from algen_agent_runtime import MeterRefusedError, UsageMeter
+from algen_agent_runtime.orchestration.container import build_container
+from algen_agent_runtime.types.contracts import TokenUsage
+
+
+class CreditMeter:  # satisfies UsageMeter
+    def __init__(self, wallet) -> None:
+        self._wallet = wallet
+
+    async def reserve(self, *, max_input_tokens: int, max_output_tokens: int) -> object:
+        hold = await self._wallet.hold(max_input_tokens + max_output_tokens)
+        if hold is None:
+            raise MeterRefusedError("You have used this month's model allowance.")
+        return hold
+
+    async def settle(self, ticket: object, usage: TokenUsage) -> None:
+        await self._wallet.charge(ticket, usage.input_tokens + usage.output_tokens)
+
+    async def release(self, ticket: object) -> None:
+        await self._wallet.cancel(ticket)
+
+
+container = build_container(settings, usage_meter=CreditMeter(wallet))
+```
+
+`max_input_tokens` is the router's estimate of the request sent to the chosen model
+(`estimate_request_tokens`, about four characters a token, tools and schema included) and
+`max_output_tokens` is the request's output cap. `settle` receives the provider's reported
+usage, with `estimated_cost_usd` filled in when the provider has configured rates.
+
+To refuse, raise `MeterRefusedError`. The runtime does not retry the call, does not try a
+fallback model and does not count it against the provider's health; the run ends `failed` with
+the message as its error, a `budget.refused` event and a `budget.refused` attribute on the
+`agent.run` span (see [Operations](operations.md#usage-metering)). The meter holds its own
+state, so a run paused for approval is charged again only for the calls it makes after it
+resumes.

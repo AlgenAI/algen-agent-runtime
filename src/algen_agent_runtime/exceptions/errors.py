@@ -43,6 +43,15 @@ class BudgetExceededError(AlgenAgentRuntimeError):
     pass
 
 
+class MeterRefusedError(AlgenAgentRuntimeError):
+    """A usage meter declined to reserve a model call (no credits left, a limit reached).
+
+    Raised by a deployment's ``UsageMeter.reserve``. The runtime does not retry it, does not
+    fall back to another model, and does not count it against provider health; the run fails
+    with this message as its error.
+    """
+
+
 class VerificationError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_RESPONSE
 

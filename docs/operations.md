@@ -160,6 +160,26 @@ unversioned agent name in `agent.id` and `gen_ai.agent.id`; `agent.version` and
 `name@version` key for reproducibility. Policies and long-lived dashboards should scope by
 `agent.id`, never by `agent.definition.id`.
 
+## Usage metering
+
+A deployment that bills or rations model use passes a `UsageMeter` to
+`build_container(settings, usage_meter=...)`. The model router reserves before every provider
+dispatch and settles afterwards, so agent steps, retries, fallbacks, schema repairs, streamed calls
+and history compaction are all charged; a cached model response makes no call and is not charged.
+See [Agent tool behaviour](agent-tooling.md#metering-model-calls) for the protocol and an example.
+
+| Signal | Where | Meaning |
+| --- | --- | --- |
+| `budget.refused` event | run events | The meter raised `MeterRefusedError`; `data.reason` is its message. |
+| `run.failed` event with `reason: budget_refused` | run events | The run that the refusal ended; `data.error` repeats the reason, which is also `RunState.error`. |
+| `budget.refused` audit record | audit log | Outcome `refused`, the agent as resource, and the reason. |
+| `budget.refused = true` | `agent.run` span | Set on the run root whose drive the refusal ended. |
+
+A refusal is not a provider error: it is not retried, the router does not try a fallback model, and
+it does not count towards the provider's circuit breaker or latency. The run ends `failed`. Alert on
+`budget.refused` separately from provider failures. A meter must not raise any other exception from
+`reserve` to mean "no": that is treated as an internal error.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
