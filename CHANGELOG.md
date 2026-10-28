@@ -27,6 +27,21 @@ contracts are explicitly marked experimental during the `0.x` series.
   that drops the startup parameter. The name is validated as a plain lowercase identifier. Unset
   by default: no change for existing deployments. See
   docs/operations.md#sharing-a-database-postgres_schema.
+- An approval inbox. `GET /v1/approvals` lists the tenant's approval requests, newest first,
+  filtered by `status`, `run_id` and `agent`, and paged with `limit` (1 to 500) and `offset`;
+  `GET /v1/approvals/{approval_id}` reads one. Both need `runs:read`. `ApprovalService.list(...)`
+  does the same in Python, on the in-memory and PostgreSQL stores. A pending request past its
+  expiry is reported as `expired` (`ApprovalRequest.effective(now)`) without changing the stored
+  request. See docs/operations.md#approval-inbox.
+- `ApprovalRequest.agent` and `ApprovalRequest.created_at`, set when the request is created; the
+  runtime passes the run's agent to `ApprovalService.create(..., agent=...)`. Both are `None` on
+  requests stored by earlier releases (the PostgreSQL store fills `created_at` from the row).
+
+### Changed
+
+- The `ApprovalService` protocol adds `list(...)` and an optional keyword-only `agent` argument to
+  `create`. A host's own implementation should add both; the runtime now passes `agent=` when it
+  creates a request. No migration: the new fields live in the stored JSON.
 
 ## [0.1.0a17] - 2026-10-28
 

@@ -8,10 +8,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -38,6 +38,7 @@ from algen_agent_runtime.api.rate_limiting import (
 )
 from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
+from algen_agent_runtime.approvals.service import MAX_APPROVAL_PAGE, ApprovalStatus
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
@@ -351,6 +352,42 @@ def create_app(
         require_scope(identity, "runs:write")
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
+
+    @app.get("/v1/approvals")
+    async def list_approvals(
+        approval_status: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
+        run_id: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        identity: Principal = identity_dependency,
+    ) -> list[dict[str, Any]]:
+        require_scope(identity, "runs:read")
+        if not 1 <= limit <= MAX_APPROVAL_PAGE:
+            raise HTTPException(
+                status_code=422, detail=f"limit must be between 1 and {MAX_APPROVAL_PAGE}"
+            )
+        if offset < 0:
+            raise HTTPException(status_code=422, detail="offset must not be negative")
+        approvals = await dependencies.runtime.approvals.list(
+            identity.tenant_id,
+            status=approval_status,
+            run_id=run_id,
+            agent=agent,
+            limit=limit,
+            offset=offset,
+        )
+        return [approval.model_dump(mode="json") for approval in approvals]
+
+    @app.get("/v1/approvals/{approval_id}")
+    async def read_approval(
+        approval_id: str, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_scope(identity, "runs:read")
+        approval = await dependencies.runtime.approvals.get(approval_id, identity.tenant_id)
+        if approval is None:
+            raise NotFoundError("approval request not found")
+        return approval.effective(utc_now()).model_dump(mode="json")
 
     @app.get("/v1/runs/{run_id}/events")
     async def stream_events(

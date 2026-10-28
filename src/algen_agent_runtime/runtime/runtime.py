@@ -1604,6 +1604,7 @@ class AgentRuntime:
             },
             "additional governed execution",
             policy.approval_expires_seconds,
+            agent=state.request.agent,
         )
         state.pause_payload = {
             "kind": "execution_continuation",
@@ -1804,6 +1805,7 @@ class AgentRuntime:
                 self._redact_mapping(action.arguments),
                 decision.audit_metadata.get("risk", tool.definition.side_effect.value),
                 agent.approval_policy.expires_seconds,
+                agent=state.request.agent,
             )
             state.pause_payload = {
                 "kind": "tool_approval",
