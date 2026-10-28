@@ -72,6 +72,9 @@ class ToolDescription(_Description):
     max_attempts: int
     requires_approval: bool
     volatile: bool = False
+    # Whether operators can auto-reconcile the tool's unknown outcomes and compensate its calls.
+    reconcile: bool = False
+    compensation: bool = False
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     env: tuple[str, ...] = ()
@@ -235,6 +238,8 @@ def _tool(tool: Tool, source: str, env: tuple[str, ...]) -> ToolDescription:
         max_attempts=definition.retry_policy.max_attempts,
         requires_approval=definition.requires_approval,
         volatile=definition.volatile,
+        reconcile=tool.reconcile is not None,
+        compensation=tool.compensation is not None,
         input_schema=definition.input_schema,
         output_schema=definition.output_schema,
         env=env,

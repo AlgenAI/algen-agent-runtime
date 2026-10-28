@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime import __version__
+from algen_agent_runtime.api.auth_routes import add_auth_routes
 from algen_agent_runtime.api.body_limit import (
     RequestBodyLimitMiddleware,
     RequestPayloadTooLarge,
@@ -35,6 +36,7 @@ from algen_agent_runtime.api.rate_limiting import (
     InMemoryApiRateLimiter,
     RouteLimitPolicy,
 )
+from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
@@ -142,7 +144,12 @@ def create_app(
 ) -> FastAPI:
     resolved = settings or AppSettings()
     dependencies = container or build_container(resolved)
-    authenticate = principal_dependency(resolved.api)
+    authenticate = principal_dependency(
+        resolved.api,
+        audits=dependencies.runtime.audits,
+        revocations=dependencies.token_revocations,
+        oidc_transport=dependencies.oidc_transport,
+    )
     identity_dependency = Depends(authenticate)
     configure_logging()
 
@@ -296,6 +303,8 @@ def create_app(
 
     add_workflow_routes(app, workflows, identity_dependency)
     add_mcp_oauth_routes(app, dependencies, identity_dependency)
+    add_auth_routes(app, dependencies, identity_dependency)
+    add_tool_execution_routes(app, dependencies, identity_dependency)
 
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(
@@ -845,7 +854,14 @@ def main() -> None:
     settings = (
         load_settings(tuple(Path(item) for item in config_files)) if config_files else AppSettings()
     )
-    uvicorn.run(create_app(settings), host=settings.api.host, port=settings.api.port)
+    uvicorn.run(
+        create_app(settings),
+        host=settings.api.host,
+        port=settings.api.port,
+        # The trusted-proxy identity hook checks the direct peer; never let X-Forwarded-For
+        # rewrite it.
+        proxy_headers=not settings.api.trusted_proxy_identity.enabled,
+    )
 
 
 app = create_app()

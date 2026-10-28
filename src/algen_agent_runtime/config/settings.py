@@ -12,6 +12,12 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from algen_agent_runtime.cache.contracts import CacheScope
+from algen_agent_runtime.config.authentication import (
+    AuthenticationAuditSettings,
+    OidcSettings,
+    TokenRevocationSettings,
+    TrustedProxyIdentitySettings,
+)
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
@@ -304,7 +310,7 @@ class ApiRateLimitSettings(StrictSettings):
 class ApiSettings(StrictSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
-    auth_mode: Literal["development_headers", "jwt"] = "development_headers"
+    auth_mode: Literal["development_headers", "jwt", "oidc"] = "development_headers"
     allow_insecure_development_auth: bool = False
     jwt_key: str | None = Field(default=None, description="env:// signing or verification key")
     jwt_algorithms: tuple[str, ...] = ("RS256",)
@@ -312,6 +318,14 @@ class ApiSettings(StrictSettings):
     jwt_audience: str | None = None
     tenant_claim: str = "tenant_id"
     scopes_claim: str = "scope"
+    oidc: OidcSettings = Field(default_factory=OidcSettings)
+    token_revocation: TokenRevocationSettings = Field(default_factory=TokenRevocationSettings)
+    trusted_proxy_identity: TrustedProxyIdentitySettings = Field(
+        default_factory=TrustedProxyIdentitySettings
+    )
+    authentication_audit: AuthenticationAuditSettings = Field(
+        default_factory=AuthenticationAuditSettings
+    )
     cors_allowed_origins: tuple[str, ...] = ()
     cors_allow_credentials: bool = False
     cors_allowed_headers: tuple[str, ...] = (
@@ -347,6 +361,16 @@ class ApiSettings(StrictSettings):
             raise ValueError("jwt authentication requires jwt_key")
         if self.jwt_key and not self.jwt_key.startswith("env://"):
             raise ValueError("jwt_key must be an env:// secret reference")
+        if any(algorithm.lower() == "none" for algorithm in self.jwt_algorithms):
+            raise ValueError("jwt_algorithms may not include 'none'")
+        if self.auth_mode == "oidc" and not self.oidc.issuers:
+            raise ValueError("oidc authentication requires at least one oidc issuer")
+        if self.auth_mode == "development_headers" and (
+            self.token_revocation.enabled or self.trusted_proxy_identity.enabled
+        ):
+            raise ValueError(
+                "token_revocation and trusted_proxy_identity require jwt or oidc authentication"
+            )
         return self
 
 
@@ -619,6 +643,13 @@ class AppSettings(StrictSettings):
                     f"http tool {tool.name!r} calls {tool.host!r}, which must be listed in "
                     "security.allowed_http_hosts"
                 ) from exc
+        return self
+
+    @model_validator(mode="after")
+    def validate_token_revocation_store(self) -> AppSettings:
+        revocation = self.api.token_revocation
+        if revocation.enabled and revocation.store == "postgres" and not self.storage.postgres_dsn:
+            raise ValueError("api.token_revocation store 'postgres' requires storage.postgres_dsn")
         return self
 
     @model_validator(mode="after")

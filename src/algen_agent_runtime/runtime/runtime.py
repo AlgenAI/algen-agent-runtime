@@ -9,6 +9,7 @@ from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import cached_property
 from typing import Any
 
 import structlog
@@ -102,13 +103,18 @@ from algen_agent_runtime.runtime.guards import (
     wrap_up_note,
 )
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
+from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.security.redaction import redact
 from algen_agent_runtime.tools.contracts import (
     EarlierCall,
+    ReconcilableToolExecutionStore,
+    SideEffect,
     Tool,
     ToolContext,
     ToolDefinition,
+    ToolExecutionRecord,
+    ToolExecutionStatus,
     ToolResult,
     read_only_credentials,
 )
@@ -410,6 +416,11 @@ class AgentRuntime:
         state = await self._require_state(run_id, tenant_id)
         return build_narrative(state, await self.events.history(run_id))
 
+    @cached_property
+    def reconciliation(self) -> ToolReconciliation:
+        """List, resolve, auto-reconcile and compensate a tenant's recorded tool calls."""
+        return ToolReconciliation(self)
+
     async def cancel(self, run_id: str, tenant_id: str) -> RunState:
         state = await self._require_state(run_id, tenant_id)
         if state.status in TERMINAL_STATUSES:
@@ -593,6 +604,7 @@ class AgentRuntime:
             if state.status in {
                 RunStatus.AWAITING_APPROVAL,
                 RunStatus.AWAITING_CLARIFICATION,
+                RunStatus.AWAITING_RECONCILIATION,
             }:
                 continue
             if state.deadline and state.deadline <= utc_now():
@@ -800,6 +812,7 @@ class AgentRuntime:
         while state.status not in TERMINAL_STATUSES and state.status not in {
             RunStatus.AWAITING_APPROVAL,
             RunStatus.AWAITING_CLARIFICATION,
+            RunStatus.AWAITING_RECONCILIATION,
         }:
             limit_reason = self._limit_reason(state, agent)
             if limit_reason:
@@ -1733,6 +1746,10 @@ class AgentRuntime:
         try:
             outcome = await self._run_tool_call(state, agent, action, tool)
         except Exception as exc:
+            unknown = await self._awaits_reconciliation(state, agent, action)
+            if unknown is not None:
+                await self._pause_for_reconciliation(state, action, unknown)
+                return
             await self._tool_call_failed(state, agent, action, exc)
             return
         await self._record_tool_call(state, agent, action, tool, outcome)
@@ -2012,7 +2029,11 @@ class AgentRuntime:
                 span.set_attribute("tool.input", self._telemetry_content(action.arguments))
             try:
                 result = await self.tool_executor.execute(
-                    tool.definition.name, action.arguments, context, agent=agent
+                    tool.definition.name,
+                    action.arguments,
+                    context,
+                    agent=agent,
+                    on_reconciled=lambda record: self._announce_replay_reconciled(state, record),
                 )
                 tool_text = json.dumps(result.value, default=str)
                 if tool.definition.name in MEMORY_PERMISSIONS:
@@ -2286,14 +2307,23 @@ class AgentRuntime:
         for failure in ran:
             if isinstance(failure, BaseException) and not isinstance(failure, Exception):
                 raise failure
-        if agent.tool_policy.on_error != "return_to_model":
-            for failure in ran:
-                if isinstance(failure, Exception):
-                    raise failure
         results = iter(ran)
         outcomes = [hold if hold is not None else next(results) for hold in held]
+        # Calls whose outcome is unknown stay pending while the run waits for an operator.
+        unknown = [
+            await self._awaits_reconciliation(state, agent, action)
+            if isinstance(outcome, Exception)
+            else None
+            for action, outcome in zip(actions, outcomes, strict=True)
+        ]
+        if agent.tool_policy.on_error != "return_to_model":
+            for settled, waiting in zip(outcomes, unknown, strict=True):
+                if isinstance(settled, Exception) and waiting is None:
+                    raise settled
         # Recorded in the order the model asked for them, as if they had run one by one.
-        for action, tool, outcome in zip(actions, tools, outcomes, strict=True):
+        for action, tool, outcome, waiting in zip(actions, tools, outcomes, unknown, strict=True):
+            if waiting is not None:
+                continue
             if isinstance(outcome, _HeldCall):
                 await self._hold_tool_call(state, agent, action, outcome, settle=False)
             elif isinstance(outcome, BaseException):
@@ -2301,8 +2331,102 @@ class AgentRuntime:
                 await self._tool_call_failed(state, agent, action, outcome, settle=False)
             else:
                 await self._record_tool_call(state, agent, action, tool, outcome)
+        for action, waiting in zip(actions, unknown, strict=True):
+            if waiting is not None:
+                await self._pause_for_reconciliation(state, action, waiting)
+                return True
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         return True
+
+    async def _awaits_reconciliation(
+        self, state: RunState, agent: AgentDefinition, action: PlannedAction
+    ) -> ToolExecutionRecord | None:
+        """The ledger record of a failed side-effecting call whose outcome is unknown, when the
+        agent pauses for those (``tool_policy.on_indeterminate="pause"``); otherwise None."""
+        if agent.tool_policy.on_indeterminate != "pause":
+            return None
+        store = self.tool_executor.executions
+        if not isinstance(store, ReconcilableToolExecutionStore):
+            return None
+        try:
+            definition = self.tools.get(action.tool_name or "").definition
+        except NotFoundError:
+            return None
+        if definition.side_effect in {SideEffect.NONE, SideEffect.READ}:
+            return None
+        call_id = action.id.removeprefix("tool-")
+        record = await store.get(f"{state.id}:{call_id}", state.request.tenant_id)
+        if record is None or record.status not in {
+            ToolExecutionStatus.STARTED,
+            ToolExecutionStatus.INDETERMINATE,
+        }:
+            return None
+        return record
+
+    async def _pause_for_reconciliation(
+        self, state: RunState, action: PlannedAction, record: ToolExecutionRecord
+    ) -> None:
+        """Pause the run until an operator settles the call (see ``ToolReconciliation``)."""
+        state.pause_payload = {
+            "kind": "tool_reconciliation",
+            "tool_call_id": action.id.removeprefix("tool-"),
+            "tool": record.tool_name,
+            "idempotency_key": record.idempotency_key,
+            "execution_status": record.status.value,
+            "paused_at": utc_now().isoformat(),
+        }
+        await self._transition(state, RunStatus.AWAITING_RECONCILIATION)
+        await self._emit(
+            state,
+            "tool.reconciliation_required",
+            {
+                "tool": record.tool_name,
+                "idempotency_key": record.idempotency_key,
+                "status": record.status.value,
+            },
+            action.id,
+        )
+        await self._audit(
+            state,
+            "tool.call",
+            "awaiting_reconciliation",
+            record.tool_name,
+            {"step_id": action.id, "idempotency_key": record.idempotency_key},
+        )
+
+    async def _announce_replay_reconciled(
+        self, state: RunState, record: ToolExecutionRecord
+    ) -> None:
+        """Event and audit for a call the tool's reconcile hook settled while being replayed."""
+        previous = record.resolutions[-1].previous_status.value if record.resolutions else ""
+        await self._emit(
+            state,
+            "tool.reconciled",
+            {
+                "tool": record.tool_name,
+                "idempotency_key": record.idempotency_key,
+                "status": record.status.value,
+                "previous_status": previous,
+                "method": "replay",
+            },
+            record.step_id,
+        )
+        await self.audits.append(
+            AuditEvent(
+                action="tool.reconcile",
+                outcome=record.status.value,
+                tenant_id=record.tenant_id,
+                actor_id=RUNTIME_ACTOR,
+                resource_id=record.tool_name,
+                metadata={
+                    "run_id": record.run_id,
+                    "step_id": record.step_id,
+                    "idempotency_key": record.idempotency_key,
+                    "method": "replay",
+                    "previous_status": previous,
+                },
+            )
+        )
 
     async def _tool_call_failed(
         self,

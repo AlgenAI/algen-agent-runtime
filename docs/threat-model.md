@@ -9,6 +9,8 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Threat | Primary controls |
 |---|---|
 | Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks |
+| Forged, stolen or replayed caller tokens | verified JWT/OIDC only outside loopback development, JWKS from allowlisted issuer hosts, asymmetric algorithms bound to key type, bounded clock skew, audience/issuer checks, fail-closed tenant mapping, short-lived tokens plus optional tenant-scoped revocation, content-minimal authentication audits |
+| Spoofed service identity | trusted-proxy identity off by default, honoured only from configured proxy CIDRs for exactly mapped identities, spoof attempts refused and audited, proxy-header peer rewriting disabled |
 | Prompt injection | pre/post policy points, tool/model allowlists, model output never executes directly |
 | Secret/PII leakage | secret references, redaction middleware, content telemetry off, memory policy |
 | SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
@@ -92,9 +94,52 @@ External MCP servers integrate into Runtime under explicit security boundaries:
 
 Credentials a host passes to `Runtime.start`, `run` or `resume` (for example the signed-in user's bearer token, for tools that act as that user) are kept only in the process's memory, keyed by run, and only while the run executes. They are never written to `RunState`, checkpoints, the run, approval, event or audit stores, events, audits, spans, logs, caches or the model's context, and `ToolContext` leaves them out of its `repr`, serialization, equality and hashing, so a store, exporter, log line or traceback cannot hold them. They are dropped when the run pauses for approval or clarification and when it ends, however it ends. A pause can last longer than a token lives, and a persisted token would outlive the request that carried it and become readable to anyone with access to the stores, so the host must supply fresh credentials on `resume`; a run resumed without them, or recovered after a restart, gives its tools an empty mapping and they should refuse to act. Concurrent runs never share credentials; a child run started by `core.subagent` holds its own copy of its parent's until it ends. Tools receive a read-only copy and must not echo it in results or errors, which do reach the model, events and stores.
 
+### API authentication
+
+Callers authenticate with one of three modes (docs/operations.md#api-authentication).
+`development_headers` trusts identity headers and binds only to a loopback host unless an
+operator explicitly opts out for an isolated development network. `jwt` verifies bearer tokens
+with one static `env://` key. `oidc` verifies bearer tokens against each configured issuer's
+JWKS:
+
+- **Key retrieval is an egress path.** Discovery and JWKS fetches go through the SSRF-safe client,
+  restricted to the issuer host, a configured `jwks_url` host and explicitly listed extra hosts;
+  private networks stay closed unless configured, redirects are not followed, bodies are capped,
+  and a discovery document must name the configured issuer. A `jwks_uri` on another host is
+  never fetched.
+- **Key-id DoS.** An unknown `kid` refreshes the JWKS at most once per
+  `jwks_min_refresh_interval_seconds` per issuer; floods of random key ids cost no upstream
+  traffic. A failed refresh keeps the last good keys, so an identity-provider outage does not
+  lock out callers whose keys are cached.
+- **Algorithm confusion.** Only configured asymmetric algorithms are accepted (`none` and `HS*`
+  are rejected at configuration time), the algorithm must match the key type and any `alg` the
+  JWKS states, and symmetric JWKS keys are ignored, so a token "signed" with the public key as an
+  HMAC secret is refused.
+- **Claims.** `exp`, `iss`, `aud` and the subject are required, `nbf`/`iat` are checked, skew is
+  bounded (at most 300 seconds), and `max_token_lifetime_seconds` can refuse long-lived tokens.
+  The tenant comes from a configured claim or a fixed tenant per issuer and is never defaulted;
+  a token's own `*` scope is dropped.
+- **Revocation.** Short-lived tokens are the primary control. The optional check denies a `jti`
+  until its expiry or every token for a subject issued before a cutoff. Entries are
+  tenant-scoped, so one tenant's administrator cannot revoke another tenant's tokens; a store
+  outage fails closed. Introspection (RFC 7662) is deferred.
+- **Service identity.** A client-certificate identity forwarded by a TLS-terminating proxy is
+  honoured only from configured proxy CIDRs (never every address), only for exactly mapped
+  identities, and the same header from any other peer is refused and audited. The proxy must
+  overwrite the header; `serve` disables `X-Forwarded-For` peer rewriting so a forwarded address
+  cannot impersonate the proxy.
+- **Audit.** Every failure (and, opt-in, every success) is recorded with at most the method,
+  reason, issuer, key id and verified subject, never the token. Failures without a verified
+  tenant go to the `_authentication` audit tenant, so unverified claims cannot write into a
+  tenant's trail, and a per-minute cap keeps a credential flood from flooding the audit store.
+
 ## Deployment checklist
 
-- Replace header identity hook with verified JWT or mTLS and deny missing tenant claims.
+- Use `oidc` (or `jwt`) authentication outside loopback development; require short-lived tokens
+  (`max_token_lifetime_seconds`), map tenants explicitly, and enable `token_revocation` with the
+  `postgres` store when tokens must be revocable before expiry.
+- Enable `trusted_proxy_identity` only behind a proxy that verifies client certificates and
+  overwrites the identity header; list only the proxies' own CIDRs.
 - Store secrets in a managed secret provider; never in YAML.
 - Set explicit egress and tool host allowlists.
 - Verify all declared `mcp_servers` stdio commands and args are strictly trusted operator-authored code; review remote MCP server URLs against egress host allowlists.
