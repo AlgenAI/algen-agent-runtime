@@ -359,6 +359,20 @@ def extractor_for(filename: str) -> DocumentExtractor:
         from algen_agent_runtime.security.docx import DocxDocumentExtractor
 
         return DocxDocumentExtractor()
-    if suffix in {".txt", ".md"}:
+    if suffix == ".xlsx":
+        from algen_agent_runtime.security.xlsx import XlsxDocumentExtractor
+
+        return XlsxDocumentExtractor()
+    if suffix == ".pptx":
+        from algen_agent_runtime.security.pptx import PptxDocumentExtractor
+
+        return PptxDocumentExtractor()
+    if suffix in {".html", ".htm"}:
+        from algen_agent_runtime.security.html import HtmlDocumentExtractor
+
+        return HtmlDocumentExtractor()
+    if suffix in {".txt", ".md", ".csv", ".tsv"}:
         return PlainTextDocumentExtractor()
-    raise ValueError("only PDF, DOCX, TXT, and Markdown documents are supported")
+    raise ValueError(
+        "only PDF, DOCX, XLSX, PPTX, HTML, CSV, TSV, TXT, and Markdown documents are supported"
+    )

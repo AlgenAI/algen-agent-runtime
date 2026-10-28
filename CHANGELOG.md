@@ -17,6 +17,20 @@ contracts are explicitly marked experimental during the `0.x` series.
   `ContextPolicy`, passed by `build()` only when shortening is on so existing
   `pack(self, messages)` overrides keep working. The final packing against a model's
   `context_window_tokens` does not shorten. See docs/artifacts.md.
+- Document inspection for Excel (`XlsxDocumentExtractor`), PowerPoint (`PptxDocumentExtractor`)
+  and HTML (`HtmlDocumentExtractor`), and CSV/TSV through the plain-text extractor;
+  `extractor_for` returns them for `.xlsx`, `.pptx`, `.html`/`.htm`, `.csv` and `.tsv`. Standard
+  library only. Hidden sheets, rows, columns, slides, shapes and HTML elements are kept out of
+  the sanitized text and reported as `hidden_text.*` findings; Office packages get the DOCX
+  limits (part count, size, compression ratio, no DTD) and the macro and remote-content findings.
+  XLSX date and time cells come out as ISO dates and times, a sheet longer than
+  `max_rows_per_sheet` is reported as `document.truncated`, and cells without an `r` reference
+  follow the previous cell. Known gaps are listed under "Known limitations".
+  The shared package checks are in `security/ooxml.py`. See docs/document-security.md.
+
+### Changed
+
+- `extractor_for` names every supported format in its `ValueError` for an unknown suffix.
 
 ## [0.1.0a13] - 2026-10-27
 
