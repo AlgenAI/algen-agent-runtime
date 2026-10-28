@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a14">v0.1.0a14 · latest</option>
+                    <option value="0.1.0a15">v0.1.0a15 · latest</option>
+                    <option value="0.1.0a14">v0.1.0a14</option>
                     <option value="0.1.0a13">v0.1.0a13</option>
                     <option value="0.1.0a12">v0.1.0a12</option>
                     <option value="0.1.0a11">v0.1.0a11</option>
@@ -1390,7 +1391,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a14</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a15</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1410,7 +1411,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a14 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a15 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1467,7 +1468,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2097,7 +2098,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a14</span>.</footer>
+                    data-version-field="version">0.1.0a15</span>.</footer>
         </main>
     </div>
 
@@ -2223,9 +2224,35 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14'];
-        const LATEST_VERSION = '0.1.0a14';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15'];
+        const LATEST_VERSION = '0.1.0a15';
         const RELEASES = {
+            '0.1.0a15': {
+                date: '2026-10-28',
+                kind: 'Multi-tenant hosts',
+                title: 'Meter call context and per-run tool credentials',
+                summary: 'A usage meter is now told whose call it is, so a multi-tenant host can charge the right account and weight tokens by model, also for resumed and recovered runs. Tools can act as the caller through credentials that are kept in memory only and re-supplied on every resume.',
+                fields: {
+                    tag: 'v0.1.0a15',
+                    package: '0.1.0a15 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a15',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Meter call context.</strong> <code>UsageMeter.reserve</code> receives <code>call: MeterCall</code>: tenant, user, run, session, conversation, agent, step, <code>purpose</code>, <code>attempt</code>, the <code>provider</code> and <code>model</code> being tried, and a read-only copy of the request metadata. <code>budget.refused</code> now names the provider and model. See <a href="agent-tooling.md#metering-model-calls">metering</a>.',
+                            '<strong>Per-run tool credentials.</strong> <code>start</code>, <code>run</code> and <code>resume</code> take <code>credentials=</code>; tools read them from <code>ToolContext.credentials</code>. Memory only: never persisted, emitted or logged, dropped when the run pauses or ends, and replaced on every resume. See <a href="tool-authoring.md#credentials-of-the-caller">tool authoring</a>.'
+                        ]
+                    },
+                    {
+                        kind: 'Deprecated', items: [
+                            'The 0.1.0a14 <code>reserve(*, max_input_tokens, max_output_tokens)</code> form still works with one <code>DeprecationWarning</code> per meter; add <code>call: MeterCall</code>. Removed in 0.2.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a14': {
                 date: '2026-10-28',
                 kind: 'Guards in the Runtime',
@@ -2234,7 +2261,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a14',
                     package: '0.1.0a14 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a15',
                     version: '0.1.0a14',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
