@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
@@ -33,6 +34,26 @@ class ApprovalRequest(BaseModel):
     expires_at: datetime
     status: ApprovalStatus = ApprovalStatus.PENDING
     modified_parameters: dict[str, Any] | None = None
+    # The agent whose run asked, and when. None on approvals stored by earlier releases.
+    agent: str | None = None
+    created_at: datetime | None = None
+
+    def effective(self, now: datetime) -> ApprovalRequest:
+        """This request as a reader should see it: a pending request past ``expires_at`` is
+        reported as expired, although its stored status changes only when it is decided."""
+        if self.status == ApprovalStatus.PENDING and self.expires_at <= now:
+            return self.model_copy(update={"status": ApprovalStatus.EXPIRED})
+        return self
+
+
+MAX_APPROVAL_PAGE = 500
+
+
+def _check_page(limit: int, offset: int) -> None:
+    if not 1 <= limit <= MAX_APPROVAL_PAGE:
+        raise ValueError(f"limit must be between 1 and {MAX_APPROVAL_PAGE}")
+    if offset < 0:
+        raise ValueError("offset must not be negative")
 
 
 class ApprovalService(Protocol):
@@ -45,6 +66,8 @@ class ApprovalService(Protocol):
         parameters: dict[str, Any],
         risk: str,
         expires_seconds: int,
+        *,
+        agent: str | None = None,
     ) -> ApprovalRequest: ...
 
     async def decide(
@@ -56,6 +79,25 @@ class ApprovalService(Protocol):
     ) -> ApprovalRequest: ...
 
     async def get(self, approval_id: str, tenant_id: str) -> ApprovalRequest | None: ...
+
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        status: ApprovalStatus | None = None,
+        run_id: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[ApprovalRequest]:
+        """The tenant's approval requests, newest first, each as
+        :meth:`ApprovalRequest.effective` reports it.
+
+        ``status``, ``run_id`` and ``agent`` narrow the list. ``status=PENDING`` leaves out
+        requests past their expiry, and ``status=EXPIRED`` includes them. ``limit`` is 1 to
+        ``MAX_APPROVAL_PAGE``.
+        """
+        ...
 
 
 class InMemoryApprovalService:
@@ -72,7 +114,10 @@ class InMemoryApprovalService:
         parameters: dict[str, Any],
         risk: str,
         expires_seconds: int,
+        *,
+        agent: str | None = None,
     ) -> ApprovalRequest:
+        now = utc_now()
         request = ApprovalRequest(
             run_id=run_id,
             step_id=step_id,
@@ -81,7 +126,9 @@ class InMemoryApprovalService:
             side_effect_summary=f"Proposed {risk} operation: {proposed_action}",
             redacted_parameters=parameters,
             risk=risk,
-            expires_at=utc_now() + timedelta(seconds=expires_seconds),
+            expires_at=now + timedelta(seconds=expires_seconds),
+            agent=agent,
+            created_at=now,
         )
         async with self._lock:
             self._items[request.id] = request
@@ -114,6 +161,38 @@ class InMemoryApprovalService:
             item = self._items.get(approval_id)
             return item.model_copy(deep=True) if item and item.tenant_id == tenant_id else None
 
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        status: ApprovalStatus | None = None,
+        run_id: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[ApprovalRequest]:
+        _check_page(limit, offset)
+        now = utc_now()
+        async with self._lock:
+            items = [
+                item.effective(now).model_copy(deep=True)
+                for item in self._items.values()
+                if item.tenant_id == tenant_id
+                and (run_id is None or item.run_id == run_id)
+                and (agent is None or item.agent == agent)
+            ]
+        # Newest first; insertion order breaks ties between requests created together.
+        ordered = [
+            item
+            for _, item in sorted(
+                enumerate(items),
+                key=lambda pair: (pair[1].created_at or now, pair[0]),
+                reverse=True,
+            )
+            if status is None or item.status == status
+        ]
+        return tuple(ordered[offset : offset + limit])
+
 
 class PostgresApprovalService:
     def __init__(self, database: Any) -> None:
@@ -128,7 +207,10 @@ class PostgresApprovalService:
         parameters: dict[str, Any],
         risk: str,
         expires_seconds: int,
+        *,
+        agent: str | None = None,
     ) -> ApprovalRequest:
+        now = utc_now()
         request = ApprovalRequest(
             run_id=run_id,
             step_id=step_id,
@@ -137,7 +219,9 @@ class PostgresApprovalService:
             side_effect_summary=f"Proposed {risk} operation: {proposed_action}",
             redacted_parameters=parameters,
             risk=risk,
-            expires_at=utc_now() + timedelta(seconds=expires_seconds),
+            expires_at=now + timedelta(seconds=expires_seconds),
+            agent=agent,
+            created_at=now,
         )
         await self._database.execute(
             "INSERT INTO algen_agent_runtime_approvals "
@@ -181,6 +265,54 @@ class PostgresApprovalService:
             tenant_id,
         )
         return ApprovalRequest.model_validate_json(row["approval"]) if row else None
+
+    async def list(
+        self,
+        tenant_id: str,
+        *,
+        status: ApprovalStatus | None = None,
+        run_id: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[ApprovalRequest]:
+        _check_page(limit, offset)
+        now = utc_now()
+        clauses = ["tenant_id=$1"]
+        arguments: list[Any] = [tenant_id]
+
+        def bind(value: Any) -> str:
+            arguments.append(value)
+            return f"${len(arguments)}"
+
+        if run_id is not None:
+            clauses.append(f"run_id={bind(run_id)}")
+        if agent is not None:
+            clauses.append(f"approval->>'agent'={bind(agent)}")
+        if status is not None:
+            stored = "approval->>'status'"
+            if status in {ApprovalStatus.PENDING, ApprovalStatus.EXPIRED}:
+                past_expiry = f"(approval->>'expires_at')::timestamptz <= {bind(now)}"
+                clauses.append(
+                    f"{stored}='pending' AND NOT {past_expiry}"
+                    if status == ApprovalStatus.PENDING
+                    else f"({stored}='expired' OR ({stored}='pending' AND {past_expiry}))"
+                )
+            else:
+                clauses.append(f"{stored}={bind(status.value)}")
+        rows = await self._database.fetch(
+            "SELECT approval, created_at FROM algen_agent_runtime_approvals "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY created_at DESC, id DESC LIMIT {bind(limit)} OFFSET {bind(offset)}",
+            *arguments,
+        )
+        items: list[ApprovalRequest] = []
+        for row in rows:
+            item = ApprovalRequest.model_validate_json(row["approval"])
+            if item.created_at is None:
+                item = item.model_copy(update={"created_at": row["created_at"]})
+            items.append(item.effective(now))
+        return tuple(items)
 
     async def _save(self, item: ApprovalRequest, expected: ApprovalStatus) -> bool:
         result = await self._database.execute(

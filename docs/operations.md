@@ -641,6 +641,34 @@ stop the process between the two writes and check this. Migration
 `014_tool_execution_reconciliation.sql` adds the new statuses as a `NOT VALID` check constraint
 and an index on `(tenant_id, status, updated_at)`.
 
+## Approval inbox
+
+A run that needs a human decision pauses with `status: awaiting_approval` and the approval's id in
+`pause_payload.approval_id`. To show everything waiting for a decision, list the tenant's approval
+requests instead of polling runs:
+
+| Route | Scope | Returns |
+| --- | --- | --- |
+| `GET /v1/approvals` | `runs:read` | The tenant's approval requests, newest first. Query: `status` (`pending`, `approved`, `rejected`, `modified`, `expired`), `run_id`, `agent`, `limit` (1 to 500, default 50), `offset` (default 0). |
+| `GET /v1/approvals/{approval_id}` | `runs:read` | One request; `404` for another tenant's. |
+
+Decide as before with `POST /v1/runs/{run_id}/approval` (scope `runs:write`), or for a
+conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`.
+
+Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id`, `agent`,
+`proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
+the same values as the run's `pause_payload`), `risk`, `created_at`, `expires_at`, `status` and, after
+a `modified` decision, `modified_parameters`. A pending request past `expires_at` is reported as
+`expired`: `status=pending` leaves it out and `status=expired` includes it. Reading never changes the
+stored request; it moves to `expired` when someone tries to decide it, as before. Requests stored by
+releases before this one have no `agent` (an `agent` filter leaves them out) and, from the in-memory
+store, no `created_at`; the PostgreSQL store reports the row's creation time.
+
+In Python, `runtime.approvals.list(tenant_id, status=..., run_id=..., agent=..., limit=...,
+offset=...)` returns the same list. Results are tenant-scoped by the authenticated principal, like
+every run route. Paging is by offset over a list ordered by creation time, so a request created
+between two page reads shifts later pages by one; page with a small `limit` and de-duplicate by `id`.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
