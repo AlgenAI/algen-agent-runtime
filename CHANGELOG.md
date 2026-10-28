@@ -6,6 +6,20 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `telemetry.otlp_metrics_endpoint` and `telemetry.otlp_metrics_export_interval_seconds`
+  (default 60): export the Runtime's OpenTelemetry metrics to an OTLP/HTTP collector through a
+  periodic reader. If an SDK meter provider is already installed (by Traccia or the application),
+  it is kept and the setting is ignored with a warning. See docs/operations.md#traccia.
+
+### Fixed
+
+- `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
+  Runtime metric was recorded and silently dropped, and the process-global provider was taken,
+  so an application could not install its own afterwards. Metrics are exported when
+  `otlp_metrics_endpoint` is set, as above.
+
 ## [0.1.0a17] - 2026-10-28
 
 ### Added
