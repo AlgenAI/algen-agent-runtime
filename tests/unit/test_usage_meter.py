@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
+import warnings
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -10,7 +13,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from algen_agent_runtime import MeterRefusedError, UsageMeter
+from algen_agent_runtime import MeterCall, MeterRefusedError, UsageMeter
+from algen_agent_runtime.cache import CachePolicy, CacheScope, CacheService, InMemoryCacheStore
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.context.artifacts import CONTEXT_READ_TOOL, ContextArtifactService
 from algen_agent_runtime.context.budget import estimate_request_tokens
@@ -53,8 +57,12 @@ class RecordingMeter:
         self.reserved: list[tuple[int, int, int]] = []
         self.settled: list[tuple[int, TokenUsage]] = []
         self.released: list[int] = []
+        self.calls: list[MeterCall] = []
 
-    async def reserve(self, *, max_input_tokens: int, max_output_tokens: int) -> object:
+    async def reserve(
+        self, *, max_input_tokens: int, max_output_tokens: int, call: MeterCall
+    ) -> object:
+        self.calls.append(call)
         self.attempts += 1
         if self.refuse_from is not None and self.attempts >= self.refuse_from:
             raise MeterRefusedError(self.reason)
@@ -170,7 +178,11 @@ async def test_refusal_ends_the_run_without_retry_fallback_or_provider_blame() -
     types = [event.type for event in history]
     assert "model.retrying" not in types
     refused = next(event for event in history if event.type == "budget.refused")
-    assert refused.data == {"reason": "Monthly model allowance used up."}
+    assert refused.data == {
+        "reason": "Monthly model allowance used up.",
+        "provider": "mock",
+        "model": "deterministic",
+    }
     assert history[-1].type == "run.failed"
     assert history[-1].data == {
         "error": "Monthly model allowance used up.",
@@ -558,3 +570,283 @@ async def test_without_a_meter_the_router_dispatches_as_before() -> None:
 
     assert result.status == RunStatus.COMPLETED
     assert runtime.router._usage_meter is None
+
+
+# --- 0.1.0a15: the meter is told whose call it is -------------------------------------------
+
+
+async def model_step_ids(runtime: AgentRuntime, run_id: str) -> list[str | None]:
+    history = await runtime.events.history(run_id)
+    return [event.step_id for event in history if event.type == "model.completed"]
+
+
+def assert_run_context(call: MeterCall, run_id: str, *, tenant: str = "t", user: str = "u") -> None:
+    assert (call.tenant_id, call.user_id, call.run_id) == (tenant, user, run_id)
+    assert (call.agent, call.agent_version) == ("test-agent", "1.0.0")
+    assert call.session_id is not None
+
+
+async def test_meter_call_carries_the_run_context_of_a_step() -> None:
+    meter = RecordingMeter()
+    runtime = metered(meter, ("mock", MockModelProvider(["answer"])))
+
+    result = await runtime.run(
+        request(conversation_id="c1", turn_id="turn-1", parent_run_id="parent-1")
+    )
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    [call] = meter.calls
+    assert_run_context(call, result.run_id)
+    assert (call.conversation_id, call.turn_id, call.parent_run_id) == ("c1", "turn-1", "parent-1")
+    assert call.step_id is not None
+    assert [call.step_id] == await model_step_ids(runtime, result.run_id)
+    assert (call.purpose, call.attempt, call.streaming) == ("step", 0, False)
+    assert (call.provider, call.model) == ("mock", "deterministic")
+    state = await runtime.status(result.run_id, "t")
+    assert call.session_id == state.session_id
+
+
+async def test_meter_call_of_a_streamed_step() -> None:
+    meter = RecordingMeter()
+    runtime = metered(meter, ("mock", MockModelProvider(["one two"])))
+
+    result = await runtime.run(request(stream=True))
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    [call] = meter.calls
+    assert_run_context(call, result.run_id)
+    assert (call.purpose, call.attempt, call.streaming) == ("step", 0, True)
+    assert (call.provider, call.model) == ("mock", "deterministic")
+    assert call.step_id is not None
+
+
+async def test_meter_call_attempt_increments_on_retry() -> None:
+    meter = RecordingMeter()
+    agent = make_agent(retry_policy=RetryPolicy(max_attempts=2, initial_backoff_seconds=0))
+    runtime = metered(meter, ("mock", FailingProvider("answer", failures=1)), agent=agent)
+    runtime.router._reset_seconds = 0
+
+    result = await runtime.run(request())
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    assert [call.attempt for call in meter.calls] == [0, 1]
+    assert len({call.step_id for call in meter.calls}) == 1
+    for call in meter.calls:
+        assert_run_context(call, result.run_id)
+        assert call.purpose == "step"
+
+
+async def test_meter_call_names_the_fallback_candidate_being_tried() -> None:
+    meter = RecordingMeter()
+    agent = make_agent(
+        fallback_models=(ModelProfile(name="b", provider="backup", model="backup-model"),)
+    )
+    runtime = metered(
+        meter,
+        ("mock", FailingProvider("never", failures=1, retryable=False)),
+        ("backup", MockModelProvider(["from fallback"])),
+        agent=agent,
+    )
+
+    result = await runtime.run(request())
+
+    assert result.output == "from fallback"
+    assert [(call.provider, call.model) for call in meter.calls] == [
+        ("mock", "deterministic"),
+        ("backup", "backup-model"),
+    ]
+    assert [call.attempt for call in meter.calls] == [0, 0]
+    assert meter.calls[0].step_id == meter.calls[1].step_id
+    for call in meter.calls:
+        assert_run_context(call, result.run_id)
+
+
+async def test_meter_call_of_compaction() -> None:
+    meter = RecordingMeter()
+    provider = MockModelProvider(["Earlier work summarized.", "Answer."])
+
+    result = await compaction_run(meter, provider)
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    compaction, step = meter.calls
+    assert_run_context(compaction, result.run_id, tenant="tenant", user="user")
+    assert (compaction.purpose, compaction.step_id, compaction.attempt) == ("compaction", None, 0)
+    assert (compaction.provider, compaction.model) == ("mock", "deterministic")
+    assert step.purpose == "step" and step.step_id is not None
+
+
+class LegacyMeter:
+    """A meter written for 0.1.0a14: ``reserve`` has no ``call`` parameter."""
+
+    def __init__(self) -> None:
+        self.reserved: list[tuple[int, int]] = []
+        self.settled: list[object] = []
+
+    async def reserve(self, *, max_input_tokens: int, max_output_tokens: int) -> object:
+        self.reserved.append((max_input_tokens, max_output_tokens))
+        return len(self.reserved)
+
+    async def settle(self, ticket: object, usage: TokenUsage) -> None:
+        self.settled.append(ticket)
+
+    async def release(self, ticket: object) -> None:
+        raise AssertionError("nothing fails in this test")
+
+
+async def test_a14_meter_still_works_without_call_and_warns_once() -> None:
+    meter = LegacyMeter()
+
+    with pytest.warns(DeprecationWarning, match="removed in 0.2") as caught:
+        router = ModelRouter(usage_meter=meter)  # type: ignore[arg-type]
+        ModelRouter(usage_meter=meter)  # type: ignore[arg-type]
+
+    [warning] = [item for item in caught if issubclass(item.category, DeprecationWarning)]
+    assert "LegacyMeter.reserve() has no 'call' parameter" in str(warning.message)
+    # Attributed to the meter's own module, where the fix belongs.
+    assert warning.filename == __file__
+
+    router.register_provider(MockModelProvider(["answer"]))
+    profile = ModelProfile(name="m", provider="mock", model="deterministic")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the signature is not inspected again per call
+        response = await router.generate(
+            ModelRequest(messages=(Message.text(Role.USER, "hi"),), max_output_tokens=64),
+            (profile,),
+        )
+
+    assert response.message.text_content == "answer"
+    assert len(meter.reserved) == 1 and meter.reserved[0][1] == 64
+    assert meter.settled == [1]
+
+
+class KwargsMeter(RecordingMeter):
+    async def reserve(self, **kwargs: Any) -> object:  # type: ignore[override]
+        return await super().reserve(**kwargs)
+
+
+async def test_meter_taking_kwargs_receives_call() -> None:
+    meter = KwargsMeter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        runtime = metered(meter, ("mock", MockModelProvider(["answer"])))
+
+    result = await runtime.run(request())
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    [call] = meter.calls
+    assert_run_context(call, result.run_id)
+
+
+async def test_direct_router_use_meters_with_purpose_other() -> None:
+    meter = RecordingMeter()
+    router = ModelRouter(usage_meter=meter)
+    router.register_provider(MockModelProvider(["answer"]))
+    profile = ModelProfile(name="m", provider="mock", model="deterministic")
+
+    await router.generate(ModelRequest(messages=(Message.text(Role.USER, "hi"),)), (profile,))
+
+    assert meter.calls == [MeterCall(purpose="other", provider="mock", model="deterministic")]
+    [call] = meter.calls
+    assert call.tenant_id is None and call.user_id is None and call.run_id is None
+    assert call.step_id is None and call.attempt == 0 and call.streaming is False
+    assert dict(call.metadata) == {}
+
+
+async def test_resumed_run_in_a_new_runtime_reports_the_same_run() -> None:
+    def approval_runtime(meter: RecordingMeter, provider: MockModelProvider) -> AgentRuntime:
+        agent = make_agent(enabled_tools={"kb.write"}, tool_permissions={"kb.write"})
+        runtime = metered(meter, ("mock", provider), agent=agent)
+        runtime.tools.register(lookup_tool("kb.write", SideEffect.WRITE))
+        return runtime
+
+    first_meter = RecordingMeter()
+    first = approval_runtime(
+        first_meter, MockModelProvider([tool_call_response("kb.write", {}), "unused"])
+    )
+    paused = await first.run(request(metadata={"workspace_id": "w1"}))
+    assert paused.status == RunStatus.AWAITING_APPROVAL
+
+    # A restarted process: new runtime, router and meter, the same durable stores.
+    second_meter = RecordingMeter()
+    second = approval_runtime(second_meter, MockModelProvider(["final answer"]))
+    second.runs, second.events, second.approvals = first.runs, first.events, first.approvals
+    second.memory, second.audits = first.memory, first.audits
+
+    await second.resume(paused.run_id, "t", {"decision": "approved"})
+    finished = await second.wait(paused.run_id, "t")
+
+    assert finished.status == RunStatus.COMPLETED, finished.error
+    [before] = first_meter.calls
+    [after] = second_meter.calls
+    for call in (before, after):
+        assert_run_context(call, paused.run_id)
+        assert call.metadata == {"workspace_id": "w1"}
+    assert before.session_id == after.session_id
+    assert before.step_id != after.step_id
+
+
+async def test_cache_hit_is_not_metered() -> None:
+    meter = RecordingMeter()
+    provider = MockModelProvider(["answer"])
+    runtime = metered(meter, ("mock", provider))
+    runtime.cache = CacheService(
+        InMemoryCacheStore(),
+        {"model_responses": CachePolicy(enabled=True, scope=CacheScope.USER)},
+    )
+
+    first = await runtime.run(request())
+    second = await runtime.run(request())
+
+    assert first.output == second.output == "answer"
+    assert second.execution_summary.usage.cached_tokens > 0
+    assert len(meter.calls) == 1 and meter.calls[0].run_id == first.run_id
+    assert_balanced(meter)
+
+
+async def test_budget_refused_names_the_model_and_never_the_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    meter = RecordingMeter(refuse_from=1, reason="Credit limit reached.")
+    built, adapter = container(monkeypatch, meter)
+    runtime = built.runtime
+
+    result = await AlgenAgentRuntimeClient(runtime).run(
+        RunRequest(
+            agent="metered",
+            input="q",
+            tenant_id="t",
+            user_id="u",
+            metadata={"account_id": "secret-account-7"},
+        )
+    )
+
+    assert result.status == RunStatus.FAILED
+    assert meter.calls[0].metadata["account_id"] == "secret-account-7"
+    history = await runtime.events.history(result.run_id)
+    refused = next(event for event in history if event.type == "budget.refused")
+    assert refused.data == {"reason": "Credit limit reached.", "provider": "mock", "model": "m"}
+    [audit] = [item for item in await runtime.audits.list("t") if item.action == "budget.refused"]
+    assert audit.metadata == refused.data
+    events = json.dumps([event.model_dump(mode="json") for event in history])
+    audits = json.dumps([item.model_dump(mode="json") for item in await runtime.audits.list("t")])
+    spans = repr([dict(span.attributes or {}) for span in adapter.exporter.get_finished_spans()])
+    for text in (events, audits, spans):
+        assert "secret-account-7" not in text
+
+
+async def test_meter_call_exposes_run_metadata_read_only() -> None:
+    meter = RecordingMeter()
+    runtime = metered(meter, ("mock", MockModelProvider(["answer"])))
+    metadata = {"workspace_id": "w1"}
+
+    await runtime.run(request(metadata=metadata))
+
+    [call] = meter.calls
+    assert call.metadata["workspace_id"] == "w1"
+    with pytest.raises(TypeError):
+        call.metadata["workspace_id"] = "w2"  # type: ignore[index]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        call.metadata = {}  # type: ignore[misc]
+    # A copy: the caller's dict and the meter's view do not affect each other.
+    metadata["workspace_id"] = "changed"
+    assert call.metadata == {"workspace_id": "w1"}

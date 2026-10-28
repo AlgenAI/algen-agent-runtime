@@ -7,7 +7,7 @@ from algen_agent_runtime.artifacts import (
 )
 from algen_agent_runtime.cache import CacheContext, CachePolicy, CacheScope, CacheService
 from algen_agent_runtime.exceptions.errors import MeterRefusedError
-from algen_agent_runtime.models.metering import UsageMeter
+from algen_agent_runtime.models.metering import MeterCall, UsageMeter
 from algen_agent_runtime.retrieval.contracts import (
     RetrievalQuery,
     RetrievedDocument,
@@ -43,6 +43,7 @@ __all__ = [
     "Citation",
     "HashingEmbedder",
     "InMemoryRetriever",
+    "MeterCall",
     "MeterRefusedError",
     "RetrievalQuery",
     "RetrievedDocument",

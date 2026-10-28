@@ -6,9 +6,37 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- `MeterCall`, exported from `algen_agent_runtime`: what a usage meter is told about each model
+  call. It carries the tenant, user, run, parent run, session, conversation, turn, agent and
+  agent version, the step id, the `purpose` (`step`, `compaction` or `other`), the retry
+  `attempt`, the `provider` and `model` of the candidate being tried, whether it is
+  `streaming`, and a read-only copy of `RunRequest.metadata`. The runtime builds it from the
+  persisted run, so resumed and recovered runs report the same tenant, user and run. See
+  docs/agent-tooling.md#metering-model-calls.
+- `ModelRouter.generate(..., meter_call=...)` and `ModelRouter.stream(..., meter_call=...)`.
+  The router fills in `provider`, `model` and `streaming` for each candidate, so a fallback
+  reports the model it tries. Without `meter_call`, the meter gets `purpose="other"` and no run
+  fields.
+- `provider` and `model` in the `budget.refused` event data and audit record, and as
+  attributes of `MeterRefusedError`, which the router fills before re-raising.
+
 ### Changed
 
 - Allow structlog 26 (`structlog>=24.4,<27`). structlog 26 drops only Python 3.8 and 3.9 support.
+- `UsageMeter.reserve` takes `call: MeterCall` as a keyword argument. `settle` and `release` are
+  unchanged; keep the `MeterCall` in the ticket to use it when settling.
+
+### Deprecated
+
+- The 0.1.0a14 `UsageMeter.reserve(*, max_input_tokens, max_output_tokens)` form, without
+  `call`. The router still calls such a meter, without `call`, and emits one
+  `DeprecationWarning` per meter, attributed to the meter's module. Removed in 0.2.
+
+### Upgrade notes
+
+- Usage meters: add `call: MeterCall` to `reserve`; nothing else changes.
 
 ## [0.1.0a14] - 2026-10-28
 

@@ -79,6 +79,7 @@ from algen_agent_runtime.memory.service import (
     LearnedMemoryService,
 )
 from algen_agent_runtime.models.base import ModelRouter
+from algen_agent_runtime.models.metering import MeterCall, MeterPurpose
 from algen_agent_runtime.observability.traccia_adapter import (
     NoopObservabilityAdapter,
     ObservabilityAdapter,
@@ -697,13 +698,15 @@ class AgentRuntime:
             trace.get_current_span().set_attribute("budget.refused", True)
             if current.status not in TERMINAL_STATUSES:
                 current.error = self._safe_error(exc)
-                await self._emit(current, "budget.refused", {"reason": current.error})
+                # The candidate the router was reserving; never the run's metadata values.
+                refused = {"reason": current.error, "provider": exc.provider, "model": exc.model}
+                await self._emit(current, "budget.refused", refused)
                 await self._audit(
                     current,
                     "budget.refused",
                     "refused",
                     current.agent_key or current.request.agent,
-                    {"reason": current.error},
+                    refused,
                 )
                 await self._transition(current, RunStatus.FAILED)
                 await self._emit(
@@ -961,7 +964,12 @@ class AgentRuntime:
             attributes={**self._span_attributes(state), "span.type": "context"},
         ) as span:
             response = await self.router.generate(
-                request, (agent.default_model, *agent.fallback_models), agent.model_allowlist
+                request,
+                (agent.default_model, *agent.fallback_models),
+                agent.model_allowlist,
+                meter_call=self._meter_call(
+                    state, agent, step_id=None, purpose="compaction", attempt=0
+                ),
             )
             self._record_model_usage(state, response)
             # A later validation/archive failure must not lose already-incurred usage.
@@ -1315,6 +1323,9 @@ class AgentRuntime:
     ) -> Any:
         last_error: Exception | None = None
         for attempt in range(agent.retry_policy.max_attempts):
+            meter_call = self._meter_call(
+                state, agent, step_id=step_id, purpose="step", attempt=attempt
+            )
             try:
                 if request.stream:
                     text_parts: list[str] = []
@@ -1324,7 +1335,9 @@ class AgentRuntime:
                     # Closing the stream on every exit lets the router release a metered call
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
-                        self.router.stream(request, profiles, agent.model_allowlist)
+                        self.router.stream(
+                            request, profiles, agent.model_allowlist, meter_call=meter_call
+                        )
                     ) as events:
                         async for event in events:
                             if first_chunk and (event.delta or event.tool_call):
@@ -1353,7 +1366,9 @@ class AgentRuntime:
                     except ProviderError:
                         self._record_model_usage(state, completed)
                         raise
-                response = await self.router.generate(request, profiles, agent.model_allowlist)
+                response = await self.router.generate(
+                    request, profiles, agent.model_allowlist, meter_call=meter_call
+                )
                 try:
                     return self._validate_model_completion(response, request)
                 except ProviderError:
@@ -2701,6 +2716,37 @@ class AgentRuntime:
         return {
             key: "[REDACTED]" if key.lower() in sensitive else item for key, item in value.items()
         }
+
+    @staticmethod
+    def _meter_call(
+        state: RunState,
+        agent: AgentDefinition,
+        *,
+        step_id: str | None,
+        purpose: MeterPurpose,
+        attempt: int,
+    ) -> MeterCall:
+        """The usage meter's view of a model call, built from the persisted run alone.
+
+        Only checkpointed state is read, so a resumed or recovered run reports the same
+        tenant, user and run as before. The router fills in the provider and model it tries.
+        """
+        request = state.request
+        return MeterCall(
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            run_id=state.id,
+            parent_run_id=request.parent_run_id,
+            session_id=state.session_id,
+            conversation_id=request.conversation_id,
+            turn_id=request.turn_id,
+            agent=agent.name,
+            agent_version=agent.version,
+            step_id=step_id,
+            purpose=purpose,
+            attempt=attempt,
+            metadata=request.metadata,
+        )
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:

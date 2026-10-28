@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
+from typing import cast
 
 import structlog
 
@@ -13,9 +14,15 @@ from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     CapabilityError,
+    MeterRefusedError,
     ProviderError,
 )
-from algen_agent_runtime.models.metering import DEFAULT_RESERVED_OUTPUT_TOKENS, UsageMeter
+from algen_agent_runtime.models.metering import (
+    DEFAULT_RESERVED_OUTPUT_TOKENS,
+    MeterCall,
+    UsageMeter,
+    reserve_accepts_call,
+)
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     ModelCapabilities,
@@ -115,6 +122,8 @@ class ModelRouter:
         self._cache = cache
         # Reserves before and settles after every provider dispatch; see models/metering.py.
         self._usage_meter = usage_meter
+        # Inspected once here, never per call: a 0.1.0a14 meter is called without ``call``.
+        self._meter_takes_call = usage_meter is None or reserve_accepts_call(usage_meter)
 
     async def _capabilities(
         self,
@@ -262,7 +271,14 @@ class ModelRouter:
         request: ModelRequest,
         profiles: Sequence[ModelProfile],
         allowlist: frozenset[str] = frozenset(),
+        *,
+        meter_call: MeterCall | None = None,
     ) -> ModelResponse:
+        """Dispatch to the best candidate, falling back to the next on a provider error.
+
+        ``meter_call`` is the run context the usage meter receives; the router fills in
+        ``provider``, ``model`` and ``streaming`` for each candidate it tries.
+        """
         candidates = await self.candidates(profiles, allowlist)
         if not candidates:
             raise CapabilityError("no healthy allowed model satisfies required capabilities")
@@ -279,7 +295,9 @@ class ModelRouter:
             await self._limits[rid].acquire()
             # A refusal is not a ProviderError: it skips the fallbacks below and leaves health
             # untouched.
-            ticket = await self._reserve(candidate_request)
+            ticket = await self._reserve(
+                candidate_request, meter_call, rid, profile, streaming=False
+            )
             started = time.monotonic()
             try:
                 response = await self._dispatch(provider, candidate_request, ticket)
@@ -329,7 +347,10 @@ class ModelRouter:
         request: ModelRequest,
         profiles: Sequence[ModelProfile],
         allowlist: frozenset[str] = frozenset(),
+        *,
+        meter_call: MeterCall | None = None,
     ) -> AsyncGenerator[ModelStreamEvent, None]:
+        """Stream from the first candidate that fits; see ``generate`` for ``meter_call``."""
         candidates = await self.candidates(profiles, allowlist)
         if not candidates:
             raise CapabilityError("no healthy allowed streaming model is available")
@@ -351,7 +372,7 @@ class ModelRouter:
         if not capabilities.streaming:
             raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
         await self._limits[rid].acquire()
-        ticket = await self._reserve(candidate_request)
+        ticket = await self._reserve(candidate_request, meter_call, rid, profile, streaming=True)
         settled = False
         try:
             async for event in provider.stream(
@@ -384,14 +405,44 @@ class ModelRouter:
             if self._usage_meter is not None and not settled:
                 await self._usage_meter.release(ticket)
 
-    async def _reserve(self, request: ModelRequest) -> object:
+    async def _reserve(
+        self,
+        request: ModelRequest,
+        meter_call: MeterCall | None,
+        registration_id: str,
+        profile: ModelProfile,
+        *,
+        streaming: bool,
+    ) -> object:
         """Reserve a call's most cost with the meter, or nothing without one."""
         if self._usage_meter is None:
             return None
-        return await self._usage_meter.reserve(
-            max_input_tokens=estimate_request_tokens(request),
-            max_output_tokens=request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS,
-        )
+        model = request.model or profile.model or ""
+        max_input_tokens = estimate_request_tokens(request)
+        max_output_tokens = request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS
+        try:
+            if not self._meter_takes_call:
+                # The 0.1.0a14 form, warned about when this router was built; removed in 0.2.
+                legacy = cast(Callable[..., Awaitable[object]], self._usage_meter.reserve)
+                return await legacy(
+                    max_input_tokens=max_input_tokens, max_output_tokens=max_output_tokens
+                )
+            call = replace(
+                meter_call if meter_call is not None else MeterCall(purpose="other"),
+                provider=registration_id,
+                model=model,
+                streaming=streaming,
+            )
+            return await self._usage_meter.reserve(
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                call=call,
+            )
+        except MeterRefusedError as exc:
+            # Name the refused candidate for the run's budget.refused event and audit.
+            exc.provider = registration_id
+            exc.model = model
+            raise
 
     async def _dispatch(
         self, provider: ModelProvider, request: ModelRequest, ticket: object
