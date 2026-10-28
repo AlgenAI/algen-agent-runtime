@@ -92,8 +92,8 @@ The default API bind is `127.0.0.1`. Development-header authentication has no
 implicit scopes and is rejected on a non-loopback host unless
 `allow_insecure_development_auth: true` is explicitly configured. That override
 is intended only for isolated local/container development networks; public or
-shared deployments must use verified JWT authentication or an equivalent
-deployment-owned identity boundary.
+shared deployments must use verified JWT or OIDC authentication or an equivalent
+deployment-owned identity boundary (see [API authentication](#api-authentication)).
 
 The schema runner records applied files transactionally. FastAPI startup initializes storage and
 recovers non-paused incomplete runs and the workflow runs the HTTP workflow service started (see
@@ -158,7 +158,7 @@ characters with URLs, DSNs and credential-like values removed. Every probe is bo
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `model_providers` | `any` | `any`: at least one registered provider must be healthy (`failing: ["provider.*"]` otherwise); `all`: every provider is required (the behavior before 0.2.0b1); `none`: providers are only reported. With no providers registered, the rule is met. |
+| `model_providers` | `any` | `any`: at least one registered provider must be healthy (`failing: ["provider.*"]` otherwise); `all`: every provider is required (the behavior before 0.1.0a16); `none`: providers are only reported. With no providers registered, the rule is met. |
 | `require_durable_stores` | `true` | Require every `store.*` and `resource.*` dependency. |
 | `required` | `[]` | Further dependencies that must be up. A name that nothing registers is reported `down` with `not registered`. |
 | `optional` | `[]` | Dependencies to report without requiring them. A name cannot be both required and optional. |
@@ -216,6 +216,171 @@ once with the executor, or let a decision or answer through the API continue the
 | `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. |
 | `workflow.input.expired` | An input (clarification) wait was older than `maintenance.clarification_timeout_seconds` when the sweep ran; the asking node fails with `workflow input expired`. |
 | `workflow.recovered` | A recovered run continues after a restart. |
+
+## API authentication
+
+`api.auth_mode` selects how callers are identified:
+
+| Mode | Use | Verification |
+| --- | --- | --- |
+| `development_headers` (default) | local development only | Trusts `X-Tenant-ID`, `X-User-ID`, `X-Scopes`. Refused on a non-loopback host unless `allow_insecure_development_auth: true`. |
+| `jwt` | one signing key you manage | Bearer JWT verified with the static `env://` `jwt_key`, `jwt_algorithms`, `jwt_issuer` and `jwt_audience`; tenant from `tenant_claim`, scopes from `scopes_claim`. Unchanged from earlier releases, except that `none` is refused in `jwt_algorithms`. |
+| `oidc` | an OpenID Connect identity provider | Bearer JWT verified against the issuer's published JWKS, with key rotation, claim mapping and the options below. |
+
+`jwt` and `oidc` need the `auth` extra (`PyJWT[crypto]`).
+
+### OIDC issuers and JWKS
+
+```yaml
+api:
+  host: 0.0.0.0
+  auth_mode: oidc
+  oidc:
+    jwks_cache_ttl_seconds: 300            # how long fetched keys are used
+    jwks_min_refresh_interval_seconds: 30  # at most one JWKS fetch per issuer per interval
+    http_timeout_seconds: 5
+    allow_private_networks: false          # true only for an in-cluster identity provider
+    issuers:
+      - issuer: https://login.example.com/realms/acme   # exact 'iss'
+        # jwks_url: https://login.example.com/realms/acme/protocol/openid-connect/certs
+        audiences: [algen-agent-runtime]
+        algorithms: [RS256]                # RS*, PS*, ES*, EdDSA only
+        leeway_seconds: 30                 # clock skew for exp/nbf/iat, at most 300
+        max_token_lifetime_seconds: 900    # optional: refuse long-lived tokens
+        required_claims: [azp]             # beyond exp, iss, aud and the subject
+        claims:
+          subject_claim: sub
+          tenant_claim: tenant_id          # or fixed_tenant: acme
+          allowed_tenants: []              # optional allowlist
+          scope_claims: [scope, scp]
+          role_claims: [realm_access.roles, groups]
+          role_scopes:
+            runtime-operators: [runs:read, runs:write, conversations:read]
+            runtime-admins: [auth:revoke]
+```
+
+- **Discovery.** Without `jwks_url` the Runtime reads `{issuer}/.well-known/openid-configuration`,
+  requires its `issuer` to equal the configured issuer, and fetches its `jwks_uri`.
+- **Egress.** Discovery and JWKS fetches use the SSRF-safe client: only the issuer host, the
+  `jwks_url` host and the issuer's `additional_allowed_hosts` are reachable; private, loopback,
+  link-local and metadata addresses are refused unless `allow_private_networks: true`; redirects
+  are not followed; responses are capped at `max_jwks_bytes`; `https` is required unless
+  `allow_insecure_http: true` (local test providers only).
+- **Caching and rotation.** Keys are cached for `jwks_cache_ttl_seconds`. A token whose `kid` is
+  unknown triggers a refresh, rate-limited to one per `jwks_min_refresh_interval_seconds` per
+  issuer, so random key ids cannot turn requests into identity-provider traffic. If a refresh
+  fails the last good keys stay in use; if keys were never fetched the API answers 503.
+  Publish a new key in the JWKS before signing with it, and keep the old key published until the
+  tokens it signed have expired.
+- **Algorithms.** Only the issuer's `algorithms` are accepted. `none` and `HS*` are refused by
+  configuration validation; the token's algorithm must also match the key type (RSA: `RS*`/`PS*`,
+  EC: `ES*`, OKP: `EdDSA`) and the key's `alg` when the JWKS states one. Symmetric (`oct`) JWKS
+  keys are ignored. Tokens must carry a `kid`.
+- **Claims.** `exp`, `iss`, `aud` and the subject are required; `nbf` and `iat` are checked when
+  present, all with `leeway_seconds` of skew.
+- **Claim mapping.** The subject claim becomes the user id. The tenant comes from `fixed_tenant`
+  (one-tenant issuers; takes precedence) or `tenant_claim`; a missing, empty or non-string tenant
+  is refused (fail closed). Scopes are the union of the `scope_claims` values (a space-separated
+  string or a list) and the scopes `role_scopes` grants for each value in `role_claims`. A `*` in
+  a token scope claim is dropped; grant the wildcard through `role_scopes` if you really need it.
+  Claim names are looked up literally first (namespaced claims such as
+  `https://example.com/tenant`), then as dotted paths (`realm_access.roles`).
+
+### Token revocation
+
+Short-lived access tokens (5 to 15 minutes, enforced with `max_token_lifetime_seconds`) are the
+primary revocation control. For a token that must stop working sooner, enable the optional check:
+
+```yaml
+api:
+  token_revocation:
+    enabled: true
+    store: postgres     # 'memory' is per-process and lost on restart
+    require_jti: false  # true refuses tokens without a jti
+```
+
+Each verified `jwt` or `oidc` token is then checked, in one store lookup, against a tenant-scoped
+`jti` denylist and a per-subject "revoked before" cutoff (tokens whose `iat` is at or before the
+cutoff, or that have no `iat`, are refused). A store outage fails closed with 503. Revoke with
+the `auth:revoke` scope, within the caller's own tenant:
+
+- `POST /v1/auth/revocations/tokens` `{"jti", "expires_at", "reason"?}` denies the token until
+  its `exp` (the entry is purged afterwards; `expires_at` at most a year ahead).
+- `POST /v1/auth/revocations/subjects` `{"subject", "revoked_before"?, "reason"?}` refuses every
+  token for the subject issued at or before the cutoff (default now, never more than five
+  minutes in the future). A cutoff only moves forward.
+
+Both return 404 while revocation is disabled. From Python, use `container.token_revocations`
+(`revoke_token`, `revoke_subject`, `state`, `purge_expired`). The PostgreSQL store uses migration
+`013_token_revocation.sql`.
+
+Trade-offs: the check costs one indexed lookup per request and makes the store a dependency of
+authentication. OAuth token introspection (RFC 7662) is not implemented: it adds an
+identity-provider round trip per request (or a cache that brings back the same staleness), and
+short lifetimes plus this denylist cover the common cases. A deployment that needs introspection
+can run it in a gateway in front of the Runtime.
+
+### Service identity from a trusted proxy (mTLS)
+
+When a TLS-terminating proxy verifies client certificates, it can pass the client's identity to
+the Runtime in a header. Off by default:
+
+```yaml
+api:
+  trusted_proxy_identity:
+    enabled: true
+    header: x-client-cert-identity
+    trusted_proxies: [10.0.0.0/24]       # CIDRs of the proxies, never 0.0.0.0/0
+    identities:
+      spiffe://acme/ns/jobs/sa/scheduler:
+        tenant_id: acme
+        user_id: svc-scheduler           # default: the identity string
+        scopes: [runs:write, runs:read]
+```
+
+The header is honoured only when the request's direct TCP peer is in `trusted_proxies`, and only
+for an exact identity listed in `identities`; any other value is refused. The same header from
+any other address is refused (and audited as `untrusted_proxy`) even when the request also carries
+a valid bearer token. Requests without the header fall through to bearer authentication. The
+hook needs `auth_mode: jwt` or `oidc`.
+
+The proxy must overwrite the header on every request and never pass a client-supplied value
+through: for example Envoy `request_headers_to_add` with `%DOWNSTREAM_PEER_URI_SAN%` and
+`append_action: OVERWRITE_IF_EXISTS_OR_ADD`, or nginx `ssl_verify_client on` with
+`proxy_set_header X-Client-Cert-Identity $ssl_client_s_dn;`. The peer address must be the real
+TCP peer: `algen-agent-runtime serve` disables uvicorn's `X-Forwarded-For` rewriting when the
+hook is enabled; if you run the app under another server, disable proxy-header rewriting there
+too. Terminating mTLS in the Runtime itself (uvicorn `--ssl-cert-reqs`) is not mapped to
+principals.
+
+### Authentication audit events
+
+| Kind | Name | Data |
+| --- | --- | --- |
+| Audit | `auth.authenticate`, outcome `failure` | `method` (`jwt`, `oidc`, `trusted_proxy`), `reason`, and when known `issuer`, `kid`, `subject`. Recorded under the verified tenant when the token was verified (`revoked`, `missing_jti`, `revocation_unavailable`), otherwise under tenant `_authentication`. |
+| Audit | `auth.authenticate`, outcome `success` | `method`, `issuer`, `kid`, `subject`; only with `authentication_audit.record_success: true`. |
+| Audit | `auth.audit.suppressed`, outcome `suppressed` | `count` of failure records dropped by the per-minute cap. |
+| Audit | `auth.token.revoked`, `auth.subject.revoked` (outcome `completed`) | `expires_at` or `revoked_before`, `reason`; the actor is the revoking principal. |
+| Metric | `algen_agent_runtime.auth.attempts` (counter) | Attributes `method`, `outcome`, `reason`. |
+| Log | `authentication failed` (warning) | `auth_method`, `auth_reason`, `auth_issuer`, `auth_kid`. |
+
+Failure reasons: `missing_credentials`, `malformed_token`, `algorithm_not_allowed`,
+`unknown_issuer`, `missing_key_id`, `unknown_key`, `keys_unavailable`, `invalid_signature`,
+`expired`, `not_yet_valid`, `invalid_issued_at`, `invalid_audience`, `invalid_issuer`,
+`missing_claim`, `token_lifetime_exceeded`, `missing_subject`, `missing_tenant`,
+`tenant_not_allowed`, `missing_jti`, `revoked`, `revocation_unavailable`, `untrusted_proxy`,
+`invalid_service_identity`, `unknown_service_identity`, `invalid_token`.
+
+No record contains the token, its signature or any claim beyond the subject. A `subject` is
+recorded only after the signature is verified (or for a trusted proxy's identity); the `issuer`
+and `kid` of an unverified token are attacker-controlled and truncated to 256 characters. Failure
+records are capped at `authentication_audit.max_failure_records_per_minute` (default 600) per
+process; the excess is counted in one `auth.audit.suppressed` record, and the metric and log
+still see every attempt. `authentication_audit.record_failures: false` turns the records off (the
+metric and log remain). Each request is authenticated and audited once, even when the rate
+limiter authenticates it before the route does. Clients get a generic answer (a rejected token is
+`invalid bearer token`, 401 with `WWW-Authenticate: Bearer error="invalid_token"`; unavailable
+keys or revocation store are 503); the specific reason is only in the audit.
 
 ## Resumable execution budgets
 

@@ -31,6 +31,11 @@ from algen_agent_runtime.approvals.service import (
     InMemoryApprovalService,
     PostgresApprovalService,
 )
+from algen_agent_runtime.auth.revocation import (
+    InMemoryTokenRevocationStore,
+    PostgresTokenRevocationStore,
+    TokenRevocationStore,
+)
 from algen_agent_runtime.cache import (
     CachePolicy,
     CacheService,
@@ -195,6 +200,12 @@ class Container:
     rate_limiter: ApiRateLimiter | None = None
     mcp: MCPClientManager | None = None
     degraded_dependencies: dict[str, str] = field(default_factory=dict)
+    token_revocations: TokenRevocationStore | None = None
+    """Store checked by verified API authentication when ``api.token_revocation`` is enabled;
+    revoke through it from Python or through ``/v1/auth/revocations``."""
+    oidc_transport: httpx.AsyncBaseTransport | None = None
+    """Transport for OIDC discovery and JWKS fetches; ``None`` uses the SSRF-safe transport.
+    Tests and hosts with their own egress layer may inject one."""
     resources: tuple[object, ...] = ()
     recover_incomplete_runs: bool = True
     recovery_limit: int = 1000
@@ -311,6 +322,17 @@ class Container:
                     await result
         self.close()
         self.lifecycle.phase = "stopped"
+
+
+def _token_revocation_store(
+    settings: AppSettings, database: PostgresDatabase | None
+) -> TokenRevocationStore | None:
+    revocation = settings.api.token_revocation
+    if not revocation.enabled:
+        return None
+    if revocation.store == "postgres":
+        return PostgresTokenRevocationStore(database)
+    return InMemoryTokenRevocationStore()
 
 
 class _ScopedEnvironmentSecretProvider:
@@ -467,6 +489,8 @@ def build_container(
         settings.distributed_execution.queue_backend,
         storage.mcp_oauth_token_store,
     }
+    if settings.api.token_revocation.enabled:
+        selected_backends.add(settings.api.token_revocation.store)
     if storage.artifact_store == "s3":
         selected_backends.add("postgres")
     database = (
@@ -1008,6 +1032,7 @@ def build_container(
         rate_limiter=rate_limiter,
         resources=tuple(lifecycle_resources),
         mcp=mcp_manager,
+        token_revocations=_token_revocation_store(settings, database),
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,
         shutdown_grace_seconds=settings.runtime.shutdown_grace_seconds,

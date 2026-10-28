@@ -75,7 +75,14 @@ def _run_serve(
     if settings.api.agent_ui_enabled:
         print(f"Agent UI enabled at: http://{bind_host}:{bind_port}{settings.api.agent_ui_path}")
 
-    uvicorn.run(create_app(settings), host=bind_host, port=bind_port)
+    uvicorn.run(
+        create_app(settings),
+        host=bind_host,
+        port=bind_port,
+        # The trusted-proxy identity hook checks the direct peer; never let X-Forwarded-For
+        # rewrite it.
+        proxy_headers=not settings.api.trusted_proxy_identity.enabled,
+    )
 
 
 def _discover_config_paths(config: list[str] | None) -> tuple[Path, ...] | None:
