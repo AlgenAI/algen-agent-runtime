@@ -21,12 +21,26 @@ contracts are explicitly marked experimental during the `0.x` series.
   fields.
 - `provider` and `model` in the `budget.refused` event data and audit record, and as
   attributes of `MeterRefusedError`, which the router fills before re-raising.
+- Per-run tool credentials. `Runtime.start`, `run` and `resume` take a keyword-only
+  `credentials: Mapping[str, str] | None`, and tools read them from the new
+  `ToolContext.credentials`: a read-only private copy, empty by default. They are kept in memory
+  only, while the run executes, and dropped when it pauses or ends; they never reach run state,
+  checkpoints, stores, events, audits, spans, logs, caches or the model, and are left out of
+  `ToolContext`'s `repr`, `model_dump`, equality and hashing. A resumed run sees only the
+  credentials passed to `resume`; one resumed without them or recovered after a restart sees none.
+  `core.subagent` passes the parent's credentials to its child run. Workflow tool steps and the
+  HTTP API pass none. `fake_tool_context(credentials=...)` sets them in tests. See
+  docs/tool-authoring.md#credentials-of-the-caller and docs/threat-model.md.
 
 ### Changed
 
 - Allow structlog 26 (`structlog>=24.4,<27`). structlog 26 drops only Python 3.8 and 3.9 support.
 - `UsageMeter.reserve` takes `call: MeterCall` as a keyword argument. `settle` and `release` are
   unchanged; keep the `MeterCall` in the ticket to use it when settling.
+- The `Runtime` protocol (`types.interfaces.Runtime`) adds the optional `credentials` keyword to
+  `start`, `run` and `resume`. A host's own implementation of the protocol should accept it.
+- `ToolContext` validation errors no longer echo the rejected input, and `ToolContext` is now
+  hashable (from its identifiers; secrets and credentials take no part).
 
 ### Deprecated
 

@@ -110,10 +110,12 @@ from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolDefinition,
     ToolResult,
+    read_only_credentials,
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
+    PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
     ContextCompaction,
@@ -283,6 +285,9 @@ class AgentRuntime:
         self.telemetry_include_content = telemetry_include_content
         self.telemetry_max_content_chars = telemetry_max_content_chars
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # The caller's credentials for each run while it executes, by run id. Memory only: set
+        # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
+        self._credentials: dict[str, Mapping[str, str]] = {}
         self._task_lock = asyncio.Lock()
         self._accepting_runs = True
         self._shutdown_cancellation = False
@@ -345,7 +350,16 @@ class AgentRuntime:
                 "history compaction, working state, and skills require a built-in context builder"
             )
 
-    async def start(self, request: RunRequest) -> RunState:
+    async def start(
+        self, request: RunRequest, *, credentials: Mapping[str, str] | None = None
+    ) -> RunState:
+        """Create a run and execute it in the background.
+
+        ``credentials`` are the caller's (for example ``{"authorization": "Bearer ..."}``): tools
+        read them from ``ToolContext.credentials``. They stay in this process's memory until the
+        run pauses or ends and are never persisted, so ``resume`` must supply them again.
+        """
+        credentials = read_only_credentials(credentials)
         if not self._accepting_runs:
             raise ConflictError("runtime is draining and is not accepting new runs")
         agent = self.agents.get(request.agent, request.agent_version)
@@ -362,11 +376,14 @@ class AgentRuntime:
         state = RunState(**state_values)
         await self.runs.create(state)
         await self._emit(state, "run.started", {"agent": agent.key})
-        await self._schedule(state.id, request.tenant_id)
+        await self._schedule(state.id, request.tenant_id, credentials)
         return state
 
-    async def run(self, request: RunRequest) -> RunResult:
-        state = await self.start(request)
+    async def run(
+        self, request: RunRequest, *, credentials: Mapping[str, str] | None = None
+    ) -> RunResult:
+        """Start a run and wait for it; ``credentials`` as for :meth:`start`."""
+        state = await self.start(request, credentials=credentials)
         return await self.wait(state.id, request.tenant_id)
 
     async def wait(self, run_id: str, tenant_id: str) -> RunResult:
@@ -406,7 +423,19 @@ class AgentRuntime:
             await self._emit(state, "run.cancelled", {})
         return state
 
-    async def resume(self, run_id: str, tenant_id: str, payload: Mapping[str, Any]) -> RunState:
+    async def resume(
+        self,
+        run_id: str,
+        tenant_id: str,
+        payload: Mapping[str, Any],
+        *,
+        credentials: Mapping[str, str] | None = None,
+    ) -> RunState:
+        """Answer a paused run's approval or clarification and continue it.
+
+        The resumed run sees only the ``credentials`` passed here; none from before the pause.
+        """
+        credentials = read_only_credentials(credentials)
         state = await self._require_state(run_id, tenant_id)
         if state.status == RunStatus.AWAITING_CLARIFICATION:
             clarification = str(payload.get("clarification", "")).strip()
@@ -478,7 +507,7 @@ class AgentRuntime:
                     f"tool-{call_id}",
                 )
                 await self._transition(state, RunStatus.PLANNING)
-                await self._schedule(run_id, tenant_id)
+                await self._schedule(run_id, tenant_id, credentials)
                 return state
             if pause_payload.get("kind") == "execution_continuation":
                 state.continuation_count += 1
@@ -496,7 +525,7 @@ class AgentRuntime:
                         "reason": str(pause_payload.get("reason", "execution_budget")),
                     },
                 )
-                await self._schedule(run_id, tenant_id)
+                await self._schedule(run_id, tenant_id, credentials)
                 return state
             state.approved_tool_call_ids.add(call_id)
             if approval.status == ApprovalStatus.MODIFIED:
@@ -510,23 +539,49 @@ class AgentRuntime:
             await self._transition(state, RunStatus.PLANNING)
         else:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
-        await self._schedule(run_id, tenant_id)
+        await self._schedule(run_id, tenant_id, credentials)
         return state
 
-    async def _schedule(self, run_id: str, tenant_id: str) -> None:
+    async def _schedule(
+        self,
+        run_id: str,
+        tenant_id: str,
+        credentials: Mapping[str, str] | None = None,
+    ) -> None:
         async with self._task_lock:
             existing = self._tasks.get(run_id)
             if existing and not existing.done():
                 raise ConflictError("run is already executing")
-            task = asyncio.create_task(self._drive(run_id, tenant_id))
+            # Only this drive's credentials: none carried over from an earlier one. Installed
+            # under the lock, so a drive still running never sees another call's credentials.
+            if credentials:
+                self._credentials[run_id] = read_only_credentials(credentials)
+            else:
+                self._credentials.pop(run_id, None)
+            task = asyncio.create_task(self._drive_with_credentials(run_id, tenant_id))
             self._tasks[run_id] = task
             task.add_done_callback(self._forget_task)
+
+    async def _drive_with_credentials(self, run_id: str, tenant_id: str) -> None:
+        try:
+            await self._drive(run_id, tenant_id)
+        finally:
+            # However the drive ends (paused, finished, failed, cancelled, shut down), the
+            # caller's credentials go with it.
+            self._credentials.pop(run_id, None)
 
     def _forget_task(self, completed: asyncio.Task[None]) -> None:
         for run_id, task in tuple(self._tasks.items()):
             if task is completed:
                 self._tasks.pop(run_id, None)
+                # A task cancelled before it started never ran its drive's cleanup. A newer
+                # drive has replaced this one in _tasks if it installed credentials of its own.
+                self._credentials.pop(run_id, None)
                 return
+
+    def _run_credentials(self, run_id: str) -> Mapping[str, str]:
+        """The credentials the run's current drive was given, or none."""
+        return read_only_credentials(self._credentials.get(run_id))
 
     async def recover(self, limit: int = 1000) -> int:
         """Resume non-paused checkpoints after a single-node process restart."""
@@ -1042,6 +1097,7 @@ class AgentRuntime:
                     user_id=state.request.user_id,
                     permissions=agent.tool_permissions,
                     idempotency_key=f"{state.id}:compaction:{plan.start}:{plan.through}",
+                    # Archiving history runs no tool, so it is given no caller credentials.
                 ),
                 agent.context_policy,
                 started_at=state.started_at,
@@ -1933,6 +1989,7 @@ class AgentRuntime:
             user_id=state.request.user_id,
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
+            credentials=self._run_credentials(state.id),
         )
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
@@ -2509,6 +2566,9 @@ class AgentRuntime:
         state.status = target
         state.updated_at = utc_now()
         await self.runs.save(state, expected)
+        if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
+            # A paused run gets fresh credentials on resume; an ended run needs none.
+            self._credentials.pop(state.id, None)
 
     async def _emit(
         self,

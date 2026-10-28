@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from algen_agent_runtime.types.contracts import RetryPolicy
 
@@ -52,8 +53,71 @@ class ToolDefinition(BaseModel):
     )
 
 
+class _ReadOnlyCredentials(Mapping[str, str]):
+    """A caller's credentials: read-only, never shown by ``repr`` and never pickled."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Mapping[str, str]) -> None:
+        self._values: Mapping[str, str] = MappingProxyType(dict(values))
+
+    def __getitem__(self, key: str) -> str:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"<credentials: {len(self._values)} redacted>"
+
+    def __copy__(self) -> _ReadOnlyCredentials:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _ReadOnlyCredentials:
+        return self
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Credentials live in memory only: a pickled copy comes back empty.
+        return (_ReadOnlyCredentials, ({},))
+
+
+_NO_CREDENTIALS = _ReadOnlyCredentials({})
+
+
+def read_only_credentials(credentials: Mapping[str, str] | None) -> Mapping[str, str]:
+    """A private, read-only copy of a caller's credentials.
+
+    Raises ``TypeError``, naming no key or value, when it is not a mapping of strings to strings.
+    """
+    if credentials is None:
+        return _NO_CREDENTIALS
+    if isinstance(credentials, _ReadOnlyCredentials):
+        # Already a private, immutable copy.
+        return credentials
+    if not isinstance(credentials, Mapping) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in credentials.items()
+    ):
+        raise TypeError("credentials must be a mapping of strings to strings")
+    return _ReadOnlyCredentials(credentials) if credentials else _NO_CREDENTIALS
+
+
 class ToolContext(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+    """What a tool knows about a call: who, which run and step, and what it may do.
+
+    ``credentials`` are the calling user's credentials for this run (for example an
+    ``authorization`` header to forward), as the host passed them to ``Runtime.run``, ``start`` or
+    ``resume``. They are a read-only copy kept in memory only: left out of ``repr``,
+    ``model_dump``, equality and hashing, and never written to run state, events, audits or spans.
+    A run resumed without credentials, or recovered after a restart, has none.
+    """
+
+    # Validation errors never echo their input: it may hold secrets or credentials.
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, arbitrary_types_allowed=True, hide_input_in_errors=True
+    )
     run_id: str
     step_id: str
     tenant_id: str
@@ -61,6 +125,46 @@ class ToolContext(BaseModel):
     permissions: frozenset[str]
     idempotency_key: str
     secrets: Mapping[str, str] = Field(default_factory=dict)
+    credentials: Mapping[str, str] = Field(
+        default_factory=lambda: _NO_CREDENTIALS, repr=False, exclude=True
+    )
+
+    @field_validator("credentials", mode="plain")
+    @classmethod
+    def _read_only_credentials(cls, value: Any) -> Mapping[str, str]:
+        try:
+            return read_only_credentials(value)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from None
+
+    def _compared(self) -> tuple[Any, ...]:
+        return (
+            self.run_id,
+            self.step_id,
+            self.tenant_id,
+            self.user_id,
+            self.permissions,
+            self.idempotency_key,
+            dict(self.secrets),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        # Credentials take no part, so comparing two contexts says nothing about them.
+        if not isinstance(other, ToolContext):
+            return NotImplemented
+        return self._compared() == other._compared()
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.run_id,
+                self.step_id,
+                self.tenant_id,
+                self.user_id,
+                self.permissions,
+                self.idempotency_key,
+            )
+        )
 
 
 class ToolResult(BaseModel):

@@ -20,7 +20,10 @@ def subagent_tool(runtime: Runtime, max_depth: int = 3) -> Tool:
                 tenant_id=context.tenant_id,
                 user_id=context.user_id,
                 metadata={"parent_run_id": context.run_id, "depth": str(depth + 1)},
-            )
+            ),
+            # The child acts for the same caller: it gets the parent's credentials, in memory,
+            # until it pauses or ends.
+            credentials=context.credentials,
         )
         return result.model_dump(mode="json")
 
