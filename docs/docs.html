@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a13">v0.1.0a13 · latest</option>
+                    <option value="0.1.0a14">v0.1.0a14 · latest</option>
+                    <option value="0.1.0a13">v0.1.0a13</option>
                     <option value="0.1.0a12">v0.1.0a12</option>
                     <option value="0.1.0a11">v0.1.0a11</option>
                     <option value="0.1.0a10">v0.1.0a10</option>
@@ -1389,7 +1390,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a13</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a14</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1409,7 +1410,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a13 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a14 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1466,7 +1467,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2096,7 +2097,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a13</span>.</footer>
+                    data-version-field="version">0.1.0a14</span>.</footer>
         </main>
     </div>
 
@@ -2222,9 +2223,38 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13'];
-        const LATEST_VERSION = '0.1.0a13';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14'];
+        const LATEST_VERSION = '0.1.0a14';
         const RELEASES = {
+            '0.1.0a14': {
+                date: '2026-10-28',
+                kind: 'Guards in the Runtime',
+                title: 'Tool-call guards, usage metering, OAuth for MCP servers, and Runtime-only Traccia traces',
+                summary: 'The guards that kept agents from wasting a run now live in the Runtime, configured per agent and kept across approval pauses. Every model call can be metered, remote MCP servers that need OAuth can be connected per tenant or per user, and Traccia receives only the traces the Runtime started.',
+                fields: {
+                    tag: 'v0.1.0a14',
+                    package: '0.1.0a14 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a14',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Tool-call guards.</strong> <code>Tool.precheck</code> refuses a change before it runs or asks for approval; <code>tool_policy.max_refusals_per_tool</code>, <code>repeat_guard</code> and <code>max_calls_per_tool</code> answer a stuck model with a note; <code>wrap_up_policy</code> warns when the run has room only to answer. State is kept in <code>RunState</code>. See <a href="agent-tooling.md#tool-call-guards">agent tooling</a>.',
+                            '<strong>Usage metering.</strong> <code>build_container(usage_meter=...)</code> reserves and settles every model call (steps, retries, fallbacks, repairs, streaming, compaction); a <code>MeterRefusedError</code> ends the run with <code>budget.refused</code>.',
+                            '<strong>OAuth for MCP servers.</strong> <code>auth: {type: oauth}</code> on <code>streamable_http</code> and <code>sse</code> servers, with PKCE, refresh, revocation, per-tenant or per-user tokens and an encrypted PostgreSQL store. A call with no connection returns <code>MCPNotConnected</code>. See <a href="mcp.md">MCP</a>.',
+                            '<strong>Shortened older tool results</strong> (<code>context_policy.shorten_older_tool_results</code>) and <strong>XLSX, PPTX, HTML and CSV inspection</strong> in <code>extractor_for</code>.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Traccia receives only Runtime traces.</strong> Spans from FastAPI and other instrumentors are dropped; <code>telemetry.traccia.export_foreign_traces: true</code> restores the old behaviour.',
+                            '<strong>Schema check before approval.</strong> Arguments that do not fit a tool\'s <code>input_schema</code> are refused before the call runs or is put to the user.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a13': {
                 date: '2026-10-27',
                 kind: 'Workflows over HTTP',
@@ -2233,7 +2263,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a13',
                     package: '0.1.0a13 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a14',
                     version: '0.1.0a13',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
