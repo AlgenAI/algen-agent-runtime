@@ -285,6 +285,7 @@ telemetry:
     export_whole_runs: true        # send each run's spans together (default)
     run_export_max_spans: 2000     # flush a run early past this many spans
     run_export_max_seconds: 300    # or once it has been open this long
+    export_foreign_traces: false   # send only traces the Runtime started (default)
 ```
 
 Set `TRACCIA_API_KEY` through the deployment secret manager. Alternatively, omit `api_key` here and let the Traccia SDK load `TRACCIA_API_KEY` or `traccia.toml`. Never put a literal key in YAML.
@@ -348,6 +349,31 @@ run past `run_export_max_spans` spans or open longer than `run_export_max_second
 the rest follows its root. The root records `agent.run.span_count`, the number of spans the run
 emitted, so a backend can tell a whole trace from a partial one. Other OpenTelemetry deployments can
 use `install_run_scoped_export(provider)` from `algen_agent_runtime.observability.run_export`.
+
+**Foreign traces.** Traccia's provider is the process-global one, so a library that traces through
+the global provider (FastAPI's request tracing, an httpx or SQLAlchemy instrumentor) reaches the same
+exporters, with no agent identity; Traccia files those spans under `unknown-agent-name`. With
+`export_foreign_traces: false` (the default), the adapter puts a `RuntimeTraceFilterProcessor` in front
+of the export processors present when Traccia starts (in front of the whole-run processor when that is
+on): a trace is exported only when the span that opened it in this process is a Runtime root, and
+every other trace is dropped whole, including spans that end after its root. A Runtime root is either:
+
+- a span carrying `algen.runtime.root=true`: `conversation.turn`, an `agent.run` that opens its trace
+  (a standalone run, or a resumed run under its stored parent; a run inside a turn is the turn's
+  child and is not marked), or
+- a span created by a Runtime tracer (instrumentation scope `algen_agent_runtime.*`), so Runtime spans
+  that start without a run, such as `model_service.invoke`, `conversation.feedback` or
+  `distributed_work.execute`, keep reaching Traccia.
+
+A run started while an HTTP request span is current, as when a FastAPI handler starts it, opens its
+own trace instead of becoming the request's child, so it is exported whole and not dropped with the
+request. A Runtime component span created inside an application's request span, outside any run,
+belongs to the request's trace and is dropped with it. Set `export_foreign_traces: true`
+(`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__EXPORT_FOREIGN_TRACES=true`) to send everything as before,
+with runs as children of the request that started them, when an application wants its own spans in
+Traccia. An exporter added after Traccia starts, such as `telemetry.otlp_endpoint`, is not filtered.
+Other OpenTelemetry deployments can use `install_runtime_trace_filter(provider)` from
+`algen_agent_runtime.observability.runtime_traces`.
 
 **Resumed runs.** A run stores its first `agent.run` span in `RunState.trace_parent`; when it resumes
 after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one

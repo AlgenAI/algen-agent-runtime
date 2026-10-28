@@ -637,6 +637,7 @@ def test_traccia_adapter_routes_spans_and_exports_runs_whole(
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     from algen_agent_runtime.observability.run_export import RunScopedExportProcessor
+    from algen_agent_runtime.observability.runtime_traces import RuntimeTraceFilterProcessor
 
     exporter = InMemorySpanExporter()
     otel_provider = TracerProvider()
@@ -675,7 +676,8 @@ def test_traccia_adapter_routes_spans_and_exports_runs_whole(
 
     assert tracers == ["algen_agent_runtime.runtime"] * 2
     processors = otel_provider._active_span_processor._span_processors
-    assert len(processors) == 1 and isinstance(processors[0], RunScopedExportProcessor)
+    assert len(processors) == 1 and isinstance(processors[0], RuntimeTraceFilterProcessor)
+    assert isinstance(processors[0].processors[0], RunScopedExportProcessor)
     spans = exporter.get_finished_spans()
     assert [span.name for span in spans] == ["agent.model.call", "agent.run"]
     assert spans[1].attributes is not None
@@ -700,7 +702,7 @@ def test_whole_run_export_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> 
         lambda name: fake,
     )
     adapter = TracciaObservabilityAdapter(
-        TracciaSettings(enabled=True, export_whole_runs=False), "svc"
+        TracciaSettings(enabled=True, export_whole_runs=False, export_foreign_traces=True), "svc"
     )
     monkeypatch.setattr(adapter, "_register_otel_provider", lambda provider: None)
 

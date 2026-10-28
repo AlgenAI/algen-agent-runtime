@@ -216,6 +216,12 @@ class TracciaSettings(StrictSettings):
     )
     run_export_max_spans: int = Field(default=2_000, ge=1, le=100_000)
     run_export_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+    export_foreign_traces: bool = Field(
+        default=False,
+        description="Also export traces the Runtime did not start, such as the HTTP request spans "
+        "a web framework or instrumentor creates through the global OpenTelemetry provider. By "
+        "default Traccia receives only traces opened by a Runtime root.",
+    )
 
     @model_validator(mode="after")
     def validate_api_key_reference(self) -> TracciaSettings:

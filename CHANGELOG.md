@@ -31,6 +31,17 @@ contracts are explicitly marked experimental during the `0.x` series.
 ### Changed
 
 - `extractor_for` names every supported format in its `ValueError` for an unknown suffix.
+- With Traccia on, Traccia receives only the traces the Runtime started. Spans that other libraries
+  create through the global OpenTelemetry provider (FastAPI's request tracing, httpx or SQLAlchemy
+  instrumentors), which Traccia filed under `unknown-agent-name`, are dropped. A trace is kept when
+  the span that opened it in this process is a Runtime root: `conversation.turn` or an `agent.run`
+  that opens its trace, now marked `algen.runtime.root=true`, or a span from a Runtime tracer
+  (`algen_agent_runtime.*`), so Runtime spans without a run (model services, feedback) still go out.
+  A run started inside an HTTP request now opens its own trace instead of becoming the request's
+  child. New setting `telemetry.traccia.export_foreign_traces` (default `false`); `true` restores
+  the previous behaviour. Works with and without `export_whole_runs`. See docs/operations.md.
+  **Upgrade note:** apps that turned off FastAPI's request tracing to keep it out of Traccia
+  (`FastAPI(telemetry={...: False})`) can remove that workaround after upgrading.
 
 ## [0.1.0a13] - 2026-10-27
 
