@@ -36,6 +36,7 @@ from algen_agent_runtime.api.rate_limiting import (
     InMemoryApiRateLimiter,
     RouteLimitPolicy,
 )
+from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
@@ -303,6 +304,7 @@ def create_app(
     add_workflow_routes(app, workflows, identity_dependency)
     add_mcp_oauth_routes(app, dependencies, identity_dependency)
     add_auth_routes(app, dependencies, identity_dependency)
+    add_tool_execution_routes(app, dependencies, identity_dependency)
 
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(

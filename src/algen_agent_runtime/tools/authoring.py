@@ -20,8 +20,10 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.tools.contracts import (
+    CompensationHandler,
     Idempotency,
     Precheck,
+    Reconciler,
     SideEffect,
     Tool,
     ToolContext,
@@ -270,11 +272,15 @@ def build_tool(
     audit_metadata: dict[str, str] | None = None,
     volatile: bool = False,
     precheck: Precheck | None = None,
+    reconcile: Reconciler | None = None,
+    compensation: CompensationHandler | None = None,
 ) -> Tool:
     """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this.
 
     ``volatile`` marks a read of state that changes on its own, which the repeat guard never
-    holds back; ``precheck`` refuses a call before anyone is asked to approve it.
+    holds back; ``precheck`` refuses a call before anyone is asked to approve it. ``reconcile``
+    asks the external system, by idempotency key, whether a call whose outcome is unknown took
+    effect; ``compensation`` undoes a call when an operator asks for it.
     """
     preset = preset or read()
     tool_name = name or function.__name__
@@ -348,7 +354,7 @@ def build_tool(
             ApprovalRequest(definition, arguments, context), lambda: run(arguments, context)
         )
 
-    tool = Tool(definition, handler, precheck=precheck)
+    tool = Tool(definition, handler, compensation, precheck=precheck, reconcile=reconcile)
     tool.__doc__ = function.__doc__
     return tool
 

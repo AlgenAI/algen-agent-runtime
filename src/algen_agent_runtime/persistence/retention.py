@@ -39,7 +39,8 @@ WITH doomed AS (
       AND r.updated_at < now() - ($1 * interval '1 second')
       AND NOT EXISTS (
           SELECT 1 FROM algen_agent_runtime_tool_executions t
-          WHERE t.run_id = r.id AND t.status IN ('started', 'indeterminate')
+          WHERE t.run_id = r.id
+            AND t.status IN ('started', 'indeterminate', 'compensating', 'compensation_failed')
       )
       AND NOT EXISTS (
           SELECT 1 FROM algen_agent_runtime_workflow_checkpoints w
