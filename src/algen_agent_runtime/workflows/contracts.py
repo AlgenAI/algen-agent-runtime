@@ -373,6 +373,13 @@ class WorkflowExecutionState(BaseModel):
     root_workflow_id: str | None = None
     workflow_depth: int = Field(default=0, ge=0, le=32)
     workflow_ancestry: tuple[str, ...] = ()
+    owner: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Which component drives the run after a restart and expires its waits: "
+        "'workflow_service' for runs started through the HTTP workflow API; None for runs an "
+        "application drives with its own executor (it calls executor.recover itself).",
+    )
     version: int = Field(default=0, ge=0)
     status: WorkflowStatus = WorkflowStatus.PENDING
     values: dict[str, Any] = Field(default_factory=dict)

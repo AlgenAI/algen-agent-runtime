@@ -4,7 +4,10 @@ A deployed project's other systems (a mail worker, a scheduler, an HR system's a
 need to start its workflows and decide their approval steps without a person in Studio. The
 service runs ``settings.workflows`` with the Runtime's own executor and checkpoint store, so a
 run survives a restart when the store is PostgreSQL, and every call is scoped to the caller's
-tenant. Hook code (custom steps) is imported only from modules under
+tenant. The service owns the runs it starts (``owner="workflow_service"``): on start the container
+recovers the ones a stop interrupted (``recover``), the maintenance sweep expires their approval
+and input waits (``expire_paused``), and a drain leaves unfinished runs recoverable rather than
+cancelled (``drain``). Hook code (custom steps) is imported only from modules under
 ``security.trusted_plugin_prefixes``, the same trust that plugins need; a workflow whose hooks
 are not trusted cannot be started.
 
@@ -26,7 +29,11 @@ from typing import Any
 from uuid import uuid4
 
 from algen_agent_runtime.config.settings import AppSettings
-from algen_agent_runtime.exceptions.errors import ConfigurationError, NotFoundError
+from algen_agent_runtime.exceptions.errors import (
+    ConfigurationError,
+    ConflictError,
+    NotFoundError,
+)
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.security.network import create_safe_http_client
 from algen_agent_runtime.workflows.contracts import (
@@ -50,6 +57,10 @@ NOTIFIED = {
     WorkflowStatus.FAILED: "workflow.failed",
 }
 SIGNATURE_HEADER = "X-Algen-Signature"
+# The owner recorded on runs this service starts; only these are recovered and expired by it.
+OWNER = "workflow_service"
+PAUSED = {WorkflowStatus.AWAITING_APPROVAL, WorkflowStatus.AWAITING_INPUT}
+INTERRUPTED = {WorkflowStatus.PENDING, WorkflowStatus.RUNNING}
 
 
 class WorkflowService:
@@ -62,7 +73,10 @@ class WorkflowService:
         self._registry: WorkflowRegistry | None = None
         self._untrusted: dict[str, str] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
+        # (tenant_id, workflow_id) of runs a task in this process is driving.
+        self._active: set[tuple[str, str]] = set()
         self._ready = asyncio.Lock()
+        self._draining = False
 
     def catalog(self) -> list[dict[str, Any]]:
         """Each configured workflow: its name, version, input schema and whether it can run."""
@@ -91,6 +105,7 @@ class WorkflowService:
         manifest = self._manifest(name)
         if problem := self._trusted(manifest):
             raise ConfigurationError(problem)
+        self._require_open()
         executor = await self._executor(name)
         run_id = workflow_id or str(uuid4())
         values: dict[str, Any] = {"input": input_text or json.dumps(dict(inputs or {}))}
@@ -98,9 +113,15 @@ class WorkflowService:
             values["inputs"] = dict(inputs)
         self._spawn(
             executor.run(
-                manifest, values, tenant_id=tenant_id, user_id=user_id, workflow_id=run_id
+                manifest,
+                values,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                workflow_id=run_id,
+                owner=OWNER,
             ),
             name,
+            (tenant_id, run_id),
         )
         return await self._wait_for_state(run_id, tenant_id)
 
@@ -134,6 +155,7 @@ class WorkflowService:
         executor = await self._executor(state.manifest_name)
         if state.status is not WorkflowStatus.AWAITING_APPROVAL:
             raise ConfigurationError(f"workflow run {workflow_id!r} is not awaiting approval")
+        self._require_open()
         self._spawn(
             executor.decide_approval(
                 manifest,
@@ -145,6 +167,7 @@ class WorkflowService:
                 modified_parameters=modified_parameters,
             ),
             state.manifest_name,
+            (tenant_id, workflow_id),
         )
         return await self._wait_for_change(state)
 
@@ -155,6 +178,7 @@ class WorkflowService:
         state = await self.status(workflow_id, tenant_id)
         if state.status is not WorkflowStatus.AWAITING_INPUT:
             raise ConfigurationError(f"workflow run {workflow_id!r} is not awaiting input")
+        self._require_open()
         executor = await self._executor(state.manifest_name)
         self._spawn(
             executor.resume(
@@ -164,15 +188,138 @@ class WorkflowService:
                 values=dict(values),
             ),
             state.manifest_name,
+            (tenant_id, workflow_id),
         )
         return await self._wait_for_change(state)
 
-    async def aclose(self) -> None:
-        for task in tuple(self._tasks):
+    async def recover(self, limit: int = 1000) -> int:
+        """Carry on the runs this service started that a stop interrupted; returns how many.
+
+        Only top-level runs with ``owner="workflow_service"`` that were pending or running are
+        taken up (their child workflows are recovered through them). Each is driven with the
+        exact configured manifest, name and version, whose hooks come only from trusted modules;
+        a run whose manifest is no longer configured, changed version or is untrusted is left
+        alone and logged. Recovery uses the engine's ``recover``, so an interrupted node is
+        retried only when its ``recovery_policy`` is ``retry``.
+        """
+        started = 0
+        for state in await self._container.workflow_checkpoints.list_recoverable(limit):
+            if state.status not in INTERRUPTED or not self._takes(state):
+                continue
+            manifest = self._runnable_manifest(state)
+            if manifest is None:
+                continue
+            executor = await self._executor(state.manifest_name)
+            self._spawn(
+                executor.recover(manifest, state.id, tenant_id=state.tenant_id),
+                state.manifest_name,
+                (state.tenant_id, state.id),
+            )
+            started += 1
+        if started:
+            LOGGER.info("recovering %d interrupted workflow run(s)", started)
+        return started
+
+    async def expire_paused(
+        self, *, limit: int = 1000, input_timeout_seconds: float | None = None
+    ) -> int:
+        """Expire this service's approval and input waits that are past expiry; returns how many.
+
+        Approval waits expire at their ``expires_at``; input waits only with
+        ``input_timeout_seconds``. The engine's ``expire_pause`` does the work, so the expired step
+        fails exactly as a late answer would find it, the run continues under its failure and
+        rejection policies, and the result is checkpointed (and notified) as usual. Runs already
+        being driven here are skipped, and saves are version-checked, so repeating a sweep, or
+        sweeping from several replicas, expires each wait once. Every run is handled in its own
+        tenant. At most ``limit`` unfinished runs, oldest first, are looked at per call.
+        """
+        expired = 0
+        for state in await self._container.workflow_checkpoints.list_recoverable(limit):
+            if state.status not in PAUSED or not self._takes(state):
+                continue
+            if not MultiAgentWorkflowExecutor.pause_expired(state, input_timeout_seconds):
+                continue
+            manifest = self._runnable_manifest(state)
+            if manifest is None:
+                continue
+            executor = await self._executor(state.manifest_name)
+            self._spawn(
+                executor.expire_pause(
+                    manifest,
+                    state.id,
+                    tenant_id=state.tenant_id,
+                    input_timeout_seconds=input_timeout_seconds,
+                ),
+                state.manifest_name,
+                (state.tenant_id, state.id),
+            )
+            expired += 1
+        return expired
+
+    async def idle(self) -> None:
+        """Wait until every run this process is driving has finished or paused."""
+        while self._tasks:
+            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+
+    @property
+    def draining(self) -> bool:
+        return self._draining
+
+    async def drain(self, grace_seconds: float = 0) -> None:
+        """Stop taking work, let running runs carry on for the grace period, then interrupt them.
+
+        An interrupted run keeps its last checkpoint (it is not marked cancelled), so the next
+        start recovers it. Starting or answering a run while draining raises ``ConflictError``.
+        """
+        self._draining = True
+        pending = set(self._tasks)
+        if pending and grace_seconds > 0:
+            _, pending = await asyncio.wait(pending, timeout=grace_seconds)
+        for task in pending:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        for provider in reversed(self._loaded):
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def aclose(self, grace_seconds: float = 0) -> None:
+        """Drain, then close the loaded hook providers; safe to call more than once."""
+        await self.drain(grace_seconds)
+        loaded, self._loaded = self._loaded, []
+        for provider in reversed(loaded):
             await provider.aclose()
+
+    def _require_open(self) -> None:
+        if self._draining:
+            raise ConflictError("the workflow service is draining and is not taking new work")
+
+    def _takes(self, state: WorkflowExecutionState) -> bool:
+        """Whether this service drives the run: one it started, top-level, not running here."""
+        return (
+            not self._draining
+            and state.owner == OWNER
+            and state.parent_workflow_id is None
+            and (state.tenant_id, state.id) not in self._active
+        )
+
+    def _runnable_manifest(self, state: WorkflowExecutionState) -> WorkflowManifest | None:
+        """The exact configured manifest of the run, when it may be driven here."""
+        manifest = self._settings.workflows.get(state.manifest_name)
+        if manifest is None or not MultiAgentWorkflowExecutor.manifest_matches(manifest, state):
+            LOGGER.warning(
+                "workflow run %s: %s@%s is not configured here (or its manifest changed); "
+                "left for an operator",
+                state.id,
+                state.manifest_name,
+                state.manifest_version,
+            )
+            return None
+        if self._trusted(manifest) is not None:
+            LOGGER.warning(
+                "workflow run %s: its hooks are not under security.trusted_plugin_prefixes; "
+                "left for an operator",
+                state.id,
+            )
+            return None
+        return manifest
 
     def _manifest(self, name: str) -> WorkflowManifest:
         try:
@@ -203,6 +350,7 @@ class WorkflowService:
             self._hooks.get(name, WorkflowHookRegistry()),
             store=self._container.workflow_checkpoints,
             workflow_registry=self._registry,
+            interrupted=lambda: self._draining,
         )
 
     async def _load_hooks(self) -> None:
@@ -224,18 +372,22 @@ class WorkflowService:
             self._hooks[name] = hooks
         self._registry = registry
 
-    def _spawn(self, work: Any, name: str) -> None:
+    def _spawn(self, work: Any, name: str, key: tuple[str, str]) -> None:
         async def drive() -> None:
             try:
                 state = await work
             except Exception:
                 LOGGER.exception("workflow %s stopped with an error", name)
+                self._active.discard(key)
                 return
+            self._active.discard(key)
             await self._notify(state)
 
+        self._active.add(key)
         task = asyncio.create_task(drive())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(lambda _: self._active.discard(key))
 
     async def _wait_for_state(self, workflow_id: str, tenant_id: str) -> WorkflowExecutionState:
         for _ in range(200):

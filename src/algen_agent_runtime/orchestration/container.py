@@ -97,7 +97,9 @@ from algen_agent_runtime.observability.traccia_adapter import (
     observability_adapter,
 )
 from algen_agent_runtime.observability.trace_levels import TraceLevelTracer
+from algen_agent_runtime.orchestration.lifecycle import ContainerLifecycle, OwnedWorkflows
 from algen_agent_runtime.orchestration.maintenance import MaintenanceService
+from algen_agent_runtime.orchestration.readiness import ReadinessChecker, declare_dependencies
 from algen_agent_runtime.orchestration.validation import (
     AvailableComponents,
     ComponentProblem,
@@ -202,8 +204,24 @@ class Container:
     plugins: tuple[PluginManifest, ...] = ()
     component_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     component_check: Literal["error", "warn"] = "error"
+    # What /health/ready requires and reports; see orchestration/readiness.py.
+    readiness: ReadinessChecker = field(default_factory=ReadinessChecker)
+    # Start/drain phase and the service-owned workflow runs (attach_workflows).
+    lifecycle: ContainerLifecycle = field(default_factory=ContainerLifecycle)
+    recover_service_workflows: bool = True
+
+    def attach_workflows(self, workflows: OwnedWorkflows) -> None:
+        """Let the container recover, expire and drain the workflow runs a service owns."""
+        self.lifecycle.workflows = workflows
+        if self.maintenance is not None:
+            self.maintenance.attach_workflows(workflows)
+
+    async def readiness_report(self) -> tuple[bool, dict[str, Any]]:
+        """``(ready, body)`` as ``/health/ready`` returns it."""
+        return await self.readiness.report(self)
 
     async def astart(self) -> None:
+        self.lifecycle.phase = "starting"
         self.observability.start()
         for resource in self.resources:
             start = getattr(resource, "start", None)
@@ -239,8 +257,17 @@ class Container:
         if self.recover_incomplete_runs:
             await self.runtime.recover(self.recovery_limit)
             await self.conversations.recover(self.recovery_limit)
+            workflows = self.lifecycle.workflows
+            if self.recover_service_workflows and workflows is not None:
+                try:
+                    await workflows.recover(self.recovery_limit)
+                except Exception as exc:
+                    # Serve the rest; readiness reports it and the next start tries again.
+                    logger.exception("workflow recovery failed")
+                    self.degraded_dependencies["workflow.recovery"] = type(exc).__name__
         if self.maintenance is not None and self.run_maintenance_in_background:
             self.maintenance.start()
+        self.lifecycle.phase = "ready"
 
     async def resource_health(self) -> dict[str, bool]:
         health: dict[str, bool] = {}
@@ -262,8 +289,12 @@ class Container:
         self.observability.stop()
 
     async def aclose(self) -> None:
+        self.lifecycle.phase = "draining"
         if self.maintenance is not None:
             await self.maintenance.stop()
+        if self.lifecycle.workflows is not None:
+            # Before the runtime drains, so workflow steps can still start agent runs.
+            await self.lifecycle.workflows.aclose(self.shutdown_grace_seconds)
         await self.conversations.shutdown(self.shutdown_grace_seconds)
         await self.runtime.shutdown(self.shutdown_grace_seconds)
         for name in self.retrievers.list():
@@ -279,6 +310,7 @@ class Container:
                 if inspect.isawaitable(result):
                     await result
         self.close()
+        self.lifecycle.phase = "stopped"
 
 
 class _ScopedEnvironmentSecretProvider:
@@ -981,4 +1013,13 @@ def build_container(
         plugins=plugin_manifests,
         component_sources=plugin_context.sources.as_dict(),
         component_check=settings.runtime.component_check,
+        readiness=declare_dependencies(
+            settings,
+            database=database,
+            redis_client=redis_client,
+            cache_redis_client=cache_redis_client,
+            artifacts=artifacts,
+            observability=observability,
+        ),
+        recover_service_workflows=settings.runtime.recover_service_workflows,
     )

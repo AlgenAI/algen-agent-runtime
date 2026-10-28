@@ -345,6 +345,68 @@ class ApiSettings(StrictSettings):
         return self
 
 
+READINESS_DEPENDENCY_KINDS = (
+    "store",
+    "cache",
+    "provider",
+    "retriever",
+    "mcp",
+    "telemetry",
+    "resource",
+)
+
+
+class ReadinessSettings(StrictSettings):
+    """Which dependencies ``/health/ready`` requires; every known dependency is reported.
+
+    Dependencies are named ``<kind>.<name>``: ``store.run``, ``store.workflow``, ``cache.redis``,
+    ``provider.openai``, ``retriever.docs``, ``mcp.crm``, ``telemetry.otlp`` or
+    ``resource.<TypeName>`` for a plugin resource with ``health()`` or ``ping()``. Readiness fails
+    (503) only when a required dependency is down; an optional one that is down makes the
+    status ``degraded`` with HTTP 200.
+    """
+
+    model_providers: Literal["any", "all", "none"] = Field(
+        default="any",
+        description="How many registered model providers must be healthy: at least one, every "
+        "one, or none (providers are still reported).",
+    )
+    require_durable_stores: bool = Field(
+        default=True,
+        description="Require every store configured on PostgreSQL, Redis or S3, and every plugin "
+        "resource that exposes health() or ping(). In-memory stores are always up.",
+    )
+    required: tuple[str, ...] = Field(
+        default=(),
+        description="Further dependencies that must be up, for example mcp.crm, retriever.docs "
+        "or provider.openai. MCP servers with required: true are always required.",
+    )
+    optional: tuple[str, ...] = Field(
+        default=(),
+        description="Dependencies to report without requiring them, for example cache.redis.",
+    )
+    probe_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+        description="Upper bound for each dependency probe; a probe that takes longer is down.",
+    )
+
+    @model_validator(mode="after")
+    def validate_names(self) -> ReadinessSettings:
+        for name in (*self.required, *self.optional):
+            kind, _, rest = name.partition(".")
+            if kind not in READINESS_DEPENDENCY_KINDS or not rest:
+                raise ValueError(
+                    f"readiness dependency {name!r} must be named <kind>.<name> with kind one of "
+                    f"{', '.join(READINESS_DEPENDENCY_KINDS)}"
+                )
+        both = sorted(set(self.required) & set(self.optional))
+        if both:
+            raise ValueError(f"readiness dependencies cannot be required and optional: {both}")
+        return self
+
+
 class RuntimeSettings(StrictSettings):
     component_check: Literal["error", "warn"] = Field(
         default="error",
@@ -354,6 +416,13 @@ class RuntimeSettings(StrictSettings):
     recover_incomplete_runs: bool = True
     recovery_limit: int = Field(default=1000, ge=1, le=100_000)
     shutdown_grace_seconds: float = Field(default=10.0, ge=0, le=300)
+    recover_service_workflows: bool = Field(
+        default=True,
+        description="On start, recover workflow runs that the HTTP workflow service started "
+        "(requires recover_incomplete_runs). Applications that drive workflows with their own "
+        "executor keep calling executor.recover themselves.",
+    )
+    readiness: ReadinessSettings = Field(default_factory=ReadinessSettings)
 
 
 class MaintenanceSettings(StrictSettings):
@@ -364,6 +433,12 @@ class MaintenanceSettings(StrictSettings):
     batch_size: int = Field(default=500, ge=1, le=10_000)
     max_batches_per_sweep: int = Field(default=20, ge=1, le=1_000)
     expire_paused_runs: bool = True
+    expire_paused_workflows: bool = Field(
+        default=True,
+        description="Expire approval waits of service-owned workflow runs past their expires_at "
+        "(and input waits older than clarification_timeout_seconds, when set) through the "
+        "workflow engine, so rejection handling and checkpoints stay correct.",
+    )
     clarification_timeout_seconds: int | None = Field(default=None, ge=60)
     terminal_run_retention_days: int | None = Field(default=None, ge=1)
     audit_retention_days: int | None = Field(default=None, ge=1)

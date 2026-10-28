@@ -38,6 +38,13 @@ runtime:
   recover_incomplete_runs: true
   recovery_limit: 1000
   shutdown_grace_seconds: 10
+  recover_service_workflows: true
+  readiness:
+    model_providers: any        # any | all | none
+    require_durable_stores: true
+    required: []                # e.g. [mcp.crm, retriever.docs]
+    optional: []                # e.g. [cache.redis]
+    probe_timeout_seconds: 2
 maintenance:
   enabled: true
   interval_seconds: 300
@@ -85,10 +92,126 @@ shared deployments must use verified JWT authentication or an equivalent
 deployment-owned identity boundary.
 
 The schema runner records applied files transactionally. FastAPI startup initializes storage and
-recovers non-paused incomplete runs. Completed tool calls return their persisted result; an
-interrupted side-effecting call becomes `indeterminate` and requires reconciliation rather than
-automatic replay. Approval and clarification waits remain paused across restarts until a
+recovers non-paused incomplete runs and the workflow runs the HTTP workflow service started (see
+[Readiness and lifecycle](#readiness-and-lifecycle)). Completed tool calls return their persisted
+result; an interrupted side-effecting call becomes `indeterminate` and requires reconciliation
+rather than automatic replay. Approval and clarification waits remain paused across restarts until a
 maintenance sweep expires them (see [Maintenance and data retention](#maintenance-and-data-retention)).
+
+## Readiness and lifecycle
+
+### Readiness contract
+
+`/health/live` answers `{"status": "ok"}` while the process runs. `/health/ready` reports every
+dependency the service has and answers:
+
+- **200, `status: ready`** when every dependency is up;
+- **200, `status: degraded`** when an optional dependency is down (an optional MCP server that
+  failed at startup, a cache, a retriever) but every required one is up;
+- **503, `status: degraded`** when a required dependency is down or the model-provider rule is not
+  met (`failing` names them);
+- **503, `status: draining`** from the moment the service starts to shut down; dependencies are
+  not probed then.
+
+```json
+{
+  "status": "degraded",
+  "ready": true,
+  "lifecycle": "ready",
+  "providers": {"openai": true},
+  "stores": {"PostgresDatabase": true},
+  "dependencies": {
+    "store.run": {"kind": "store", "required": true, "backend": "postgres", "status": "up"},
+    "provider.openai": {"kind": "provider", "required": false, "status": "up"},
+    "mcp.crm": {"kind": "mcp", "required": false, "status": "down", "reason": "ConnectError"},
+    "telemetry.otlp": {"kind": "telemetry", "required": false, "status": "unknown", "reason": "not probeable"}
+  },
+  "degraded_dependencies": {"mcp.crm": "ConnectError"},
+  "failing": []
+}
+```
+
+`providers` and `stores` keep their earlier meaning (provider health by id, and each
+health-capable resource by type name). A dependency's `status` is `up`, `down` or `unknown` (it
+cannot be probed; it is reported and never fails readiness). Reasons are content-minimal: an
+exception type, `probe failed`, `probe timed out`, `not registered`, or a message of at most 160
+characters with URLs, DSNs and credential-like values removed. Every probe is bounded by
+`probe_timeout_seconds` and all run concurrently.
+
+| Dependency | Name | Probe | Required by default |
+| --- | --- | --- | --- |
+| Run, event, approval, audit, artifact, workflow, tool-execution, conversation, memory, learned-memory and analytical-graph stores; the work queue when distributed execution is on; the MCP token store when MCP servers are configured | `store.<kind>` | The backing PostgreSQL pool, Redis client or S3 bucket (one probe per backend); in-memory stores are always up | Yes (`require_durable_stores`) |
+| Cache on Redis | `cache.redis` | Redis `PING` | No |
+| Model providers | `provider.<id>` | `provider.health()` | See `model_providers` |
+| Plugin resources with `health()` or `ping()` | `resource.<TypeName>` | Its `health()`/`ping()` | Yes (`require_durable_stores`) |
+| Retrievers | `retriever.<name>` | `health()`/`ping()` when the retriever has one, else `unknown` | No |
+| MCP servers | `mcp.<server>` | Discovered at startup, or `down` with the startup error | When `required: true` and not OAuth (OAuth servers connect per tenant or user) |
+| OTLP exporter | `telemetry.otlp` | None (`unknown`) | No |
+| Traccia | `telemetry.traccia` | The adapter's `health()` if it has one, else `unknown` | No |
+| Other startup failures | the `degraded_dependencies` key, for example `workflow.recovery` | — | No |
+
+`runtime.readiness` settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `model_providers` | `any` | `any`: at least one registered provider must be healthy (`failing: ["provider.*"]` otherwise); `all`: every provider is required (the behavior before 0.2.0b1); `none`: providers are only reported. With no providers registered, the rule is met. |
+| `require_durable_stores` | `true` | Require every `store.*` and `resource.*` dependency. |
+| `required` | `[]` | Further dependencies that must be up. A name that nothing registers is reported `down` with `not registered`. |
+| `optional` | `[]` | Dependencies to report without requiring them. A name cannot be both required and optional. |
+| `probe_timeout_seconds` | `2` | Upper bound for each probe (0 < value ≤ 30). |
+
+Names are `<kind>.<name>` with kind one of `store`, `cache`, `provider`, `retriever`, `mcp`,
+`telemetry` or `resource`; `algen-agent-runtime check` rejects other forms.
+
+### Start and drain
+
+Startup (`Container.astart`, run by the FastAPI lifespan) moves `lifecycle` from `created` to
+`starting` to `ready`. It starts resources, discovers MCP tools, recovers incomplete agent runs and
+conversations, recovers the workflow service's interrupted runs (below), and starts the background
+maintenance loop when `maintenance.enabled`.
+
+Shutdown (`Container.aclose`) moves `lifecycle` to `draining`, which makes `/health/ready` return
+503 at once, then in order: stops the maintenance loop; drains the workflow service (running
+workflows get `shutdown_grace_seconds` to finish or pause, then are interrupted); drains
+conversations and agent runs with the same grace period; closes retrievers and resources; and
+moves `lifecycle` to `stopped`. Interrupted agent runs keep a recoverable status, and interrupted
+workflow runs keep their last checkpoint (they are not marked `cancelled`); the agent run a
+workflow step was waiting on is drained by the runtime, not cancelled by the workflow. Starting or
+answering a workflow run while draining is refused with 409.
+
+Configure the orchestrator's termination grace period above `shutdown_grace_seconds` × 3 plus a
+margin, so the drain completes before the process is killed.
+
+### Workflow recovery
+
+Runs started through the HTTP workflow API (`POST /v1/workflows/{name}/runs`) record
+`owner: workflow_service` in their checkpoint. With `runtime.recover_incomplete_runs` and
+`runtime.recover_service_workflows` (both default `true`), startup recovers each such top-level run
+that was `pending` or `running` through the engine's `executor.recover`, using:
+
+- the exact configured manifest: same name, version and content fingerprint; a run whose manifest
+  is no longer configured or changed is left untouched and logged for an operator;
+- hooks loaded only from modules under `security.trusted_plugin_prefixes`
+  (`WorkflowHookLoader`); a run whose hooks are not trusted is left untouched;
+- the node's `recovery_policy`: interrupted nodes retry only when it is `retry`, and the run fails
+  closed otherwise.
+
+Child workflows are recovered through their parent. Waiting runs are not resumed by recovery; the
+maintenance sweep expires their waits. Runs that an application drives with its own executor have
+no owner and are never touched; such applications keep calling `executor.recover(...)` (and
+`executor.expire_pause(...)`) themselves. If recovery fails (for example a hook provider cannot be
+imported), the service still starts and readiness reports `workflow.recovery` as degraded.
+
+Runs started before this release have no owner and are not recovered automatically; recover them
+once with the executor, or let a decision or answer through the API continue them.
+
+### Workflow events
+
+| Event | When |
+| --- | --- |
+| `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. |
+| `workflow.input.expired` | An input (clarification) wait was older than `maintenance.clarification_timeout_seconds` when the sweep ran; the asking node fails with `workflow input expired`. |
+| `workflow.recovered` | A recovered run continues after a restart. |
 
 ## Resumable execution budgets
 
@@ -217,6 +340,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | --- | --- | --- |
 | Paused approvals | on (`expire_paused_runs`) | A run awaiting approval becomes `timed_out` with a `run.failed` event (`reason: approval_expired`) once its approval request has expired or is missing. |
 | Paused clarifications | off | With `clarification_timeout_seconds` set, a run awaiting clarification longer than that becomes `timed_out` (`reason: clarification_expired`). |
+| Paused workflow waits | on (`expire_paused_workflows`) | For runs the HTTP workflow service started: an approval wait past its `expires_at` fails its approval node (`workflow.approval.expired`), and, with `clarification_timeout_seconds` set, an input wait older than that fails its node (`workflow.input.expired`). The engine's own expiry path does this, so rejection policies, dependents and checkpoints behave as for a late decision, and the webhook is notified of the outcome. Each run is handled in its own tenant; runs already being driven are skipped and saves are version-checked, so repeated or concurrent sweeps expire a wait once. At most `batch_size × max_batches_per_sweep` unfinished runs, oldest first, are looked at per sweep. Reports `expired_workflow_pauses`. Runs only in the serving process (`maintenance.enabled`); the `maintenance` command does not drive workflows. |
 | Expired memory | on | Deletes PostgreSQL memory rows past `memory_retention_seconds`; readers already ignore them. |
 | Expired learned memory | on | Clears content and evidence; retains revisions and replay receipts. Reports `purged_learned_memory`. |
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
@@ -283,7 +407,7 @@ retryable; Algen Agent Runtime does not blindly replay a generic conversation ha
 handler may own non-idempotent external effects. Dashboard clients reload persisted messages and
 reconnect to SSE with `Last-Event-ID`. Use fetch-based SSE when bearer authentication is enabled.
 
-Health endpoints are `/health/live` and `/health/ready`. Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
+Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
 
 ## Traccia
 
