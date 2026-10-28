@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from algen_agent_runtime.config.settings import AppSettings
@@ -63,6 +65,38 @@ def test_heading_anchor_matches_github_slugs() -> None:
     assert heading_anchor("Use `pip` with [PyPI](https://pypi.org)") == "use-pip-with-pypi"
     assert heading_anchor("API v2.0 — notes") == "api-v20--notes"
     assert heading_anchor("Über uns") == "über-uns"
+    # Underscores inside words are not emphasis in GFM and stay in GitHub's slug.
+    assert heading_anchor("set_config()") == "set_config"
+    assert heading_anchor("MAX_RETRIES") == "max_retries"
+    assert heading_anchor("_private_ and *bold* ~~gone~~") == "private-and-bold-gone"
+    assert heading_anchor("![logo](a.png) Brand") == "logo-brand"
+    assert heading_anchor("[[nested](x)] and [literal]") == "nested-and-literal"
+
+
+def test_atx_headings_follow_commonmark() -> None:
+    text = (
+        "# Closed #\n\nA\n\n## `set_config()` ##\n\nB\n\n### MAX_RETRIES#\n\nC\n\n"
+        "#\n\nD\n\n####### seven\n\n#no-space\n"
+    )
+    chunks = MarkdownChunker().chunk(markdown(text))
+
+    assert [chunk.metadata.get("heading") for chunk in chunks] == [
+        "Closed",
+        "set_config()",
+        "MAX_RETRIES#",
+        None,
+    ]
+    assert [chunk.metadata.get("anchor") for chunk in chunks] == [
+        "closed",
+        "set_config",
+        "max_retries",
+        None,
+    ]
+    # An empty heading still starts a section but adds nothing to the path.
+    assert chunks[3].metadata["heading_path"] == []
+    assert chunks[3].metadata["heading_level"] == 1
+    assert chunks[3].uri == "https://docs.example/guide"
+    assert "####### seven" in chunks[3].text and "#no-space" in chunks[3].text
 
 
 def test_markdown_chunker_splits_by_heading_and_records_path_and_anchor() -> None:
@@ -159,6 +193,15 @@ def test_markdown_chunker_handles_documents_without_headings_and_tilde_fences() 
     assert "anchor" not in chunks[0].metadata
 
 
+def test_a_heading_without_text_is_kept_only_when_no_subsection_carries_it() -> None:
+    chunks = MarkdownChunker().chunk(markdown("# Parent\n## Child\n# Lone\n"))
+    plain = MarkdownChunker(include_heading_path=False).chunk(markdown("# Lone\n"))
+
+    assert [chunk.text for chunk in chunks] == ["Parent > Child", "Lone"]
+    assert [chunk.metadata["anchor"] for chunk in chunks] == ["child", "lone"]
+    assert [chunk.text for chunk in plain] == ["# Lone"]
+
+
 def test_markdown_chunker_ignores_thematic_breaks_and_lists_as_setext_headings() -> None:
     text = "# Top\n\n- item\n---\n\nPara one\npara two\n---\n\nend\n"
     chunks = MarkdownChunker().chunk(markdown(text))
@@ -225,3 +268,24 @@ def test_retrieval_settings_select_the_markdown_chunker() -> None:
     assert isinstance(retriever._chunker, MarkdownChunker)
     assert retriever._chunker.chunk_size == 256
     assert isinstance(container.runtime.contexts.get("retrieval.docs"), RetrievalContextBuilder)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "| a | b |\n| --- " + " " * 200_000 + "x\n| c | d |\n",
+        "# x" + " " * 200_000 + "y\n",
+        "# " + "[" * 200_000 + "\n",
+        "# " + "[a](" * 50_000 + "\n",
+        "# a" + "*" * 200_000 + "b\n",
+        "para\n" + "=" * 200_000 + "x\n",
+        "1" * 200_000 + "x\n---\n",
+    ],
+    ids=["table", "atx-spaces", "brackets", "open-links", "emphasis", "setext", "list"],
+)
+def test_pathological_lines_are_chunked_in_linear_time(text: str) -> None:
+    # Documents can be untrusted uploads; none of these may backtrack quadratically.
+    started = time.perf_counter()
+    chunks = MarkdownChunker().chunk(markdown(text))
+    assert time.perf_counter() - started < 1.0
+    assert chunks

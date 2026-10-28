@@ -72,25 +72,92 @@ class TextChunker:
         )
 
 
-_ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
+# Documents may be untrusted uploads: every pattern below runs in linear time on any line. The
+# headings, links and table delimiters that would need backtracking are parsed without a regex.
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
-_TABLE_DELIMITER = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+_TABLE_CELL = re.compile(r"[ \t]*:?-+:?[ \t]*")
 _NOT_PLAIN_TEXT = re.compile(r"^\s*([-*+>|]|\d+[.)])(\s|$)")
-_INLINE_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
-_INLINE_MARKUP = re.compile(r"[`*_~]")
+# Code spans' backticks, and emphasis markers only where they open or close text: an underscore
+# inside a word (set_config, MAX_RETRIES) is not emphasis in GFM and stays in the slug.
+_INLINE_MARKUP = re.compile(r"`+|(?<!\w)[*_~]+|[*_~]+(?!\w)")
 _ANCHOR_DROP = re.compile(r"[^\w\- ]")
 
 
 def heading_anchor(heading: str) -> str:
     """The GitHub-style anchor slug of a heading: ``"Getting Started!"`` -> ``getting-started``."""
-    text = _INLINE_LINK.sub(r"\1", unicodedata.normalize("NFC", heading))
+    text = _strip_links(unicodedata.normalize("NFC", heading))
     text = _INLINE_MARKUP.sub("", text).strip().lower()
     return _ANCHOR_DROP.sub("", text).replace(" ", "-")
 
 
 def _heading_text(raw: str) -> str:
-    return " ".join(_INLINE_MARKUP.sub("", _INLINE_LINK.sub(r"\1", raw)).split())
+    return " ".join(_INLINE_MARKUP.sub("", _strip_links(raw)).split())
+
+
+def _strip_links(text: str) -> str:
+    """``text`` with each inline link or image ``[label](target)`` replaced by its label.
+
+    One pass: the next ``]`` and ``)`` are looked up once and reused until passed, so the cost is
+    linear however many brackets the text has.
+    """
+    out: list[str] = []
+    index = 0
+    next_close = next_paren = -2
+    while index < len(text):
+        opening = text.find("[", index)
+        if opening == -1:
+            break
+        if next_close != -1 and next_close <= opening:
+            next_close = text.find("]", opening + 1)
+        if next_close == -1:
+            break
+        inner = text.rfind("[", opening + 1, next_close)
+        if inner != -1:
+            # The label starts at the last "[" before the "]".
+            out.append(text[index:inner])
+            index = inner
+            continue
+        out.append(text[index:opening])
+        target = next_close + 1
+        if target < len(text) and text[target] == "(":
+            if next_paren != -1 and next_paren <= target:
+                next_paren = text.find(")", target + 1)
+            if next_paren != -1:
+                if out and out[-1].endswith("!"):
+                    out[-1] = out[-1][:-1]
+                out.append(text[opening + 1 : next_close])
+                index = next_paren + 1
+                continue
+        out.append(text[opening : next_close + 1])
+        index = next_close + 1
+    out.append(text[index:])
+    return "".join(out)
+
+
+def _atx_heading(line: str) -> tuple[int, str] | None:
+    """``(level, raw title)`` when ``line`` is an ATX heading, else ``None``."""
+    stripped = line.lstrip(" ")
+    if len(line) - len(stripped) > 3 or not stripped.startswith("#"):
+        return None
+    level = len(stripped) - len(stripped.lstrip("#"))
+    rest = stripped[level:]
+    if level > 6 or (rest and rest[0] not in " \t"):
+        return None
+    title = rest.strip(" \t")
+    # An optional closing sequence of #s, preceded by a space or tab, is not part of the title.
+    without_closing = title.rstrip("#")
+    if not without_closing:
+        title = ""
+    elif without_closing != title and without_closing[-1] in " \t":
+        title = without_closing.rstrip(" \t")
+    return level, title
+
+
+def _table_delimiter(line: str) -> bool:
+    """Whether ``line`` is a table's delimiter row, such as ``| --- | :-: |``."""
+    cells = line.strip().removeprefix("|").removesuffix("|").split("|")
+    return all(_TABLE_CELL.fullmatch(cell) for cell in cells)
 
 
 def _fence_opening(line: str) -> re.Match[str] | None:
@@ -115,6 +182,7 @@ def _closes(line: str, fence: str) -> bool:
 class _Section:
     path: tuple[str, ...]
     level: int
+    title: str
     heading_line: str | None
     anchor: str | None
     lines: list[str] = field(default_factory=list)
@@ -157,7 +225,12 @@ class MarkdownChunker:
             lines = list(section.lines)
             if section.heading_line is not None and not prefix:
                 lines.insert(0, section.heading_line)
-            for body in self._pack(self._blocks(lines), self.chunk_size - len(prefix)):
+            bodies = self._pack(self._blocks(lines), self.chunk_size - len(prefix))
+            if not bodies:
+                # A heading with no text of its own and no subsection: keep the heading itself.
+                bodies = [prefix.strip()] if prefix else self._fit(lines, self.chunk_size)
+                prefix = ""
+            for body in bodies:
                 chunks.append(self._chunk(document, section, prefix + body, len(chunks)))
         return tuple(chunks)
 
@@ -171,12 +244,10 @@ class MarkdownChunker:
     ) -> RetrievedDocument:
         metadata: dict[str, Any] = dict(document.metadata)
         uri = document.uri
-        if section.path:
-            metadata.update(
-                heading_path=list(section.path),
-                heading=section.path[-1],
-                heading_level=section.level,
-            )
+        if section.level:
+            metadata.update(heading_path=list(section.path), heading_level=section.level)
+            if section.title:
+                metadata["heading"] = section.title
         if section.anchor:
             metadata["anchor"] = section.anchor
             if self.link_anchors and uri and "#" not in uri:
@@ -195,7 +266,7 @@ class MarkdownChunker:
 
     @staticmethod
     def _sections(text: str) -> list[_Section]:
-        sections = [_Section(path=(), level=0, heading_line=None, anchor=None)]
+        sections = [_Section(path=(), level=0, title="", heading_line=None, anchor=None)]
         stack: list[tuple[int, str]] = []
         anchors: dict[str, int] = {}
         fence: str | None = None
@@ -210,7 +281,8 @@ class MarkdownChunker:
                 seen = anchors.get(slug)
                 anchors[slug] = 0 if seen is None else seen + 1
                 anchor = slug if seen is None else f"{slug}-{seen + 1}"
-            sections.append(_Section(tuple(name for _, name in stack), level, heading_line, anchor))
+            path = tuple(name for _, name in stack if name)
+            sections.append(_Section(path, level, title, heading_line, anchor))
 
         for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
             current = sections[-1]
@@ -224,9 +296,9 @@ class MarkdownChunker:
                 fence = opened.group(2)
                 current.lines.append(line)
                 continue
-            atx = _ATX_HEADING.match(line)
+            atx = _atx_heading(line)
             if atx:
-                start(len(atx.group(1)), _heading_text(atx.group(2) or ""), line.strip())
+                start(atx[0], _heading_text(atx[1]), line.strip())
                 continue
             underline = _SETEXT_UNDERLINE.match(line)
             previous = current.lines[-1] if current.lines else ""
@@ -241,7 +313,15 @@ class MarkdownChunker:
                 start(level, _heading_text(previous), f"{'#' * level} {previous.strip()}")
                 continue
             current.lines.append(line)
-        return [section for section in sections if any(line.strip() for line in section.lines)]
+        kept: list[_Section] = []
+        for index, section in enumerate(sections):
+            following = sections[index + 1] if index + 1 < len(sections) else None
+            has_text = any(line.strip() for line in section.lines)
+            # A heading without text is kept unless its subsections carry it in their path.
+            leaf = section.level > 0 and (following is None or following.level <= section.level)
+            if has_text or (leaf and (section.title or section.heading_line)):
+                kept.append(section)
+        return kept
 
     @staticmethod
     def _blocks(lines: list[str]) -> list[list[str]]:
@@ -304,7 +384,7 @@ class MarkdownChunker:
             room = budget - len(block[0]) - len(closing) - 2
             if room >= budget // 4:
                 return [f"{block[0]}\n{piece}\n{closing}" for piece in self._lines(body, room)]
-        if len(block) > 2 and "|" in block[0] and _TABLE_DELIMITER.match(block[1]):
+        if len(block) > 2 and "|" in block[0] and _table_delimiter(block[1]):
             header = f"{block[0]}\n{block[1]}"
             if len(header) < budget // 2:
                 return [
