@@ -42,6 +42,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `ToolContext` validation errors no longer echo the rejected input, and `ToolContext` is now
   hashable (from its identifiers; secrets and credentials take no part).
 
+- The bundled agent skills (`.agents/skills`) cover 0.1.0a14 and 0.1.0a15: tool-call guards,
+  shortened older tool results, caller credentials, MCP OAuth and `streamable_http`, document
+  inspection, the Traccia default and usage metering with `MeterCall`, so agents built with
+  them use these features.
+
 ### Deprecated
 
 - The 0.1.0a14 `UsageMeter.reserve(*, max_input_tokens, max_output_tokens)` form, without

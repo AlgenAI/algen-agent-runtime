@@ -35,7 +35,11 @@ optional/defaulted fields, constants, and unsupported constraint keywords in con
 
 Inspect `tools/contracts.py`, `tools/adapters.py`, the executor, and policy engine. Every tool needs a
 strict input schema, output schema, permissions, side-effect class, idempotency class, timeout,
-concurrency bound, and result-size bound. Use `ToolContext` for identity and secrets. A database
+concurrency bound, and result-size bound. Use `ToolContext` for identity and secrets, and
+`ToolContext.credentials` for the caller's own credentials when the tool acts as the signed-in
+user: a read-only, memory-only mapping that never enters `repr`, dumps, caches or idempotency keys,
+and is empty after a resume without credentials or a recovery. A tool may also carry a `precheck`
+and be marked `volatile` (docs/agent-tooling.md, "Tool-call guards"). A database
 connector accepts parameterized statements through a deployment-owned handler; remote HTTP tools
 must validate destinations and propagate the idempotency key.
 
@@ -94,6 +98,22 @@ create objects, verify downloads locally, compensate partial uploads, and make d
 to retry. Credentials come from workload identity or the SDK chain, not Runtime YAML. Scanner
 adapters return only `ArtifactScanResult`; lifecycle state and audit writes belong to
 `ArtifactLifecycleService`.
+
+## Usage meter
+
+A deployment's billing or quota system plugs in as a `UsageMeter` (`models/metering.py`) passed to
+`build_container(usage_meter=...)`; the `ModelRouter` calls it around every provider dispatch.
+Implement `reserve(*, max_input_tokens, max_output_tokens, call: MeterCall)`, `settle(ticket,
+usage)` and `release(ticket)`; charge the account named by `call` (tenant, or an id the host put in
+`RunRequest.metadata`), keep `call` in the ticket when settling depends on the model, and refuse
+only by raising `MeterRefusedError`. The a14 `reserve` without `call` still works with a
+deprecation warning and is removed in 0.2.
+
+## MCP OAuth token storage
+
+`MCPTokenStore` keeps MCP OAuth tokens keyed by tenant, user and server; `SecretCipher` encrypts
+them at rest (`AesGcmCipher`, `encryption` extra). Another backend preserves tenant-scoped keys,
+ciphertext bound to its row key, single-use flow state, and never logs or returns token values.
 
 ## Framework or telemetry adapter
 
