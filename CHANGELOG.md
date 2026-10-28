@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a16] - 2026-10-28
+
 ### Added
 
 - Explicit readiness dependencies. `/health/ready` now reports every dependency under
@@ -92,6 +94,14 @@ contracts are explicitly marked experimental during the `0.x` series.
   message on that conversation gets `409` until the turn is answered or cancelled. A turn whose
   run is rejected ends `failed` with the Runtime's "Proposed action was rejected." text, and one
   whose run is cancelled ends `cancelled`.
+
+### Known limitations
+
+- Pending conversation turns are reconciled and their events fanned out per process, like the rest
+  of the conversation layer; run one Runtime process per deployment.
+- Readiness reports OTLP and Traccia exporters as `unknown`: they have no health API.
+- Workflow runs started through the HTTP API before this release have no `owner`, so they are
+  neither recovered on start nor expired by the maintenance sweep.
 
 ## [0.1.0a15] - 2026-10-28
 
@@ -975,7 +985,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a15...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a16...HEAD
+[0.1.0a16]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a15...v0.1.0a16
 [0.1.0a15]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...v0.1.0a15
 [0.1.0a14]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a13...v0.1.0a14
 [0.1.0a13]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a12...v0.1.0a13
