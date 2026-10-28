@@ -216,7 +216,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev,frameworks,mcp,traccia]'
+      - run: python -m pip install -e '.[dev,encryption,frameworks,mcp,traccia]'
       - name: Run optional framework and integration tests
         run: >-
           pytest -q -p no:cacheprovider

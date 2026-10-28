@@ -68,6 +68,7 @@ jobs:
                   "algen_agent_runtime/py.typed",
                   "algen_agent_runtime/persistence/migrations/001_initial.sql",
                   "algen_agent_runtime/persistence/migrations/011_learned_memory.sql",
+                  "algen_agent_runtime/persistence/migrations/012_mcp_oauth.sql",
                   "algen_agent_runtime/context/compaction.py",
                   "algen_agent_runtime/context/working_state.py",
                   "algen_agent_runtime/context/skills.py",
