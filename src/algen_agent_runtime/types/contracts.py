@@ -195,6 +195,24 @@ class Budget(StrictModel):
     max_output_tokens: int = Field(default=8_192, ge=1)
     max_cost_usd: float = Field(default=10.0, ge=0)
     max_latency_seconds: float = Field(default=300.0, gt=0)
+    max_model_calls: int = Field(
+        default=1_000,
+        ge=1,
+        description="Model calls one run may make (steps, retried rejections, compaction and "
+        "repairs). A continuation adds continuation_policy.step_increment.",
+    )
+    max_response_chars: int = Field(
+        default=1_000_000,
+        ge=1_000,
+        description="Characters one model response may carry: its text plus its tool calls' "
+        "arguments as JSON. A longer response fails the run, streamed or not.",
+    )
+    max_events: int = Field(
+        default=10_000,
+        ge=100,
+        description="Run events one run may record. Past it, only events that end or pause the "
+        "run are recorded, and the run fails at its next step.",
+    )
 
 
 class MemoryPolicy(StrictModel):

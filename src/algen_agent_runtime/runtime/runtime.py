@@ -70,6 +70,7 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
+    QuotaExceededError,
     ToolExecutionError,
     VerificationError,
 )
@@ -129,6 +130,7 @@ from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
+    Budget,
     ContextCompaction,
     ErrorKind,
     FinishReason,
@@ -153,6 +155,21 @@ from algen_agent_runtime.types.contracts import (
 )
 from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
 from algen_agent_runtime.verification.verifiers import VerificationService
+
+# Events recorded even past ``Budget.max_events``: they end or pause the run, or say why.
+_ALWAYS_RECORDED_EVENTS = frozenset(
+    {
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "approval.required",
+        "clarification.required",
+        "tool.reconciliation_required",
+        "mcp.auth_required",
+        "budget.refused",
+        "steer.undelivered",
+    }
+)
 
 # Tools whose completion updates run state (memory, skills, working state): never batched.
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
@@ -264,6 +281,7 @@ class AgentRuntime:
         telemetry_include_content: bool = False,
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
+        stream_delta_interval_seconds: float = 0.0,
     ) -> None:
         self.agents = agents
         self.router = router
@@ -296,6 +314,11 @@ class AgentRuntime:
             self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
         self.telemetry_max_content_chars = telemetry_max_content_chars
+        # Streamed text is recorded as at most one model.delta event per interval; 0 records
+        # every chunk the provider sends.
+        self.stream_delta_interval_seconds = max(0.0, stream_delta_interval_seconds)
+        # Runs in this process that reached Budget.max_events: they fail at their next step.
+        self._event_overflow: set[str] = set()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
@@ -932,8 +955,25 @@ class AgentRuntime:
             )
             if current.status not in TERMINAL_STATUSES:
                 current.error = self._safe_error(exc)
+                failed: dict[str, Any] = {"error": current.error}
+                limit = exc.limit if isinstance(exc, BudgetExceededError) else None
+                if limit is not None:
+                    failed.update(reason="limit_exceeded", limit=limit)
+                    trace.get_current_span().set_attribute("agent.run.limit_exceeded", limit)
+                    await self._audit(
+                        current,
+                        "run.limit_exceeded",
+                        "failed",
+                        current.id,
+                        {
+                            "limit": limit,
+                            "step_count": current.step_count,
+                            "model_calls": current.summary.model_calls,
+                            "total_tokens": current.summary.usage.total_tokens,
+                        },
+                    )
                 await self._transition(current, RunStatus.FAILED)
-                await self._emit(current, "run.failed", {"error": current.error})
+                await self._emit(current, "run.failed", failed)
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
         self._validate_context_policy(agent)
@@ -954,6 +994,10 @@ class AgentRuntime:
             RunStatus.AWAITING_CLARIFICATION,
             RunStatus.AWAITING_RECONCILIATION,
         }:
+            if state.id in self._event_overflow:
+                raise BudgetExceededError(
+                    f"run reached its limit of {agent.budget.max_events} events", limit="events"
+                )
             limit_reason = self._limit_reason(state, agent)
             if limit_reason:
                 if await self._continue_or_pause(state, agent, limit_reason):
@@ -1542,6 +1586,9 @@ class AgentRuntime:
                     completed = None
                     stream_started = time.monotonic()
                     first_chunk = True
+                    streamed_chars = 0
+                    unsent: list[str] = []
+                    last_delta: float | None = None
                     # Closing the stream on every exit lets the router release a metered call
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
@@ -1558,11 +1605,25 @@ class AgentRuntime:
                                 )
                             if event.delta:
                                 text_parts.append(event.delta)
-                                await self._emit(
-                                    state, "model.delta", {"delta": event.delta}, step_id
-                                )
+                                streamed_chars += len(event.delta)
+                                if streamed_chars > agent.budget.max_response_chars:
+                                    raise self._response_too_large(agent, streamed_chars)
+                                unsent.append(event.delta)
+                                now = time.monotonic()
+                                if (
+                                    last_delta is None
+                                    or now - last_delta >= self.stream_delta_interval_seconds
+                                ):
+                                    # Chunks that arrive within the interval share one event.
+                                    await self._emit(
+                                        state, "model.delta", {"delta": "".join(unsent)}, step_id
+                                    )
+                                    unsent.clear()
+                                    last_delta = now
                             if event.response:
                                 completed = event.response
+                    if unsent:
+                        await self._emit(state, "model.delta", {"delta": "".join(unsent)}, step_id)
                     if completed is None:
                         raise ProviderError(
                             "stream ended without a completed response", retryable=True
@@ -1571,6 +1632,7 @@ class AgentRuntime:
                         completed = completed.model_copy(
                             update={"message": Message.text(Role.ASSISTANT, "".join(text_parts))}
                         )
+                    await self._check_response_size(state, agent, completed)
                     try:
                         return self._validate_model_completion(completed, request)
                     except ProviderError:
@@ -1579,6 +1641,7 @@ class AgentRuntime:
                 response = await self.router.generate(
                     request, profiles, agent.model_allowlist, meter_call=meter_call
                 )
+                await self._check_response_size(state, agent, response)
                 try:
                     return self._validate_model_completion(response, request)
                 except ProviderError:
@@ -1662,6 +1725,28 @@ class AgentRuntime:
             )
         return response
 
+    async def _check_response_size(
+        self, state: RunState, agent: AgentDefinition, response: Any
+    ) -> None:
+        size = len(response.message.text_content) + sum(
+            len(json.dumps(call.arguments, separators=(",", ":"), default=str))
+            for call in response.tool_calls
+        )
+        if size > agent.budget.max_response_chars:
+            # The oversized response was generated and paid for: charge it to the run.
+            self._record_model_usage(state, response)
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            raise self._response_too_large(agent, size)
+
+    @staticmethod
+    def _response_too_large(agent: AgentDefinition, size: int) -> BudgetExceededError:
+        return BudgetExceededError(
+            f"model response of at least {size} characters exceeds the "
+            f"{agent.budget.max_response_chars} character limit",
+            limit="response_chars",
+        )
+
     def _record_model_usage(self, state: RunState, response: Any) -> None:
         """Charge auxiliary or rejected completions to the same run budget."""
         state.summary = state.summary.model_copy(
@@ -1689,10 +1774,19 @@ class AgentRuntime:
     def _step_limit(state: RunState, agent: AgentDefinition) -> int:
         return agent.max_steps + state.continuation_count * agent.continuation_policy.step_increment
 
+    @staticmethod
+    def _model_call_limit(state: RunState, agent: AgentDefinition) -> int:
+        return (
+            agent.budget.max_model_calls
+            + state.continuation_count * agent.continuation_policy.step_increment
+        )
+
     @classmethod
     def _limit_reason(cls, state: RunState, agent: AgentDefinition) -> str | None:
         if state.step_count >= cls._step_limit(state, agent):
             return "execution_steps"
+        if state.summary.model_calls >= cls._model_call_limit(state, agent):
+            return "model_calls"
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             return "model_tokens"
@@ -1705,16 +1799,16 @@ class AgentRuntime:
         """Enforce local termination ceilings; platform governance remains external."""
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
-            raise BudgetExceededError("model_tokens budget exhausted")
+            raise BudgetExceededError("model_tokens budget exhausted", limit="model_tokens")
         if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
-            raise BudgetExceededError("estimated_cost budget exhausted")
+            raise BudgetExceededError("estimated_cost budget exhausted", limit="estimated_cost")
 
     async def _continue_or_pause(
         self, state: RunState, agent: AgentDefinition, reason: str
     ) -> bool:
         policy = agent.continuation_policy
         if not policy.enabled:
-            raise BudgetExceededError(f"{reason} budget exhausted")
+            raise BudgetExceededError(f"{reason} budget exhausted", limit=reason)
         if state.continuation_count < policy.automatic_extensions:
             expected = state.version
             state.continuation_count += 1
@@ -2129,6 +2223,11 @@ class AgentRuntime:
             return ()
         calls = tool_calls_left(self._step_limit(state, agent), state.step_count)
         reason = "steps"
+        # Each further tool call needs the model call that reads its result, and the answer
+        # needs one more.
+        model_calls = max(0, self._model_call_limit(state, agent) - state.summary.model_calls - 1)
+        if model_calls < calls:
+            calls, reason = model_calls, "model_calls"
         share = state.summary.usage.total_tokens / self._token_limit(state, agent)
         if share >= policy.token_answer_share:
             calls, reason = 0, "tokens"
@@ -2866,7 +2965,17 @@ class AgentRuntime:
                 span.set_attribute(
                     "memory.retention_seconds", agent.memory_policy.retention_seconds
                 )
-                await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+                quota_error: QuotaExceededError | None = None
+                try:
+                    await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+                except QuotaExceededError as exc:
+                    # The answer stands; only the turn's memory is not kept.
+                    quota_error = exc
+                    span.set_attribute("memory.quota_exceeded", True)
+            if quota_error is not None:
+                await self._audit(
+                    state, "storage.quota_exceeded", "refused", state.id, quota_error.details()
+                )
             await self._emit(
                 state,
                 "memory.written",
@@ -2874,6 +2983,13 @@ class AgentRuntime:
                     "operation": "append",
                     "item_count": len(persisted),
                     "retention_seconds": agent.memory_policy.retention_seconds,
+                }
+                if quota_error is None
+                else {
+                    "operation": "skipped",
+                    "item_count": 0,
+                    "retention_seconds": agent.memory_policy.retention_seconds,
+                    "reason": "quota_exceeded",
                 },
                 step_id,
             )
@@ -2894,6 +3010,8 @@ class AgentRuntime:
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
+        if target in TERMINAL_STATUSES:
+            self._event_overflow.discard(state.id)
         if target in TERMINAL_STATUSES and state.pending_steering:
             await self._emit(
                 state, "steer.undelivered", self._steering_data(state.pending_steering)
@@ -2907,6 +3025,11 @@ class AgentRuntime:
         step_id: str | None = None,
     ) -> None:
         sequence = await self.events.next_sequence(state.id)
+        if event_type not in _ALWAYS_RECORDED_EVENTS and sequence > self._event_limit(state):
+            # A runaway run must not fill the event store: drop the event and fail the run at
+            # its next step. Events that end or pause a run are always recorded.
+            self._event_overflow.add(state.id)
+            return
         span_context = trace.get_current_span().get_span_context()
         await self.events.publish(
             RunEvent(
@@ -2926,6 +3049,13 @@ class AgentRuntime:
                 data=data,
             )
         )
+
+    def _event_limit(self, state: RunState) -> int:
+        try:
+            agent = self.agents.get(state.request.agent, state.request.agent_version)
+        except NotFoundError:
+            return Budget().max_events
+        return agent.budget.max_events
 
     async def _require_state(self, run_id: str, tenant_id: str) -> RunState:
         state = await self.runs.get(run_id, tenant_id)
