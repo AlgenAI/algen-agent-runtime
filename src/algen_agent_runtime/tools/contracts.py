@@ -363,10 +363,16 @@ ReplayValidator = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
 Reconciler = Callable[
     [ToolExecutionRecord, ToolContext], Awaitable[ReconcileOutcome] | ReconcileOutcome
 ]
-# A call planned before the one being checked, in the same model reply: it runs first.
+# A call in the same model reply as the one being checked that will run before it and has not
+# run yet, as (definition, arguments).
 EarlierCall = tuple[ToolDefinition, Mapping[str, Any]]
 # Why a call would be refused, or None. It runs before any approval is asked for, so a call that
-# cannot succeed goes back to the model instead of to the user.
+# cannot succeed goes back to the model instead of to the user. ``earlier`` holds the calls of the
+# same reply that will run before this one and have not run yet: judge the call as if they had.
+# When a reply's calls run one at a time, each earlier call has already run when the next is
+# checked, so ``earlier`` is () and the precheck sees their effect in the system itself; only a
+# reply whose calls run together (``tool_policy.parallel_calls``) fills it. Calls the precheck
+# refused, or a guard held back, are left out, since they will not run.
 Precheck = Callable[
     [ToolDefinition, Mapping[str, Any], Sequence[EarlierCall]],
     Awaitable[str | None] | str | None,
@@ -417,7 +423,11 @@ class Tool:
     async def check(
         self, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall] = ()
     ) -> str | None:
-        """The precheck's problem with this call, judged after ``earlier``, or None."""
+        """The precheck's problem with this call, judged after ``earlier``, or None.
+
+        ``earlier`` holds the calls of the same reply that will run before this one and have not
+        run yet (see ``Precheck``); it is () when they already ran.
+        """
         if self.precheck is None:
             return None
         problem = self.precheck(self.definition, arguments, earlier)

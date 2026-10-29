@@ -1838,7 +1838,10 @@ class AgentRuntime:
 
         Arguments that do not fit the tool's input schema, or a call its precheck refuses, are
         refused; a read repeated with nothing changed since, or a call past the tool's limit,
-        is held back. ``batch_keys`` holds the reads admitted earlier in the same parallel reply.
+        is held back. ``earlier`` holds the calls of the same reply that will run before this
+        one and have not run yet: the parallel path passes the batch's admitted calls, the
+        single path () because the reply's earlier calls have already run. ``batch_keys`` holds
+        the reads admitted earlier in the same parallel reply.
         """
         definition = tool.definition
         name = definition.name

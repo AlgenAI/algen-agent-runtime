@@ -163,6 +163,18 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   call `failed`, not `indeterminate`, even for a write, so it needs no reconciliation and runs
   again normally with the same idempotency key once the user signs in.
 
+## Prechecks
+
+`@tool(..., precheck=check)` (or `Tool(..., precheck=check)`) refuses a call that is not
+read-only before it runs or anyone is asked to approve it; the model gets the problem back to
+fix. `check(definition, arguments, earlier)` returns the problem as a string, or None.
+`earlier` holds the calls in the same model reply that will run before this one and have not run
+yet, as `(definition, arguments)` pairs. It is `()` when the reply's calls run one at a time,
+because by then the earlier calls have already run and their effect is visible; it is filled only
+for calls that run together (`tool_policy.parallel_calls`). Judge the call against the current
+state with `earlier` applied on top, and the answer is the same either way. See
+[Tool-call guards](agent-tooling.md#tool-call-guards).
+
 ## Reporting a failure the model should fix
 
 A tool that returns an expected failure as data, so the model can correct itself, can say so.

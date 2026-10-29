@@ -208,16 +208,24 @@ other than `none` or `read`), whether or not the call needs approval:
 async def config_precheck(
     definition: ToolDefinition, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall]
 ) -> str | None:
-    """Why the change would be refused, or None. ``earlier`` holds the calls planned before
-    this one in the same model reply, as (definition, arguments): judge the call after them."""
+    """Why the change would be refused, or None. ``earlier`` holds the calls of the same model
+    reply that will run before this one and have not run yet, as (definition, arguments):
+    judge the call as if they had run."""
     ...
 
 Tool(definition, handler, precheck=config_precheck)
 # or: @tool(write(approval=True), precheck=config_precheck)
 ```
 
-`earlier` is filled only when the calls of a reply run together (`parallel_calls`); otherwise the
-earlier calls of the reply have already run, one at a time, and the precheck sees their effect.
+The contract for `earlier`: it holds the calls in the same reply that will run before this one
+and have not run yet. So it is filled only when the calls of a reply run together
+(`parallel_calls`), in the order the model sent them, leaving out calls already refused or held
+back. When a reply's calls run one at a time, each is checked just before it runs, after the
+earlier ones have run, so `earlier` is `()` and the precheck sees their effect in the system it
+checks. Write a precheck that gives the same answer either way: look at the system's current
+state, then apply `earlier` on top. A call refused because of an earlier call in its reply is
+refused after that earlier call has run, not before; the Runtime does not plan a whole reply
+before running any of it.
 A refused call is answered with `{"ok": false, "error": <problem>, "note": <note>}`: nothing ran
 and nobody was asked. A call already approved is not prechecked again.
 
