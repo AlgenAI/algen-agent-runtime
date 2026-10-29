@@ -1,0 +1,36 @@
+# An agent that issues account credits through an external billing system. BillingPlugin
+# (plugin.py) registers the billing toolkit (tools.py), whose tool has reconcile and compensation
+# hooks.
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: billing-assistant
+    version: 1.0.0
+    description: Issues account credits through the billing system
+    system_instructions: Use billing.issue_credit to credit an account.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    planning_strategy: direct
+    enabled_tools: [billing.issue_credit]
+    tool_permissions: [billing.write]
+    domain_plugins: ["examples.pattern_side_effect_reconciliation.plugin:BillingPlugin"]
+    # The example's runs need no approval; see quickstart_approval for that checkpoint.
+    approval_policy: {require_for_side_effects: false}
+    tool_policy:
+      # A call whose outcome is unknown pauses the run in awaiting_reconciliation instead of
+      # failing it; settling the call continues the run.
+      on_indeterminate: pause
+      # A refused call (ToolNotAttemptedError) goes back to the model instead of failing the run.
+      on_error: return_to_model
+security:
+  trusted_plugin_prefixes: [examples.pattern_side_effect_reconciliation]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+  workflow_store: memory
+telemetry: {enabled: false}

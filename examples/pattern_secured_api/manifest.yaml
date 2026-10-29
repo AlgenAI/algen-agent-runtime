@@ -1,0 +1,23 @@
+id: pattern_secured_api
+display_name: "Secured HTTP API (OIDC)"
+tier: pattern
+description: >
+  Serves the HTTP API in-process behind OIDC with a local JWKS stub: scopes from claims, the
+  approval inbox, redacted modified parameters, conversation ownership, token revocation and an
+  HTTP tool that forwards the signed-in user's credential.
+
+extras: [auth]
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_secured_api.app
+
+commands:
+  setup: "pip install -e '.[dev,auth]'"
+  run: "python -m examples.pattern_secured_api.app"
+  test: "python -m pytest tests/integration/test_reconciliation_and_secured_api_examples.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 10
+deterministic_mock_support: true
