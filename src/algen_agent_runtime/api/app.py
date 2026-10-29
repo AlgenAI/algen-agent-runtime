@@ -57,6 +57,7 @@ from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     ConflictError,
     NotFoundError,
+    QuotaExceededError,
 )
 from algen_agent_runtime.observability.setup import (
     configure_logging,
@@ -305,6 +306,22 @@ def create_app(
             },
         )
 
+    @app.exception_handler(QuotaExceededError)
+    async def quota_exceeded(request: Request, exc: QuotaExceededError) -> JSONResponse:
+        # 413 like an oversized request: retrying the same write cannot succeed until the
+        # tenant deletes data or its quota is raised.
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": str(exc),
+                "code": "QUOTA_EXCEEDED",
+                "resource": exc.resource,
+                "dimension": exc.dimension,
+                "limit": exc.limit,
+                "used": exc.used,
+            },
+        )
+
     @app.exception_handler(NotFoundError)
     async def not_found(request: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -446,6 +463,14 @@ def create_app(
         if approval is None:
             raise NotFoundError("approval request not found")
         return approval_view(approval.effective(utc_now()))
+
+    @app.get("/v1/storage/usage")
+    async def storage_usage(identity: Principal = identity_dependency) -> dict[str, Any]:
+        require_scope(identity, "usage:read")
+        service = dependencies.storage_usage
+        if service is None:
+            raise HTTPException(status_code=404, detail="storage usage is not available")
+        return (await service.usage(identity.tenant_id)).model_dump(mode="json")
 
     @app.get("/v1/runs/{run_id}/events")
     async def stream_events(

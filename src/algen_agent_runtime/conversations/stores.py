@@ -69,6 +69,29 @@ class InMemoryConversationStore:
             conversation.version = saved.version
             self._conversations[conversation.id] = saved
 
+    async def purge_inactive(self, cutoff: datetime, limit: int) -> tuple[tuple[str, ...], int]:
+        """Delete up to ``limit`` conversations idle since ``cutoff`` with no turn in progress
+        or waiting; return their ids and how many messages went with them."""
+        active = {MessageStatus.ACCEPTED, MessageStatus.STREAMING, *AWAITING_MESSAGE_STATUSES}
+        async with self._lock:
+            idle = sorted(
+                (
+                    item
+                    for item in self._conversations.values()
+                    if item.updated_at < cutoff
+                    and not any(
+                        message.created_at >= cutoff or message.status in active
+                        for message in self._messages.get(item.id, ())
+                    )
+                ),
+                key=lambda item: item.updated_at,
+            )[:limit]
+            messages = 0
+            for item in idle:
+                del self._conversations[item.id]
+                messages += len(self._messages.pop(item.id, ()))
+            return tuple(item.id for item in idle), messages
+
     async def append_message(self, message: ConversationMessage) -> None:
         async with self._lock:
             if any(item.id == message.id for item in self._messages[message.conversation_id]):
@@ -156,6 +179,11 @@ class InMemoryConversationEventBus:
             return tuple(
                 event for event in self._history.get(conversation_id, ()) if event.sequence > after
             )
+
+    async def forget(self, conversation_ids: Sequence[str]) -> int:
+        """Drop the event history of deleted conversations; return how many events went."""
+        async with self._lock:
+            return sum(len(self._history.pop(item, ())) for item in conversation_ids)
 
     async def subscribe(
         self, conversation_id: str, after: int = 0

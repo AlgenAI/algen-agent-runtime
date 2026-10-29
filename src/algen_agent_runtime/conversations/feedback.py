@@ -76,6 +76,15 @@ class InMemoryConversationFeedbackStore:
             item = self._items.get((tenant_id, user_id, message_id))
             return item.model_copy(deep=True) if item else None
 
+    async def forget_conversations(self, conversation_ids: Sequence[str]) -> int:
+        """Drop the feedback on deleted conversations; return how many items went."""
+        doomed = set(conversation_ids)
+        async with self._lock:
+            keys = [key for key, item in self._items.items() if item.conversation_id in doomed]
+            for key in keys:
+                del self._items[key]
+            return len(keys)
+
     async def list_for_conversation(
         self, tenant_id: str, user_id: str, conversation_id: str
     ) -> Sequence[ConversationFeedback]:
