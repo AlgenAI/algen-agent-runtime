@@ -202,18 +202,22 @@ class HuggingFaceInferenceProvider(OpenAICompatibleProvider):
 
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+XAI_BASE_URL = "https://api.x.ai/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 def _system_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+        return "\n\n".join(
+            text
+            for text in (
+                str(block.get("text") or "") for block in content if isinstance(block, dict)
+            )
+            if text
+        )
     return ""
-
-
-XAI_BASE_URL = "https://api.x.ai/v1"
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 class GeminiProvider(OpenAICompatibleProvider):
@@ -251,18 +255,26 @@ class GeminiProvider(OpenAICompatibleProvider):
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         payload = super()._payload(request)
         # The OpenAI-compatible endpoint keeps only the last system message as the system
-        # instruction. Runtime sends agent instructions and retrieved evidence as separate system
-        # messages, so merge them, in order, into one leading message.
+        # instruction. Runtime sends agent instructions, retrieved evidence and pinned compaction
+        # summaries as a leading run of system messages, so merge that run, in order, into one.
+        # A later system message (such as a verification-repair instruction) is sent in place as
+        # a user turn so it keeps its position in the conversation.
         messages = payload["messages"]
-        system = [m for m in messages if m.get("role") == "system"]
-        if len(system) > 1:
-            merged = "\n\n".join(
-                text for text in (_system_text(m.get("content")) for m in system) if text
-            )
-            payload["messages"] = [
-                {"role": "system", "content": merged},
-                *(m for m in messages if m.get("role") != "system"),
-            ]
+        leading = 0
+        while leading < len(messages) and messages[leading].get("role") == "system":
+            leading += 1
+        merged = "\n\n".join(
+            text for text in (_system_text(m.get("content")) for m in messages[:leading]) if text
+        )
+        rewritten: list[dict[str, Any]] = [{"role": "system", "content": merged}] if merged else []
+        for message in messages[leading:]:
+            if message.get("role") == "system":
+                text = _system_text(message.get("content"))
+                if text:
+                    rewritten.append({"role": "user", "content": f"[system] {text}"})
+            else:
+                rewritten.append(message)
+        payload["messages"] = rewritten
         return payload
 
     async def capabilities(self, model: str) -> ModelCapabilities:

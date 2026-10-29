@@ -32,8 +32,10 @@ unasked. `stream_options` from profile extensions are kept.
 - `type: gemini` calls `https://generativelanguage.googleapis.com/v1beta/openai`; set `base_url` to
   use another endpoint. Thinking models accept `reasoning_effort` (`low`, `medium`, `high`) as a
   profile extension; without it, a small `max_output_tokens` can be spent on hidden reasoning.
-- The endpoint keeps only the last system message, so the adapter merges every system message
-  (agent instructions, retrieved evidence, compaction summaries), in order, into one.
+- The endpoint keeps only the last system message, so the adapter merges the leading run of system
+  messages (agent instructions, retrieved evidence, pinned compaction summaries), in order, into
+  one. A system message later in the conversation, such as the verification-repair instruction, is
+  sent in place as a user message prefixed `[system] ` so it keeps its position.
 - Embedding models (`gemini-embedding-*`) report `chat: false, embeddings: true`.
 
 ## Anthropic notes

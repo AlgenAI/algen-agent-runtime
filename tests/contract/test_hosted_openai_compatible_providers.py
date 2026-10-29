@@ -16,6 +16,7 @@ from algen_agent_runtime.types.contracts import (
     ModelRequest,
     Role,
     TextBlock,
+    ToolCall,
 )
 
 CASES = [
@@ -204,3 +205,80 @@ async def test_gemini_merges_system_messages_into_one() -> None:
     assert (
         seen["messages"][0]["content"] == "You are a tutor.\n\nRetrieved evidence follows. [S1] ..."
     )
+
+
+def _gemini_capturing(seen: dict[str, Any]) -> GeminiProvider:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen["messages"] = json.loads(request.content)["messages"]
+        return httpx.Response(200, json=_completion("gemini-flash-latest"))
+
+    return GeminiProvider(
+        "env://GEMINI_API_KEY",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        secret_provider=StaticSecrets("GEMINI_API_KEY"),
+    )
+
+
+async def test_gemini_keeps_a_later_system_message_in_place() -> None:
+    """Only the leading system run is merged. The verification-repair instruction Runtime appends
+    after a rejected answer stays last, as a user turn, so "the previous response" still follows it.
+    """
+    seen: dict[str, Any] = {}
+    provider = _gemini_capturing(seen)
+    await provider.generate(
+        ModelRequest(
+            messages=(
+                Message.text(Role.SYSTEM, "Always end with BANANA."),
+                Message.text(Role.SYSTEM, "Evidence: [S1] ..."),
+                Message.text(Role.USER, "Q?"),
+                Message(
+                    role=Role.ASSISTANT,
+                    content=(),
+                    tool_calls=(ToolCall(id="c1", name="search", arguments={"q": "x"}),),
+                ),
+                Message.text(Role.TOOL, "result").model_copy(update={"tool_call_id": "c1"}),
+                Message.text(Role.ASSISTANT, "bad answer"),
+                Message.text(Role.SYSTEM, "Repair the previous response to satisfy validation."),
+            ),
+            max_output_tokens=20,
+        )
+    )
+    messages = seen["messages"]
+    assert [m["role"] for m in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert messages[0]["content"] == "Always end with BANANA.\n\nEvidence: [S1] ..."
+    assert messages[2]["tool_calls"][0]["id"] == "c1"
+    assert messages[3]["tool_call_id"] == "c1"
+    assert messages[-1] == {
+        "role": "user",
+        "content": "[system] Repair the previous response to satisfy validation.",
+    }
+
+
+async def test_gemini_system_text_joins_blocks_and_skips_empty_system() -> None:
+    seen: dict[str, Any] = {}
+    provider = _gemini_capturing(seen)
+    await provider.generate(
+        ModelRequest(
+            messages=(
+                Message(role=Role.SYSTEM, content=(TextBlock(text="One."), TextBlock(text="Two."))),
+                Message.text(Role.USER, "Q?"),
+            ),
+            max_output_tokens=20,
+        )
+    )
+    assert seen["messages"][0] == {"role": "system", "content": "One.\n\nTwo."}
+
+    await provider.generate(
+        ModelRequest(
+            messages=(Message.text(Role.SYSTEM, ""), Message.text(Role.USER, "Q?")),
+            max_output_tokens=20,
+        )
+    )
+    assert [m["role"] for m in seen["messages"]] == ["user"]
