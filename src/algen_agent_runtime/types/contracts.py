@@ -275,9 +275,15 @@ class ToolPolicy(StrictModel):
     max_refusals_per_tool: int | None = Field(
         default=None,
         ge=1,
-        description="Refused calls to one tool in a run (a failed precheck or arguments that do "
-        "not fit its input schema) after which the refusal tells the model to stop calling it and "
+        description="Refused calls to one tool (a failed precheck or arguments that do not fit "
+        "its input schema, counted as ``refusal_count`` says) after which the refusal tells the model to stop calling it and "
         "tell the user what was refused and why. None always says to fix the call and try again.",
+    )
+    refusal_count: Literal["consecutive", "per_run"] = Field(
+        default="consecutive",
+        description="How refusals count toward ``max_refusals_per_tool``. ``consecutive`` starts "
+        "a tool's count again when a call to it runs successfully, so a model that is making "
+        "progress is not stopped; ``per_run`` counts every refusal in the run.",
     )
     repeat_guard: bool = Field(
         default=False,
@@ -638,7 +644,8 @@ class RunState(BaseModel):
     # Tool guards, checkpointed so they survive an approval pause and a restart.
     tool_refusals: dict[str, int] = Field(
         default_factory=dict,
-        description="Calls refused per tool in this run (precheck or input schema).",
+        description="Calls refused per tool (precheck or input schema): since the tool's last "
+        "successful call, or in the whole run with tool_policy.refusal_count='per_run'.",
     )
     tool_call_counts: dict[str, int] = Field(
         default_factory=dict,

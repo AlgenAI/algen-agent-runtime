@@ -1901,7 +1901,10 @@ class AgentRuntime:
         state: RunState, agent: AgentDefinition, definition: ToolDefinition, arguments: Any
     ) -> None:
         """A successful read is remembered for the repeat guard; a successful change forgets
-        every read, since looking again may now show something new."""
+        every read, since looking again may now show something new. A successful call also
+        starts its tool's refusal count again, unless refusals count per run."""
+        if agent.tool_policy.refusal_count == "consecutive":
+            state.tool_refusals.pop(definition.name, None)
         if not agent.tool_policy.repeat_guard or definition.volatile:
             return
         if read_only(definition):

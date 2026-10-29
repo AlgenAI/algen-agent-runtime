@@ -470,7 +470,7 @@ async def test_refusals_counted_before_an_approval_pause_count_after_it() -> Non
             side_effect=SideEffect.WRITE,
             precheck=recorder.precheck,
         ),
-        tool_policy=ToolPolicy(max_refusals_per_tool=2),
+        tool_policy=ToolPolicy(max_refusals_per_tool=2, refusal_count="per_run"),
     )
     paused = await runtime.run(_request())
     assert paused.status == RunStatus.AWAITING_APPROVAL
@@ -480,6 +480,128 @@ async def test_refusals_counted_before_an_approval_pause_count_after_it() -> Non
     assert state.status == RunStatus.COMPLETED
     assert recorder.ran == [{"key": "good"}]
     assert _results(provider)[-1]["note"] == STOP.format(count=2)
+
+
+async def test_a_successful_call_starts_the_tools_refusal_count_again() -> None:
+    recorder = Recorder(refuse={"bad": "invalid"})
+    bad, good = ("config.change", {"key": "bad"}), ("config.change", {"key": "good"})
+    provider = MockModelProvider(
+        [_call(*bad), _call(*good), _call(*bad), _call(*bad), _call(*bad), "done"]
+    )
+    runtime, _ = _runtime(
+        provider,
+        _tool(
+            "config.change",
+            recorder.handler,
+            side_effect=SideEffect.WRITE,
+            precheck=recorder.precheck,
+        ),
+        tool_policy=ToolPolicy(max_refusals_per_tool=3),
+        approval_policy=NO_APPROVAL,
+    )
+    result = await runtime.run(_request())
+    assert result.status == RunStatus.COMPLETED and recorder.ran == [{"key": "good"}]
+    # Refused, succeeded, refused, refused: two in a row, under the limit of three.
+    notes = [item.get("note") for item in _results(provider)]
+    assert notes == [FIX_IT, None, FIX_IT, FIX_IT, STOP.format(count=3)]
+    refused = [
+        event.data["refusal_count"]
+        for event in await runtime.events.history(result.run_id)
+        if event.type == "tool.refused"
+    ]
+    assert refused == [1, 1, 2, 3]
+    assert (await runtime.status(result.run_id, "t")).tool_refusals == {"config.change": 3}
+
+
+async def test_per_run_counts_every_refusal_in_the_run() -> None:
+    recorder = Recorder(refuse={"bad": "invalid"})
+    bad, good = ("config.change", {"key": "bad"}), ("config.change", {"key": "good"})
+    provider = MockModelProvider([_call(*bad), _call(*good), _call(*bad), _call(*bad), "done"])
+    runtime, _ = _runtime(
+        provider,
+        _tool(
+            "config.change",
+            recorder.handler,
+            side_effect=SideEffect.WRITE,
+            precheck=recorder.precheck,
+        ),
+        tool_policy=ToolPolicy(max_refusals_per_tool=3, refusal_count="per_run"),
+        approval_policy=NO_APPROVAL,
+    )
+    result = await runtime.run(_request())
+    assert result.status == RunStatus.COMPLETED
+    assert recorder.ran == [{"key": "good"}]
+    notes = [item.get("note") for item in _results(provider)]
+    assert notes == [FIX_IT, None, FIX_IT, STOP.format(count=3)]
+
+
+async def test_another_tools_success_or_a_failed_call_does_not_reset_the_count() -> None:
+    recorder = Recorder(refuse={"bad": "invalid"})
+
+    def handler(arguments: dict[str, Any], context: Any) -> dict[str, Any]:
+        if arguments["key"] == "boom":
+            raise RuntimeError("boom")
+        return recorder.handler(arguments, context)
+
+    provider = MockModelProvider(
+        [
+            _call("config.change", {"key": "bad"}),
+            _call("files.read", {"key": "r"}),
+            _call("config.change", {"key": "boom"}),
+            _call("config.change", {"key": "bad"}),
+            "done",
+        ]
+    )
+    runtime, _ = _runtime(
+        provider,
+        _tool("config.change", handler, side_effect=SideEffect.WRITE, precheck=recorder.precheck),
+        _tool("files.read", recorder.handler),
+        tool_policy=ToolPolicy(on_error="return_to_model", max_refusals_per_tool=2),
+        approval_policy=NO_APPROVAL,
+    )
+    await runtime.run(_request())
+    results = _results(provider)
+    assert "error" in results[2] and results[-1]["note"] == STOP.format(count=2)
+
+
+async def test_a_consecutive_count_survives_an_approval_pause() -> None:
+    recorder = Recorder(refuse={"bad": "invalid"})
+    provider = MockModelProvider(
+        [
+            _call("config.change", {"key": "bad"}),
+            _call("files.write", {"key": "w"}),
+            _call("config.change", {"key": "bad"}),
+            _call("config.change", {"key": "good"}),
+            _call("config.change", {"key": "bad"}),
+            "done",
+        ]
+    )
+    runtime, _ = _runtime(
+        provider,
+        _tool(
+            "config.change",
+            recorder.handler,
+            side_effect=SideEffect.WRITE,
+            precheck=recorder.precheck,
+        ),
+        _tool("files.write", recorder.handler, side_effect=SideEffect.WRITE),
+        tool_policy=ToolPolicy(max_refusals_per_tool=2),
+        approval_policy=ApprovalPolicy(require_for_side_effects=True),
+    )
+    paused = await runtime.run(_request())
+    assert paused.status == RunStatus.AWAITING_APPROVAL
+    assert (await runtime.status(paused.run_id, "t")).tool_refusals == {"config.change": 1}
+    await runtime.resume(paused.run_id, "t", {"decision": "approved"})
+    state = await _settle(runtime, paused.run_id)
+    # Another tool's success does not reset config.change: the count after the pause is two.
+    assert state.status == RunStatus.AWAITING_APPROVAL
+    assert _results(provider)[-1]["note"] == STOP.format(count=2)
+    # The approved good change resets it, and the reset is checkpointed.
+    await runtime.resume(paused.run_id, "t", {"decision": "approved"})
+    state = await _settle(runtime, paused.run_id)
+    assert state.status == RunStatus.COMPLETED
+    assert _results(provider)[-1]["note"] == FIX_IT
+    assert state.tool_refusals == {"config.change": 1}
 
 
 # 3. Repeat guard and per-tool call limits

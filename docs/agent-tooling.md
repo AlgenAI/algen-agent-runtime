@@ -14,7 +14,8 @@ contain secret-like text, run independent tool calls together, and remember what
 | `guardrail_policy.tool_result_injection` | `off` | `flag`: a tool result that tries to give the model instructions is wrapped as untrusted data with a warning before the model reads it. `block`: the call fails (combine with `on_error="return_to_model"` to tell the model). |
 | `tool_policy.parallel_calls` | `false` | The tool calls one model reply asks for run concurrently, up to `max_parallel_calls` (default 4), and are recorded in the order asked. A reply that includes a call needing approval, or a memory, skill or working-state tool, runs one call at a time. |
 | `memory_policy.store_tool_payloads` | `false` | Session memory keeps the turn's tool calls and results as well as the question and answer, each result capped at `tool_payload_max_chars` (default 4,000). History read back always starts at a whole turn, and a tool call is never kept without its result. |
-| `tool_policy.max_refusals_per_tool` | `None` | From this many refused calls to one tool in a run, the refusal tells the model to stop calling it and answer. See [Tool-call guards](#tool-call-guards). |
+| `tool_policy.max_refusals_per_tool` | `None` | From this many refused calls to one tool in a row, the refusal tells the model to stop calling it and answer. See [Tool-call guards](#tool-call-guards). |
+| `tool_policy.refusal_count` | `consecutive` | `per_run`: count every refusal of a tool in the run toward `max_refusals_per_tool`, not only those since its last successful call. |
 | `tool_policy.repeat_guard` | `false` | A read repeated with nothing changed since returns a note instead of running. |
 | `tool_policy.max_calls_per_tool` | `{}` | The most times each named tool runs in a run; past it, a call returns a note. |
 | `wrap_up_policy.enabled` | `false` | Near the end of the run's steps or tokens, tool results carry a notice to stop calling tools and answer. |
@@ -176,7 +177,7 @@ agents:
     enabled_tools: [hr.find_people, hr.update_record, jobs.status]
     tool_policy:
       on_error: return_to_model
-      max_refusals_per_tool: 3      # from the third refusal: stop and tell the user
+      max_refusals_per_tool: 3      # from the third refusal in a row: stop and tell the user
       repeat_guard: true            # an identical read with nothing changed returns a note
       max_calls_per_tool:
         hr.find_people: 5           # a search the model could keep rephrasing
@@ -213,9 +214,16 @@ earlier calls of the reply have already run, one at a time, and the precheck see
 A refused call is answered with `{"ok": false, "error": <problem>, "note": <note>}`: nothing ran
 and nobody was asked. A call already approved is not prechecked again.
 
-**Refusal limits.** Refusals (schema and precheck) are counted per tool per run. The note says
+**Refusal limits.** Refusals (schema and precheck) are counted per tool. The note says
 "Fix it and try again" until `max_refusals_per_tool`; from then on it says the tool has refused
 the model that many times, not to call it again, and to tell the user what was refused and why.
+With `refusal_count: consecutive` (the default) a call to the tool that runs successfully starts
+its count again: the limit is for a model that cannot get a call right, not one that fixes its
+mistakes along the way, so refused, succeeded, refused, refused is two refusals, not three. A
+call that fails or is held back by another guard does not reset the count, and neither does a
+successful call to another tool. `refusal_count: per_run` counts every
+refusal in the run, as 0.1.0a17 did. The count is part of `RunState`, so either way it survives
+an approval pause and a restart.
 
 **Repeat guard and call limits.** With `repeat_guard`, a read-only call identical (tool and
 arguments) to one that already succeeded in the run, with no successful state-changing call since,
