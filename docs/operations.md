@@ -34,6 +34,8 @@ storage:
   postgres_min_pool_size: 1
   postgres_max_pool_size: 10
   memory_retention_seconds: 86400
+  # quotas:                     # optional per-tenant storage limits; see "Storage quotas"
+  #   default: {artifact_bytes: 10737418240, memory_items: 100000}
 runtime:
   component_check: error  # or warn; see docs/plugins.md
   recover_incomplete_runs: true
@@ -52,6 +54,10 @@ maintenance:
   clarification_timeout_seconds: 604800
   terminal_run_retention_days: 30
   # audit_retention_days: 365  # opt-in; keep unset when audit must be retained indefinitely
+  # conversation_retention_days: 180
+  # workflow_checkpoint_retention_days: 90
+  # analytical_graph_retention_days: 30
+  # work_item_retention_days: 30
 conversation_presentation:
   progress_audience: business
   error_audience: business
@@ -534,7 +540,7 @@ without running it, or add a notice to its result. Each leaves a record:
 | Precheck | `tool.refused` (`reason_code: tool.precheck_refused`) | `refused` | `tool.call`, `refused` | `agent.tool.call` with `tool.status=refused` |
 | Repeat guard | `tool.repeated` (`reason_code: tool.repeated`) | `repeated` | `tool.call`, `repeated` | `agent.tool.call` with `tool.status=repeated` |
 | Call limit | `tool.repeated` (`reason_code: tool.call_limit`) | `over_limit` | `tool.call`, `over_limit` | `agent.tool.call` with `tool.status=over_limit` |
-| Wrap-up notice | `tool.wrap_up` (`tool_calls_left`, `reason: steps\|tokens`) | unchanged | `run.wrap_up`, `notified` | `agent.wrap_up.tool_calls_left` on the `agent.step` span (`agent.run` for a parallel reply) |
+| Wrap-up notice | `tool.wrap_up` (`tool_calls_left`, `reason: steps\|tokens\|model_calls`) | unchanged | `run.wrap_up`, `notified` | `agent.wrap_up.tool_calls_left` on the `agent.step` span (`agent.run` for a parallel reply) |
 
 `tool.refused` also carries `refusal_count` (refusals of that tool so far in the run) and
 `refusal_limit_reached` (the note told the model to stop); `tool.repeated` for a call limit
@@ -550,6 +556,76 @@ event and `tool.completed` with that status and its `reason_code`. A consumer th
 from `tool.started` sees every call. A reply's calls are announced in the order the model sent
 them: in a parallel reply every call's `step.started`, then every call's `tool.started`, before
 any of them runs, and their results and `tool.completed` events follow in the same order.
+
+## Run limits
+
+Beside steps, tokens, cost and latency, every agent's `budget` bounds what one run can make the
+model produce and how many events it can record. The defaults are far above what a normal run
+uses, so existing agents are unaffected; lower them for agents that face untrusted input.
+
+| Setting | Default | Bounds | When reached |
+| --- | --- | --- | --- |
+| `budget.max_model_calls` | 1,000 | Model calls in the run: steps, rejected completions that were retried, history compaction and verification repairs. | Like the step limit: a continuation (`continuation_policy`) adds `step_increment` calls, otherwise the run fails. The wrap-up notice counts the calls left (`reason: model_calls`). |
+| `budget.max_response_chars` | 1,000,000 (at least 1,000) | One model response: its text plus its tool calls' arguments as compact JSON. | The run fails at once. A streamed response is cut off as soon as it passes the limit; a complete one is charged to the run's usage first. |
+| `budget.max_events` | 10,000 (at least 100) | Run events recorded for the run. | Further events are dropped, except those that end or pause the run (`run.completed`, `run.failed`, `run.cancelled`, `approval.required`, `clarification.required`, `tool.reconciliation_required`, `mcp.auth_required`, `budget.refused`, `steer.undelivered`), and the run fails at its next step. |
+| `runtime.stream_delta_interval_ms` | 50 (0 to 5,000) | How often streamed text is recorded. | Chunks that arrive within the interval are joined into one `model.delta` event (the first is sent at once, the rest at the end of the stream at the latest), so a long stream does not use up `max_events`. `0` records every chunk, as `AgentRuntime` does when constructed directly. |
+
+A run that ends at a limit fails with `RunState.error` naming it and a `run.failed` event with
+`reason: limit_exceeded` and `limit` (`model_calls`, `response_chars`, `events`, or the existing
+`execution_steps`, `model_tokens` and `estimated_cost`), and the audit log gets a
+`run.limit_exceeded` record (outcome `failed`) with the limit, steps, model calls and tokens used;
+the `agent.run` span carries `agent.run.limit_exceeded`. The event count is the run's event
+sequence, so it holds across pauses and restarts. Alert on `run.limit_exceeded`: a run that keeps
+reaching a limit is looping or being fed hostile input.
+
+## Storage quotas
+
+`storage.quotas` limits what each tenant can keep in the artifact store, session memory and learned
+memory. Every limit is unlimited by default; `default` applies to every tenant and a `tenants` entry
+overrides only the fields it sets (`null` lifts a limit for that tenant):
+
+```yaml
+storage:
+  quotas:
+    default:
+      artifact_count: 10000
+      artifact_bytes: 10737418240    # 10 GiB
+      memory_items: 100000           # session memory messages
+      memory_bytes: 1073741824
+      learned_memory_items: 5000     # learned-memory records that hold content
+      learned_memory_bytes: 52428800
+    tenants:
+      enterprise-tenant: {artifact_bytes: 107374182400}
+      internal-tools: {memory_items: null}
+```
+
+Bytes are what is stored: artifact payload bytes (S3 artifacts included) and the JSON size of each
+memory message or learned-memory record. Expired records count until the maintenance sweep purges
+them. A write that would take a tenant past a limit writes nothing and raises `QuotaExceededError`;
+the API answers **413** with `code: QUOTA_EXCEEDED`, `resource`, `dimension` (`items` or `bytes`),
+`limit` and `used` (the usage the write would have reached). 413 rather than 429 because retrying
+cannot succeed until the tenant deletes data or its quota is raised. Deletes, and writes that do not
+grow usage, are always allowed, so a tenant over a lowered quota can clean up. Inside a run, a full
+artifact quota fails the tool-result offload as a tool error (`could not store context artifact:
+storage quota exceeded ...`), a full learned-memory quota fails the memory tool call, and a full
+session-memory quota keeps the run's answer but not the turn's memory: `memory.written` reports
+`operation: skipped, reason: quota_exceeded` and a `storage.quota_exceeded` audit record (outcome
+`refused`) names the resource.
+
+`GET /v1/storage/usage` (scope `usage:read`) returns the caller's tenant usage and limits per
+resource; `container.storage_usage.usage(tenant_id)` does the same in Python.
+
+| Backend | How usage is kept |
+| --- | --- |
+| PostgreSQL (and S3 metadata) | Migration `016_resource_bounds.sql` adds `algen_agent_runtime_tenant_usage` (tenant, resource, items, bytes) and triggers on the artifact, memory and learned-memory tables that update it in the same transaction as every insert, update and delete, from any code path, the maintenance sweep and manual SQL included. The migration backfills it from existing rows. A quota-checked write locks the tenant's usage row (`SELECT ... FOR UPDATE`), writes, re-reads the row and rolls back when the limit is passed, so concurrent writes for one tenant are serialized and cannot overshoot. Tenants without a limit write as before; the triggers still keep their usage. S3 checks once before uploading and again under the lock when it records the artifact, deleting the uploaded object if the second check fails. |
+| In memory | Computed from the stored records under the store's lock. |
+| Redis (session memory) | Lua scripts keep each tenant's usage beside its sessions and forget sessions whose list has expired. Enabled only when some quota is configured; sessions written before that are not counted until they expire. The scripts touch several keys, so this needs a Redis that is not clustered. |
+
+On PostgreSQL the triggers update one usage row per tenant and resource, so concurrent writes of
+one tenant wait briefly for each other on that row (each holds it until its own statement or
+transaction commits); a quota-checked write holds it for the whole write. Writes of different
+tenants never wait for each other. Run the migration in a quiet period: creating the triggers locks
+the artifact, memory and learned-memory tables against writes until the backfill commits.
 
 ## Resolving indeterminate tool calls
 
@@ -798,17 +874,24 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
 | Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |
+| Conversations | off | With `conversation_retention_days` set, deletes conversations not updated within that window, together with their messages, conversation events and feedback. A conversation is kept while any of its messages is newer than the window or a turn is in progress or waiting (`accepted`, `streaming`, `awaiting_approval`, `awaiting_input`). Reports `conversations`, `conversation_messages`, `conversation_events` and `conversation_feedback`. |
+| Workflow checkpoints | off | With `workflow_checkpoint_retention_days` set, deletes `completed`, `failed` and `cancelled` workflow runs not updated within that window, except a child run whose parent run is unfinished (the parent's recovery reads it). Reports `workflow_checkpoints`. |
+| Analytical graphs | off | With `analytical_graph_retention_days` set, deletes `completed`, `failed` and `cancelled` graphs not updated within that window. Reports `analytical_graphs`. |
+| Work items | off | With `work_item_retention_days` set, deletes `completed` and `failed` (dead) distributed work items not updated within that window. Their deduplication keys are released: enqueueing the same key later creates a new item. Reports `work_items`. |
 
 Terminal-run deletion is conservative. It keeps runs that still have a `started`, `indeterminate`,
 `compensating` or `compensation_failed` tool execution, so operators can reconcile side effects
 first, and runs that belong to a workflow
-that has not finished. Artifacts follow their own expiry; deleting a run clears their `run_id`.
-Conversations, workflow checkpoints, analytical graphs, and work items are not deleted by the sweep.
+that has not finished. Artifacts follow their own expiry; deleting a run clears their `run_id`. The runs of a deleted
+conversation or workflow follow the terminal-run window, and a run whose workflow is unfinished is
+kept; deleting a finished workflow checkpoint lets its runs be deleted. The conversation, workflow,
+graph and work-item windows apply to PostgreSQL stores and to stores kept in memory.
 
 Work is done in batches (`batch_size`, `max_batches_per_sweep`) with `FOR UPDATE SKIP LOCKED`, so
 several replicas or a CronJob can sweep concurrently without blocking request traffic or deleting
-the same rows twice. Migration `010_retention_indexes.sql` adds the supporting indexes; on large
-existing tables, create them `CONCURRENTLY` before upgrading to avoid a long write lock. Choose
+the same rows twice. Migrations `010_retention_indexes.sql` and `016_resource_bounds.sql` add the
+supporting indexes; on large existing tables, create them `CONCURRENTLY` before upgrading to avoid a
+long write lock. Choose
 retention windows that cover your incident-investigation and compliance needs before enabling
 deletion, and back up the database first.
 
