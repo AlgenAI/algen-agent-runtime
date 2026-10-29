@@ -10,8 +10,8 @@ Capabilities depend on the selected model and server. These adapter defaults are
 | DeepSeek | yes | yes | model-dependent | no strict guarantee | endpoint-dependent | no | OpenAI-compatible |
 | Mistral AI | yes | yes | model-dependent | model-dependent | yes | model-dependent | Mistral Chat/Embeddings |
 | Google Gemini | yes | yes | yes | yes | yes | yes | OpenAI-compatible (Gemini API) |
-| xAI Grok | yes | yes | yes | yes | no | model-dependent | OpenAI-compatible |
-| Groq | yes | yes | model-dependent | model-dependent | no | no | OpenAI-compatible |
+| xAI Grok | yes | yes | yes | yes | no | yes (model-dependent) | OpenAI-compatible |
+| Groq | yes | yes | yes | gpt-oss models (others best-effort) | no | no | OpenAI-compatible |
 | Ollama | yes | yes | model-dependent | model-dependent | yes | model-dependent | OpenAI-compatible |
 | Hugging Face Inference | yes | yes | model-dependent | no guarantee | endpoint-dependent | model-dependent | OpenAI-compatible router |
 | Local Transformers | yes | completion only | no | no | no | no | in-process |
@@ -37,6 +37,20 @@ unasked. `stream_options` from profile extensions are kept.
   one. A system message later in the conversation, such as the verification-repair instruction, is
   sent in place as a user message prefixed `[system] ` so it keeps its position.
 - Embedding models (`gemini-embedding-*`) report `chat: false, embeddings: true`.
+
+## Groq notes
+
+- Groq enforces strict JSON-schema output only on the gpt-oss family (`openai/gpt-oss-*`). For
+  those models the adapter reports `json_schema: true` and sends `strict: true`; for other models it
+  reports `json_schema: false` (best-effort `structured_output` only) and sends `strict: false`, so
+  a `response_schema` is not rejected and Runtime's JSON-schema verifier checks the answer.
+- Setting `capabilities` on the provider entry replaces this per-model default; `json_schema` in it
+  then decides `strict`. Narrow `tools` there for Groq models without tool calling.
+
+## xAI notes
+
+- The adapter reports `images: true`. Not every Grok model accepts image input; narrow
+  `capabilities` on the provider entry for a text-only model.
 
 ## Anthropic notes
 

@@ -282,3 +282,44 @@ async def test_gemini_system_text_joins_blocks_and_skips_empty_system() -> None:
         )
     )
     assert [m["role"] for m in seen["messages"]] == ["user"]
+
+
+async def test_groq_strict_json_schema_is_model_dependent() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_completion("m"))
+
+    def groq(capabilities: ModelCapabilities | None = None) -> GroqProvider:
+        return GroqProvider(
+            "env://GROQ_API_KEY",
+            capabilities=capabilities,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+            secret_provider=StaticSecrets("GROQ_API_KEY"),
+        )
+
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+
+    def request(model: str) -> ModelRequest:
+        return ModelRequest(
+            messages=(Message.text(Role.USER, "x"),),
+            model=model,
+            response_schema=schema,
+            max_output_tokens=20,
+        )
+
+    provider = groq()
+    await provider.generate(request("openai/gpt-oss-20b"))
+    await provider.generate(request("llama-3.3-70b-versatile"))
+    assert [p["response_format"]["json_schema"]["strict"] for p in seen] == [True, False]
+    assert (await provider.capabilities("openai/gpt-oss-120b")).json_schema
+    llama = await provider.capabilities("llama-3.3-70b-versatile")
+    assert llama.structured_output and not llama.json_schema
+
+    # Configured capabilities replace the per-model default.
+    seen.clear()
+    configured = groq(ModelCapabilities(streaming=True, structured_output=True, json_schema=True))
+    await configured.generate(request("llama-3.3-70b-versatile"))
+    assert seen[0]["response_format"]["json_schema"]["strict"] is True
+    assert (await configured.capabilities("llama-3.3-70b-versatile")).json_schema

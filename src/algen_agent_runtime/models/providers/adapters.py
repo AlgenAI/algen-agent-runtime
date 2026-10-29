@@ -310,8 +310,18 @@ class XAIProvider(OpenAICompatibleProvider):
         )
 
 
+def _groq_strict_schema(model: str) -> bool:
+    """Groq enforces ``strict`` JSON-schema output only for the gpt-oss family."""
+    return model.startswith("openai/gpt-oss")
+
+
 class GroqProvider(OpenAICompatibleProvider):
-    """Models served by Groq's OpenAI-compatible API (for example ``openai/gpt-oss-120b``)."""
+    """Models served by Groq's OpenAI-compatible API (for example ``openai/gpt-oss-120b``).
+
+    Strict JSON-schema output is model-dependent on Groq: gpt-oss models report ``json_schema`` and
+    get ``strict: true``; other models report only best-effort ``structured_output`` and are sent
+    ``strict: false``. Configured ``capabilities`` replace this per-model default.
+    """
 
     def __init__(
         self,
@@ -331,4 +341,24 @@ class GroqProvider(OpenAICompatibleProvider):
                 streaming=True, tools=True, structured_output=True, json_schema=True
             ),
             **kwargs,
+        )
+        self._configured_capabilities = capabilities is not None
+
+    def _strict_schema(self, model: str) -> bool:
+        if self._configured_capabilities:
+            return self._capabilities.json_schema
+        return _groq_strict_schema(model)
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        response_format = payload.get("response_format")
+        if response_format and response_format.get("type") == "json_schema":
+            response_format["json_schema"]["strict"] = self._strict_schema(payload["model"])
+        return payload
+
+    async def capabilities(self, model: str) -> ModelCapabilities:
+        if self._configured_capabilities:
+            return self._capabilities
+        return self._capabilities.model_copy(
+            update={"json_schema": self._strict_schema(model or self._default_model)}
         )
