@@ -70,6 +70,8 @@ await runtime.run(request, credentials={"authorization": incoming_headers["autho
   header, which settings validation refuses. No other credential, cookie or request header of the
   caller is forwarded, and `token`, `username` and `password` are refused with `caller`.
 - A call without that credential fails with `authentication required` before any request is sent.
+  [`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md) shows both cases: a
+  host route that passes the incoming `Authorization` header, and a `/v1/runs` run that has none.
   This is the case for a run started without credentials, a run resumed without them, a run recovered
   after a restart, workflow tool steps and runs started through the HTTP API, which pass none. A
   blank value, or with `scheme` set a value that is only the scheme (`"Bearer "`), counts as none.

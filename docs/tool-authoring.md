@@ -297,6 +297,9 @@ hooks.
   the idempotency key) without caller credentials, since an operator, not the user, starts them.
 - `describe` shows `reconcile: true` and `compensation: true` for tools that have them.
 
+[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+is a runnable tool with both hooks, over a fake external system.
+
 ## Decorating a handler
 
 A wrapper that adds behaviour around a tool (logging, steering, reporting outcomes) should not

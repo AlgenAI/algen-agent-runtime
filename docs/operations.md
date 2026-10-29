@@ -279,6 +279,10 @@ once with the executor, or let a decision or answer through the API continue the
 
 `jwt` and `oidc` need the `auth` extra (`PyJWT[crypto]`).
 
+[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md) runs the API in-process
+behind `oidc` with a local JWKS stub: scopes from claims, the approval inbox, conversation
+ownership, token revocation and an HTTP tool that forwards the signed-in user's credential.
+
 ### OIDC issuers and JWKS
 
 ```yaml
@@ -559,6 +563,10 @@ a dropped connection after the request left), the ledger records it `indetermina
 process stops mid-call, the reservation stays `started`. Neither is ever retried automatically:
 someone has to find out whether the effect happened.
 
+[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+walks through this section offline: a paused run, the `reconcile` hook, resolution over
+`/v1/tool-executions`, compensation, and a `ToolNotAttemptedError` refusal recorded `failed`.
+
 ### What happens to the run
 
 By default (`tool_policy.on_indeterminate: on_error`) an indeterminate call is handled like any
@@ -696,7 +704,8 @@ and an index on `(tenant_id, status, updated_at)`.
 
 A run that needs a human decision pauses with `status: awaiting_approval` and the approval's id in
 `pause_payload.approval_id`. To show everything waiting for a decision, list the tenant's approval
-requests instead of polling runs:
+requests instead of polling runs (shown end to end in
+[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md)):
 
 | Route | Scope | Returns |
 | --- | --- | --- |

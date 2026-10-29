@@ -457,6 +457,24 @@ reply (see `examples/offline.py`). Without `--offline` they need the provider's 
 it is missing. Traccia export is opt-in in every example
 (`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true` with the `traccia` extra).
 
+### Operating patterns
+
+Two examples walk through production controls offline, with mock models and in-process fakes:
+
+```bash
+# A write whose outcome is unknown: pause, reconcile by idempotency key, resolve over
+# /v1/tool-executions, compensate on request, and ToolNotAttemptedError recorded as failed
+python -m examples.pattern_side_effect_reconciliation.app
+
+# The HTTP API behind OIDC with a local JWKS stub: scopes from claims, the approval inbox,
+# redacted modified parameters, conversation ownership, token revocation and auth.type: caller
+# (needs the auth extra: pip install 'algen-agent-runtime[auth]'; without it, it says so and exits 0)
+python -m examples.pattern_secured_api.app
+```
+
+See [pattern_side_effect_reconciliation](examples/pattern_side_effect_reconciliation/README.md)
+and [pattern_secured_api](examples/pattern_secured_api/README.md).
+
 
 ## Development
 

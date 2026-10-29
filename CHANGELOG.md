@@ -92,6 +92,19 @@ contracts are explicitly marked experimental during the `0.x` series.
   1.0, at least 1.0) scale the input tokens reserved with a `UsageMeter`, rounding up; `4/3`
   reserves as if a token were three characters. Context packing and the token budget are
   unchanged. (#71)
+- Example `pattern_side_effect_reconciliation`: a billing write whose response times out pauses
+  its run (`tool_policy.on_indeterminate: pause`); the tool's `reconcile` hook finds the credit by
+  idempotency key and the run resumes; an operator resolves another call `failed` with a reason
+  over `/v1/tool-executions` (`tools:reconcile`); compensation runs on request (`compensating` to
+  `compensated`); and a `ToolNotAttemptedError` refusal is recorded `failed`, not `indeterminate`.
+  Offline, with a mock model and an in-process fake billing system.
+- Example `pattern_secured_api`: the HTTP API in-process with `api.auth_mode: oidc` against a local
+  JWKS stub and a key generated at start-up: scopes from claims, the approval inbox and its
+  `approvals:read` scope, redacted `modified_parameters`, conversation ownership (another user of
+  the tenant gets 404), token revocation by `jti`, and an `http_tools` entry with
+  `auth.type: caller` that forwards the signed-in user's token through a host route and fails
+  closed without one. Needs the `auth` extra; without it the example says how to install it and
+  exits 0.
 
 ### Changed
 
