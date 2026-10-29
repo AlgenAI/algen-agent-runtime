@@ -55,6 +55,14 @@ class ToolExecutionError(AlgenAgentRuntimeError):
     pass
 
 
+class ToolNotAttemptedError(ToolExecutionError):
+    """A tool refused a call before sending anything (no credential, an unsafe argument).
+
+    The call had no effect, so the executor records it ``failed``, never ``indeterminate``, even
+    for a tool that writes: there is nothing for an operator to reconcile.
+    """
+
+
 class BudgetExceededError(AlgenAgentRuntimeError):
     pass
 

@@ -25,9 +25,9 @@ http_tools:
 | Field | Meaning |
 | --- | --- |
 | `name`, `description`, `version` | The tool's identity, as the model sees it. |
-| `method`, `url` | `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. `{param}` placeholders in the path are filled in (escaped) and must be required parameters; the host cannot be templated. |
+| `method`, `url` | `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. `{param}` placeholders in the path are filled in and must be required parameters; each value is escaped as exactly one segment and cannot be empty, `.` or `..` (also percent-encoded). The host cannot be templated. A query string in the URL is kept and sent before `query` and pagination parameters. |
 | `parameters` | JSON Schema (an object) for the arguments the model supplies. |
-| `query`, `headers`, `body` | Templates. An entry naming a missing optional argument is left out. In `body`, a value that is exactly `"{param}"` keeps the argument's JSON type. `Authorization`, `Cookie` and `Host` headers are refused; use `auth`. |
+| `query`, `headers`, `body` | Templates. An entry naming a missing optional argument is left out. In `body`, a value that is exactly `"{param}"` keeps the argument's JSON type. `Authorization`, `Cookie` and `Host` headers, and the `auth.header_name` of `caller` or `header` authentication, are refused; use `auth`. |
 | `auth` | `none`, `bearer` (`token`), `basic` (`username`, `password`) or `header` (`header_name`, `token`): values are `env://` references, resolved per call. `caller`: the calling user's credential for this run (see below). |
 | `pagination` | `none`, `link_header` (follows `rel="next"`) or `page_param` (increments `page_param` from `start_page` until an empty page), up to `max_pages`; `items_pointer` names the list to concatenate. |
 | `response` | `select`: a JSON pointer into the body; `output_schema`: validates the selected data. |
@@ -52,12 +52,18 @@ http_tools:
       credential: authorization   # key in the run's credentials (default)
       # header_name: Authorization  (default)
       # scheme: Bearer              (optional; prefixed unless the value already has it)
+      # Prefer a key per API, e.g. credential: lms_token, over one shared "authorization".
 ```
 
 ```python
 await runtime.run(request, credentials={"authorization": incoming_headers["authorization"]})
 ```
 
+- Forward a token only to an API that is its audience: the host's own incoming `authorization`
+  is right when the target API issued it, or accepts it, for itself (the LMS signed the user in).
+  Otherwise pass a token issued for that API under its own key (`credentials={"lms_token": ...}`
+  with `credential: lms_token`), one key per API. Any `caller` tool can name any key in the run's
+  credentials, so which API receives which token is decided by this configuration alone.
 - The value comes from `ToolContext.credentials[credential]`
   ([credentials of the caller](tool-authoring.md#credentials-of-the-caller)). It is sent only as
   `header_name`: never as `Cookie`, `Set-Cookie`, `Host`, `Proxy-Authorization` or a framing
@@ -65,8 +71,13 @@ await runtime.run(request, credentials={"authorization": incoming_headers["autho
   caller is forwarded, and `token`, `username` and `password` are refused with `caller`.
 - A call without that credential fails with `authentication required` before any request is sent.
   This is the case for a run started without credentials, a run resumed without them, a run recovered
-  after a restart, workflow tool steps and runs started through the HTTP API, which pass none.
-- A value with a line break or another control character is refused without being echoed.
+  after a restart, workflow tool steps and runs started through the HTTP API, which pass none. A
+  blank value, or with `scheme` set a value that is only the scheme (`"Bearer "`), counts as none.
+  The tool-execution ledger records such a call `failed`, not `indeterminate`, even for a write:
+  nothing was sent, so the same call runs normally once the user signs in again.
+- A value with a control character anywhere, a trailing line break included, is refused without
+  being echoed. With `scheme` set, a value that carries another scheme (`Basic ...`) or more than
+  one word is refused instead of being prefixed.
 - The credential goes only to the declared URL's origin (scheme, host and port). A `Link` header
   that points the next page at another origin fails the call instead of forwarding the credential,
   even to an allowlisted host. Redirects are never followed.

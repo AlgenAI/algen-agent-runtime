@@ -108,7 +108,7 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
     """List the open tickets assigned to the signed-in user."""
     authorization = context.credentials.get("authorization")
     if authorization is None:
-        raise ToolExecutionError("authentication required: sign in again and retry")
+        raise ToolNotAttemptedError("authentication required: sign in again and retry")
     client = await crm.client()
     return await client.tickets(assignee="me", headers={"Authorization": authorization})
 ```
@@ -134,12 +134,16 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   [HTTP API tools](http-tools.md#calling-the-api-as-the-signed-in-user).
 - A call that carries credentials is never served from, or stored in, the tool-result cache.
 - `ToolContext.secrets` is different: static deployment configuration, the same for every run.
+- Raise `ToolNotAttemptedError` (from `algen_agent_runtime.exceptions`, a `ToolExecutionError`)
+  when a tool refuses a call before contacting anything, as above. The ledger then records the
+  call `failed`, not `indeterminate`, even for a write, so it needs no reconciliation and runs
+  again normally with the same idempotency key once the user signs in.
 
 ## Unknown outcomes: reconcile and compensation
 
 A call that changes something can fail without saying whether it took effect: the request left,
 then the connection dropped. The Runtime records it `indeterminate` and never runs it again by
-itself. Two optional hooks let an operator settle it (see
+itself (unless the tool raised `ToolNotAttemptedError`, which says nothing was sent). Two optional hooks let an operator settle it (see
 [Resolving indeterminate tool calls](operations.md#resolving-indeterminate-tool-calls)):
 
 ```python

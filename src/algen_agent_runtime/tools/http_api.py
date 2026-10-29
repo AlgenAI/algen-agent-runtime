@@ -3,10 +3,10 @@
 Each ``http_tools`` entry names one operation: method, a URL template with ``{param}``
 placeholders, query, header and body templates, the parameters (JSON Schema) the model fills
 in, authentication (``env://`` secret references, or the caller's per-run credentials),
-pagination, limits and how to pick the part of the response the model sees. Calls go through ``create_safe_http_client``: the URL's host
-must be in ``security.allowed_http_hosts``, private networks stay blocked unless allowed, and
-redirects are never followed. A non-2xx response is returned to the model as ``ok: false``,
-not raised, so it can react to it.
+pagination, limits and how to pick the part of the response the model sees. Calls go through
+``create_safe_http_client``: the URL's host must be in ``security.allowed_http_hosts``, private
+networks stay blocked unless allowed, and redirects are never followed. A non-2xx response is
+returned to the model as ``ok: false``, not raised, so it can react to it.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from algen_agent_runtime.exceptions.errors import ToolExecutionError
+from algen_agent_runtime.exceptions.errors import ToolExecutionError, ToolNotAttemptedError
 from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
@@ -45,10 +45,18 @@ _RESERVED_HEADERS = frozenset(
         "content-length",
         "transfer-encoding",
         "connection",
+        "keep-alive",
         "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "upgrade",
     }
 )
 _HEADER_VALUE = re.compile(r"^[\x20-\x7e\t]+$")
+_BLANKS = " \t"
+# Path values that would change the path itself once escaped (dot segments) or empty a segment.
+_UNSAFE_SEGMENTS = frozenset({"", ".", ".."})
 
 
 class _Strict(BaseModel):
@@ -165,8 +173,12 @@ class HttpToolConfig(_Strict):
                 )
         if self.body is not None and self.method == "GET":
             raise ValueError(f"http tool {self.name!r} cannot send a body with GET")
+        refused = {"authorization", "cookie", "host"}
+        if self.auth.type in {"caller", "header"} and self.auth.header_name:
+            # A template must not write into the header the API authenticates with.
+            refused.add(self.auth.header_name.lower())
         for header in self.headers:
-            if header.lower() in {"authorization", "cookie", "host"}:
+            if header.lower() in refused:
                 raise ValueError(
                     f"http tool {self.name!r} sets {header!r}; use auth for credentials"
                 )
@@ -203,8 +215,9 @@ def http_api_tool(
     origin = _origin(config.url)
 
     async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        url = _render_url(config.url, arguments)
-        query = _render_mapping(config.query, arguments)
+        url, url_query = _render_url(config.name, config.url, arguments)
+        # The URL's own query first, then the query templates.
+        query = [*url_query, *_render_mapping(config.query, arguments).items()]
         headers = {"Accept": "application/json", **_render_mapping(config.headers, arguments)}
         if caller_auth:
             headers.update(_caller_headers(config.name, config.auth, context))
@@ -220,9 +233,11 @@ def http_api_tool(
         page_number = config.pagination.start_page
         next_url: str | None = url
         while next_url is not None and pages < config.pagination.max_pages:
-            page_query = dict(query)
+            page_query = list(query)
             if config.pagination.type == "page_param":
-                page_query[config.pagination.page_param] = str(page_number)
+                page_param = config.pagination.page_param
+                page_query = [pair for pair in page_query if pair[0] != page_param]
+                page_query.append((page_param, str(page_number)))
             await validate_outbound_url(next_url, allowed_hosts, allow_private_networks)
             # A Link header's next URL already carries its own query.
             following_link = config.pagination.type == "link_header" and next_url != url
@@ -236,7 +251,7 @@ def http_api_tool(
             response = await http_client.request(
                 config.method,
                 next_url,
-                params=None if following_link else page_query,
+                params=None if following_link else tuple(page_query),
                 headers=headers,
                 json=body,
                 timeout=config.timeout_seconds,
@@ -334,21 +349,30 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 
 
 def _caller_headers(name: str, auth: HttpToolAuth, context: ToolContext) -> dict[str, str]:
-    """The header carrying the caller's credential; never echoes the credential in errors."""
-    value = context.credentials.get(auth.credential)
+    """The header carrying the caller's credential; never echoes the credential in errors.
+
+    Every refusal comes before a request is sent, so it is a :class:`ToolNotAttemptedError`.
+    """
+    # Only spaces and tabs are trimmed: a line break anywhere is refused below, not dropped.
+    value = (context.credentials.get(auth.credential) or "").strip(_BLANKS)
+    if auth.scheme:
+        head = value.replace("\t", " ").partition(" ")[0]
+        if head.lower() == auth.scheme.lower():
+            value = value[len(head) :].strip(_BLANKS)
     if not value:
-        raise ToolExecutionError(
+        raise ToolNotAttemptedError(
             f"{name}: authentication required: the caller's {auth.credential!r} credential was "
             "not passed for this run; sign in again and retry"
         )
-    value = value.strip()
     if auth.scheme:
-        prefix = f"{auth.scheme} "
-        if value[: len(prefix)].lower() == prefix.lower():
-            value = value[len(prefix) :].strip()
-        value = prefix + value
+        if any(blank in value for blank in _BLANKS):
+            # Another scheme ("Basic ...") or a second word: not one token of this scheme.
+            raise ToolNotAttemptedError(
+                f"{name}: the caller's credential is not a {auth.scheme} credential"
+            )
+        value = f"{auth.scheme} {value}"
     if not _HEADER_VALUE.fullmatch(value):
-        raise ToolExecutionError(f"{name}: the caller's credential is not a valid header value")
+        raise ToolNotAttemptedError(f"{name}: the caller's credential is not a valid header value")
     return {auth.header_name or "Authorization": value}
 
 
@@ -363,17 +387,32 @@ async def _auth_headers(auth: HttpToolAuth, secrets: SecretResolver) -> dict[str
     return {}
 
 
-def _render_url(template: str, arguments: Mapping[str, Any]) -> str:
+def _render_url(
+    name: str, template: str, arguments: Mapping[str, Any]
+) -> tuple[str, list[tuple[str, str]]]:
+    """The URL without its query, and the template's query entries, filled in.
+
+    Each path value is a model argument escaped as exactly one segment: one that is empty, ``.``
+    or ``..`` (also percent-encoded) would point the call at another path, so it is refused.
+    """
     parts = urlsplit(template)
-    path = _PLACEHOLDER.sub(lambda m: quote(str(arguments[m.group(1)]), safe=""), parts.path)
-    query = urlencode(
-        [
-            (key, rendered)
-            for key, value in parse_qsl(parts.query, keep_blank_values=True)
-            if (rendered := _render_text(value, arguments)) is not None
-        ]
-    )
-    return urlunsplit((parts.scheme, parts.netloc, path, query, ""))
+
+    def segment(match: re.Match[str]) -> str:
+        value = str(arguments[match.group(1)])
+        if unquote(value).strip() in _UNSAFE_SEGMENTS:
+            raise ToolNotAttemptedError(
+                f"{name}: {match.group(1)!r} must name one path segment; it cannot be empty, "
+                "'.' or '..'"
+            )
+        return quote(value, safe="")
+
+    path = _PLACEHOLDER.sub(segment, parts.path)
+    query = [
+        (key, rendered)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if (rendered := _render_text(value, arguments)) is not None
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, path, "", "")), query
 
 
 def _render_mapping(templates: Mapping[str, str], arguments: Mapping[str, Any]) -> dict[str, str]:

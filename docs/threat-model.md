@@ -139,18 +139,28 @@ A declared HTTP tool with `auth.type: caller` sends the calling user's credentia
 operator-declared API. The threats are a credential sent somewhere it should not go, a credential
 that outlives its request, one user's response shown to another, and header injection. Controls:
 
-- **Destination.** The URL, host and path template are operator configuration, never model
+- **Destination.** The scheme, host and path template are operator configuration, never model
   arguments, and the host must be in `security.allowed_http_hosts`; private networks stay blocked
-  and redirects are never followed. A paginated call sends the credential only to the declared
+  and redirects are never followed. Path values are model arguments: each is escaped as exactly
+  one segment (`/`, `?`, `#` and `@` are encoded) and cannot be empty, `.` or `..`, also
+  percent-encoded, so prompt injection cannot move the user's credential to another path on the
+  host. A paginated call sends the credential only to the declared
   origin and fails when a response's `Link` header points elsewhere, even to an allowlisted host.
 - **What is sent.** Only the one named credential, in the one configured header. Cookies and other
-  caller headers are never forwarded, and the header cannot be `Cookie`, `Host`,
-  `Proxy-Authorization` or a framing header. Control characters are refused, so a value cannot add
-  headers.
+  caller headers are never forwarded, the header cannot be `Cookie`, `Host`,
+  `Proxy-Authorization` or a framing or hop-by-hop header, and no `headers` template may set it, so
+  model text never joins the value. Control characters anywhere in the value, a trailing line break
+  included, are refused, so a value cannot add headers.
+- **Audience.** A token is forwarded as is, so it must be one the target API is the audience of:
+  the user's incoming `authorization` only when that API issued or accepts it for itself.
+  Otherwise the host passes a token for that API under its own credential key, one key per API.
+  Any `caller` tool can name any key in the run's credentials; which API receives which token is
+  bound only by operator configuration.
 - **Lifetime.** The credential is read from `ToolContext.credentials` at call time and follows its
   rules: memory only, gone when the run pauses or ends, and never in state, stores, events, audits,
   spans, logs or errors. Without it the call fails closed with `authentication required`; it never
-  falls back to an unauthenticated request or to a deployment secret.
+  falls back to an unauthenticated request or to a deployment secret. Such a call, and one refused
+  for an unsafe path value, is recorded `failed` rather than `indeterminate`: nothing was sent.
 - **Cross-user results.** A call that carries caller credentials bypasses the tool-result cache,
   whose scope (tenant by default) is shared by several users.
 - **Response content.** The result keeps only a fixed set of response headers, so `Set-Cookie` and

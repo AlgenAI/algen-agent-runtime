@@ -11,7 +11,11 @@ import structlog
 from opentelemetry import trace
 
 from algen_agent_runtime.cache import CacheContext, CacheService
-from algen_agent_runtime.exceptions.errors import PolicyDeniedError, ToolExecutionError
+from algen_agent_runtime.exceptions.errors import (
+    PolicyDeniedError,
+    ToolExecutionError,
+    ToolNotAttemptedError,
+)
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.tools.contracts import (
@@ -211,7 +215,12 @@ class ToolExecutor:
                     )
                     await asyncio.sleep(delay)
             except BaseException as exc:
-                indeterminate = definition.side_effect not in {SideEffect.NONE, SideEffect.READ}
+                # A call the tool refused before sending anything had no effect: it is a
+                # definite failure, not an unknown outcome for an operator to reconcile.
+                indeterminate = definition.side_effect not in {
+                    SideEffect.NONE,
+                    SideEffect.READ,
+                } and not isinstance(exc, ToolNotAttemptedError)
                 await self._executions.fail(
                     context.idempotency_key,
                     type(exc).__name__,
