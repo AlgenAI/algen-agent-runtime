@@ -2,7 +2,7 @@
 
 Owner: AlgenAI Maintainers  
 Status: Active (0.1.x)  
-Last reviewed: 2026-09-22  
+Last reviewed: 2026-10-29  
 
 Run `algen-agent-runtime` with `ALGEN_AGENT_RUNTIME_CONFIG` set to one or more OS-path-separated YAML files. Put secrets in referenced environment variables. PostgreSQL can persist run and multi-agent workflow checkpoints, conversation memory, events, audits, approvals, bounded artifact payloads, analytical graphs, worker leases, and the tool-execution ledger. Redis can alternatively store run checkpoints, expiring conversation memory, and scoped cache entries. See the [artifact lifecycle](artifacts.md), [production-readiness roadmap](production-readiness.md), and [Analytical Runtime](analytical-runtime.md) for their respective contracts and limits.
 
@@ -33,6 +33,8 @@ storage:
   initialize_schema: true
   postgres_min_pool_size: 1
   postgres_max_pool_size: 10
+  postgres_connect_timeout_seconds: 10   # see "Database outages" below
+  postgres_command_timeout_seconds: 60
   memory_retention_seconds: 86400
 runtime:
   component_check: error  # or warn; see docs/plugins.md
@@ -266,6 +268,190 @@ once with the executor, or let a decision or answer through the API continue the
 | `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. |
 | `workflow.input.expired` | An input (clarification) wait was older than `maintenance.clarification_timeout_seconds` when the sweep ran; the asking node fails with `workflow input expired`. |
 | `workflow.recovered` | A recovered run continues after a restart. |
+
+## Persistence: restarts, outages, backup and rollback
+
+This section is the single-node contract: one Runtime process per database, with PostgreSQL (and
+optionally Redis). The drills in `tests/drills` check every statement here against live
+PostgreSQL 17 and Redis 7 containers on each change (see [Running the drills](#running-the-drills)).
+
+### Restart recovery
+
+A process that is killed (SIGKILL, OOM, node loss) leaves only what it had committed. The next
+start recovers every unfinished run that is not waiting:
+
+- A run interrupted in a model call calls the model again from its last checkpoint. The step it
+  was in is counted once, so repeated crashes do not use up `max_steps`.
+- A tool call that completed is replayed from the ledger, never run again. A call interrupted
+  while running (ledger `started`) is put to the tool's `reconcile` hook on replay; without one, a
+  side-effecting call waits for an operator ([Resolving indeterminate tool
+  calls](#resolving-indeterminate-tool-calls)). Keyed tools therefore take effect once, however
+  often the process dies: the drills kill five processes in a row in the middle of runs and check
+  one ledger record and one external effect per run.
+- A run paused for approval or clarification stays paused and is resumed by whichever process
+  receives the decision; its approval request, ledger and events are in the database.
+- A conversation turn paused for approval resumes on the new process. A turn that was streaming
+  when the process died is ended as `failed` with `error_type: InterruptedResponse` (retryable);
+  its run is recovered by the runtime and does not repeat its tool effects.
+- A workflow run started through the HTTP API is recovered as in [Workflow
+  recovery](#workflow-recovery). An agent node with `recovery_policy: retry` starts a new agent
+  run; the interrupted agent run is recovered too and completes from its own ledger, but the
+  retried attempt makes its own tool calls. A retried node is at-least-once: declare `retry` only
+  for nodes whose tools are idempotent or reconcilable.
+
+Recovery is not coordinated between processes: a process that starts while another serves the same
+database also drives the other's unfinished runs. The second drive's first checkpoint write fails
+its version check (`RunConflictError`) and it stands down without touching the run, and ledger
+reservations keep a tool call to one execution, but the model call may be made twice. Run one
+process per database (or schema), and do not overlap old and new processes during a deploy for
+longer than the drain.
+
+### Database outages
+
+Store calls are bounded, so an unreachable or unresponsive store fails fast instead of hanging a
+request, a run or a readiness probe:
+
+| Setting | Default | Bound |
+| --- | --- | --- |
+| `storage.postgres_connect_timeout_seconds` | `10` | Opening a PostgreSQL connection. |
+| `storage.postgres_command_timeout_seconds` | `60` | One PostgreSQL store command; `null` waits indefinitely. Migrations are not held to it. |
+| `storage.redis_socket_timeout_seconds` | `10` | Connecting to Redis and one Redis command; `null` waits indefinitely. |
+
+While PostgreSQL (or a Redis run store) is down:
+
+- `/health/ready` returns 503 with the store's dependency `down` (`store.run`, `store.event`, ...)
+  and listed in `failing`, within `runtime.readiness.probe_timeout_seconds`. A Redis cache
+  (`cache.redis`) is reported down but is optional: cached calls fall through to the tool after
+  the socket timeout.
+- A store call fails with `StoreUnavailableError` (`kind: unavailable`, `retryable`), and the API
+  answers **503** with `Retry-After`, never a driver exception. Starting a run, deciding an
+  approval or answering a turn during the outage is refused this way; retry it once the store is
+  back.
+- A run in flight keeps its last checkpoint. It is not failed: the process drives it again from
+  that checkpoint once the store answers (retrying with backoff from 0.5 to 30 seconds), with the
+  same caller credentials, and `runtime.wait` follows it. Completed tool calls are replayed from
+  the ledger. If the process stops first, the next start recovers it.
+- When the store returns, the connection pool reconnects without a restart. A lost PostgreSQL
+  server leaves every pooled connection dead; the first call that meets one fails with
+  `StoreUnavailableError` and the pool replaces the rest, so one request fails rather than one per
+  pooled connection.
+- A process that starts while PostgreSQL is down fails its start with `StoreUnavailableError`
+  after the connect timeout; the orchestrator restarts it.
+
+A write interrupted by the outage may or may not have been applied: a run's checkpoint that was
+written is found by its version check, and a tool call that may have run is `started` in the ledger
+and is reconciled. Event and audit writes interrupted by an outage can be lost with the request
+that made them.
+
+Run stores and the stores that reference runs belong together: `event_store`, `approval_store` and
+`tool_execution_store` `postgres` require `run_store: postgres`, since their rows reference the run
+in PostgreSQL. Configuration validation rejects other combinations.
+
+### Failover
+
+A single node sees a primary failover as a restart of its database: every connection drops, and the
+server comes back (at the same address) with what it had committed. The drills restart the
+PostgreSQL container under load and check that nothing committed is lost, the pool reconnects, the
+run in flight completes once and a paused run keeps its pending approval.
+
+Replica promotion and its guarantees are the database operator's concern. What the Runtime needs:
+
+- A stable endpoint in `postgres_dsn` (a DNS name, virtual IP or proxy that follows the primary);
+  the pool reconnects through it on the next call.
+- Synchronous replication (or a managed service with zero data loss on failover) if no committed
+  checkpoint may be lost. With asynchronous replication, the last transactions before a failover
+  can be lost: a run's checkpoint can fall behind its ledger (the call replays from the ledger), a
+  tool call can be missing from the ledger although it took effect (reconcile with the external
+  system), and an approval decided just before can be pending again.
+- A pooler in front of PostgreSQL in session mode, or one that keeps startup parameters when
+  `postgres_schema` is set (see [Sharing a database](#sharing-a-database-postgres_schema)).
+
+### Backup and restore
+
+Back up the Runtime's database (or its `postgres_schema`) as a whole: runs, events, audits,
+approvals, artifacts metadata, the tool-execution ledger, conversations, workflow checkpoints,
+memory, analytical graphs, work items, MCP OAuth tokens, token revocations and the
+`algen_agent_runtime_schema_migrations` table. They reference each other (a ledger record or an
+approval refers to its run), so back them up in one snapshot, never table by table. S3 artifact
+blobs and a Redis run store need their own backups; a Redis run store has no ledger or approvals of
+its own, so prefer PostgreSQL for anything that must be restored.
+
+A logical backup with `pg_dump` reads one consistent snapshot and can run while the Runtime serves:
+
+```bash
+pg_dump --format=custom --file=runtime.dump "$DATABASE_URL"
+```
+
+For point-in-time recovery use the database's base backups and WAL archiving (or the managed
+service's equivalent) instead; the same restore steps apply.
+
+To restore:
+
+1. Stop the Runtime (or point it elsewhere): two processes must not drive the same runs.
+2. Restore into an empty database:
+   `createdb runtime_restored && pg_restore --no-owner --exit-on-error -d runtime_restored runtime.dump`.
+3. Start the Runtime with `postgres_dsn` pointing at the restored database. Startup applies any
+   newer migrations, recovers unfinished runs and serves; paused runs keep their approvals, ledger
+   and events and resume on a decision.
+4. Reconcile what happened after the backup was taken. The external effects of tool calls made
+   after the snapshot are not in the restored ledger, so a recovered run may make them again unless
+   the tool's own idempotency key or `reconcile` hook prevents it; approvals decided after the
+   snapshot are pending again; runs started after it do not exist. List the restored
+   `indeterminate` and `started` calls with `GET /v1/tool-executions` and settle them first.
+
+The drill `tests/drills/test_backup_restore.py` takes a dump of a live database with a paused run,
+restores it into a new database and resumes the run there.
+
+### Upgrades and rollback
+
+Migrations are forward-only and additive: each adds tables, nullable columns, indexes or widened
+constraints, never drops or rewrites what an earlier release reads. Stored JSON (run state, tool
+results, approval requests) is written so the previous release can read it, so:
+
+- **Upgrade:** start the new release. It applies the missing migrations under an advisory lock
+  (concurrent starts wait for one another) and carries on what the previous release left; the drill
+  starts `0.1.0a17` on an empty database, pauses a run, then starts the current code, which applies
+  `015` and resumes the run.
+- **Rollback:** stop the new release and start the previous one on the same database. Leave the
+  newer migrations in place: the previous release ignores migration rows it does not know and does
+  not read the new columns or tables. The drill rolls back to `0.1.0a17` after the current code has
+  migrated and written, and reads, lists and resumes the current code's runs there.
+
+| Migration | Since | Change | Safe to leave on rollback |
+| --- | --- | --- | --- |
+| `015_approval_agent.sql` | unreleased (after `0.1.0a17`) | Nullable `agent` column and an index on approvals. | Yes; `0.1.0a17` does not read it. Approvals created by the previous release have no `agent`. |
+
+Restore from backup instead of rolling back only when a release's notes say a migration is not
+backward compatible; none is so far. Take a backup before every upgrade.
+
+### Running the drills
+
+`scripts/integration-tests.sh` starts throwaway PostgreSQL and Redis containers and exports their
+names (`ALGEN_TEST_CONTAINER_ENGINE`, `ALGEN_TEST_POSTGRES_CONTAINER`,
+`ALGEN_TEST_REDIS_CONTAINER`) so the outage, failover and backup drills can pause, restart and exec
+into them:
+
+```bash
+scripts/integration-tests.sh tests/drills -m drill                     # every drill but the soak
+ALGEN_DRILL_SOAK_RUNS=200 scripts/integration-tests.sh tests/drills -m soak -s
+```
+
+Drills that need a container or the previous release's git tag skip without them. The soak drill
+mixes tool-calling runs, approvals and conversation turns at `ALGEN_DRILL_SOAK_CONCURRENCY`
+(default 20) and checks that every run ends once, the pool stays within its maximum and is
+released, no task is left behind and traced memory growth stays under
+`ALGEN_DRILL_SOAK_MAX_GROWTH_MB` (default 64). It lifts the mock provider's request rate limit
+(600 a minute by default), which would otherwise pace it. Local runs (Apple Silicon laptop,
+PostgreSQL 17 and Redis 7 in podman, pool of 10, concurrency 20; a tool-calling run, an approval
+round trip or a conversation turn per item):
+
+| Items | Seconds | Items/s | p50 | p95 | Max | Pool peak | Traced growth |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 200 | 10.2 | 19.6 | 0.99 s | 1.30 s | 1.42 s | 10 of 10 | 0.34 MB |
+| 1000 | 53.7 | 18.6 | 1.05 s | 1.39 s | 1.63 s | 10 of 10 | 1.17 MB |
+
+Every item ended completed with its effect once, the pool waited at its maximum without errors and
+was released, and no task was left. The item latency is mostly the drill's own polling.
 
 ## API authentication
 
@@ -1287,4 +1473,8 @@ Distributed execution allows scaling background analytical graphs and long-runni
      ```
    - Automated CI runs verify schema initialization (`001_initial.sql`), optimistic locking on run checkpoints, artifact lifecycle, tool ledger idempotency, and workflow checkpoint persistence.
 
-Back up each durable store enabled by the application according to its retention policy. User deletion must remove tenant/session memory and authorized artifacts while preserving legally required, redacted audit records.
+The persistence drills (restart, outage, failover, backup/restore, upgrade/rollback, soak) are
+described in [Persistence: restarts, outages, backup and rollback](#persistence-restarts-outages-backup-and-rollback).
+
+Back up each durable store enabled by the application according to its retention policy (see
+[Backup and restore](#backup-and-restore)). User deletion must remove tenant/session memory and authorized artifacts while preserving legally required, redacted audit records.

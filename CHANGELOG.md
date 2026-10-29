@@ -92,6 +92,22 @@ contracts are explicitly marked experimental during the `0.x` series.
   1.0, at least 1.0) scale the input tokens reserved with a `UsageMeter`, rounding up; `4/3`
   reserves as if a token were three characters. Context packing and the token budget are
   unchanged. (#71)
+- Persistence drills (`tests/drills`, pytest marker `drill`, CI job `persistence-drills`): real
+  Runtime processes on live PostgreSQL and Redis for first start, restart and concurrent starts;
+  SIGKILL crashes mid-model and mid-tool call, across an approval pause, a workflow run and
+  conversation turns, and five in a row; two processes deciding one approval; PostgreSQL and Redis
+  outages and a database restart (failover); `pg_dump` backup and restore; schema upgrade from and
+  rollback to `0.1.0a17`. A bounded soak drill (marker `soak`) runs with `ALGEN_DRILL_SOAK_RUNS`.
+  `scripts/integration-tests.sh` exports `ALGEN_TEST_CONTAINER_ENGINE`,
+  `ALGEN_TEST_POSTGRES_CONTAINER` and `ALGEN_TEST_REDIS_CONTAINER` for them. See
+  docs/operations.md#persistence-restarts-outages-backup-and-rollback.
+- `storage.postgres_connect_timeout_seconds` (default 10), `storage.postgres_command_timeout_seconds`
+  (default 60, `null` for none; migrations are exempt) and `storage.redis_socket_timeout_seconds`
+  (default 10), also as `PostgresDatabase(connect_timeout_seconds=..., command_timeout_seconds=...)`.
+- `StoreUnavailableError` (`kind: unavailable`, retryable), raised by the PostgreSQL and Redis
+  stores for connection, timeout and server-shutdown errors, and answered by the API with 503 and
+  `Retry-After`. `RunConflictError`, a `ConflictError` the run stores raise when a checkpoint's
+  version moved on.
 
 ### Changed
 
@@ -116,6 +132,20 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Stored approvals, run checkpoints and tool results keep the 0.1.0a17 shape unless a new feature
   is used (a pending steering message, a failed tool result), so a17 replicas can read them during
   a rolling deploy or after a rollback.
+- PostgreSQL and Redis store calls fail with `StoreUnavailableError` instead of the driver's
+  exception (asyncpg `ConnectionDoesNotExistError`, `OSError`, `TimeoutError`; redis-py
+  `ConnectionError`, `TimeoutError`), and the API answers 503 instead of 500. A PostgreSQL command
+  now times out after 60 seconds by default and a connection attempt after 10 (asyncpg's default
+  was 60); a Redis connection or command after 10 seconds (no bound before).
+- A run whose store becomes unavailable mid-run is no longer failed: it keeps its last checkpoint
+  and the process drives it again once the store answers (or the next start recovers it), with the
+  same caller credentials; `AgentRuntime.wait` follows it.
+- A run drive whose checkpoint write loses the version check (`RunConflictError`, for example
+  because another process recovered the run) stops without writing instead of marking the run
+  `failed`.
+- Configuration rejects `event_store`, `approval_store` or `tool_execution_store` `postgres` with a
+  `run_store` other than `postgres`: their rows reference the run in PostgreSQL, so every run
+  failed on its first event.
 
 ### Fixed
 
@@ -136,6 +166,15 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
   Runtime metric was recorded and silently dropped, and the process-global provider was taken, so
   an application could not install its own afterwards.
+- A run recovered after a crash no longer counts the interrupted model or tool step twice, so
+  repeated crashes no longer use up `max_steps` and fail the run.
+- Resuming a run right after it paused for approval could record the decision and then refuse to
+  drive the run (`run is already executing`), leaving it stuck until a restart: `resume` now waits
+  for the drive that paused the run to finish, and decides nothing if it is still running.
+- After a PostgreSQL restart or failover, only the first call fails: the pool replaces all its
+  dead connections at once instead of failing one call per pooled connection.
+- Container shutdown closes resources with `aclose()` when they have it, so a Redis client no
+  longer warns that `close()` is deprecated.
 
 ## [0.1.0a17] - 2026-10-28
 
