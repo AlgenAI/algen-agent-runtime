@@ -23,6 +23,31 @@ compatibility never weakens the application contract.
 
 Secrets are references (`env://NAME`) resolved immediately before a request. Never accept or log literal secret configuration.
 
+## Hosted OpenAI-compatible vendors
+
+`gemini`, `xai` and `groq` are first-class types: the vendor base URL and default secret are built in,
+and `base_url`, `capabilities` and `stream_usage` can still be set.
+
+```yaml
+providers:
+  gemini: {type: gemini, default_model: gemini-flash-latest}        # env://GEMINI_API_KEY
+  groq: {type: groq, default_model: openai/gpt-oss-120b}            # env://GROQ_API_KEY
+  xai: {type: xai, default_model: grok-4}                           # env://XAI_API_KEY
+```
+
+## Ordered fallback
+
+By default (`routing_preference: balanced`) candidates are ranked by `quality_tier`, observed
+latency and cost, so a consistently faster fallback can be chosen ahead of the default model. Set
+`routing_preference: ordered` on the profiles to try them strictly in declaration order; providers
+with an open circuit breaker, missing capabilities or exceeded latency/cost limits are still skipped.
+
+```yaml
+default_model: {name: primary, provider: gemini, model: gemini-flash-latest, routing_preference: ordered}
+fallback_models:
+  - {name: fast, provider: groq, model: openai/gpt-oss-120b, routing_preference: ordered}
+```
+
 ## Provider instances vs. adapter types
 
 Configuration keys under `providers:` in `agent.yaml` represent **provider instance IDs** (deployment identities), while the `type:` field specifies the underlying adapter implementation.

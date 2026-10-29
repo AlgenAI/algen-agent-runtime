@@ -225,7 +225,7 @@ class ModelRouter:
     ) -> tuple[tuple[ModelProvider, ModelProfile], ...]:
         ranked: list[tuple[float, ModelProvider, ModelProfile]] = []
         now = time.monotonic()
-        for profile in profiles:
+        for position, profile in enumerate(profiles):
             if profile.provider is None or profile.model is None:
                 continue
             identity = f"{profile.provider}/{profile.model}"
@@ -259,9 +259,18 @@ class ModelRouter:
                 preference_score = 10_000 if locality else 0
             elif profile.routing_preference == "cloud_first":
                 preference_score = 10_000 if not locality else 0
-            score = (
-                profile.quality_tier * 1000 + preference_score - health.latency_ms - average_cost
-            )
+            if profile.routing_preference == "ordered":
+                # Declaration order wins (primary, then fallbacks); health, capability, latency
+                # and cost filters above still remove candidates. Ordered profiles rank ahead of
+                # scored ones.
+                score = 1e15 - position
+            else:
+                score = (
+                    profile.quality_tier * 1000
+                    + preference_score
+                    - health.latency_ms
+                    - average_cost
+                )
             ranked.append((score, provider, profile))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return tuple((provider, profile) for _, provider, profile in ranked)

@@ -199,3 +199,124 @@ class HuggingFaceInferenceProvider(OpenAICompatibleProvider):
             ),
             **kwargs,
         )
+
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+def _system_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+    return ""
+
+
+XAI_BASE_URL = "https://api.x.ai/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+class GeminiProvider(OpenAICompatibleProvider):
+    """Google Gemini through the Gemini API's OpenAI-compatible endpoint.
+
+    Chat, streaming, tools, JSON-schema output, image input and embeddings. Thinking models accept
+    ``reasoning_effort`` as a profile extension.
+    """
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "gemini-flash-latest",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = GEMINI_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "gemini",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True,
+                tools=True,
+                structured_output=True,
+                json_schema=True,
+                embeddings=True,
+                images=True,
+            ),
+            **kwargs,
+        )
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        # The OpenAI-compatible endpoint keeps only the last system message as the system
+        # instruction. Runtime sends agent instructions and retrieved evidence as separate system
+        # messages, so merge them, in order, into one leading message.
+        messages = payload["messages"]
+        system = [m for m in messages if m.get("role") == "system"]
+        if len(system) > 1:
+            merged = "\n\n".join(
+                text for text in (_system_text(m.get("content")) for m in system) if text
+            )
+            payload["messages"] = [
+                {"role": "system", "content": merged},
+                *(m for m in messages if m.get("role") != "system"),
+            ]
+        return payload
+
+    async def capabilities(self, model: str) -> ModelCapabilities:
+        if "embedding" in model:
+            return ModelCapabilities(chat=False, embeddings=True)
+        return await super().capabilities(model)
+
+    async def embed(self, texts: Sequence[str], model: str | None = None) -> list[list[float]]:
+        return await super().embed(texts, model or "gemini-embedding-001")
+
+
+class XAIProvider(OpenAICompatibleProvider):
+    """xAI Grok models through xAI's OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "grok-4",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = XAI_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "xai",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True, tools=True, structured_output=True, json_schema=True, images=True
+            ),
+            **kwargs,
+        )
+
+
+class GroqProvider(OpenAICompatibleProvider):
+    """Models served by Groq's OpenAI-compatible API (for example ``openai/gpt-oss-120b``)."""
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "openai/gpt-oss-120b",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = GROQ_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "groq",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True, tools=True, structured_output=True, json_schema=True
+            ),
+            **kwargs,
+        )

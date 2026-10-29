@@ -449,3 +449,29 @@ async def test_partial_capability_override_isolated_in_cache() -> None:
         )
     )
     assert len(cands_b_files) == 0
+
+
+@pytest.mark.asyncio
+async def test_ordered_preference_keeps_declaration_order_over_latency() -> None:
+    router = ModelRouter()
+    slow_primary = MockModelProvider(["primary"])
+    fast_fallback = MockModelProvider(["fallback"])
+    router.register_provider(slow_primary, registration_id="primary")
+    router.register_provider(fast_fallback, registration_id="fallback")
+    router._health["primary"].latency_ms = 9_000
+    router._health["fallback"].latency_ms = 200
+
+    def profiles(preference: str) -> tuple[ModelProfile, ...]:
+        return (
+            ModelProfile(name="p", provider="primary", model="m", routing_preference=preference),  # type: ignore[arg-type]
+            ModelProfile(name="f", provider="fallback", model="m", routing_preference=preference),  # type: ignore[arg-type]
+        )
+
+    balanced = await router.candidates(profiles("balanced"))
+    assert balanced[0][0] is fast_fallback
+    ordered = await router.candidates(profiles("ordered"))
+    assert [c[0] for c in ordered] == [slow_primary, fast_fallback]
+
+    # An open circuit still removes the primary.
+    router._health["primary"].opened_at = __import__("time").monotonic()
+    assert [c[0] for c in await router.candidates(profiles("ordered"))] == [fast_fallback]

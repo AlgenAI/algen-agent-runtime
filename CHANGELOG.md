@@ -56,6 +56,21 @@ contracts are explicitly marked experimental during the `0.x` series.
   tool-result cache (`cache.policies.tool_results`): its result can depend on who is calling,
   and the cache's scope is shared beyond one caller. Calls without credentials are cached as
   before.
+- Provider types `gemini` (Google Gemini API), `xai` (Grok) and `groq`, built on the
+  OpenAI-compatible adapter with vendor base URLs and default `env://GEMINI_API_KEY`,
+  `env://XAI_API_KEY` and `env://GROQ_API_KEY` secrets. `base_url` and `capabilities` can be set per
+  provider entry. Gemini supports embeddings (`gemini-embedding-001` by default) and image input.
+- `routing_preference: ordered` on model profiles: candidates are tried in declaration order
+  (default model, then `fallback_models`), while circuit-breaker, capability, latency and cost
+  filters still apply. The `balanced` score can otherwise prefer a faster fallback over the
+  intended primary.
+
+### Fixed
+
+- Gemini: Runtime sends agent instructions and retrieved evidence as separate system messages,
+  but Gemini's OpenAI-compatible endpoint keeps only the last one, so agents silently lost their
+  instructions whenever retrieval ran. The `gemini` adapter merges system messages, in order, into
+  one leading message.
 
 ## [0.1.0a17] - 2026-10-28
 
