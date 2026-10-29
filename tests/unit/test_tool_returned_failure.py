@@ -279,3 +279,11 @@ async def test_typed_tool_takes_a_failure_field() -> None:
     executor = ToolExecutor(tools, CompositePolicyEngine())
     returned = await executor.execute("lookup", {"key": "a"}, fake_tool_context(lookup))
     assert returned.failed and returned.value == {"ok": False, "error": "no a"}
+
+
+def test_an_unset_failure_is_left_out_of_the_stored_result() -> None:
+    # 0.1.0a17's ToolResult forbids unknown fields; only a failed result carries the new one.
+    assert "failed" not in ToolResult(value={"ok": True}).model_dump()
+    assert "failed" not in ToolResult(value=1).model_dump_json()
+    assert ToolResult(value=1, failed=True).model_dump()["failed"] is True
+    assert ToolResult.model_validate_json(ToolResult(value=1).model_dump_json()).failed is False

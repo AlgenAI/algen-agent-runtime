@@ -8,7 +8,14 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+)
 
 from algen_agent_runtime.types.contracts import RetryPolicy, utc_now
 
@@ -212,6 +219,16 @@ class ToolResult(BaseModel):
         "The call is recorded and emitted as failed, the value still goes to the model, and the "
         "result is never cached. It is not retried: the call finished.",
     )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_failure(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a17 validates stored results with extra="forbid" and has no ``failed``: leave it
+        # out unless it is set, so ledger rows and cached results stay readable by a17 replicas
+        # during a rolling deploy or after a rollback.
+        data = handler(self)
+        if isinstance(data, dict) and not self.failed:
+            data.pop("failed", None)
+        return data
 
 
 class ToolExecutionStatus(StrEnum):
