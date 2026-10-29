@@ -544,6 +544,13 @@ the audit metadata beside `step_id`. None of them carries argument values. The r
 the three events. Alert on runs whose `refusal_limit_reached` is true or with many
 `tool.repeated` events: the model is stuck on a tool's contract or its instructions.
 
+A held call has the same step events as one that runs: `step.started`, then `tool.started` with
+the guard's status (`refused`, `repeated` or `over_limit`) instead of `running`, then the guard's
+event and `tool.completed` with that status and its `reason_code`. A consumer that tracks calls
+from `tool.started` sees every call. A reply's calls are announced in the order the model sent
+them: in a parallel reply every call's `step.started`, then every call's `tool.started`, before
+any of them runs, and their results and `tool.completed` events follow in the same order.
+
 ## Resolving indeterminate tool calls
 
 Every side-effecting tool call is reserved in the tool-execution ledger under its idempotency key

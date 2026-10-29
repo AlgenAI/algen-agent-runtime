@@ -112,7 +112,11 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
             summary = f"Usage meter refused the model call: {data.get('reason') or 'refused'}"
         case "tool.started":
             kind = "tool"
-            summary = f"Called {data.get('tool')} with arguments: {_join(data.get('argument_keys') or [])}"
+            arguments = _join(data.get("argument_keys") or [])
+            if data.get("status", "running") == "running":
+                summary = f"Called {data.get('tool')} with arguments: {arguments}"
+            else:
+                summary = f"Asked for {data.get('tool')} with arguments: {arguments}"
         case "tool.completed":
             kind = "tool"
             result = f", {data['result_chars']} result chars" if "result_chars" in data else ""

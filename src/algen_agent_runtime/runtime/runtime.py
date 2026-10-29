@@ -1923,9 +1923,19 @@ class AgentRuntime:
         held: _HeldCall,
         *,
         settle: bool = True,
+        announced: bool = False,
     ) -> None:
-        """Answer a call a guard held back with the guard's note, and record why."""
+        """Answer a call a guard held back with the guard's note, and record why.
+
+        A held call gets a ``tool.started`` like one that runs, with the guard's status
+        (``refused``, ``repeated`` or ``over_limit``) instead of ``running``, so consumers that
+        track calls from their start see it; ``announced`` means it was already emitted.
+        """
         name = action.tool_name or ""
+        if not announced:
+            # A guard only holds a call to a registered tool.
+            definition = self.tools.get(name).definition
+            await self._announce_tool_call(state, action, definition, held.status)
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -1953,7 +1963,13 @@ class AgentRuntime:
                 {"step_id": action.id, "reason_code": held.reason_code, **held.details},
             )
             await self._finish_tool_call_without_result(
-                state, action, held.payload, status=held.status, settle=settle, agent=agent
+                state,
+                action,
+                held.payload,
+                status=held.status,
+                settle=settle,
+                agent=agent,
+                reason_code=held.reason_code,
             )
 
     async def _wrap_up_blocks(
@@ -1992,21 +2008,38 @@ class AgentRuntime:
         )
         return (TextBlock(text=wrap_up_note(calls)),)
 
-    async def _run_tool_call(
-        self, state: RunState, agent: AgentDefinition, action: PlannedAction, tool: Tool
-    ) -> _ToolCallOutcome:
-        call_id = action.id.removeprefix("tool-")
+    async def _announce_tool_call(
+        self,
+        state: RunState,
+        action: PlannedAction,
+        definition: ToolDefinition,
+        status: str = "running",
+    ) -> None:
+        """Emit a call's ``tool.started``: ``running``, or the status a guard held it with."""
         await self._emit(
             state,
             "tool.started",
             {
-                "tool": tool.definition.name,
-                "status": "running",
-                "side_effect": tool.definition.side_effect.value,
+                "tool": definition.name,
+                "status": status,
+                "side_effect": definition.side_effect.value,
                 "argument_keys": sorted(action.arguments),
             },
             action.id,
         )
+
+    async def _run_tool_call(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        action: PlannedAction,
+        tool: Tool,
+        *,
+        announced: bool = False,
+    ) -> _ToolCallOutcome:
+        call_id = action.id.removeprefix("tool-")
+        if not announced:
+            await self._announce_tool_call(state, action, tool.definition)
         context = ToolContext(
             run_id=state.id,
             step_id=action.id,
@@ -2295,12 +2328,17 @@ class AgentRuntime:
         state.step_count += len(actions)
         for action in actions:
             await self._emit(state, "step.started", {"action": action.type.value}, action.id)
+        # Every call's start is announced in the model's order before any of them runs, so a
+        # running call's start never comes before an earlier call a guard held back.
+        for action, tool, hold in zip(actions, tools, held, strict=True):
+            status = "running" if hold is None else hold.status
+            await self._announce_tool_call(state, action, tool.definition, status)
         await self._transition(state, RunStatus.INVOKING_TOOL)
         limit = asyncio.Semaphore(agent.tool_policy.max_parallel_calls)
 
         async def run_one(action: PlannedAction, tool: Tool) -> _ToolCallOutcome:
             async with limit:
-                return await self._run_tool_call(state, agent, action, tool)
+                return await self._run_tool_call(state, agent, action, tool, announced=True)
 
         with self._tracer.start_as_current_span(
             "agent.step",
@@ -2337,7 +2375,9 @@ class AgentRuntime:
             if waiting is not None:
                 continue
             if isinstance(outcome, _HeldCall):
-                await self._hold_tool_call(state, agent, action, outcome, settle=False)
+                await self._hold_tool_call(
+                    state, agent, action, outcome, settle=False, announced=True
+                )
             elif isinstance(outcome, BaseException):
                 assert isinstance(outcome, Exception)
                 await self._tool_call_failed(state, agent, action, outcome, settle=False)
@@ -2507,10 +2547,12 @@ class AgentRuntime:
         status: str,
         settle: bool = True,
         agent: AgentDefinition | None = None,
+        reason_code: str | None = None,
     ) -> None:
         """Answer a tool call the model made with ``payload`` instead of the tool's result.
 
-        With ``agent``, the answer carries the agent's wrap-up notice when it applies.
+        With ``agent``, the answer carries the agent's wrap-up notice when it applies;
+        ``reason_code`` (a guard's) goes on the ``tool.completed`` event.
         """
         call_id = action.id.removeprefix("tool-")
         name = action.tool_name or ""
@@ -2533,7 +2575,10 @@ class AgentRuntime:
         state.summary = state.summary.model_copy(
             update={"tool_calls": state.summary.tool_calls + 1}
         )
-        await self._emit(state, "tool.completed", {"tool": name, "status": status}, action.id)
+        completed: dict[str, Any] = {"tool": name, "status": status}
+        if reason_code is not None:
+            completed["reason_code"] = reason_code
+        await self._emit(state, "tool.completed", completed, action.id)
         if settle and state.status == RunStatus.INVOKING_TOOL:
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
 

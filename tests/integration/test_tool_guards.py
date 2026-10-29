@@ -244,7 +244,11 @@ async def test_a_refused_call_never_runs_and_nobody_is_asked() -> None:
         "refusal_limit_reached": False,
     }
     [completed] = [event for event in events if event.type == "tool.completed"]
-    assert completed.data == {"tool": "config.change", "status": "refused"}
+    assert completed.data == {
+        "tool": "config.change",
+        "status": "refused",
+        "reason_code": "tool.precheck_refused",
+    }
     audits = await runtime.audits.list("t", "config.change")
     assert [(audit.action, audit.outcome) for audit in audits] == [("tool.call", "refused")]
     assert audits[0].metadata["reason_code"] == "tool.precheck_refused"
@@ -344,6 +348,107 @@ async def test_a_parallel_reply_is_prechecked_in_order_after_the_calls_that_will
     assert [item.get("ok") for item in results] == [True, False, True, True]
     assert results[1]["error"] == "b depends on a host nobody allowed"
     assert result.execution_summary.tool_calls == 4
+
+
+async def _mixed_reply_events(*, parallel: bool) -> list[tuple[str, str, str]]:
+    """A reply whose first call (A) is refused and whose second (B) runs."""
+    recorder = Recorder(refuse={"a": "a is not allowed"})
+    first = next(_IDS)
+    provider = MockModelProvider(
+        [
+            ModelResponse(
+                message=Message.text(Role.ASSISTANT, ""),
+                tool_calls=(
+                    ToolCall(id=f"call-{first}-a", name="config.change", arguments={"key": "a"}),
+                    ToolCall(id=f"call-{first}-b", name="config.change", arguments={"key": "b"}),
+                ),
+                finish_reason=FinishReason.TOOL_CALLS,
+                model="deterministic",
+                provider="mock",
+            ),
+            "done",
+        ]
+    )
+    runtime, _ = _runtime(
+        provider,
+        _tool(
+            "config.change",
+            recorder.handler,
+            side_effect=SideEffect.WRITE,
+            precheck=recorder.precheck,
+        ),
+        tool_policy=ToolPolicy(on_error="return_to_model", parallel_calls=parallel),
+        approval_policy=NO_APPROVAL,
+    )
+    result = await runtime.run(_request())
+    assert result.status == RunStatus.COMPLETED and recorder.ran == [{"key": "b"}]
+    events = await runtime.events.history(result.run_id)
+    [held] = [
+        event for event in events if event.type == "tool.started" and event.step_id.endswith("-a")
+    ]
+    assert held.data == {
+        "tool": "config.change",
+        "status": "refused",
+        "side_effect": "write",
+        "argument_keys": ["key"],
+    }
+    # ``(type, call, status)`` for each tool step's start, refusal and completion, in order.
+    return [
+        (event.type, event.step_id.rsplit("-", 1)[-1], event.data.get("status", ""))
+        for event in events
+        if event.step_id is not None
+        and event.step_id.startswith("tool-")
+        and event.type in {"step.started", "tool.started", "tool.refused", "tool.completed"}
+    ]
+
+
+async def test_a_refused_call_starts_like_one_that_runs_one_at_a_time() -> None:
+    assert await _mixed_reply_events(parallel=False) == [
+        ("step.started", "a", ""),
+        ("tool.started", "a", "refused"),
+        ("tool.refused", "a", ""),
+        ("tool.completed", "a", "refused"),
+        ("step.started", "b", ""),
+        ("tool.started", "b", "running"),
+        ("tool.completed", "b", "completed"),
+    ]
+
+
+async def test_a_parallel_reply_announces_its_calls_in_the_models_order() -> None:
+    # A running call's start never comes before an earlier call a guard held back, and
+    # every call finishes in the order the model sent them.
+    assert await _mixed_reply_events(parallel=True) == [
+        ("step.started", "a", ""),
+        ("step.started", "b", ""),
+        ("tool.started", "a", "refused"),
+        ("tool.started", "b", "running"),
+        ("tool.refused", "a", ""),
+        ("tool.completed", "a", "refused"),
+        ("tool.completed", "b", "completed"),
+    ]
+
+
+async def test_a_held_back_read_starts_with_its_guard_status() -> None:
+    recorder = Recorder()
+    provider = MockModelProvider(
+        [_call("files.read", {"key": "a"}), _call("files.read", {"key": "a"}), "done"]
+    )
+    runtime, _ = _runtime(
+        provider,
+        _tool("files.read", recorder.handler),
+        tool_policy=ToolPolicy(repeat_guard=True),
+    )
+    result = await runtime.run(_request())
+    assert result.status == RunStatus.COMPLETED
+    events = await runtime.events.history(result.run_id)
+    started = [event.data["status"] for event in events if event.type == "tool.started"]
+    completed = [
+        (event.data["status"], event.data.get("reason_code"))
+        for event in events
+        if event.type == "tool.completed"
+    ]
+    assert started == ["running", "repeated"]
+    assert completed == [("completed", None), ("repeated", "tool.repeated")]
 
 
 async def test_a_refused_call_is_recorded_as_a_tool_span() -> None:
