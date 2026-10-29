@@ -739,6 +739,38 @@ between two page reads shifts later pages by one; page with a small `limit` and 
 Requests created at the same instant are ordered by insertion in the in-memory store and by `id` in
 PostgreSQL; both are stable between calls.
 
+## Steering a running run
+
+A user can add to a run while it works: `runtime.steer(run_id, tenant_id, text)` queues a message
+and returns it as a `SteeringMessage` (`id`, `text`, `queued_at`). Over HTTP it is
+`POST /v1/runs/{run_id}/steer` with `{"text": "..."}` (scope `runs:write`, tenant-scoped like every
+run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`.
+
+- **When the model sees it.** At the run's next step boundary: after the results of every call in
+  the model's last reply and before the next model call, as one user message with a text block
+  per queued message, in the order they were sent. It is checked at the `input` policy boundary
+  like the run's input (context `operation: steering`). A `steer.delivered` event and a
+  `run.steer` audit (`delivered`, with `steer_ids`) follow.
+- **When the run ends first.** Messages still waiting when the run completes, fails, is cancelled
+  or times out (for example, sent during the model's final answer) are never delivered. They are
+  `RunResult.undelivered_steering` from `runtime.wait`/`run`, stay in `RunState.pending_steering`,
+  and a `steer.undelivered` event announces them, so a host can hand them back to the user or
+  start the next turn with them.
+- **Paused runs.** A run awaiting approval, clarification or reconciliation keeps its messages in
+  its checkpoint (`RunState.pending_steering`) and delivers them after it is resumed, at the next
+  boundary. Messages sent to a running run are checkpointed at its next state transition, so a
+  restart loses at most those sent since the last one.
+- **Events.** `steer.delivered` and `steer.undelivered` carry `count` and `messages`, a list of
+  `{id, chars}`; the text is added (`text`) only when `telemetry_include_content` is on. The run
+  narrative tells them as `steering` entries without the text. `GET /v1/runs/{run_id}` includes
+  `pending_steering`, text included, to callers with `runs:read`.
+- **Limits and errors.** At most `MAX_PENDING_STEERING` (16) messages wait per run and each is at
+  most `MAX_STEERING_CHARS` (8,000) characters after trimming. Empty or longer text raises
+  `ValueError` (HTTP `422`); a full queue, an ended run, or a run executing in another process
+  raises `ConflictError` (HTTP `409`). Another tenant's run is `NotFoundError` (HTTP `404`).
+- **Not yet:** conversation turns do not expose steering; a host steers the turn's run by its id
+  (`pending.run_id`).
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused

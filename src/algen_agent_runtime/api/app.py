@@ -66,6 +66,7 @@ from algen_agent_runtime.observability.setup import (
 from algen_agent_runtime.orchestration.container import Container, build_container
 from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.types.contracts import (
+    MAX_STEERING_CHARS,
     AgentDefinition,
     Artifact,
     ArtifactStatus,
@@ -91,6 +92,11 @@ class CreateRunBody(BaseModel):
 class ClarificationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clarification: str = Field(min_length=1)
+
+
+class SteerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=MAX_STEERING_CHARS)
 
 
 class ApprovalBody(BaseModel):
@@ -381,6 +387,17 @@ def create_app(
         await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
+
+    @app.post("/v1/runs/{run_id}/steer", status_code=202)
+    async def steer_run(
+        run_id: str, body: SteerBody, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_scope(identity, "runs:write")
+        try:
+            message = await dependencies.runtime.steer(run_id, identity.tenant_id, body.text)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"run_id": run_id, "steer_id": message.id, "status": "queued"}
 
     @app.post("/v1/runs/{run_id}/approval", status_code=202)
     async def approve_run(

@@ -23,6 +23,7 @@ EntryKind = Literal[
     "tool",
     "approval",
     "clarification",
+    "steering",
     "policy",
     "verification",
     "memory",
@@ -130,6 +131,28 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
         case "tool.wrap_up":
             kind = "tool"
             summary = f"Told the model to wrap up: {data.get('tool_calls_left')} tool calls left"
+        case "tool.note":
+            # A note is tool content for the UI: only that there was one is told.
+            kind, summary = (
+                "tool",
+                f"{data.get('tool') or 'Tool'} sent a note to the user interface",
+            )
+            data = {"call_id": data.get("call_id")}
+        case "steer.delivered" | "steer.undelivered":
+            kind = "steering"
+            count = data.get("count", 0)
+            summary = (
+                f"Delivered {count} steering messages to the model"
+                if event.type == "steer.delivered"
+                else f"Ended with {count} steering messages undelivered"
+            )
+            data = {
+                "count": count,
+                "messages": [
+                    {"id": item.get("id"), "chars": item.get("chars")}
+                    for item in data.get("messages") or []
+                ],
+            }
         case "approval.required":
             kind = "approval"
             subject = data.get("tool") or data.get("reason") or data.get("kind") or "an action"

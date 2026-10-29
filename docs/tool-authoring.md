@@ -210,6 +210,36 @@ async def handler(arguments, context):
 - Raise instead when the run should fail (with `on_error: fail_run`), or for an error the model
   cannot act on.
 
+## Notes for the user interface
+
+A tool can tell the user interface what a call did (a title, the files it touched, follow-ups to
+offer) without telling the model:
+
+```python
+@workspace.tool(write())
+async def apply_patch(path: str, patch: str, context: ToolContext) -> Receipt:
+    """Apply a unified diff to one file in the workspace."""
+    before, after = await workspace.apply(path, patch)
+    await context.emit_note(
+        title=f"Edited {path}",
+        paths=[path],
+        suggestions=["Run the tests"],
+        data={"before_sha256": before, "after_sha256": after},
+    )
+    return Receipt(ok=True)
+```
+
+- The note is a `tool.note` run event with the call's `step_id`, and data `{tool, call_id, title,
+  paths, suggestions, data}`. It never enters the model's input, the tool's result, or the run
+  narrative's details (which say only that a note was sent).
+- `emit_note` returns the `ToolNote`. It raises `ValueError` for an empty title or one over 200
+  characters; more than 50 `paths` or `suggestions`, or one over 2,000 characters; `data` that is
+  not JSON values; a note over 16 KiB serialized; or more than 20 notes in one call.
+- Notes are stored in the event history and streamed to anyone who can read the run's events: do
+  not put secrets or credentials in them.
+- Outside a run (a unit test, `fake_tool_context`, a reconcile or compensation hook) the note is
+  checked and returned, and nothing is emitted.
+
 ## Unknown outcomes: reconcile and compensation
 
 A call that changes something can fail without saying whether it took effect: the request left,

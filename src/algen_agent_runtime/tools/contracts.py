@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -12,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SerializerFunctionWrapHandler,
     field_validator,
     model_serializer,
@@ -140,6 +142,50 @@ def read_only_credentials(credentials: Mapping[str, str] | None) -> Mapping[str,
     return _ReadOnlyCredentials(credentials) if credentials else _NO_CREDENTIALS
 
 
+# Bounds on a tool note: the whole note serialized, its parts, and notes per call.
+MAX_TOOL_NOTE_BYTES = 16_384
+MAX_TOOL_NOTE_TITLE_CHARS = 200
+MAX_TOOL_NOTE_ITEMS = 50
+MAX_TOOL_NOTE_ITEM_CHARS = 2_000
+MAX_TOOL_NOTES_PER_CALL = 20
+
+
+class ToolNote(BaseModel):
+    """What a tool call did, for the user interface: written as a ``tool.note`` run event.
+
+    A note never reaches the model. ``paths`` are files or resources the call touched,
+    ``suggestions`` short follow-ups to offer the user, and ``data`` anything else a UI shows
+    (JSON values). The whole note is at most ``MAX_TOOL_NOTE_BYTES`` serialized.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    title: str = Field(min_length=1, max_length=MAX_TOOL_NOTE_TITLE_CHARS)
+    paths: tuple[str, ...] = Field(default=(), max_length=MAX_TOOL_NOTE_ITEMS)
+    suggestions: tuple[str, ...] = Field(default=(), max_length=MAX_TOOL_NOTE_ITEMS)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("paths", "suggestions")
+    @classmethod
+    def _bounded_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(len(item) > MAX_TOOL_NOTE_ITEM_CHARS for item in value):
+            raise ValueError(f"each item is at most {MAX_TOOL_NOTE_ITEM_CHARS} characters")
+        return value
+
+    def payload(self) -> dict[str, Any]:
+        """The note as event data; raises ``ValueError`` when it is too large or not JSON."""
+        try:
+            payload = self.model_dump(mode="json")
+            encoded = json.dumps(payload, allow_nan=False).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("a tool note's data must be JSON values") from exc
+        if len(encoded) > MAX_TOOL_NOTE_BYTES:
+            raise ValueError(f"a tool note is at most {MAX_TOOL_NOTE_BYTES} bytes serialized")
+        return payload
+
+
+NoteSink = Callable[[ToolNote], Awaitable[None]]
+
+
 class ToolContext(BaseModel):
     """What a tool knows about a call: who, which run and step, and what it may do.
 
@@ -164,6 +210,33 @@ class ToolContext(BaseModel):
     credentials: Mapping[str, str] = Field(
         default_factory=lambda: _NO_CREDENTIALS, repr=False, exclude=True
     )
+    # Where emit_note sends notes: set by the Runtime for a call inside a run.
+    _note_sink: NoteSink | None = PrivateAttr(default=None)
+
+    async def emit_note(
+        self,
+        *,
+        title: str,
+        paths: Sequence[str] = (),
+        suggestions: Sequence[str] = (),
+        data: Mapping[str, Any] | None = None,
+    ) -> ToolNote:
+        """Tell the user interface what this call did, without telling the model.
+
+        The Runtime writes it as a ``tool.note`` run event tagged with the call's step and call
+        id. Raises ``ValueError`` for a note past its bounds (see ``ToolNote``) or past
+        ``MAX_TOOL_NOTES_PER_CALL`` notes in one call. Outside a run (a test, or a tool run
+        directly) the note is checked and returned, and nothing is emitted.
+        """
+        if isinstance(paths, str) or isinstance(suggestions, str):
+            raise ValueError("paths and suggestions are sequences of strings, not one string")
+        note = ToolNote(
+            title=title, paths=tuple(paths), suggestions=tuple(suggestions), data=dict(data or {})
+        )
+        note.payload()
+        if self._note_sink is not None:
+            await self._note_sink(note)
+        return note
 
     @field_validator("credentials", mode="plain")
     @classmethod

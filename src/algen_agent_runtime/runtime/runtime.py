@@ -107,7 +107,9 @@ from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconc
 from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.security.redaction import redact, redact_parameters
 from algen_agent_runtime.tools.contracts import (
+    MAX_TOOL_NOTES_PER_CALL,
     EarlierCall,
+    NoteSink,
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
@@ -115,12 +117,15 @@ from algen_agent_runtime.tools.contracts import (
     ToolDefinition,
     ToolExecutionRecord,
     ToolExecutionStatus,
+    ToolNote,
     ToolResult,
     read_only_credentials,
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
+    MAX_PENDING_STEERING,
+    MAX_STEERING_CHARS,
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
@@ -137,6 +142,7 @@ from algen_agent_runtime.types.contracts import (
     RunState,
     RunStatus,
     SkillSelection,
+    SteeringMessage,
     TextBlock,
     TokenUsage,
     ToolSpec,
@@ -294,6 +300,9 @@ class AgentRuntime:
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
         self._credentials: dict[str, Mapping[str, str]] = {}
+        # Steering messages for runs executing in this process, by run id, until the run's next
+        # transition checkpoints them into RunState.pending_steering.
+        self._steering: dict[str, list[SteeringMessage]] = {}
         self._task_lock = asyncio.Lock()
         self._accepting_runs = True
         self._shutdown_cancellation = False
@@ -402,7 +411,16 @@ class AgentRuntime:
         current = await self._require_state(run_id, tenant_id)
         agent = self.agents.get(current.request.agent, current.request.agent_version)
         composer = self.composers.get(agent.response_composer)
-        return await composer.compose(current)
+        result = await composer.compose(current)
+        if (
+            current.status in TERMINAL_STATUSES
+            and current.pending_steering
+            and not result.undelivered_steering
+        ):
+            result = result.model_copy(
+                update={"undelivered_steering": tuple(current.pending_steering)}
+            )
+        return result
 
     async def status(self, run_id: str, tenant_id: str) -> RunState:
         return await self._require_state(run_id, tenant_id)
@@ -433,6 +451,46 @@ class AgentRuntime:
             await self._transition(state, RunStatus.CANCELLED)
             await self._emit(state, "run.cancelled", {})
         return state
+
+    async def steer(self, run_id: str, tenant_id: str, text: str) -> SteeringMessage:
+        """Queue a user message for a run that has not ended, and return it.
+
+        The model gets it at the run's next step boundary, after the current tool results and
+        before the next model call, as a user message; a ``steer.delivered`` event follows. A
+        paused run keeps it until it is resumed. Messages still waiting when the run ends are
+        its ``RunResult.undelivered_steering``, announced by a ``steer.undelivered`` event.
+
+        Raises ``ValueError`` for empty text or text over ``MAX_STEERING_CHARS``, and
+        ``ConflictError`` when the run has ended, already has ``MAX_PENDING_STEERING`` messages
+        waiting, or is executing in another process.
+        """
+        text = text.strip() if isinstance(text, str) else ""
+        if not text:
+            raise ValueError("steering text is required")
+        if len(text) > MAX_STEERING_CHARS:
+            raise ValueError(f"steering text is at most {MAX_STEERING_CHARS} characters")
+        state = await self._require_state(run_id, tenant_id)
+        if state.status in TERMINAL_STATUSES:
+            raise ConflictError(f"run in {state.status.value!r} has ended and cannot be steered")
+        message = SteeringMessage(text=text)
+        async with self._task_lock:
+            task = self._tasks.get(run_id)
+            running = task is not None and not task.done()
+            queued = self._steering.get(run_id, [])
+            if len(state.pending_steering) + len(queued) >= MAX_PENDING_STEERING:
+                raise ConflictError(
+                    f"run already has {MAX_PENDING_STEERING} steering messages waiting"
+                )
+            if running:
+                # The drive checkpoints it at its next transition and delivers it.
+                self._steering.setdefault(run_id, []).append(message)
+            elif state.status in PAUSED_STATUSES:
+                state.pending_steering.append(message)
+                state.updated_at = utc_now()
+                await self.runs.save(state, state.version)
+            else:
+                raise ConflictError("run is executing in another process; steer it there")
+        return message
 
     async def resume(
         self,
@@ -580,6 +638,88 @@ class AgentRuntime:
             # However the drive ends (paused, finished, failed, cancelled, shut down), the
             # caller's credentials go with it.
             self._credentials.pop(run_id, None)
+            await self._keep_late_steering(run_id, tenant_id)
+
+    async def _keep_late_steering(self, run_id: str, tenant_id: str) -> None:
+        """Checkpoint steering that arrived after the drive's last transition."""
+        queued = self._steering.pop(run_id, None)
+        if not queued:
+            return
+        try:
+            state = await self._require_state(run_id, tenant_id)
+            state.pending_steering.extend(queued)
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            if state.status in TERMINAL_STATUSES:
+                await self._emit(state, "steer.undelivered", self._steering_data(queued))
+        except Exception:
+            self._logger.exception("steering_checkpoint_failed", run_id=run_id)
+
+    def _steering_data(self, messages: Sequence[SteeringMessage]) -> dict[str, Any]:
+        """Event data for steering messages: ids and sizes, and text only with content on."""
+        return {
+            "count": len(messages),
+            "messages": [
+                {
+                    "id": message.id,
+                    "chars": len(message.text),
+                    **({"text": message.text} if self.telemetry_include_content else {}),
+                }
+                for message in messages
+            ],
+        }
+
+    async def _deliver_steering(self, state: RunState, agent: AgentDefinition) -> None:
+        """Give the model the run's waiting steering messages, before its next model call.
+
+        Nothing is delivered while calls from the model's last reply wait for their results,
+        or once the run has its answer: those messages are delivered later or not at all.
+        """
+        state.pending_steering.extend(self._steering.pop(state.id, ()))
+        if (
+            not state.pending_steering
+            or state.output_text is not None
+            or any(
+                call.id not in state.completed_tool_call_ids for call in state.pending_tool_calls
+            )
+        ):
+            return
+        messages = list(state.pending_steering)
+        blocks: list[TextBlock] = []
+        for message in messages:
+            # Checked like the run's input: it is the same user speaking.
+            checked = await self._policy_value(
+                "input", message.text, state, {"agent": agent, "operation": "steering"}
+            )
+            blocks.append(TextBlock(text=checked if isinstance(checked, str) else message.text))
+        state.pending_steering = []
+        state.append_message(Message(role=Role.USER, content=tuple(blocks)))
+        await self._emit(state, "steer.delivered", self._steering_data(messages))
+        await self._audit(
+            state,
+            "run.steer",
+            "delivered",
+            state.id,
+            {"steer_ids": [message.id for message in messages]},
+        )
+
+    def _tool_note_sink(self, state: RunState, action: PlannedAction, tool_name: str) -> NoteSink:
+        """Where a call's ``ToolContext.emit_note`` writes: a ``tool.note`` event for the call."""
+        emitted = 0
+
+        async def sink(note: ToolNote) -> None:
+            nonlocal emitted
+            if emitted >= MAX_TOOL_NOTES_PER_CALL:
+                raise ValueError(f"a tool call emits at most {MAX_TOOL_NOTES_PER_CALL} notes")
+            emitted += 1
+            await self._emit(
+                state,
+                "tool.note",
+                {"tool": tool_name, "call_id": action.id.removeprefix("tool-"), **note.payload()},
+                action.id,
+            )
+
+        return sink
 
     def _forget_task(self, completed: asyncio.Task[None]) -> None:
         for run_id, task in tuple(self._tasks.items()):
@@ -896,6 +1036,7 @@ class AgentRuntime:
                 )
                 await self._transition(state, RunStatus.PLANNING)
             if state.status == RunStatus.PLANNING:
+                await self._deliver_steering(state, agent)
                 planner = self.planners.get(agent.planning_strategy)
                 with self._tracer.start_as_current_span(
                     "agent.planning",
@@ -2049,6 +2190,7 @@ class AgentRuntime:
             idempotency_key=f"{state.id}:{call_id}",
             credentials=self._run_credentials(state.id),
         )
+        context._note_sink = self._tool_note_sink(state, action, tool.definition.name)
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
         memory_receipt: MemoryReceipt | None = None
@@ -2746,10 +2888,16 @@ class AgentRuntime:
         expected = state.version
         state.status = target
         state.updated_at = utc_now()
+        # Steering queued since the last checkpoint is saved with this one.
+        state.pending_steering.extend(self._steering.pop(state.id, ()))
         await self.runs.save(state, expected)
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
+        if target in TERMINAL_STATUSES and state.pending_steering:
+            await self._emit(
+                state, "steer.undelivered", self._steering_data(state.pending_steering)
+            )
 
     async def _emit(
         self,

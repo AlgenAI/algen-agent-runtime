@@ -617,6 +617,23 @@ class WorkingStateUpdate(StrictModel):
     state: WorkingStateContent
 
 
+# Bounds on steering (``AgentRuntime.steer``): messages queued for one run, and characters each.
+MAX_PENDING_STEERING = 16
+MAX_STEERING_CHARS = 8_000
+
+
+class SteeringMessage(StrictModel):
+    """A user message queued for a running run with ``AgentRuntime.steer``.
+
+    It reaches the model at the run's next step boundary, after the current tool results and
+    before the next model call, as a user message.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    text: str = Field(min_length=1, max_length=MAX_STEERING_CHARS)
+    queued_at: datetime = Field(default_factory=utc_now)
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -655,6 +672,11 @@ class RunState(BaseModel):
         default_factory=set,
         description="Digests of read-only calls run since the last successful state-changing "
         "call, kept when tool_policy.repeat_guard is on.",
+    )
+    pending_steering: list[SteeringMessage] = Field(
+        default_factory=list,
+        description="Steering messages not yet delivered to the model. Checkpointed, so they "
+        "survive a pause and a restart; on an ended run, the ones that were never delivered.",
     )
     output_text: str | None = None
     error: str | None = None
@@ -705,3 +727,8 @@ class RunResult(StrictModel):
     warnings: tuple[str, ...] = ()
     confidence: float | None = None
     execution_summary: ExecutionSummary
+    undelivered_steering: tuple[SteeringMessage, ...] = Field(
+        default=(),
+        description="On an ended run, the steering messages it ended before delivering, for "
+        "the host to hand back to the user.",
+    )
