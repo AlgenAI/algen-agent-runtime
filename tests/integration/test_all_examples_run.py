@@ -47,6 +47,8 @@ RUNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "pattern_multi_agent_fanout.app": ((),),
     "pattern_openai_agents_integration.app": ((),),
     "pattern_provider_fallback.app": (("--offline",),),
+    "pattern_secured_api.app": ((),),
+    "pattern_side_effect_reconciliation.app": ((),),
     "pattern_text_to_sql.app": (("--offline",),),
     "reference_customer_support.app": (
         ("--answers-file", "examples/reference_customer_support/fixtures/automation-answers.json"),
