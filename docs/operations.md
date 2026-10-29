@@ -1012,7 +1012,10 @@ and no meter provider is installed, so an application can install its own. Tracc
 (`traccia.enable_metrics`, `traccia.metrics_endpoint`) are configured by the Traccia SDK. A meter
 provider installed before the Runtime applies its telemetry settings, by Traccia or by the
 application, is kept, and `otlp_metrics_endpoint` is then ignored with a warning, because a
-provider's readers are fixed when it is built.
+provider's readers are fixed when it is built. The endpoint is used as given, so include the
+path (`https://collector:4318/v1/metrics`, not `https://collector:4318`). The interval setting
+always applies, so `OTEL_METRIC_EXPORT_INTERVAL` has no effect. The Runtime flushes its meter
+provider when the API shuts down.
 
 To export the same spans to Traccia and another OTLP backend, also set `telemetry.otlp_endpoint`. Algen Agent Runtime attaches the standard OTLP processor to Traccia's OpenTelemetry provider. Leave it unset when Traccia is the only destination to prevent duplicate delivery.
 

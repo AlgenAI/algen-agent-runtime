@@ -53,7 +53,11 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
 )
-from algen_agent_runtime.observability.setup import configure_logging, configure_telemetry
+from algen_agent_runtime.observability.setup import (
+    configure_logging,
+    configure_telemetry,
+    flush_telemetry,
+)
 from algen_agent_runtime.orchestration.container import Container, build_container
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
@@ -170,6 +174,7 @@ def create_app(
             # Drains the workflow service first (attach_workflows), then the runtime.
             await dependencies.aclose()
             await workflows.aclose()
+            flush_telemetry()
 
     app = FastAPI(title="Algen Agent Runtime", version=__version__, lifespan=lifespan)
     app.state.container = dependencies

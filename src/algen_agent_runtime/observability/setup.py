@@ -16,6 +16,10 @@ from algen_agent_runtime.security.redaction import redact
 
 _logger = structlog.get_logger("algen_agent_runtime.observability")
 
+# The meter provider configure_telemetry installed, so a second call recognises its own provider
+# and shutdown can flush it. Providers installed by Traccia or the application are never touched.
+_installed_meter_provider: MeterProvider | None = None
+
 
 def _redact_processor(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
@@ -64,7 +68,11 @@ def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
             BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otlp_endpoint))
         )
     if settings.enabled and settings.otlp_metrics_endpoint:
+        global _installed_meter_provider
         current = metrics.get_meter_provider()
+        if current is _installed_meter_provider:
+            # Called again in the same process (another lifespan): already exporting.
+            return trace.get_tracer(settings.service_name), metrics.get_meter(settings.service_name)
         if isinstance(current, MeterProvider):
             # Readers are fixed when a provider is built: one installed first (by Traccia with
             # its metrics on, or by the application) keeps exporting where it was told to.
@@ -73,10 +81,21 @@ def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
                 reason="an OpenTelemetry SDK meter provider is already installed",
             )
         else:
-            metrics.set_meter_provider(
-                otlp_meter_provider(
-                    settings.otlp_metrics_endpoint,
-                    export_interval_millis=settings.otlp_metrics_export_interval_seconds * 1000,
-                )
+            provider = otlp_meter_provider(
+                settings.otlp_metrics_endpoint,
+                export_interval_millis=settings.otlp_metrics_export_interval_seconds * 1000,
             )
+            metrics.set_meter_provider(provider)
+            _installed_meter_provider = provider
     return trace.get_tracer(settings.service_name), metrics.get_meter(settings.service_name)
+
+
+def flush_telemetry(timeout_millis: float = 10_000) -> None:
+    """Export the metrics recorded since the last interval, if the Runtime installed the provider.
+
+    Called on application shutdown, so the last interval is not left to the process's atexit hook,
+    which embedded hosts and test runners may never reach. The provider stays installed: the
+    process-global provider cannot be replaced, and a later lifespan in the same process reuses it.
+    """
+    if _installed_meter_provider is not None:
+        _installed_meter_provider.force_flush(timeout_millis=timeout_millis)

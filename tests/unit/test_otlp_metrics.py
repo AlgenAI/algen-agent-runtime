@@ -11,10 +11,15 @@ from opentelemetry.metrics import NoOpMeterProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.trace import NoOpTracerProvider
 from pydantic import ValidationError
+from structlog.testing import capture_logs
 
 from algen_agent_runtime.config.settings import TelemetrySettings
 from algen_agent_runtime.observability import setup
-from algen_agent_runtime.observability.setup import configure_telemetry, otlp_meter_provider
+from algen_agent_runtime.observability.setup import (
+    configure_telemetry,
+    flush_telemetry,
+    otlp_meter_provider,
+)
 
 
 @pytest.fixture
@@ -25,6 +30,7 @@ def installed(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     monkeypatch.setattr(setup.trace, "get_tracer_provider", NoOpTracerProvider)
     monkeypatch.setattr(setup.metrics, "set_meter_provider", calls["meter"].append)
     monkeypatch.setattr(setup.metrics, "get_meter_provider", NoOpMeterProvider)
+    monkeypatch.setattr(setup, "_installed_meter_provider", None)
     yield calls
     for provider in calls["meter"]:
         provider.shutdown()
@@ -121,3 +127,38 @@ def test_runtime_metrics_reach_an_otlp_collector() -> None:
         ("/v1/metrics", "application/x-protobuf")
     }
     assert b"algen_agent_runtime.cache.operations" in received[0][2]
+
+
+def test_a_second_configuration_keeps_the_runtime_provider_without_a_warning(
+    installed: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The global getter returns whatever was installed last, as the real API does.
+    monkeypatch.setattr(
+        setup.metrics,
+        "get_meter_provider",
+        lambda: installed["meter"][-1] if installed["meter"] else NoOpMeterProvider(),
+    )
+    settings = TelemetrySettings(otlp_metrics_endpoint="http://127.0.0.1:4318/v1/metrics")
+
+    with capture_logs() as logs:
+        configure_telemetry(settings)
+        configure_telemetry(settings)
+
+    assert len(installed["meter"]) == 1
+    assert not [log for log in logs if log["event"] == "otlp_metrics_endpoint_ignored"]
+
+
+def test_flush_exports_only_the_provider_the_runtime_installed(
+    installed: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flushed: list[float] = []
+    flush_telemetry()  # Nothing installed: nothing to flush, no error.
+
+    configure_telemetry(TelemetrySettings(otlp_metrics_endpoint="http://127.0.0.1:4318/v1/metrics"))
+    provider = installed["meter"][0]
+    monkeypatch.setattr(
+        provider, "force_flush", lambda timeout_millis: flushed.append(timeout_millis)
+    )
+    flush_telemetry(timeout_millis=500)
+
+    assert flushed == [500]
