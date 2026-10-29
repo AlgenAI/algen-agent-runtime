@@ -218,6 +218,35 @@ hooks.
   the idempotency key) without caller credentials, since an operator, not the user, starts them.
 - `describe` shows `reconcile: true` and `compensation: true` for tools that have them.
 
+## Decorating a handler
+
+A wrapper that adds behaviour around a tool (logging, steering, reporting outcomes) should not
+rebuild the `Tool`: a rebuilt tool keeps only the keywords its author knew about and silently
+drops the rest, such as a `precheck` or `reconcile` added later. Replace just the handler:
+
+```python
+import inspect
+
+from algen_agent_runtime.tools.contracts import ToolHandler, wrap
+
+
+def logged(handler: ToolHandler) -> ToolHandler:
+    async def run(arguments, context):
+        log.info("tool call", step=context.step_id)
+        result = handler(arguments, context)
+        return await result if inspect.isawaitable(result) else result
+
+    return run
+
+
+traced = wrap(update_owner, logged)          # same as below
+traced = update_owner.with_handler(logged(update_owner.handler))
+```
+
+`Tool.with_handler(handler)` returns a copy that runs `handler` and keeps the definition, every
+hook (`compensation`, `replay_validator`, `precheck`, `reconcile`, `reconcile_on_replay`), any
+other attribute and the tool's class. The original tool is unchanged.
+
 ## Toolkits
 
 A `Toolkit` groups tools that share a client, configuration, `env://` secrets and a permission

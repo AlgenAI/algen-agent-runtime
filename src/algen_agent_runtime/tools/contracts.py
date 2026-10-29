@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -346,6 +347,10 @@ Precheck = Callable[
 ]
 
 
+# Takes a tool's handler and returns the handler to run instead, usually one that calls it.
+ToolMiddleware = Callable[[ToolHandler], ToolHandler]
+
+
 class Tool:
     def __init__(
         self,
@@ -370,6 +375,18 @@ class Tool:
         self.precheck = precheck
         self.reconcile = reconcile
         self.reconcile_on_replay = reconcile_on_replay
+
+    def with_handler(self, handler: ToolHandler) -> Tool:
+        """A copy of this tool that runs ``handler``, keeping everything else.
+
+        The copy keeps the definition and every hook (compensation, replay validator,
+        precheck, reconcile, ``reconcile_on_replay``) and any other attribute, including ones a
+        later release or a subclass adds, so a wrapper that decorates a handler never drops one.
+        The original tool is unchanged.
+        """
+        replaced = copy.copy(self)
+        replaced.handler = handler
+        return replaced
 
     async def check(
         self, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall] = ()
@@ -412,3 +429,11 @@ class Tool:
         if inspect.isawaitable(result):
             return await result
         return result
+
+
+def wrap(tool: Tool, middleware: ToolMiddleware) -> Tool:
+    """``tool`` with its handler decorated by ``middleware``, keeping every hook.
+
+    ``wrap(tool, logged)`` is ``tool.with_handler(logged(tool.handler))``.
+    """
+    return tool.with_handler(middleware(tool.handler))
