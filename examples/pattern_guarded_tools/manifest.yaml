@@ -1,0 +1,24 @@
+id: pattern_guarded_tools
+display_name: "Guarded Tools"
+tier: pattern
+status: runnable
+description: >
+  Typed tools behind the Runtime's controls: a precheck, a failure returned as data, a cache keyed
+  on the user, a wrapped handler that keeps its hooks, tool-call guards, a wrap-up notice and a
+  usage meter that refuses a call.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_guarded_tools.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_guarded_tools.app"
+  test: "python -m pytest tests/integration/test_all_examples_run.py -q -k pattern_guarded_tools"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 5
+deterministic_mock_support: true
