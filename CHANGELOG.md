@@ -119,10 +119,10 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Fixed
 
-- `POST /v1/runs/{run_id}/approval` and `POST /v1/runs/{run_id}/clarification` enforce
-  conversation ownership: a run started for a conversation turn answers `404` to any other user of
-  the tenant. Before, any `runs:write` principal in the tenant could decide another user's
-  conversation-turn approval.
+- Every `/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification and approval)
+  enforces conversation ownership: a run started for a conversation turn answers `404` to any
+  other user of the tenant. Before, any `runs:write` principal in the tenant could decide or cancel
+  another user's conversation-turn run, and any `runs:read` principal could read it, given its id.
 - Declared HTTP tools refuse a path value that is empty, `.` or `..` (also percent-encoded).
   Before, a model argument could move the call, and a forwarded credential, to another path on the
   same host.

@@ -429,7 +429,7 @@ async def test_a_call_emits_a_bounded_number_of_notes() -> None:
     assert len(notes) == MAX_TOOL_NOTES_PER_CALL and len(raised) == 1
 
 
-async def test_only_the_conversation_owner_can_steer_a_conversation_turn_run() -> None:
+async def test_only_the_conversation_owner_can_use_a_conversation_turn_run() -> None:
     runtime = _runtime(MockModelProvider(["done"]))
     container = Container(
         runtime=runtime,
@@ -456,3 +456,13 @@ async def test_only_the_conversation_owner_can_steer_a_conversation_turn_run() -
         assert owner.status_code == 409  # the run has ended
         read = await client.get(f"/v1/runs/{result.run_id}", headers={**headers, "x-user-id": "u"})
         assert "pending_steering" not in read.json()
+        # Every other run route answers another user of the tenant the same way.
+        bob = {**headers, "x-user-id": "bob"}
+        run_url = f"/v1/runs/{result.run_id}"
+        assert (await client.get(run_url, headers=bob)).status_code == 404
+        assert (await client.get(f"{run_url}/narrative", headers=bob)).status_code == 404
+        assert (await client.get(f"{run_url}/events", headers=bob)).status_code == 404
+        assert (await client.delete(run_url, headers=bob)).status_code == 404
+        assert (
+            await client.get(f"{run_url}/narrative", headers=headers | {"x-user-id": "u"})
+        ).status_code == 200

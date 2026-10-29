@@ -362,6 +362,7 @@ def create_app(
     @app.get("/v1/runs/{run_id}")
     async def read_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:read")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.status(run_id, identity.tenant_id)
         return state.model_dump(
             mode="json", exclude={"messages", "pending_tool_calls", "pending_steering"}
@@ -372,12 +373,14 @@ def create_app(
         run_id: str, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:read")
+        await require_conversation_owner(run_id, identity)
         narrative = await dependencies.runtime.narrative(run_id, identity.tenant_id)
         return narrative.model_dump(mode="json")
 
     @app.delete("/v1/runs/{run_id}")
     async def cancel_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.cancel(run_id, identity.tenant_id)
         return {"run_id": state.id, "status": state.status}
 
@@ -451,7 +454,7 @@ def create_app(
         identity: Principal = identity_dependency,
     ) -> StreamingResponse:
         require_any_scope(identity, "artifacts:read", "runs:read")
-        await dependencies.runtime.status(run_id, identity.tenant_id)
+        await require_conversation_owner(run_id, identity)
         last_id = int(request.headers.get("last-event-id", "0") or 0)
 
         async def generate() -> AsyncIterator[bytes]:

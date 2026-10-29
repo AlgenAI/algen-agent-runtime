@@ -710,9 +710,10 @@ above). `limit` is 1 to 500 and `offset` 0 to 1,000,000; anything else is a `422
 
 Decide as before with `POST /v1/runs/{run_id}/approval` (scope `runs:write`), or for a
 conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`. A run started for a
-conversation turn can be decided (or clarified, `POST /v1/runs/{run_id}/clarification`) only by
-the conversation's owner, as on the conversation routes: another user of the tenant gets `404`,
-whatever their scopes.
+conversation turn belongs to the conversation's owner, as on the conversation routes: every
+`/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification, approval and steer)
+answers another user of the tenant `404`, whatever their scopes. Runs started directly with
+`POST /v1/runs` are checked against the tenant only, as before.
 
 Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id`, `agent`,
 `proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
