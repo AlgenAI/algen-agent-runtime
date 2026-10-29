@@ -225,6 +225,9 @@ class ModelRouter:
     ) -> tuple[tuple[ModelProvider, ModelProfile], ...]:
         ranked: list[tuple[float, ModelProvider, ModelProfile]] = []
         now = time.monotonic()
+        # "ordered" describes the whole list, so the first (default) profile decides it. Settings
+        # reject mixed lists; an "ordered" fallback behind a scored default is scored as balanced.
+        ordered = bool(profiles) and profiles[0].routing_preference == "ordered"
         for position, profile in enumerate(profiles):
             if profile.provider is None or profile.model is None:
                 continue
@@ -259,11 +262,10 @@ class ModelRouter:
                 preference_score = 10_000 if locality else 0
             elif profile.routing_preference == "cloud_first":
                 preference_score = 10_000 if not locality else 0
-            if profile.routing_preference == "ordered":
+            if ordered:
                 # Declaration order wins (primary, then fallbacks); health, capability, latency
-                # and cost filters above still remove candidates. Ordered profiles rank ahead of
-                # scored ones.
-                score = 1e15 - position
+                # and cost filters above still remove candidates.
+                score = -float(position)
             else:
                 score = (
                     profile.quality_tier * 1000

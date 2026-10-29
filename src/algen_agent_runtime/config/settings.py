@@ -750,6 +750,16 @@ class AppSettings(StrictSettings):
                     invalid_references.append(
                         f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
                     )
+            preferences = [
+                profile.routing_preference
+                for profile in (agent.default_model, *agent.fallback_models)
+            ]
+            if "ordered" in preferences and set(preferences) != {"ordered"}:
+                raise ValueError(
+                    f"agents[{agent.name}]: routing_preference 'ordered' applies to the whole "
+                    "model list; set it on default_model and every fallback_models entry, or on "
+                    f"none (got {preferences})"
+                )
         for retrieval_name, retrieval_config in self.retrieval.items():
             if (
                 retrieval_config.embedding_provider is not None

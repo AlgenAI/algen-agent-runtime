@@ -206,6 +206,45 @@ def test_missing_fallback_provider_identifies_index_path() -> None:
     assert "'bad-fallback'" in str(exc_info.value)
 
 
+def _ordered_settings(default: str, fallbacks: list[str]) -> dict[str, object]:
+    return {
+        "providers": {"p": {"type": "mock", "default_model": "deterministic"}},
+        "agents": [
+            {
+                "name": "ordered-agent",
+                "version": "1.0.0",
+                "description": "test",
+                "system_instructions": "test",
+                "default_model": {
+                    "name": "primary",
+                    "provider": "p",
+                    "model": "m",
+                    "routing_preference": default,
+                },
+                "fallback_models": [
+                    {"name": f"fb{i}", "provider": "p", "model": "m", "routing_preference": pref}
+                    for i, pref in enumerate(fallbacks)
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("default", "fallbacks"),
+    [("balanced", ["ordered"]), ("ordered", ["balanced"]), ("ordered", ["ordered", "cloud_first"])],
+)
+def test_mixed_ordered_routing_preference_is_rejected(default: str, fallbacks: list[str]) -> None:
+    with pytest.raises(ValidationError, match="routing_preference 'ordered' applies to the whole"):
+        AppSettings.model_validate(_ordered_settings(default, fallbacks))
+
+
+def test_ordered_routing_preference_on_every_profile_loads() -> None:
+    AppSettings.model_validate(_ordered_settings("ordered", ["ordered", "ordered"]))
+    AppSettings.model_validate(_ordered_settings("ordered", []))
+    AppSettings.model_validate(_ordered_settings("balanced", ["local_first"]))
+
+
 def test_missing_embedding_provider_fails() -> None:
     with pytest.raises(ValidationError) as exc_info:
         AppSettings.model_validate(

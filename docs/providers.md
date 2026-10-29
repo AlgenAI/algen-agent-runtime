@@ -39,8 +39,11 @@ providers:
 
 By default (`routing_preference: balanced`) candidates are ranked by `quality_tier`, observed
 latency and cost, so a consistently faster fallback can be chosen ahead of the default model. Set
-`routing_preference: ordered` on the profiles to try them strictly in declaration order; providers
-with an open circuit breaker, missing capabilities or exceeded latency/cost limits are still skipped.
+`routing_preference: ordered` on the default model and every fallback to try them strictly in
+declaration order; providers with an open circuit breaker, missing capabilities or exceeded
+latency/cost limits are still skipped. `ordered` describes the whole list, so configuration that sets
+it on only some of an agent's profiles is rejected at load time. When profiles are built in code, the
+first (default) profile decides the mode.
 
 ```yaml
 default_model: {name: primary, provider: gemini, model: gemini-flash-latest, routing_preference: ordered}
