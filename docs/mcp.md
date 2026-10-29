@@ -63,8 +63,9 @@ mcp_servers:
 
 1. **`stdio`**: Spawns a local subprocess and communicates via standard input/output.
    - Requires `command: str` and optional `args: list[str]`.
-   - **Environment Isolation**: Subprocesses do not inherit ambient process environment variables. Only safe system keys (`PATH`, `SYSTEMROOT`, `TEMP`, `USER`, `HOME`) and explicit variables in `env` are passed.
-   - **Trust Boundary**: `stdio` commands run unsandboxed on the host system. They must only execute trusted operator-declared commands.
+   - **Environment Isolation**: Subprocesses do not inherit ambient process environment variables. Only safe system keys (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TEMP`, `TMP`, `SYSTEMROOT`, or `security.sandbox.env_allowlist` when set) and explicit variables in `env` are passed.
+   - **Sandbox**: `security.sandbox` (or the server's own `sandbox`, which replaces it) sets resource limits and an isolation wrapper such as `bwrap`; `security.sandbox.required: true` refuses to start a server without a wrapper. See [Subprocess and MCP stdio sandboxing](operations.md#subprocess-and-mcp-stdio-sandboxing).
+   - **Trust Boundary**: without a wrapper, `stdio` commands run with the Runtime user's access to files and network. They must only execute trusted operator-declared commands.
 2. **`streamable_http`**: Connects via HTTP using the official SDK v1 Streamable HTTP client.
    - Requires `url: str`.
    - Outbound connections are routed through Runtime's `create_safe_http_client`, enforcing DNS pinning, host allowlists (`security.allowed_http_hosts`), and private network blocking (`security.allow_private_networks`).
@@ -274,7 +275,7 @@ During `Container.astart()`:
 ## Current Boundaries and Deferred Capabilities
 
 The following capabilities are outside the scope of `0.1.0a3`:
-- **Unsandboxed Local Processes**: `stdio` transport runs host processes directly without sandbox containment; do not configure untrusted or dynamic user commands.
+- **Local Processes**: `stdio` servers are isolated only as far as the configured `security.sandbox` wrapper isolates them; do not configure untrusted or dynamic user commands.
 - **MCP Server Hosting**: Runtime acts solely as an MCP client; exposing Runtime tools or agents as an MCP server is deferred.
 - **Resources, Prompts, and Sampling Callbacks**: Only the MCP Tools primitive is supported.
 - **OAuth dynamic client registration**: OAuth servers need a client registered with the

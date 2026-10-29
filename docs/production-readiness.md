@@ -78,8 +78,8 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`; each lists what is left
-for later. Items 1, 2, 5 and 7 remain open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and item 5 as of
+`0.1.0a18`; each lists what is left for later. Items 1, 2 and 7 remain open.
 
 1. **Close persistence validation gaps.** CI runs storage integration tests against live PostgreSQL 16,
    including schema migrations, run state, optimistic conflicts, artifacts, tool deduplication, and
@@ -118,16 +118,31 @@ for later. Items 1, 2, 5 and 7 remain open.
    records, metric and log. Header identity remains loopback-only development mode. *Later:* token
    introspection (RFC 7662); mTLS terminated by the Runtime itself mapped to principals; purging
    expired revocations in the maintenance sweep.
-5. **Harden network, plugins, and local execution.** Keep outbound redirects disabled; if redirect
-   support is introduced, validate and pin every hop. Add egress proxy hooks, sandbox subprocess and
-   MCP stdio tools (which currently execute as trusted, unsandboxed host code under minimal environment
-   filtering), add stronger remote service identity where required, verify plugin signatures, and
-   prevent untrusted in-process plugin loading. Done: redirects stay disabled; plugins and workflow
-   hooks load only from allowlisted module prefixes matched on module boundaries, checked before
-   import. *Remaining:* egress proxy hooks (there is no deployment setting for one, and a `proxy`
-   passed to `create_safe_http_client` is not validated against IP pinning), subprocess and stdio
-   MCP sandboxing, stronger remote service identity, and verification of `PluginManifest.signature`,
-   which is declared but never checked.
+5. **Harden network, plugins, and local execution.** *Done (`0.1.0a18`):* outbound redirects stay
+   disabled; plugins and workflow hooks load only from allowlisted module prefixes, checked before
+   import. `network.egress_proxy` sends every client the Runtime builds (HTTP tools, MCP HTTP
+   transports and OAuth, OIDC discovery and JWKS, workflow notifications, `HTTPModelService` and
+   the HTTP model providers) through one proxy, CONNECT for `https://`, after the target passed the
+   allowlist and private-network checks; the proxied pool reaches only the proxy, credentials are
+   `env://` references kept out of URLs, logs and errors, and a different caller `proxy=` (or
+   `mounts=`) is refused. `network.remotes` adds per-host CA bundles, mTLS client certificates
+   (file or `env://`) and pinned server certificate fingerprints, through the proxy too.
+   `security.sandbox` (or a stdio server's `sandbox`) sets an environment allowlist, working
+   directory, POSIX resource limits and an operator wrapper (`bwrap`, `nsjail`, ...) for MCP stdio
+   servers and `core.subprocess`, applied by a standard-library launcher before `exec`; children
+   run in their own session and their process group is killed on timeout or shutdown;
+   `required: true` refuses to start a process without a wrapper. Defaults change nothing.
+   Plugin and hook packages can carry an Ed25519 signature over their identity and every file,
+   verified against `plugins.trusted_publishers` before import; `plugins.require_signed` refuses
+   unsigned or untrusted packages under trusted prefixes; `algen-agent-runtime plugin
+   keygen|sign|verify`. *Later:* the proxy, not the Runtime, makes the final connection, so DNS
+   pinning ends at the proxy (the proxy must enforce its own destination policy); the S3 client,
+   OTLP and Traccia exporters, vector-store SDKs and the TypeSafe decision client keep their own
+   proxy settings; plugins that build `HTTPModelService` must pass `outbound` themselves; SOCKS
+   proxies; a Runtime-managed kernel sandbox (seccomp, cgroups) instead of an operator wrapper,
+   and resource limits on Windows; a startup timeout for stdio servers; plugin signatures over
+   dependencies and bytecode, publisher key revocation, and protection against files replaced
+   between verification and import (install read-only).
 6. **Strengthen readiness and lifecycle.** *Done (`0.1.0a16`):* `/health/ready` reports every store,
    cache, model provider, retriever, MCP server, telemetry exporter and health-capable resource with
    required, status and a content-minimal reason, plus `degraded_dependencies`, and fails only when

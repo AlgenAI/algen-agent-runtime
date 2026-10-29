@@ -92,8 +92,38 @@ contracts are explicitly marked experimental during the `0.x` series.
   1.0, at least 1.0) scale the input tokens reserved with a `UsageMeter`, rounding up; `4/3`
   reserves as if a token were three characters. Context packing and the token budget are
   unchanged. (#71)
+- `network.egress_proxy`: send every outbound client the Runtime builds (`core.http`,
+  `http_tools`, `remote_tool`, MCP HTTP transports and OAuth, OIDC discovery and JWKS, workflow
+  notifications, `HTTPModelService` and the HTTP model providers) through one HTTP(S) proxy, with
+  `no_proxy` hosts reached directly. `https://` targets go through a CONNECT tunnel, so TLS stays
+  end to end. Each target passes the allowlist and private-network checks before the proxy is
+  contacted; the proxied pool connects only to the proxy; proxy credentials are `env://`
+  references and never appear in URLs, logs or errors. The proxy makes the final connection, so
+  DNS pinning protects only up to it: give the proxy its own egress policy.
+  See docs/operations.md#egress-proxy.
+- `network.remotes`: per-host (or `*.domain`) CA bundle, mTLS client certificate and key (file or
+  `env://`, never logged) and pinned server certificate SHA-256 fingerprints, for every outbound
+  client, direct or through the proxy. `create_safe_http_client(outbound=...)`,
+  `create_outbound_http_client` and `Container.outbound` expose the same settings to host code.
+- `security.sandbox` (and a per-server `sandbox` on stdio MCP servers): environment allowlist,
+  working directory, POSIX resource limits (CPU seconds, address space, open files, processes,
+  file size) and an operator wrapper command (`bwrap`, `nsjail`, `firejail`, `sandbox-exec`) for
+  MCP stdio servers and `core.subprocess`; `required: true` refuses to start a process without a
+  wrapper. `core.subprocess` gains a wall-clock limit (`subprocess_timeout_seconds`, default 60)
+  and kills the process group on timeout or cancellation. Defaults change nothing.
+  See docs/operations.md#subprocess-and-mcp-stdio-sandboxing.
+- Plugin signatures: `plugins.trusted_publishers` (Ed25519 public keys) and
+  `plugins.require_signed`. A package's `algen-plugin-signature.json` signs its publisher, name,
+  version, package name and the SHA-256 of every file, and is verified before the package is
+  imported, for `domain_plugins` and workflow hook packages. `algen-agent-runtime plugin keygen`,
+  `plugin sign` and `plugin verify`. Needs the `encryption` extra. See
+  docs/operations.md#plugin-signing.
 
 ### Changed
+- `core.http` in a built container now uses the SSRF-safe, DNS-pinned client (it used a plain
+  client after validating the URL), and every container client honours `network` settings.
+- `PluginManifest.signature` is documented as unused; signatures live in the package's signature
+  file, which can be verified before import.
 
 - `tool_policy.max_refusals_per_tool` counts refusals in a row: a call to the tool that runs
   successfully starts its count again. Set `tool_policy.refusal_count: per_run` to count every
@@ -136,6 +166,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
   Runtime metric was recorded and silently dropped, and the process-global provider was taken, so
   an application could not install its own afterwards.
+
+### Security
+
+- A `proxy=` passed to `create_safe_http_client` was used without any check of the proxy host
+  against the IP pinning, and could route requests around the allowlist. It is now refused
+  unless it is the configured `network.egress_proxy`, and `mounts=` is refused.
 
 ## [0.1.0a17] - 2026-10-28
 

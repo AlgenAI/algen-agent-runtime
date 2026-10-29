@@ -1167,6 +1167,192 @@ Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model 
 
 4. **Production Defense in Depth:**
    - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
+   - The Runtime can send all of its egress through such a proxy; see below.
+
+### Egress proxy
+
+`network.egress_proxy` sends every outbound client the Runtime builds through one HTTP(S)
+proxy: `core.http`, declared `http_tools`, `remote_tool`, MCP streamable HTTP and SSE
+transports, MCP OAuth discovery and token requests, OIDC discovery and JWKS fetches, workflow
+notifications, `HTTPModelService` (when built with the container's `outbound`), and the HTTP
+model providers (OpenAI, Azure OpenAI, Anthropic, Mistral, Gemini, xAI, Groq, DeepSeek,
+Hugging Face, Ollama and `openai_compatible`).
+
+```yaml
+network:
+  egress_proxy:
+    url: http://egress-proxy.internal:3128   # or env://EGRESS_PROXY_URL; no credentials here
+    username: env://EGRESS_PROXY_USER        # optional, sent as Proxy-Authorization (Basic)
+    password: env://EGRESS_PROXY_PASSWORD
+    no_proxy: [localhost, 127.0.0.0/8, .svc.cluster.local]   # reached directly
+    resolve_targets: true
+```
+
+- `https://` targets go through a CONNECT tunnel, so TLS stays end to end between the Runtime
+  and the target (and `network.remotes` identities and pins still apply); `http://` targets are
+  forwarded to the proxy.
+- The target is checked before the proxy is contacted, exactly as for a direct connection:
+  scheme, `security.allowed_http_hosts`, resolution, and private, link-local and metadata
+  addresses. A refused target never reaches the proxy. The proxy host itself may be private
+  because it is configured explicitly, and the proxied connection pool can reach nothing else.
+- **Limit.** The proxy makes the final connection and resolves the name again, so the
+  Runtime's DNS-rebinding pinning protects only up to the proxy. Give the proxy its own egress
+  policy: deny private, link-local and metadata ranges and allow only the destinations you
+  expect. If the Runtime cannot resolve external names at all, set `resolve_targets: false`;
+  it then checks only the allowlist and IP literals and the proxy must enforce the rest.
+- Credentials never appear in the proxy URL, logs, `repr` or errors. A `proxy=` passed to
+  `create_safe_http_client` must be the configured proxy (otherwise `PolicyDeniedError`), and
+  `mounts=` is refused.
+- Model provider clients use the proxy only when `network` is configured; otherwise they keep
+  `httpx`'s defaults, including `HTTPS_PROXY`. The S3 client, OTLP and Traccia exporters and
+  vector-store SDKs are not covered and keep their own proxy settings (normally the
+  `HTTPS_PROXY` environment variable).
+
+Hosts that embed the Runtime can build the same clients: `build_outbound_network(settings.network,
+environment)` from `algen_agent_runtime.security.outbound`, then
+`create_safe_http_client(..., outbound=...)` (checked) or `create_outbound_http_client(outbound)`
+(operator-configured endpoints). A built container exposes it as `container.outbound`.
+
+### Remote service identity: mTLS, private CAs and pinning
+
+`network.remotes` sets TLS per remote host (or `*.domain` for its subdomains) for every client
+above, direct or through the proxy:
+
+```yaml
+network:
+  remotes:
+    api.partner.example:
+      ca_bundle: /etc/algen/partner-ca.pem          # replaces the default trust store
+      client_certificate: env://PARTNER_CLIENT_CERT   # PEM text, or a file path
+      client_key: env://PARTNER_CLIENT_KEY            # PEM text, or a file path
+      client_key_password: env://PARTNER_KEY_PASSWORD # only for an encrypted key
+      pinned_sha256:
+        - "5F:3A:...:9C"                              # leaf certificate SHA-256, colons optional
+    "*.mcp.internal.example":
+      ca_bundle: env://INTERNAL_CA_PEM
+```
+
+- A `ca_bundle` replaces the default CAs for that host; certificate and host name verification
+  stay on. Pins are checked in addition and close the connection with `PolicyDeniedError` on
+  mismatch. Compute a pin with
+  `openssl x509 -in server.pem -outform der | openssl dgst -sha256`.
+- Keys and certificates are file paths or `env://` references; literal PEM in YAML is refused.
+  A key from `env://` is written to a private (mode 600) temporary file only while `ssl` loads
+  it and removed straight away. Load errors name the remote, never the key material.
+- Use the host of a model provider's `base_url`, an MCP server's `url`, an HTTP tool's URL or
+  an OIDC issuer as the key.
+
+## Subprocess and MCP stdio sandboxing
+
+MCP stdio servers and `core.subprocess` run as child processes of the Runtime.
+`security.sandbox` (or a stdio server's own `sandbox`, which replaces it for that server)
+controls them:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `env_allowlist` | unset | Names of the Runtime's environment variables a child inherits. Unset: stdio servers keep `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TEMP`, `TMP`, `SYSTEMROOT` (what they always had) and `core.subprocess` inherits nothing. A server's explicit `env` is always passed. |
+| `working_directory` | unset | Working directory for children that set none (`cwd`). |
+| `limits` | none | POSIX `setrlimit` values: `cpu_seconds`, `memory_bytes` (address space; Linux only, macOS refuses it), `open_files`, `processes` (counts all of the user's processes) and `file_size_bytes`. A value above the Runtime's hard limit is capped at it. |
+| `wrapper` | none | A command prefix that isolates the child's filesystem and network: `bwrap`, `nsjail`, `firejail`, `sandbox-exec`. The command and its arguments follow it. |
+| `required` | `false` | Refuse to start any stdio server or `core.subprocess` call without a `wrapper` (checked before the MCP package is imported). |
+| `subprocess_timeout_seconds` | 60 | `core.subprocess` wall-clock limit. |
+
+Children always start in a new session. On timeout or cancellation `core.subprocess` kills
+the whole process group (with any background processes the command started); on shutdown the
+MCP SDK terminates the stdio server's process group (SIGTERM, then SIGKILL after two seconds).
+With limits, an `env_allowlist` or a wrapper set, the child is started through a small
+standard-library launcher (`python -I -S .../_sandbox_exec.py`) that applies the limits,
+removes every variable not on the list and then `exec`s the wrapper or command, so the limits
+hold for everything the child starts. The defaults change nothing for existing configurations.
+
+Limits and a scrubbed environment are not isolation: without a wrapper a child reads every
+file and reaches every host the Runtime's user can. A Linux example with bubblewrap, which
+gives an MCP server a read-only system, a private `/tmp`, no network and no view of the
+Runtime's files:
+
+```yaml
+security:
+  sandbox:
+    required: true
+    env_allowlist: [PATH, LANG]
+    limits:
+      cpu_seconds: 600
+      memory_bytes: 2147483648     # 2 GiB
+      open_files: 1024
+      file_size_bytes: 104857600   # 100 MiB
+    wrapper: [/usr/bin/bwrap,
+              --ro-bind, /usr, /usr,
+              --symlink, usr/lib, /lib,
+              --symlink, usr/lib64, /lib64,
+              --symlink, usr/bin, /bin,
+              --ro-bind, /opt/mcp-servers, /opt/mcp-servers,
+              --proc, /proc, --dev, /dev, --tmpfs, /tmp,
+              --unshare-all, --die-with-parent, --new-session,
+              --]
+mcp_servers:
+  - name: files
+    transport: stdio
+    command: /opt/mcp-servers/files/bin/server
+    cwd: /tmp
+  - name: web_search            # needs the network: its own policy replaces the default
+    transport: stdio
+    command: /opt/mcp-servers/search/bin/server
+    sandbox:
+      env_allowlist: [PATH]
+      limits: {cpu_seconds: 600, open_files: 1024}
+      wrapper: [/usr/bin/bwrap, --ro-bind, /usr, /usr, --symlink, usr/lib, /lib,
+                --symlink, usr/lib64, /lib64, --symlink, usr/bin, /bin,
+                --ro-bind, /opt/mcp-servers, /opt/mcp-servers,
+                --ro-bind, /etc/resolv.conf, /etc/resolv.conf,
+                --ro-bind, /etc/ssl, /etc/ssl,
+                --proc, /proc, --dev, /dev, --tmpfs, /tmp,
+                --unshare-all, --share-net, --die-with-parent, --]
+```
+
+bubblewrap needs unprivileged user namespaces (in a container, allow them in its seccomp or
+security profile). Equivalent prefixes: `[nsjail, --config, /etc/algen/mcp.cfg, --]`,
+`[firejail, --quiet, --net=none, --private, --]` and, on macOS,
+`[sandbox-exec, -f, /etc/algen/mcp.sb]`. Avoid `limits.processes` with a wrapper that
+creates namespaces unless you have measured what it needs.
+
+## Plugin signing
+
+Plugins and workflow hook packages can be signed with Ed25519, and the Runtime verifies them
+before importing any of their code. Install the `encryption` extra (it provides
+`cryptography`).
+
+```bash
+algen-agent-runtime plugin keygen signing-key.pem          # prints the public key
+algen-agent-runtime plugin sign src/acme_plugins --publisher acme \
+    --key env://ACME_PLUGIN_SIGNING_KEY --name crm --version 1.2.0
+algen-agent-runtime plugin verify acme_plugins.crm:CrmPlugin --config agent.yaml
+```
+
+```yaml
+security:
+  trusted_plugin_prefixes: [acme_plugins]
+plugins:
+  trusted_publishers:
+    acme: ["MCowBQYDK2VwAyEA..."]   # base64 raw public keys; several allow rotation
+  require_signed: true
+```
+
+`plugin sign` writes `algen-plugin-signature.json` into the package directory. It signs the
+publisher, the bound name and version, the package name and the SHA-256 of every file in the
+package (not `__pycache__` or `.pyc`), so any changed, added or removed module, data file or
+extension module fails verification. Sign as the last build step, after anything that writes
+into the package, and keep the private key in CI secrets.
+
+At load time the package is located with the import finders, without executing it, and
+verified. With `require_signed: true` an unsigned package or one from a publisher not in
+`trusted_publishers` is refused even when its prefix is trusted, for `domain_plugins` and for
+workflow `hook_provider` modules alike; after import the plugin's manifest must match the
+signed publisher, name and version. Without `require_signed`, signatures from trusted
+publishers are still verified and a bad one refuses the plugin; unsigned plugins load as
+before. The signature does not cover the plugin's dependencies or bytecode in `__pycache__`,
+and does not stop a file being replaced after verification, so install plugin packages
+read-only (for example in the container image). `PluginManifest.signature` is not used.
+
 
 ## MCP OAuth connections
 

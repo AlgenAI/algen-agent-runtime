@@ -54,7 +54,7 @@ A breaking change after `0.2.0b1` restarts the stability window.
   - [ ] 2. Policy distribution and adversarial coverage.
   - [x] 3. Side-effect reconciliation, operator resolution and compensation (`0.1.0a17`).
   - [x] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit) (`0.1.0a17`).
-  - [ ] 5. Network, plugin and local-execution hardening.
+  - [x] 5. Network, plugin and local-execution hardening (`0.1.0a18`).
   - [x] 6. Readiness and lifecycle (`0.1.0a16`).
   - [ ] 7. Resource bounds and retention.
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,

@@ -10,20 +10,21 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 |---|---|
 | Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks |
 | Forged, stolen or replayed caller tokens | verified JWT/OIDC only outside loopback development, JWKS from allowlisted issuer hosts, asymmetric algorithms bound to key type, bounded clock skew, audience/issuer checks, fail-closed tenant mapping, short-lived tokens plus optional tenant-scoped revocation, content-minimal authentication audits |
+| Spoofed remote service | per-host CA bundles, pinned server certificate fingerprints and client certificates (mTLS) in `network.remotes`, applied to every outbound client including through the egress proxy |
 | Spoofed service identity | trusted-proxy identity off by default, honoured only from configured proxy CIDRs for exactly mapped identities, spoof attempts refused and audited, proxy-header peer rewriting disabled |
 | Prompt injection | pre/post policy points, tool/model allowlists, model output never executes directly |
 | Secret/PII leakage | secret references, redaction middleware, content telemetry off, memory policy |
-| SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
-| Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
+| SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects, optional egress proxy that receives only checked targets |
+| Command execution | subprocess disabled by default, explicit permission and approval, empty environment, `security.sandbox` resource limits, optional isolation wrapper (`required: true` refuses to run without one), wall-clock limit and process-group kill |
 | Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
-| Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`, `PluginLoader` with `trusted_plugin_prefixes`), prefix-confusion defense, callable shape & API version checks, secret-free audit metadata |
+| Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`, `PluginLoader` with `trusted_plugin_prefixes`), prefix-confusion defense, Ed25519 package signatures from `plugins.trusted_publishers` verified before import (`plugins.require_signed`), callable shape & API version checks, secret-free audit metadata |
 | Resource exhaustion | payload/result/artifact limits, semaphores, API admission rate limits & in-flight run concurrency quotas, time/token/cost/step budgets |
 | Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
 | Insecure code execution in tools | AST allowlist without eval(), operand/depth limits, subprocess disabled by default |
 | Provider compromise | isolated adapters, raw response opt-in, egress policy, fallback/circuit breaker |
 | Telemetry data exfiltration | content capture off, Traccia patching off by default, PII redaction, approved OTLP endpoints, sampling and retention policy |
 | Untrusted MCP server / tool | operator tool allowlists, strict header/secret reference validation, DNS-pinned safe egress for remote transports (streamable_http/sse), untrusted annotations by default, operator policy precedence |
-| MCP stdio subprocess execution | trusted operator configuration assumption (SR-12), minimal system environment filtering, process isolation deferred |
+| MCP stdio subprocess execution | trusted operator configuration assumption (SR-12), environment allowlist, `security.sandbox` (or per-server `sandbox`) resource limits and isolation wrapper, new session with process-group kill on shutdown |
 | Audit tampering | immutable audit contracts, append-only external sink, separate diagnostic logs |
 
 ### Outbound Network Security and SSRF / DNS Rebinding Mitigation
@@ -55,6 +56,17 @@ All outbound HTTP calls initiated by runtime components (`core.http`, `remote_to
 6. **Controlled Override & Defense in Depth:**
    - `allow_private_networks=True` can be passed to selectively permit private/loopback networks for local development harnesses or internal VPC deployments.
    - In production environments, application-level IP binding should be paired with a deployment-level egress firewall or forward proxy as defense in depth.
+7. **Egress proxy (`network.egress_proxy`):**
+   - Every client the Runtime builds (HTTP tools, `core.http`, `remote_tool`, MCP HTTP transports and OAuth, OIDC discovery and JWKS, workflow notifications, `HTTPModelService`, and the model providers) sends through the configured proxy, except hosts listed in `no_proxy`. `https://` targets use a CONNECT tunnel, so TLS (and any mTLS or pinning) stays end to end; `http://` targets are forwarded.
+   - The target is checked first, exactly as for a direct connection (allowlist, scheme, resolution, private and metadata addresses), and a refused target never reaches the proxy. The proxied connection pool can connect only to the configured proxy host and port; the proxy may be private, because it is configured explicitly.
+   - **Limit:** the proxy, not the Runtime, makes the final connection and resolves the name again, so DNS-rebinding pinning protects only up to the proxy. Configure the proxy to enforce its own egress policy (deny private, link-local and metadata ranges; allow only the destinations you expect). With `resolve_targets: false` the Runtime checks only the allowlist and IP literals and relies on the proxy entirely.
+   - Proxy credentials are `env://` references sent as `Proxy-Authorization`; they never appear in the proxy URL, `repr`, logs or error messages. A `proxy=` passed to `create_safe_http_client` must be the configured proxy and `mounts=` is refused, so callers cannot route around the checks.
+   - Not covered: the S3 client (boto3), OTLP and Traccia exporters, vector-store SDKs and other third-party clients keep their own proxy settings (usually `HTTPS_PROXY`).
+8. **Remote service identity (`network.remotes`):** per host (or `*.domain`), a CA bundle that replaces the default trust store, a client certificate and key for mTLS, and SHA-256 fingerprints of accepted server leaf certificates (checked in addition to normal verification; a mismatch closes the connection with `PolicyDeniedError`). Keys come from files or `env://` references; an `env://` key is written to a private temporary file only while `ssl` loads it, and load errors never include key material.
+
+### Plugin signatures
+
+`PluginLoader` and the workflow service verify plugin and hook packages before importing them when `plugins.trusted_publishers` or `plugins.require_signed` is set. A signature (`algen-plugin-signature.json` in the package root) is Ed25519 over the publisher, the plugin name and version, the package name and the SHA-256 of every file in the package except bytecode caches, so a changed, added or removed file breaks it. The package is located with import finders without executing it. With `require_signed`, unsigned packages and packages from untrusted publishers are refused even when their prefix is trusted; after import the manifest must match the signed publisher, name and version. Limits: the signature does not cover dependencies or `__pycache__` bytecode (Python may load a cached `.pyc` whose recorded source size and time match), and a file changed after verification but before import is not detected, so install signed packages read-only. `PluginManifest.signature` is not used.
 
 ### Hook Provider Loading & Dynamic Import Controls
 
@@ -85,7 +97,7 @@ To prevent memory exhaustion and denial of service through unconstrained request
 External MCP servers integrate into Runtime under explicit security boundaries:
 
 1. **Client-Only Architecture**: Runtime functions exclusively as an MCP client consuming tools from external servers; it does not host an MCP server.
-2. **Stdio Transport (Trusted Local Execution)**: Stdio servers execute operator-configured binaries as unsandboxed local host processes with no kernel sandbox, resource cgroups, or signature verification. Ambient process environment variables are filtered to a minimal safe set (`PATH`, `SYSTEMROOT`, `TEMP`, `USER`, `HOME`) to reduce accidental secret leakage, but stdio commands must only execute trusted operator-declared executables.
+2. **Stdio Transport (Trusted Local Execution)**: Stdio servers execute operator-configured binaries as local host processes in their own session; on shutdown the whole process group is terminated. By default they inherit only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TEMP`, `TMP` and `SYSTEMROOT` plus the server's explicit `env`, with no other isolation. `security.sandbox` (or a server's own `sandbox`) narrows the environment to an explicit allowlist, sets POSIX resource limits (CPU seconds, address space, open files, processes, file size) and prefixes an isolation wrapper such as `bwrap`, `nsjail`, `firejail` or `sandbox-exec` for filesystem and network isolation; `security.sandbox.required: true` refuses to start a server without a wrapper. Without a wrapper a server can still read whatever the Runtime's user can, so stdio commands must remain trusted operator-declared executables.
 3. **Remote Transports & Outbound Egress**: Streamable HTTP and SSE transports use `_make_http_client_factory` backed by `SafeAsyncTransport` and `SafeNetworkBackend`, enforcing DNS-pinned single-resolution IP validation, host allowlists (`security.allowed_http_hosts`), and private IP blocking (`security.allow_private_networks`).
 4. **Secret Hygiene**: Literal sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`, etc.) are rejected at configuration validation time. Authentication must use `auth_token_ref` or `secret_headers` with `env://` references.
 5. **Server Annotation Trust Model**: Server-provided annotations (`ToolAnnotations`) are treated as untrusted hints by default (`trust_tool_annotations: false`). Runtime defaults tools to `SideEffect.EXTERNAL` and `Idempotency.NON_IDEMPOTENT` unless the operator explicitly trusts annotations or provides authoritative `tool_policies` overrides.
@@ -180,7 +192,13 @@ that outlives its request, one user's response shown to another, and header inje
 - Set explicit egress and tool host allowlists.
 - Verify all declared `mcp_servers` stdio commands and args are strictly trusted operator-authored code; review remote MCP server URLs against egress host allowlists.
 - Enforce `WorkflowHookLoader` with explicit module allowlists for dynamic workflow manifests.
-- Disable dynamic plugins unless packages are pinned, signed, scanned, and trusted.
+- Disable dynamic plugins unless packages are pinned, signed, scanned, and trusted; set
+  `plugins.trusted_publishers` and `plugins.require_signed: true`, and install plugin packages
+  read-only so nothing can change between verification and import.
+- Route egress through `network.egress_proxy` with a proxy that enforces its own destination
+  policy; use `network.remotes` for mTLS, private CAs and certificate pinning.
+- Run MCP stdio servers and `core.subprocess` under `security.sandbox` with a wrapper and
+  `required: true`.
 - Require approval for write, external, and destructive tools.
 - Configure encryption at rest/in transit and tenant-aware database row security.
 - Disable raw provider metadata and content telemetry unless explicitly reviewed.
