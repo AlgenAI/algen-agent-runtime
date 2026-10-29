@@ -91,6 +91,30 @@ class ChangeRequests:
   Runtime defines only this protocol; the flow (a change request, a ticket, an email) is the
   deployment's. Such a tool has `audit_metadata["approval"] == "deployment"`.
 
+## Caching results
+
+With `cache.policies.tool_results` enabled, the result of an idempotent `none` or `read` call is
+cached, keyed on the tool's name, version and arguments within the policy's `scope` (`tenant` by
+default; see [Scoped caching](operations.md#scoped-caching)). A tool whose result also depends on
+the call's `ToolContext`, beyond that scope, must say so with `cache_context`, or one user can be
+served another's cached result:
+
+```python
+@orders.tool(read(), cache_context={"user_id"})
+async def my_open_orders(context: ToolContext) -> list[Order]:
+    """List the signed-in user's open orders."""
+    return await db.fetch("... WHERE owner = $1", context.user_id)
+```
+
+- `cache_context` takes any of `tenant_id`, `user_id`, `run_id` and `step_id`
+  (`ToolDefinition.cache_context`, `build_tool(..., cache_context=...)`). The named values join
+  the key material, which is digested (and HMACed with `key_secret`), so they never appear in a
+  key or in telemetry.
+- Declare every context value the result reads: a query bound to the run declares `run_id`, one
+  bound to the step `step_id`. A wider scope is not a substitute, since an operator can change it.
+- A tool declaring nothing keeps exactly the key it had before, so existing entries stay valid.
+- A call that carries the caller's credentials is never cached, whatever it declares (see below).
+
 ## Credentials of the caller
 
 A tool that acts as the signed-in user, for example by calling the host's own API, reads the

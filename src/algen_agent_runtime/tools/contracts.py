@@ -26,6 +26,10 @@ class Idempotency(StrEnum):
     NON_IDEMPOTENT = "non_idempotent"
 
 
+# The ToolContext values a tool's result can depend on, which it declares in ``cache_context``.
+CacheContextValue = Literal["tenant_id", "user_id", "run_id", "step_id"]
+
+
 class ToolDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]+$")
@@ -51,6 +55,13 @@ class ToolDefinition(BaseModel):
         default=False,
         description="Reads state that changes on its own (a job's status, the time), so the "
         "repeat guard never holds an identical call back.",
+    )
+    cache_context: frozenset[CacheContextValue] = Field(
+        default=frozenset(),
+        description="The ToolContext values the result depends on (a query bound to the "
+        "caller's user_id, say). The tool-result cache keys a result on them too, whatever "
+        "the cache policy's scope, so one caller is never served another's result. Empty keeps "
+        "the key on the tool, version and arguments within the policy's scope.",
     )
 
 

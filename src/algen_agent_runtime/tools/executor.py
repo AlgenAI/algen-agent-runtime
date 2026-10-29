@@ -161,11 +161,17 @@ class ToolExecutor:
             run_id=context.run_id,
             authorization_fingerprint=",".join(sorted(context.permissions)),
         )
-        cache_material = {
+        cache_material: dict[str, Any] = {
             "tool": definition.name,
             "version": definition.version,
             "arguments": arguments,
         }
+        if definition.cache_context:
+            # The context values the result depends on join the digested key material; a tool
+            # declaring none keeps exactly the key it always had.
+            cache_material["context"] = {
+                field: getattr(context, field) for field in sorted(definition.cache_context)
+            }
         if cacheable:
             assert cache is not None
             cached = await cache.get_json(

@@ -780,8 +780,11 @@ as provider capabilities. The authorization fingerprint is included when callers
 Exact model-response caching is intentionally disabled by default because it changes freshness and
 sampling behavior. Enable it only for evaluated workloads; streaming and raw-provider responses bypass
 it. Tool caching is restricted to idempotent tools classified `none` or `read`. Destructive, write, and
-externally visible tools always execute normally. Cached provider usage is reported as cached tokens
-with zero incremental configured-provider cost.
+externally visible tools always execute normally. A tool whose result depends on the caller's user,
+run or step beyond the policy's scope declares it in `cache_context`, which joins its key (see
+[Caching results](tool-authoring.md#caching-results)); a call that carries caller credentials is
+never cached. Cached provider usage is reported as cached tokens with zero incremental
+configured-provider cost.
 
 Invalidate related entries with `await container.cache.invalidate_tags("dataset:v2")` after a governed
 data or configuration release. Prefer a version token in cache material when a deterministic dataset

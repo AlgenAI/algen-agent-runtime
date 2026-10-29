@@ -162,7 +162,9 @@ that outlives its request, one user's response shown to another, and header inje
   falls back to an unauthenticated request or to a deployment secret. Such a call, and one refused
   for an unsafe path value, is recorded `failed` rather than `indeterminate`: nothing was sent.
 - **Cross-user results.** A call that carries caller credentials bypasses the tool-result cache,
-  whose scope (tenant by default) is shared by several users.
+  whose scope (tenant by default) is shared by several users. Code tools whose result depends on the
+  caller's user, run or step without credentials declare it in `ToolDefinition.cache_context`,
+  which adds those values (digested) to the cache key.
 - **Response content.** The result keeps only a fixed set of response headers, so `Set-Cookie` and
   authentication challenges do not reach the model. The response body is the API's answer for that
   user and is treated like any tool result: untrusted data for the model.
