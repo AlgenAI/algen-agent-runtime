@@ -137,6 +137,16 @@ async def latest(
     raise AssertionError(f"message never reached {statuses}: {messages[-1].status}")
 
 
+async def event_types(service: ConversationService, conversation_id: str, last: str) -> list[str]:
+    """The conversation's event types, once ``last`` is the latest one."""
+    for _ in range(600):
+        history = [event.type for event in await service.events.history(conversation_id)]
+        if history and history[-1] == last:
+            return history
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the last event never became {last}: {history[-3:]}")
+
+
 async def test_pending_turn_survives_restart_on_postgres_and_resumes_once(
     database: PostgresDatabase,
 ) -> None:
@@ -173,7 +183,8 @@ async def test_pending_turn_survives_restart_on_postgres_and_resumes_once(
     assert done.status == MessageStatus.COMPLETED
     assert done.text_content == "saved and done"
     assert calls == [{"value": "draft"}]
-    history = [event.type for event in await restarted.events.history(conversation.id)]
+    # The message is stored as completed before its completed event is written.
+    history = await event_types(restarted, conversation.id, "assistant.message.completed")
     assert history.count("assistant.message.awaiting_approval") == 1
     assert history.count("assistant.message.resumed") == 1
     assert "assistant.message.delta" in history
@@ -187,3 +198,6 @@ async def test_pending_turn_survives_restart_on_postgres_and_resumes_once(
             ConversationApprovalDecision(decision="approved"),
         )
     assert calls == [{"value": "draft"}]
+    # Nothing may still write once the fixture closes the pool.
+    await restarted.shutdown(1)
+    await restarted_runtime.shutdown(1)
