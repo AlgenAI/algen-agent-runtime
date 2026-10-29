@@ -21,8 +21,11 @@ from algen_agent_runtime.config.authentication import (
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.persistence.naming import check_schema_name
+from algen_agent_runtime.plugins.signing import PluginSettings
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
+from algen_agent_runtime.security.outbound import NetworkSettings
+from algen_agent_runtime.security.sandbox import SandboxSettings
 from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
@@ -308,6 +311,11 @@ class SecuritySettings(StrictSettings):
     allow_private_networks: bool = False
     allow_subprocess_tools: bool = False
     trusted_plugin_prefixes: tuple[str, ...] = ()
+    sandbox: SandboxSettings = Field(
+        default_factory=SandboxSettings,
+        description="Environment, working directory, resource limits and wrapper for MCP stdio "
+        "servers and core.subprocess.",
+    )
 
 
 class RouteLimitSettings(StrictSettings):
@@ -615,6 +623,14 @@ class AppSettings(StrictSettings):
     retrieval: dict[str, RetrievalSettings] = Field(default_factory=dict)
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    network: NetworkSettings = Field(
+        default_factory=NetworkSettings,
+        description="Egress proxy and per-host TLS identities for every outbound client.",
+    )
+    plugins: PluginSettings = Field(
+        default_factory=PluginSettings,
+        description="Plugin signature verification: trusted publishers and require_signed.",
+    )
     api: ApiSettings = Field(default_factory=ApiSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)

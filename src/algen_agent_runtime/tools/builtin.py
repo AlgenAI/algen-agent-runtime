@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx
 
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
-from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_safe_http_client,
+    validate_outbound_url,
+)
+from algen_agent_runtime.security.sandbox import SandboxSettings, prepare_command, run_sandboxed
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -21,11 +25,13 @@ def http_tool(
     allowed_hosts: tuple[str, ...],
     allow_private_networks: bool = False,
     client: httpx.AsyncClient | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> Tool:
     http_client = client or create_safe_http_client(
         allowed_hosts=allowed_hosts,
         allow_private_networks=allow_private_networks,
         follow_redirects=False,
+        outbound=outbound,
     )
 
     async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -72,23 +78,27 @@ def http_tool(
     )
 
 
-def subprocess_tool(enabled: bool = False) -> Tool:
+def subprocess_tool(enabled: bool = False, sandbox: SandboxSettings | None = None) -> Tool:
+    """Run one executable under ``sandbox`` (``security.sandbox``): no inherited environment
+    unless its ``env_allowlist`` says otherwise, its limits and wrapper, a wall-clock limit,
+    and the process group killed on timeout or cancellation."""
+    policy = sandbox or SandboxSettings()
+
     async def execute(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if not enabled:
             raise PolicyDeniedError("subprocess tools are disabled")
-        executable = arguments["executable"]
-        argv = arguments.get("arguments", [])
-        process = await asyncio.create_subprocess_exec(
-            executable,
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={},
+        prepared = prepare_command(
+            arguments["executable"],
+            arguments.get("arguments", []),
+            policy=policy,
+            required=policy.required,
+            label="core.subprocess",
         )
-        stdout, stderr = await process.communicate()
+        exit_code, stdout, stderr = await run_sandboxed(
+            prepared, timeout_seconds=policy.subprocess_timeout_seconds
+        )
         return {
-            "exit_code": process.returncode,
+            "exit_code": exit_code,
             "stdout": stdout.decode(errors="replace")[:100_000],
             "stderr": stderr.decode(errors="replace")[:100_000],
         }

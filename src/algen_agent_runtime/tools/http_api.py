@@ -22,7 +22,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime.exceptions.errors import ToolExecutionError, ToolNotAttemptedError
-from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_safe_http_client,
+    validate_outbound_url,
+)
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -202,6 +206,7 @@ def http_api_tool(
     allow_private_networks: bool = False,
     secrets: SecretResolver,
     client: httpx.AsyncClient | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> Tool:
     """The agent tool for one declared HTTP operation."""
     http_client = client or create_safe_http_client(
@@ -209,6 +214,7 @@ def http_api_tool(
         allow_private_networks=allow_private_networks,
         timeout=config.timeout_seconds,
         follow_redirects=False,
+        outbound=outbound,
     )
 
     caller_auth = config.auth.type == "caller"

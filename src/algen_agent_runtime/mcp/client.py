@@ -29,7 +29,12 @@ from algen_agent_runtime.mcp.contracts import (
     oauth_config,
 )
 from algen_agent_runtime.mcp.tokens import MCPTokenKey
-from algen_agent_runtime.security.network import DNSResolver, create_safe_http_client
+from algen_agent_runtime.security.network import (
+    DNSResolver,
+    OutboundNetwork,
+    create_safe_http_client,
+)
+from algen_agent_runtime.security.sandbox import MCP_DEFAULT_ENV, SandboxSettings, prepare_command
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -38,8 +43,8 @@ from algen_agent_runtime.tools.contracts import (
     ToolDefinition,
 )
 
-# Standard minimal environment keys for process execution
-SAFE_ENV_PASSTHROUGH = {"PATH", "SYSTEMROOT", "TEMP", "TMP", "USER", "HOME"}
+# The Runtime's minimal environment for stdio servers; security.sandbox.env_allowlist replaces it.
+SAFE_ENV_PASSTHROUGH = set(MCP_DEFAULT_ENV)
 
 
 def _resolve_secret(reference: str, environment: Mapping[str, str] | None = None) -> str:
@@ -55,6 +60,7 @@ def _resolve_secret(reference: str, environment: Mapping[str, str] | None = None
 def _make_http_client_factory(
     security: SecuritySettings | None = None,
     dns_resolver: DNSResolver | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> Any:
     allowed_hosts = tuple(security.allowed_http_hosts) if security else ()
     allow_private = security.allow_private_networks if security else False
@@ -72,6 +78,7 @@ def _make_http_client_factory(
             timeout=timeout if timeout is not None else 30.0,
             auth=auth,
             follow_redirects=False,
+            outbound=outbound,
         )
 
     return factory
@@ -164,6 +171,7 @@ class MCPClientManager:
         http_client_factory: Any | None = None,
         oauth: MCPOAuthManager | None = None,
         max_oauth_connections: int = 256,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         self._configs: dict[str, MCPServerConfigBase] = {}
         for s in servers:
@@ -173,6 +181,7 @@ class MCPClientManager:
         self._environment = environment or {}
         self._security = security
         self._dns_resolver = dns_resolver
+        self._outbound = outbound
         self._connections: dict[str, MCPConnection] = {}
         self._discovered_tools: dict[str, Tool] = {}
         self._session_factory = session_factory
@@ -227,6 +236,19 @@ class MCPClientManager:
                 # Pluggable session factory for testing/fakes
                 session = await self._session_factory(config, stack)
             elif config.transport == MCPTransportType.STDIO:
+                assert isinstance(config, MCPStdioServerConfig)
+                # The sandbox policy is checked before the optional package is imported.
+                sandbox = self._security.sandbox if self._security else SandboxSettings()
+                prepared = prepare_command(
+                    config.command,
+                    config.args,
+                    policy=config.sandbox or sandbox,
+                    required=sandbox.required,
+                    explicit_env=config.env,
+                    cwd=config.cwd,
+                    default_env=MCP_DEFAULT_ENV,
+                    label=f"MCP server {config.name!r}",
+                )
                 try:
                     from mcp import ClientSession, StdioServerParameters
                     from mcp.client.stdio import stdio_client
@@ -235,18 +257,11 @@ class MCPClientManager:
                         "mcp package is not installed. Install with 'pip install algen-agent-runtime[mcp]'"
                     ) from exc
 
-                assert isinstance(config, MCPStdioServerConfig)
-                # Environment filtering: only pass allowlisted SAFE_ENV_PASSTHROUGH + explicit config.env
-                sanitized_env = {
-                    k: v for k, v in os.environ.items() if k.upper() in SAFE_ENV_PASSTHROUGH
-                }
-                sanitized_env.update(config.env)
-
                 params = StdioServerParameters(
-                    command=config.command,
-                    args=config.args,
-                    env=sanitized_env,
-                    cwd=config.cwd,
+                    command=prepared.command,
+                    args=prepared.args,
+                    env=prepared.env,
+                    cwd=prepared.cwd,
                 )
                 read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -289,7 +304,7 @@ class MCPClientManager:
             ) from exc
 
         http_factory = self._http_client_factory or _make_http_client_factory(
-            self._security, self._dns_resolver
+            self._security, self._dns_resolver, self._outbound
         )
         if isinstance(config, MCPStreamableHttpServerConfig):
             read_stream, write_stream, _ = await stack.enter_async_context(
