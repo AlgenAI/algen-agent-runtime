@@ -14,7 +14,8 @@ contain secret-like text, run independent tool calls together, and remember what
 | `guardrail_policy.tool_result_injection` | `off` | `flag`: a tool result that tries to give the model instructions is wrapped as untrusted data with a warning before the model reads it. `block`: the call fails (combine with `on_error="return_to_model"` to tell the model). |
 | `tool_policy.parallel_calls` | `false` | The tool calls one model reply asks for run concurrently, up to `max_parallel_calls` (default 4), and are recorded in the order asked. A reply that includes a call needing approval, or a memory, skill or working-state tool, runs one call at a time. |
 | `memory_policy.store_tool_payloads` | `false` | Session memory keeps the turn's tool calls and results as well as the question and answer, each result capped at `tool_payload_max_chars` (default 4,000). History read back always starts at a whole turn, and a tool call is never kept without its result. |
-| `tool_policy.max_refusals_per_tool` | `None` | From this many refused calls to one tool in a run, the refusal tells the model to stop calling it and answer. See [Tool-call guards](#tool-call-guards). |
+| `tool_policy.max_refusals_per_tool` | `None` | From this many refused calls to one tool in a row, the refusal tells the model to stop calling it and answer. See [Tool-call guards](#tool-call-guards). |
+| `tool_policy.refusal_count` | `consecutive` | `per_run`: count every refusal of a tool in the run toward `max_refusals_per_tool`, not only those since its last successful call. |
 | `tool_policy.repeat_guard` | `false` | A read repeated with nothing changed since returns a note instead of running. |
 | `tool_policy.max_calls_per_tool` | `{}` | The most times each named tool runs in a run; past it, a call returns a note. |
 | `wrap_up_policy.enabled` | `false` | Near the end of the run's steps or tokens, tool results carry a notice to stop calling tools and answer. |
@@ -123,6 +124,13 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))
 `max_output_tokens` is the request's output cap. `settle` receives the provider's reported
 usage, with `estimated_cost_usd` filled in when the provider has configured rates.
 
+Code, JSON and non-English text often run under four characters a token, so a reservation can
+fall short of the settled charge. `build_container(settings, usage_meter=..., usage_meter_margin=4
+/ 3)` (or `ModelRouter(usage_meter=..., reserve_input_margin=4 / 3)`) scales the reserved input
+estimate, here as if a token were three characters, rounding up. The default is 1.0 and a margin
+below 1.0 is rejected. It changes only what the meter reserves: context packing, compaction and
+the run's token budget keep the unscaled estimate, and `settle` still gets the reported usage.
+
 `call` is a frozen `MeterCall` that says whose call it is and which model is being tried. One
 router serves every tenant and run, so a multi-tenant meter charges from it rather than from
 host context variables, which do not survive a pause or a restart. `settle` and `release` get
@@ -176,7 +184,7 @@ agents:
     enabled_tools: [hr.find_people, hr.update_record, jobs.status]
     tool_policy:
       on_error: return_to_model
-      max_refusals_per_tool: 3      # from the third refusal: stop and tell the user
+      max_refusals_per_tool: 3      # from the third refusal in a row: stop and tell the user
       repeat_guard: true            # an identical read with nothing changed returns a note
       max_calls_per_tool:
         hr.find_people: 5           # a search the model could keep rephrasing
@@ -200,22 +208,38 @@ other than `none` or `read`), whether or not the call needs approval:
 async def config_precheck(
     definition: ToolDefinition, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall]
 ) -> str | None:
-    """Why the change would be refused, or None. ``earlier`` holds the calls planned before
-    this one in the same model reply, as (definition, arguments): judge the call after them."""
+    """Why the change would be refused, or None. ``earlier`` holds the calls of the same model
+    reply that will run before this one and have not run yet, as (definition, arguments):
+    judge the call as if they had run."""
     ...
 
 Tool(definition, handler, precheck=config_precheck)
 # or: @tool(write(approval=True), precheck=config_precheck)
 ```
 
-`earlier` is filled only when the calls of a reply run together (`parallel_calls`); otherwise the
-earlier calls of the reply have already run, one at a time, and the precheck sees their effect.
+The contract for `earlier`: it holds the calls in the same reply that will run before this one
+and have not run yet. So it is filled only when the calls of a reply run together
+(`parallel_calls`), in the order the model sent them, leaving out calls already refused or held
+back. When a reply's calls run one at a time, each is checked just before it runs, after the
+earlier ones have run, so `earlier` is `()` and the precheck sees their effect in the system it
+checks. Write a precheck that gives the same answer either way: look at the system's current
+state, then apply `earlier` on top. A call refused because of an earlier call in its reply is
+refused after that earlier call has run, not before; the Runtime does not plan a whole reply
+before running any of it.
 A refused call is answered with `{"ok": false, "error": <problem>, "note": <note>}`: nothing ran
 and nobody was asked. A call already approved is not prechecked again.
 
-**Refusal limits.** Refusals (schema and precheck) are counted per tool per run. The note says
+**Refusal limits.** Refusals (schema and precheck) are counted per tool. The note says
 "Fix it and try again" until `max_refusals_per_tool`; from then on it says the tool has refused
 the model that many times, not to call it again, and to tell the user what was refused and why.
+With `refusal_count: consecutive` (the default) a call to the tool that runs successfully starts
+its count again: the limit is for a model that cannot get a call right, not one that fixes its
+mistakes along the way, so refused, succeeded, refused, refused is two refusals, not three. A
+call that fails, is held back by another guard or reports a failure it returned (see
+[Reporting a failure the model should fix](tool-authoring.md#reporting-a-failure-the-model-should-fix))
+does not reset the count, and neither does a successful call to another tool. `refusal_count: per_run` counts every
+refusal in the run, as 0.1.0a17 did. The count is part of `RunState`, so either way it survives
+an approval pause and a restart.
 
 **Repeat guard and call limits.** With `repeat_guard`, a read-only call identical (tool and
 arguments) to one that already succeeded in the run, with no successful state-changing call since,

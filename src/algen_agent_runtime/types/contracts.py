@@ -7,7 +7,14 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 
 def utc_now() -> datetime:
@@ -168,7 +175,7 @@ class ModelProfile(StrictModel):
     quality_tier: int = Field(default=1, ge=0, le=5)
     max_cost_per_1k_tokens: float | None = Field(default=None, ge=0)
     max_latency_ms: float | None = Field(default=None, ge=0)
-    routing_preference: Literal["balanced", "local_first", "cloud_first"] = "balanced"
+    routing_preference: Literal["balanced", "local_first", "cloud_first", "ordered"] = "balanced"
     context_window_tokens: int | None = Field(default=None, ge=1)
     context_safety_margin_tokens: int = Field(default=256, ge=0)
     extensions: dict[str, Any] = Field(default_factory=dict)
@@ -275,9 +282,15 @@ class ToolPolicy(StrictModel):
     max_refusals_per_tool: int | None = Field(
         default=None,
         ge=1,
-        description="Refused calls to one tool in a run (a failed precheck or arguments that do "
-        "not fit its input schema) after which the refusal tells the model to stop calling it and "
+        description="Refused calls to one tool (a failed precheck or arguments that do not fit "
+        "its input schema, counted as ``refusal_count`` says) after which the refusal tells the model to stop calling it and "
         "tell the user what was refused and why. None always says to fix the call and try again.",
+    )
+    refusal_count: Literal["consecutive", "per_run"] = Field(
+        default="consecutive",
+        description="How refusals count toward ``max_refusals_per_tool``. ``consecutive`` starts "
+        "a tool's count again when a call to it runs successfully, so a model that is making "
+        "progress is not stopped; ``per_run`` counts every refusal in the run.",
     )
     repeat_guard: bool = Field(
         default=False,
@@ -611,6 +624,23 @@ class WorkingStateUpdate(StrictModel):
     state: WorkingStateContent
 
 
+# Bounds on steering (``AgentRuntime.steer``): messages queued for one run, and characters each.
+MAX_PENDING_STEERING = 16
+MAX_STEERING_CHARS = 8_000
+
+
+class SteeringMessage(StrictModel):
+    """A user message queued for a running run with ``AgentRuntime.steer``.
+
+    It reaches the model at the run's next step boundary, after the current tool results and
+    before the next model call, as a user message.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    text: str = Field(min_length=1, max_length=MAX_STEERING_CHARS)
+    queued_at: datetime = Field(default_factory=utc_now)
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -638,7 +668,8 @@ class RunState(BaseModel):
     # Tool guards, checkpointed so they survive an approval pause and a restart.
     tool_refusals: dict[str, int] = Field(
         default_factory=dict,
-        description="Calls refused per tool in this run (precheck or input schema).",
+        description="Calls refused per tool (precheck or input schema): since the tool's last "
+        "successful call, or in the whole run with tool_policy.refusal_count='per_run'.",
     )
     tool_call_counts: dict[str, int] = Field(
         default_factory=dict,
@@ -649,6 +680,11 @@ class RunState(BaseModel):
         description="Digests of read-only calls run since the last successful state-changing "
         "call, kept when tool_policy.repeat_guard is on.",
     )
+    pending_steering: list[SteeringMessage] = Field(
+        default_factory=list,
+        description="Steering messages not yet delivered to the model. Checkpointed, so they "
+        "survive a pause and a restart; on an ended run, the ones that were never delivered.",
+    )
     output_text: str | None = None
     error: str | None = None
     pause_payload: dict[str, Any] | None = None
@@ -658,6 +694,16 @@ class RunState(BaseModel):
     # pause continues the same trace.
     trace_parent: dict[str, str] | None = None
     version: int = 0
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_steering(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a17 validates stored run state with extra="forbid" and has no pending_steering:
+        # leave it out while it is empty, so a17 replicas can still load what a18 checkpoints
+        # during a rolling deploy or after a rollback.
+        data = handler(self)
+        if isinstance(data, dict) and not self.pending_steering:
+            data.pop("pending_steering", None)
+        return data
 
     @model_validator(mode="after")
     def archived_history_is_consistent(self) -> RunState:
@@ -698,3 +744,8 @@ class RunResult(StrictModel):
     warnings: tuple[str, ...] = ()
     confidence: float | None = None
     execution_summary: ExecutionSummary
+    undelivered_steering: tuple[SteeringMessage, ...] = Field(
+        default=(),
+        description="On an ended run, the steering messages it ended before delivering, for "
+        "the host to hand back to the user.",
+    )

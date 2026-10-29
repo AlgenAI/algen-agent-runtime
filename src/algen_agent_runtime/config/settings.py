@@ -20,6 +20,7 @@ from algen_agent_runtime.config.authentication import (
 )
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
+from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.tools.http_api import HttpToolConfig
@@ -75,6 +76,11 @@ class StorageSettings(StrictSettings):
     tool_execution_store: Literal["memory", "postgres"] = "memory"
     conversation_store: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str | None = None
+    postgres_schema: str | None = Field(
+        default=None,
+        description="PostgreSQL schema for the Runtime's tables, created when missing if "
+        "initialize_schema is true. Unset: the server's search_path (normally public).",
+    )
     redis_url: str | None = None
     artifact_s3_bucket: str | None = None
     artifact_s3_prefix: str = "algen-agent-runtime/artifacts"
@@ -141,6 +147,11 @@ class StorageSettings(StrictSettings):
                 raise ValueError(f"{field_name} must be an env:// secret reference")
         if self.postgres_min_pool_size > self.postgres_max_pool_size:
             raise ValueError("postgres_min_pool_size cannot exceed postgres_max_pool_size")
+        if self.postgres_schema is not None:
+            try:
+                check_schema_name(self.postgres_schema)
+            except ConfigurationError as exc:
+                raise ValueError(str(exc)) from None
         if self.artifact_store == "s3" and not (self.artifact_s3_bucket or "").strip():
             raise ValueError("s3 artifact store requires artifact_s3_bucket")
         if self.artifact_store == "s3" and not self.artifact_s3_prefix.strip("/"):
@@ -195,6 +206,11 @@ class RetrievalSettings(StrictSettings):
     max_query_chars: int = Field(default=4_096, ge=128, le=100_000)
     max_retrieval_tokens: int = Field(default=4_000, ge=128)
     max_context_tokens: int = Field(default=16_000, ge=256)
+    chunker: Literal["text", "markdown"] = Field(
+        default="text",
+        description="'markdown' splits documents at their headings and records each chunk's "
+        "heading path and anchor; 'text' collapses whitespace and splits by size.",
+    )
     chunk_size: int = Field(default=1_200, ge=64)
     chunk_overlap: int = Field(default=200, ge=0)
     embedding_provider: str | None = None
@@ -272,6 +288,13 @@ class TelemetrySettings(StrictSettings):
     service_name: str = "algen-agent-runtime"
     trace_level: Literal["minimal", "standard", "detailed"] = "detailed"
     otlp_endpoint: str | None = None
+    otlp_metrics_endpoint: str | None = Field(
+        default=None,
+        description="OTLP/HTTP metrics endpoint, e.g. https://collector:4318/v1/metrics. Unset: "
+        "the Runtime's metrics are exported only by a meter provider installed elsewhere, such "
+        "as Traccia's.",
+    )
+    otlp_metrics_export_interval_seconds: int = Field(default=60, ge=1, le=3_600)
     include_content: bool = False
     include_conversation_content: bool = False
     max_content_chars: int = Field(default=16_384, ge=256, le=1_048_576)
@@ -727,6 +750,16 @@ class AppSettings(StrictSettings):
                     invalid_references.append(
                         f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
                     )
+            preferences = [
+                profile.routing_preference
+                for profile in (agent.default_model, *agent.fallback_models)
+            ]
+            if "ordered" in preferences and set(preferences) != {"ordered"}:
+                raise ValueError(
+                    f"agents[{agent.name}]: routing_preference 'ordered' applies to the whole "
+                    "model list; set it on default_model and every fallback_models entry, or on "
+                    f"none (got {preferences})"
+                )
         for retrieval_name, retrieval_config in self.retrieval.items():
             if (
                 retrieval_config.embedding_provider is not None

@@ -6,6 +6,137 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- An approval inbox. `GET /v1/approvals` lists the tenant's approval requests, newest first,
+  filtered by `status`, `run_id` and `agent`, and paged with `limit` (1 to 500) and `offset` (0 to
+  1,000,000); `GET /v1/approvals/{approval_id}` reads one. `ApprovalService.list(...)` does the
+  same in Python, on the in-memory and PostgreSQL stores. A pending request past its expiry is
+  reported as `expired` (`ApprovalRequest.effective(now)`) without changing the stored request.
+  Both routes need the new `approvals:read` scope: the inbox shows every user's pending actions in
+  the tenant, conversation turns included, so grant it to approvers on purpose. `runs:read` is not
+  enough. `modified_parameters` are returned with the same redaction as `redacted_parameters`.
+  See docs/operations.md#approval-inbox. (#61)
+- `ApprovalRequest.agent` and `ApprovalRequest.created_at`. Migration `015_approval_agent.sql` adds
+  an `agent` column and an index on `(tenant_id, agent, created_at DESC)` to
+  `algen_agent_runtime_approvals`; PostgreSQL keeps both fields in columns, and `created_at` is the
+  row's time. Requests stored by earlier releases have no `agent`.
+- `storage.postgres_schema` (and `PostgresDatabase(..., schema=...)`): an optional PostgreSQL
+  schema for the Runtime's tables, so they can share a database with an application's own. Every
+  pooled connection starts with `search_path` set to that schema alone, so migrations and all
+  PostgreSQL stores use it; with `initialize_schema` it is created when missing. Start-up fails if
+  the schema is missing (without `initialize_schema`), not usable by the role, or not in effect,
+  for example behind a pooler that drops the startup parameter. If the schema is empty while
+  `public` still holds the Runtime's tables, start-up logs
+  `postgres_schema_is_empty_but_public_has_runtime_tables`. Unset by default: no change for
+  existing deployments. See docs/operations.md#sharing-a-database-postgres_schema. (#63)
+- `MarkdownChunker` and `retrieval.<name>.chunker: markdown` (default `text`, unchanged). It
+  splits Markdown at its headings, never inside fenced code; keeps paragraphs, lists, tables and
+  code blocks whole where they fit (a split code block is re-fenced, a split table repeats its
+  header); and records `heading_path`, `heading`, `heading_level` and a unique GitHub-style
+  `anchor` in each chunk's metadata. A chunk's `uri` becomes `<document uri>#<anchor>`, so
+  citations link to the section. Parsing is linear in the document's length. `Chunker`, the
+  protocol both chunkers satisfy, types the `chunker=` argument of the in-memory retriever and the
+  vector stores. See docs/rag.md#markdown-chunking. (#59)
+- `http_tools[].auth.type: caller`: a declared HTTP tool sends the calling user's credential for
+  the run (`ToolContext.credentials[credential]`, default `authorization`) as `header_name`
+  (default `Authorization`), with an optional `scheme` prefix. A missing or blank credential, or
+  one that is only the scheme, fails with `authentication required` before any request; a value
+  carrying another scheme, or a control character anywhere, is refused. The credential goes only
+  to the declared origin: link-header pagination to another origin fails the call. Cookie, Host,
+  Proxy-Authorization, hop-by-hop and framing headers are refused as `header_name`, and
+  `headers` may not set the auth header. See docs/http-tools.md#calling-the-api-as-the-signed-in-user
+  and docs/threat-model.md. (#64)
+- `ToolDefinition.cache_context` and `build_tool(..., cache_context=...)` (also `@tool` and
+  `Toolkit.tool`): a tool names the `ToolContext` values its result depends on (`tenant_id`,
+  `user_id`, `run_id`, `step_id`). The tool-result cache adds them, digested, to the key, so a tool
+  bound to the caller's user, run or step is never served another caller's result. Tools that
+  declare nothing keep their cache keys. The component inventory reports the field. (#70)
+- `ToolNotAttemptedError`, a `ToolExecutionError` for a call a tool refuses before contacting
+  anything. The ledger records it `failed`, not `indeterminate`, even for writes.
+- Provider types `gemini` (Google Gemini API), `xai` (Grok) and `groq`, built on the
+  OpenAI-compatible adapter with vendor base URLs and default `env://GEMINI_API_KEY`,
+  `env://XAI_API_KEY` and `env://GROQ_API_KEY` secrets. `base_url` and `capabilities` can be set per
+  provider entry. Gemini supports embeddings (`gemini-embedding-001` by default) and image input.
+  Groq reports strict `json_schema` support only for gpt-oss models; other models get
+  `strict: false`. Configured `capabilities` replace these defaults.
+- `routing_preference: ordered` on model profiles: candidates are tried in declaration order
+  (default model, then `fallback_models`), while circuit-breaker, capability, latency and cost
+  filters still apply. It applies to the agent's whole model list: configuration that sets it on
+  only some profiles is rejected, and in code the default profile decides.
+- `ProviderError.status_code`, the provider's HTTP status when there is one.
+- `telemetry.otlp_metrics_endpoint` and `telemetry.otlp_metrics_export_interval_seconds`
+  (default 60): export the Runtime's OpenTelemetry metrics to an OTLP/HTTP collector through a
+  periodic reader. If an SDK meter provider is already installed (by Traccia or the application),
+  it is kept and the setting is ignored with a warning. The API flushes the provider on shutdown.
+  See docs/operations.md#traccia.
+- `AgentRuntime.steer(run_id, tenant_id, text)` and `POST /v1/runs/{run_id}/steer` (`runs:write`;
+  for a conversation turn's run, only the conversation's owner) queue a user message for a run that
+  has not ended. It is delivered before the next model call, after the current tool results, with
+  a `steer.delivered` event, and is checkpointed in `RunState.pending_steering`, so it survives a
+  pause. Messages still waiting when the run ends are `RunResult.undelivered_steering`, with a
+  `steer.undelivered` event. At most 16 messages of 8,000 characters each. Conversation turns do
+  not expose steering yet. See docs/operations.md. (#71)
+- `ToolContext.emit_note(title=, paths=, suggestions=, data=)` writes a bounded `tool.note` run
+  event for the call (step and call id) that never reaches the model. (#71)
+- A tool can report a failure it returns as data: `ToolResult(value=..., failed=True)` from the
+  handler, or `ToolDefinition.failure_field` / `@tool(failure_field="ok")` (a result whose field is
+  `false`). The call is recorded as failed in `tool.completed`, the audit record and the span; the
+  payload still goes to the model whatever `on_error` is; it is not retried or cached, and it does
+  not reset refusal counts or feed the repeat guard. The ledger records it `completed` with
+  `result.failed`, so a replay returns it without running the call again. (#71)
+- `Tool.with_handler(handler)` returns a copy of the tool with a new handler, keeping its class,
+  definition and every hook. `tools.contracts.wrap(tool, middleware)` is shorthand for
+  `tool.with_handler(middleware(tool.handler))`. (#71)
+- `ModelRouter(reserve_input_margin=...)` and `build_container(usage_meter_margin=...)` (default
+  1.0, at least 1.0) scale the input tokens reserved with a `UsageMeter`, rounding up; `4/3`
+  reserves as if a token were three characters. Context packing and the token budget are
+  unchanged. (#71)
+
+### Changed
+
+- `tool_policy.max_refusals_per_tool` counts refusals in a row: a call to the tool that runs
+  successfully starts its count again. Set `tool_policy.refusal_count: per_run` to count every
+  refusal in the run, as in 0.1.0a17. (#71)
+- A tool call a guard refuses or holds back (`refused`, `repeated`, `over_limit`) emits
+  `tool.started` with the guard's status before its `tool.refused` / `tool.repeated`, and its
+  `tool.completed` carries `reason_code`. In a parallel reply, every call's `step.started` and
+  `tool.started` are emitted in the order the model sent the calls, before any of them runs. (#71)
+- The model router no longer falls back to another model when a provider rejects the request as
+  invalid (HTTP 400/422 `invalid_request`); it raises that error, which does not count against the
+  provider's circuit breaker. Authentication errors, rate limits, timeouts, 5xx and other 4xx such
+  as 404 still fall back. HTTP 408 is now a retryable timeout.
+- A tool call whose context carries caller credentials is never served from, or stored in, the
+  tool-result cache: its result can depend on who is calling.
+- The `ApprovalService` protocol adds `list(...)` and an optional keyword-only `agent` argument to
+  `create`. A host's own implementation should add both. The approval redaction helper moved from
+  `AgentRuntime._redact_mapping` to `algen_agent_runtime.security.redaction.redact_parameters`.
+- PostgreSQL schema creation and migrations run under an advisory lock, so replicas starting at
+  once against a fresh database apply them one at a time instead of failing.
+- Stored approvals, run checkpoints and tool results keep the 0.1.0a17 shape unless a new feature
+  is used (a pending steering message, a failed tool result), so a17 replicas can read them during
+  a rolling deploy or after a rollback.
+
+### Fixed
+
+- Every `/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification and approval)
+  enforces conversation ownership: a run started for a conversation turn answers `404` to any
+  other user of the tenant. Before, any `runs:write` principal in the tenant could decide or cancel
+  another user's conversation-turn run, and any `runs:read` principal could read it, given its id.
+- Declared HTTP tools refuse a path value that is empty, `.` or `..` (also percent-encoded).
+  Before, a model argument could move the call, and a forwarded credential, to another path on the
+  same host.
+- A query string in an HTTP tool's `url` template is no longer dropped; it is merged with the
+  `query` templates and pagination parameters.
+- Gemini: the `gemini` adapter merges the leading system messages (instructions, retrieved
+  evidence, pinned compaction) into one, because Gemini's OpenAI-compatible endpoint keeps only the
+  last system message and agents lost their instructions whenever retrieval ran. A later system
+  message, such as the verification-repair instruction, is sent in place as a user message
+  prefixed `[system] `.
+- `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
+  Runtime metric was recorded and silently dropped, and the process-global provider was taken, so
+  an application could not install its own afterwards.
+
 ## [0.1.0a17] - 2026-10-28
 
 ### Added

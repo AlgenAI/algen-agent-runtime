@@ -29,6 +29,7 @@ storage:
   conversation_store: postgres
   workflow_store: postgres
   postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  # postgres_schema: agent_runtime  # optional; see "Sharing a database" below
   initialize_schema: true
   postgres_min_pool_size: 1
   postgres_max_pool_size: 10
@@ -108,6 +109,48 @@ automatic replay (see [Resolving indeterminate tool calls](#resolving-indetermin
 Approval and clarification waits remain paused across restarts until a maintenance sweep expires
 them (see [Maintenance and data retention](#maintenance-and-data-retention)); reconciliation waits
 remain paused until an operator settles the call.
+
+### Sharing a database: `postgres_schema`
+
+By default the Runtime creates its tables (`algen_agent_runtime_*`) wherever the server's
+`search_path` puts them, normally `public`. To keep them apart from an application's own tables in
+the same database, set `storage.postgres_schema`:
+
+```yaml
+storage:
+  postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  postgres_schema: agent_runtime
+```
+
+- Every connection of the Runtime's pool starts with `search_path` set to that schema alone (an
+  asyncpg startup parameter), so the migrations, the migration history table and every PostgreSQL
+  store (runs, events, audits, approvals, memory, learned memory, artifacts and S3 artifact
+  metadata, tool executions, conversations and conversation feedback, workflow checkpoints,
+  analytical graphs, the work queue, MCP OAuth tokens and token revocations) use it. A table missing from the schema is never looked up in `public`. Two Runtimes, or a Runtime and
+  its tests, can share one database with different schemas.
+- With `initialize_schema: true` the schema is created when missing (`CREATE SCHEMA`, which needs
+  the `CREATE` privilege on the database). With `false` it must exist, and start-up fails if it does
+  not. The database role needs `USAGE` and `CREATE` on the schema to migrate.
+- The name must be 1 to 63 lowercase letters, digits or underscores, start with a letter or
+  underscore, and not start with `pg_` or be `information_schema`; it is always quoted as an
+  identifier. Settings validation refuses anything else. `postgres_schema: public` is allowed, but
+  it is stricter than leaving the setting unset: only `public` is on the `search_path`.
+- At start-up the Runtime checks `current_schema()` and refuses to start if the schema is not in
+  effect. A connection pooler in transaction mode may drop the `search_path` startup parameter:
+  with PgBouncer 1.20 or later add `search_path` to `track_extra_parameters`, or use session pooling.
+  The same check fails when the schema exists but the role lacks `USAGE` on it.
+- Schema creation and migrations run under a PostgreSQL advisory lock, so several replicas
+  starting at once against a fresh schema apply them one at a time.
+- Unset (the default), nothing changes: no `search_path` is sent and existing deployments keep their
+  tables. Moving an existing deployment into a schema is a database operation
+  (`ALTER TABLE ... SET SCHEMA` for each `algen_agent_runtime_*` table, including
+  `algen_agent_runtime_schema_migrations`) done while the Runtime is stopped; the Runtime does not
+  move tables itself. If the setting is turned on while the tables are still in `public`, the
+  Runtime starts with an empty schema, and existing runs, pending approvals and tool-execution
+  records are not visible to it; start-up logs the warning
+  `postgres_schema_is_empty_but_public_has_runtime_tables` naming both schemas.
+- The pgvector retriever opens its own connection and keeps its table in `retrieval.<name>.table_name`;
+  this setting does not apply to it.
 
 ## Readiness and lifecycle
 
@@ -264,6 +307,7 @@ api:
           role_scopes:
             runtime-operators: [runs:read, runs:write, conversations:read]
             runtime-admins: [auth:revoke]
+            runtime-approvers: [approvals:read, runs:write]
 ```
 
 - **Discovery.** Without `jwks_url` the Runtime reads `{issuer}/.well-known/openid-configuration`,
@@ -500,6 +544,13 @@ the audit metadata beside `step_id`. None of them carries argument values. The r
 the three events. Alert on runs whose `refusal_limit_reached` is true or with many
 `tool.repeated` events: the model is stuck on a tool's contract or its instructions.
 
+A held call has the same step events as one that runs: `step.started`, then `tool.started` with
+the guard's status (`refused`, `repeated` or `over_limit`) instead of `running`, then the guard's
+event and `tool.completed` with that status and its `reason_code`. A consumer that tracks calls
+from `tool.started` sees every call. A reply's calls are announced in the order the model sent
+them: in a parallel reply every call's `step.started`, then every call's `tool.started`, before
+any of them runs, and their results and `tool.completed` events follow in the same order.
+
 ## Resolving indeterminate tool calls
 
 Every side-effecting tool call is reserved in the tool-execution ledger under its idempotency key
@@ -641,6 +692,89 @@ stop the process between the two writes and check this. Migration
 `014_tool_execution_reconciliation.sql` adds the new statuses as a `NOT VALID` check constraint
 and an index on `(tenant_id, status, updated_at)`.
 
+## Approval inbox
+
+A run that needs a human decision pauses with `status: awaiting_approval` and the approval's id in
+`pause_payload.approval_id`. To show everything waiting for a decision, list the tenant's approval
+requests instead of polling runs:
+
+| Route | Scope | Returns |
+| --- | --- | --- |
+| `GET /v1/approvals` | `approvals:read` | The tenant's approval requests, newest first. Query: `status` (`pending`, `approved`, `rejected`, `modified`, `expired`), `run_id`, `agent`, `limit` (1 to 500, default 50), `offset` (default 0). |
+| `GET /v1/approvals/{approval_id}` | `approvals:read` | One request; `404` for another tenant's. |
+
+**Scope.** The inbox lists every user's pending actions in the tenant, conversation turns
+included, so it needs its own scope, `approvals:read`, rather than `runs:read`, which most agent
+clients hold. Grant it to approvers and operators on purpose (for example through `role_scopes`
+above). `limit` is 1 to 500 and `offset` 0 to 1,000,000; anything else is a `422`.
+
+Decide as before with `POST /v1/runs/{run_id}/approval` (scope `runs:write`), or for a
+conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`. A run started for a
+conversation turn belongs to the conversation's owner, as on the conversation routes: every
+`/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification, approval and steer)
+answers another user of the tenant `404`, whatever their scopes. Runs started directly with
+`POST /v1/runs` are checked against the tenant only, as before.
+
+Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id`, `agent`,
+`proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
+the same values as the run's `pause_payload`), `risk`, `created_at`, `expires_at`, `status` and, after
+a `modified` decision, `modified_parameters`. The approver's `modified_parameters` are stored as
+sent; the inbox routes return them with the same redaction as `redacted_parameters` (top-level
+`password`, `secret`, `token`, `api_key` and `authorization` keys, any case, become `[REDACTED]`).
+A pending request past `expires_at` is reported as `expired`: `status=pending` leaves it out and
+`status=expired` includes it. Reading never changes the stored request; it moves to `expired` when
+someone tries to decide it, as before.
+
+**Storage.** Migration `015_approval_agent.sql` adds an `agent` column to
+`algen_agent_runtime_approvals` and an index on `(tenant_id, agent, created_at DESC)`. The
+PostgreSQL store keeps `agent` and `created_at` in columns, not in the approval JSON, so the JSON
+keeps the 0.1.0a17 shape and an a17 process can still read and resume these requests during a
+rolling deploy or after a rollback. `created_at` is the row's creation time (the database clock),
+used both to order and to display. Requests stored before this release have no `agent` (an `agent`
+filter leaves them out); in the in-memory store they also have no `created_at`.
+
+In Python, `runtime.approvals.list(tenant_id, status=..., run_id=..., agent=..., limit=...,
+offset=...)` returns the same list. Results are tenant-scoped by the authenticated principal, like
+every run route. Paging is by offset over a list ordered by creation time, so a request created
+between two page reads shifts later pages by one; page with a small `limit` and de-duplicate by `id`.
+Requests created at the same instant are ordered by insertion in the in-memory store and by `id` in
+PostgreSQL; both are stable between calls.
+
+## Steering a running run
+
+A user can add to a run while it works: `runtime.steer(run_id, tenant_id, text)` queues a message
+and returns it as a `SteeringMessage` (`id`, `text`, `queued_at`). Over HTTP it is
+`POST /v1/runs/{run_id}/steer` with `{"text": "..."}` (scope `runs:write`, tenant-scoped like every
+run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`. A run started
+for a conversation turn can be steered only by the conversation's owner; any other user of the
+tenant gets `404`, as on the approval and clarification routes.
+
+- **When the model sees it.** At the run's next step boundary: after the results of every call in
+  the model's last reply and before the next model call, as one user message with a text block
+  per queued message, in the order they were sent. It is checked at the `input` policy boundary
+  like the run's input (context `operation: steering`). A `steer.delivered` event and a
+  `run.steer` audit (`delivered`, with `steer_ids`) follow.
+- **When the run ends first.** Messages still waiting when the run completes, fails, is cancelled
+  or times out (for example, sent during the model's final answer) are never delivered. They are
+  `RunResult.undelivered_steering` from `runtime.wait`/`run`, stay in `RunState.pending_steering`,
+  and a `steer.undelivered` event announces them, so a host can hand them back to the user or
+  start the next turn with them.
+- **Paused runs.** A run awaiting approval, clarification or reconciliation keeps its messages in
+  its checkpoint (`RunState.pending_steering`) and delivers them after it is resumed, at the next
+  boundary. Messages sent to a running run are checkpointed at its next state transition, so a
+  restart loses at most those sent since the last one.
+- **Events.** `steer.delivered` and `steer.undelivered` carry `count` and `messages`, a list of
+  `{id, chars}`; the text is added (`text`) only when `telemetry_include_content` is on. The run
+  narrative tells them as `steering` entries without the text. `GET /v1/runs/{run_id}` leaves
+  `pending_steering` out, like `messages`. An empty `pending_steering` is also left out of the
+  stored checkpoint, so 0.1.0a17 replicas can load it during a rolling deploy.
+- **Limits and errors.** At most `MAX_PENDING_STEERING` (16) messages wait per run and each is at
+  most `MAX_STEERING_CHARS` (8,000) characters after trimming. Empty or longer text raises
+  `ValueError` (HTTP `422`); a full queue, an ended run, or a run executing in another process
+  raises `ConflictError` (HTTP `409`). Another tenant's run is `NotFoundError` (HTTP `404`).
+- **Not yet:** conversation turns do not expose steering; a host steers the turn's run by its id
+  (`pending.run_id`).
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
@@ -709,8 +843,11 @@ as provider capabilities. The authorization fingerprint is included when callers
 Exact model-response caching is intentionally disabled by default because it changes freshness and
 sampling behavior. Enable it only for evaluated workloads; streaming and raw-provider responses bypass
 it. Tool caching is restricted to idempotent tools classified `none` or `read`. Destructive, write, and
-externally visible tools always execute normally. Cached provider usage is reported as cached tokens
-with zero incremental configured-provider cost.
+externally visible tools always execute normally. A tool whose result depends on the caller's user,
+run or step beyond the policy's scope declares it in `cache_context`, which joins its key (see
+[Caching results](tool-authoring.md#caching-results)); a call that carries caller credentials is
+never cached. Cached provider usage is reported as cached tokens with zero incremental
+configured-provider cost.
 
 Invalidate related entries with `await container.cache.invalidate_tags("dataset:v2")` after a governed
 data or configuration release. Prefer a version token in cache material when a deterministic dataset
@@ -814,6 +951,9 @@ telemetry:
   max_content_chars: 16384
   # Optional second exporter for dual delivery to another OTLP backend:
   # otlp_endpoint: https://otel-collector.example.com/v1/traces
+  # Runtime metrics (cache, governance, auth, worker counters...) to an OTLP collector:
+  # otlp_metrics_endpoint: https://otel-collector.example.com/v1/metrics
+  # otlp_metrics_export_interval_seconds: 60
   traccia:
     enabled: true
     api_key: env://TRACCIA_API_KEY
@@ -928,6 +1068,20 @@ Other OpenTelemetry deployments can use `install_runtime_trace_filter(provider)`
 **Resumed runs.** A run stores its first `agent.run` span in `RunState.trace_parent`; when it resumes
 after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one
 trace even across processes.
+
+**Metrics.** The Runtime records OpenTelemetry metrics (cache operations and latency,
+governance decisions, authentication attempts, analytical nodes, distributed work items, method
+and model-service calls). Set `telemetry.otlp_metrics_endpoint` to an OTLP/HTTP metrics endpoint
+to export them: the Runtime installs a meter provider with a periodic reader
+(`otlp_metrics_export_interval_seconds`, default 60). `otlp_endpoint` alone exports traces only,
+and no meter provider is installed, so an application can install its own. Traccia's metrics
+(`traccia.enable_metrics`, `traccia.metrics_endpoint`) are configured by the Traccia SDK. A meter
+provider installed before the Runtime applies its telemetry settings, by Traccia or by the
+application, is kept, and `otlp_metrics_endpoint` is then ignored with a warning, because a
+provider's readers are fixed when it is built. The endpoint is used as given, so include the
+path (`https://collector:4318/v1/metrics`, not `https://collector:4318`). The interval setting
+always applies, so `OTEL_METRIC_EXPORT_INTERVAL` has no effect. The Runtime flushes its meter
+provider when the API shuts down.
 
 To export the same spans to Traccia and another OTLP backend, also set `telemetry.otlp_endpoint`. Algen Agent Runtime attaches the standard OTLP processor to Traccia's OpenTelemetry provider. Leave it unset when Traccia is the only destination to prevent duplicate delivery.
 

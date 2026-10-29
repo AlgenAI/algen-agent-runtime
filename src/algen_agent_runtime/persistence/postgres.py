@@ -10,7 +10,8 @@ from typing import Any
 
 import structlog
 
-from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
+from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -26,10 +27,21 @@ from algen_agent_runtime.types.contracts import (
 )
 
 _logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
+_database_logger = structlog.get_logger("algen_agent_runtime.persistence.postgres")
+
+
+# One key for every Runtime sharing the database: concurrent first starts create the schema and
+# run the migrations one at a time instead of racing on CREATE SCHEMA and CREATE TABLE.
+_MIGRATION_LOCK_KEY = 0x616C67656E5F7274  # "algen_rt"
 
 
 class PostgresDatabase:
-    """Lazily initialized asyncpg pool shared by all PostgreSQL stores."""
+    """Lazily initialized asyncpg pool shared by all PostgreSQL stores.
+
+    With ``schema``, every connection of the pool has ``search_path`` set to that schema alone,
+    so the migrations and every store create and use their tables there. With
+    ``initialize_schema`` the schema is created if it is missing.
+    """
 
     def __init__(
         self,
@@ -38,13 +50,20 @@ class PostgresDatabase:
         initialize_schema: bool = True,
         min_pool_size: int = 1,
         max_pool_size: int = 10,
+        schema: str | None = None,
     ) -> None:
         self._dsn = dsn
         self._initialize_schema = initialize_schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
+        self._schema = check_schema_name(schema) if schema is not None else None
         self._pool: Any | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def schema(self) -> str | None:
+        """The schema the Runtime's tables live in, or ``None`` for the server's search_path."""
+        return self._schema
 
     async def start(self) -> None:
         if self._pool is not None:
@@ -56,21 +75,81 @@ class PostgresDatabase:
                 import asyncpg
             except ImportError as exc:
                 raise ImportError("install algen-agent-runtime[postgres]") from exc
+            options: dict[str, Any] = {}
+            if self._schema is not None:
+                # A startup parameter, so it is the session default that survives the RESET ALL
+                # asyncpg runs when a connection returns to the pool. Only this schema: a table
+                # missing from it must never resolve to another schema's table of the same name.
+                options["server_settings"] = {"search_path": f'"{self._schema}"'}
             pool = await asyncpg.create_pool(
                 self._dsn,
                 min_size=self._min_pool_size,
                 max_size=self._max_pool_size,
+                **options,
             )
+            try:
+                if self._initialize_schema:
+                    async with pool.acquire() as connection:
+                        await connection.fetchval(
+                            "SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY
+                        )
+                        try:
+                            if self._schema is not None:
+                                await self._use_schema(connection, self._schema)
+                            await self._migrate(connection)
+                        finally:
+                            await connection.fetchval(
+                                "SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY
+                            )
+                elif self._schema is not None:
+                    await self._use_schema(pool, self._schema)
+            except BaseException:
+                await pool.close()
+                raise
             self._pool = pool
-            if self._initialize_schema:
-                await self._migrate(pool)
 
-    async def _migrate(self, pool: Any) -> None:
+    async def _use_schema(self, pool: Any, schema: str) -> None:
+        exists = await pool.fetchval(
+            "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1", schema
+        )
+        if not exists:
+            if not self._initialize_schema:
+                raise ConfigurationError(
+                    f"PostgreSQL schema {schema!r} does not exist and initialize_schema is false"
+                )
+            # The name was validated by check_schema_name and is quoted as an identifier.
+            await pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        current = await pool.fetchval("SELECT current_schema()")
+        if current is None:
+            raise ConfigurationError(
+                f"PostgreSQL schema {schema!r} exists but is not in effect: this role lacks USAGE "
+                "on it, or the search_path startup parameter was dropped (a connection pooler may "
+                "drop it)"
+            )
+        if current != schema:
+            raise ConfigurationError(
+                f"PostgreSQL connections use schema {current!r}, not postgres_schema {schema!r}: "
+                "the search_path startup parameter was not applied (a connection pooler may "
+                "drop it)"
+            )
+        if schema != "public" and await pool.fetchval(
+            "SELECT to_regclass('algen_agent_runtime_schema_migrations') IS NULL "
+            "AND to_regclass('public.algen_agent_runtime_schema_migrations') IS NOT NULL"
+        ):
+            # Tables left in public would otherwise vanish from the Runtime's view without a word.
+            _database_logger.warning(
+                "postgres_schema_is_empty_but_public_has_runtime_tables",
+                postgres_schema=schema,
+                legacy_schema="public",
+                docs="docs/operations.md#sharing-a-database-postgres_schema",
+            )
+
+    async def _migrate(self, connection: Any) -> None:
         # Preserve the applied-migration history when upgrading from the former
         # runtime package name. This must happen before creating the new table so
         # existing installations do not replay the initial schema into empty,
         # newly named tables and leave their data behind.
-        await pool.execute(
+        await connection.execute(
             "DO $$ BEGIN "
             "IF to_regclass('algen_agent_runtime_schema_migrations') IS NULL "
             "AND to_regclass('traccia_runtime_schema_migrations') IS NOT NULL THEN "
@@ -78,17 +157,17 @@ class PostgresDatabase:
             "RENAME TO algen_agent_runtime_schema_migrations; "
             "END IF; END $$"
         )
-        await pool.execute(
+        await connection.execute(
             "CREATE TABLE IF NOT EXISTS algen_agent_runtime_schema_migrations "
             "(name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
         )
-        rows = await pool.fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
+        rows = await connection.fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
         applied = {str(row["name"]) for row in rows}
         directory = Path(__file__).with_name("migrations")
         for migration in sorted(directory.glob("*.sql")):
             if migration.name in applied:
                 continue
-            async with pool.acquire() as connection, connection.transaction():
+            async with connection.transaction():
                 await connection.execute(migration.read_text(encoding="utf-8"))
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_schema_migrations (name) VALUES ($1)",

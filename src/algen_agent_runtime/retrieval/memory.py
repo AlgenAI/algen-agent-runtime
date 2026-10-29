@@ -13,7 +13,7 @@ from algen_agent_runtime.retrieval.contracts import (
     RetrievedDocument,
     SourceDocument,
 )
-from algen_agent_runtime.retrieval.ingestion import TextChunker
+from algen_agent_runtime.retrieval.ingestion import Chunker, TextChunker
 
 _TOKEN = re.compile(r"\w+")
 
@@ -71,7 +71,7 @@ class InMemoryRetriever:
         *,
         source_documents: tuple[SourceDocument, ...] = (),
         embedder: Embedder | None = None,
-        chunker: TextChunker | None = None,
+        chunker: Chunker | None = None,
         reranker: Reranker | None = None,
     ) -> None:
         self._documents = list(documents)

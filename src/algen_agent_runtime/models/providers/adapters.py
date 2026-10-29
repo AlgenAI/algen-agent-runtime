@@ -199,3 +199,166 @@ class HuggingFaceInferenceProvider(OpenAICompatibleProvider):
             ),
             **kwargs,
         )
+
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+XAI_BASE_URL = "https://api.x.ai/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+def _system_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n\n".join(
+            text
+            for text in (
+                str(block.get("text") or "") for block in content if isinstance(block, dict)
+            )
+            if text
+        )
+    return ""
+
+
+class GeminiProvider(OpenAICompatibleProvider):
+    """Google Gemini through the Gemini API's OpenAI-compatible endpoint.
+
+    Chat, streaming, tools, JSON-schema output, image input and embeddings. Thinking models accept
+    ``reasoning_effort`` as a profile extension.
+    """
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "gemini-flash-latest",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = GEMINI_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "gemini",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True,
+                tools=True,
+                structured_output=True,
+                json_schema=True,
+                embeddings=True,
+                images=True,
+            ),
+            **kwargs,
+        )
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        # The OpenAI-compatible endpoint keeps only the last system message as the system
+        # instruction. Runtime sends agent instructions, retrieved evidence and pinned compaction
+        # summaries as a leading run of system messages, so merge that run, in order, into one.
+        # A later system message (such as a verification-repair instruction) is sent in place as
+        # a user turn so it keeps its position in the conversation.
+        messages = payload["messages"]
+        leading = 0
+        while leading < len(messages) and messages[leading].get("role") == "system":
+            leading += 1
+        merged = "\n\n".join(
+            text for text in (_system_text(m.get("content")) for m in messages[:leading]) if text
+        )
+        rewritten: list[dict[str, Any]] = [{"role": "system", "content": merged}] if merged else []
+        for message in messages[leading:]:
+            if message.get("role") == "system":
+                text = _system_text(message.get("content"))
+                if text:
+                    rewritten.append({"role": "user", "content": f"[system] {text}"})
+            else:
+                rewritten.append(message)
+        payload["messages"] = rewritten
+        return payload
+
+    async def capabilities(self, model: str) -> ModelCapabilities:
+        if "embedding" in model:
+            return ModelCapabilities(chat=False, embeddings=True)
+        return await super().capabilities(model)
+
+    async def embed(self, texts: Sequence[str], model: str | None = None) -> list[list[float]]:
+        return await super().embed(texts, model or "gemini-embedding-001")
+
+
+class XAIProvider(OpenAICompatibleProvider):
+    """xAI Grok models through xAI's OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "grok-4",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = XAI_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "xai",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True, tools=True, structured_output=True, json_schema=True, images=True
+            ),
+            **kwargs,
+        )
+
+
+def _groq_strict_schema(model: str) -> bool:
+    """Groq enforces ``strict`` JSON-schema output only for the gpt-oss family."""
+    return model.startswith("openai/gpt-oss")
+
+
+class GroqProvider(OpenAICompatibleProvider):
+    """Models served by Groq's OpenAI-compatible API (for example ``openai/gpt-oss-120b``).
+
+    Strict JSON-schema output is model-dependent on Groq: gpt-oss models report ``json_schema`` and
+    get ``strict: true``; other models report only best-effort ``structured_output`` and are sent
+    ``strict: false``. Configured ``capabilities`` replace this per-model default.
+    """
+
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str = "openai/gpt-oss-120b",
+        capabilities: ModelCapabilities | None = None,
+        base_url: str = GROQ_BASE_URL,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            "groq",
+            base_url,
+            api_key_reference,
+            default_model,
+            capabilities
+            or ModelCapabilities(
+                streaming=True, tools=True, structured_output=True, json_schema=True
+            ),
+            **kwargs,
+        )
+        self._configured_capabilities = capabilities is not None
+
+    def _strict_schema(self, model: str) -> bool:
+        if self._configured_capabilities:
+            return self._capabilities.json_schema
+        return _groq_strict_schema(model)
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        response_format = payload.get("response_format")
+        if response_format and response_format.get("type") == "json_schema":
+            response_format["json_schema"]["strict"] = self._strict_schema(payload["model"])
+        return payload
+
+    async def capabilities(self, model: str) -> ModelCapabilities:
+        if self._configured_capabilities:
+            return self._capabilities
+        return self._capabilities.model_copy(
+            update={"json_schema": self._strict_schema(model or self._default_model)}
+        )

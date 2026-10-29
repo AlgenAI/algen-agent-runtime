@@ -287,6 +287,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
                         if response.status_code == 429
                         else ErrorKind.UNAVAILABLE,
                         retryable,
+                        status_code=response.status_code,
                     )
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):

@@ -8,6 +8,9 @@ their wording. The Runtime applies them in ``AgentRuntime`` and keeps their stat
   precheck) never runs and is never put to the user; the model gets the problem back to fix.
   A model that cannot get a call right keeps trying and pays for the whole conversation each
   time, so from ``tool_policy.max_refusals_per_tool`` refusals it is told to stop and answer.
+  By default the count is of refusals in a row: a successful call to the tool starts it again,
+  since a model making progress is not stuck (``tool_policy.refusal_count="per_run"`` counts
+  every refusal in the run).
 - A read the model already made, with nothing changed since, returns a note instead of
   running again; ``tool_policy.max_calls_per_tool`` caps searches a model can keep rephrasing.
 - Near the end of the run's steps or tokens, tool results carry a notice to wrap up and answer

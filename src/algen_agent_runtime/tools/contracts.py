@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import copy
 import inspect
+import json
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+)
 
 from algen_agent_runtime.types.contracts import RetryPolicy, utc_now
 
@@ -24,6 +34,10 @@ class Idempotency(StrEnum):
     IDEMPOTENT = "idempotent"
     KEYED = "keyed"
     NON_IDEMPOTENT = "non_idempotent"
+
+
+# The ToolContext values a tool's result can depend on, which it declares in ``cache_context``.
+CacheContextValue = Literal["tenant_id", "user_id", "run_id", "step_id"]
 
 
 class ToolDefinition(BaseModel):
@@ -52,6 +66,29 @@ class ToolDefinition(BaseModel):
         description="Reads state that changes on its own (a job's status, the time), so the "
         "repeat guard never holds an identical call back.",
     )
+    cache_context: frozenset[CacheContextValue] = Field(
+        default=frozenset(),
+        description="The ToolContext values the result depends on (a query bound to the "
+        "caller's user_id, say). The tool-result cache keys a result on them too, whatever "
+        "the cache policy's scope, so one caller is never served another's result. Empty keeps "
+        "the key on the tool, version and arguments within the policy's scope.",
+    )
+
+    failure_field: str | None = Field(
+        default=None,
+        min_length=1,
+        description="A field of the tool's result object that reports failure: a result whose "
+        "field is ``false`` (``failure_field='ok'`` and ``{\"ok\": false, ...}``) is recorded "
+        "and emitted as failed, and still goes back to the model as the call's result.",
+    )
+
+    def reports_failure(self, value: Any) -> bool:
+        """Whether a result value reports a failure through ``failure_field``."""
+        return (
+            self.failure_field is not None
+            and isinstance(value, Mapping)
+            and value.get(self.failure_field) is False
+        )
 
 
 class _ReadOnlyCredentials(Mapping[str, str]):
@@ -105,6 +142,50 @@ def read_only_credentials(credentials: Mapping[str, str] | None) -> Mapping[str,
     return _ReadOnlyCredentials(credentials) if credentials else _NO_CREDENTIALS
 
 
+# Bounds on a tool note: the whole note serialized, its parts, and notes per call.
+MAX_TOOL_NOTE_BYTES = 16_384
+MAX_TOOL_NOTE_TITLE_CHARS = 200
+MAX_TOOL_NOTE_ITEMS = 50
+MAX_TOOL_NOTE_ITEM_CHARS = 2_000
+MAX_TOOL_NOTES_PER_CALL = 20
+
+
+class ToolNote(BaseModel):
+    """What a tool call did, for the user interface: written as a ``tool.note`` run event.
+
+    A note never reaches the model. ``paths`` are files or resources the call touched,
+    ``suggestions`` short follow-ups to offer the user, and ``data`` anything else a UI shows
+    (JSON values). The whole note is at most ``MAX_TOOL_NOTE_BYTES`` serialized.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    title: str = Field(min_length=1, max_length=MAX_TOOL_NOTE_TITLE_CHARS)
+    paths: tuple[str, ...] = Field(default=(), max_length=MAX_TOOL_NOTE_ITEMS)
+    suggestions: tuple[str, ...] = Field(default=(), max_length=MAX_TOOL_NOTE_ITEMS)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("paths", "suggestions")
+    @classmethod
+    def _bounded_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(len(item) > MAX_TOOL_NOTE_ITEM_CHARS for item in value):
+            raise ValueError(f"each item is at most {MAX_TOOL_NOTE_ITEM_CHARS} characters")
+        return value
+
+    def payload(self) -> dict[str, Any]:
+        """The note as event data; raises ``ValueError`` when it is too large or not JSON."""
+        try:
+            payload = self.model_dump(mode="json")
+            encoded = json.dumps(payload, allow_nan=False).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("a tool note's data must be JSON values") from exc
+        if len(encoded) > MAX_TOOL_NOTE_BYTES:
+            raise ValueError(f"a tool note is at most {MAX_TOOL_NOTE_BYTES} bytes serialized")
+        return payload
+
+
+NoteSink = Callable[[ToolNote], Awaitable[None]]
+
+
 class ToolContext(BaseModel):
     """What a tool knows about a call: who, which run and step, and what it may do.
 
@@ -129,6 +210,33 @@ class ToolContext(BaseModel):
     credentials: Mapping[str, str] = Field(
         default_factory=lambda: _NO_CREDENTIALS, repr=False, exclude=True
     )
+    # Where emit_note sends notes: set by the Runtime for a call inside a run.
+    _note_sink: NoteSink | None = PrivateAttr(default=None)
+
+    async def emit_note(
+        self,
+        *,
+        title: str,
+        paths: Sequence[str] = (),
+        suggestions: Sequence[str] = (),
+        data: Mapping[str, Any] | None = None,
+    ) -> ToolNote:
+        """Tell the user interface what this call did, without telling the model.
+
+        The Runtime writes it as a ``tool.note`` run event tagged with the call's step and call
+        id. Raises ``ValueError`` for a note past its bounds (see ``ToolNote``) or past
+        ``MAX_TOOL_NOTES_PER_CALL`` notes in one call. Outside a run (a test, or a tool run
+        directly) the note is checked and returned, and nothing is emitted.
+        """
+        if isinstance(paths, str) or isinstance(suggestions, str):
+            raise ValueError("paths and suggestions are sequences of strings, not one string")
+        note = ToolNote(
+            title=title, paths=tuple(paths), suggestions=tuple(suggestions), data=dict(data or {})
+        )
+        note.payload()
+        if self._note_sink is not None:
+            await self._note_sink(note)
+        return note
 
     @field_validator("credentials", mode="plain")
     @classmethod
@@ -169,11 +277,31 @@ class ToolContext(BaseModel):
 
 
 class ToolResult(BaseModel):
+    """What a call returned. A handler may return one instead of a bare value, to set
+    ``failed`` or ``metadata``; its ``value`` is checked like any other result."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     value: Any
     metadata: dict[str, Any] = Field(default_factory=dict)
     artifact_ids: tuple[str, ...] = ()
     redacted: bool = False
+    failed: bool = Field(
+        default=False,
+        description="The tool ran and returned an expected failure as data for the model to "
+        "correct (``ToolResult(value=..., failed=True)``, or ``ToolDefinition.failure_field``). "
+        "The call is recorded and emitted as failed, the value still goes to the model, and the "
+        "result is never cached. It is not retried: the call finished.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_failure(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a17 validates stored results with extra="forbid" and has no ``failed``: leave it
+        # out unless it is set, so ledger rows and cached results stay readable by a17 replicas
+        # during a rolling deploy or after a rollback.
+        data = handler(self)
+        if isinstance(data, dict) and not self.failed:
+            data.pop("failed", None)
+        return data
 
 
 class ToolExecutionStatus(StrEnum):
@@ -325,14 +453,24 @@ ReplayValidator = Callable[[ToolResult, ToolContext], Awaitable[None] | None]
 Reconciler = Callable[
     [ToolExecutionRecord, ToolContext], Awaitable[ReconcileOutcome] | ReconcileOutcome
 ]
-# A call planned before the one being checked, in the same model reply: it runs first.
+# A call in the same model reply as the one being checked that will run before it and has not
+# run yet, as (definition, arguments).
 EarlierCall = tuple[ToolDefinition, Mapping[str, Any]]
 # Why a call would be refused, or None. It runs before any approval is asked for, so a call that
-# cannot succeed goes back to the model instead of to the user.
+# cannot succeed goes back to the model instead of to the user. ``earlier`` holds the calls of the
+# same reply that will run before this one and have not run yet: judge the call as if they had.
+# When a reply's calls run one at a time, each earlier call has already run when the next is
+# checked, so ``earlier`` is () and the precheck sees their effect in the system itself; only a
+# reply whose calls run together (``tool_policy.parallel_calls``) fills it. Calls the precheck
+# refused, or a guard held back, are left out, since they will not run.
 Precheck = Callable[
     [ToolDefinition, Mapping[str, Any], Sequence[EarlierCall]],
     Awaitable[str | None] | str | None,
 ]
+
+
+# Takes a tool's handler and returns the handler to run instead, usually one that calls it.
+ToolMiddleware = Callable[[ToolHandler], ToolHandler]
 
 
 class Tool:
@@ -360,10 +498,26 @@ class Tool:
         self.reconcile = reconcile
         self.reconcile_on_replay = reconcile_on_replay
 
+    def with_handler(self, handler: ToolHandler) -> Tool:
+        """A copy of this tool that runs ``handler``, keeping everything else.
+
+        The copy keeps the definition and every hook (compensation, replay validator,
+        precheck, reconcile, ``reconcile_on_replay``) and any other attribute, including ones a
+        later release or a subclass adds, so a wrapper that decorates a handler never drops one.
+        The original tool is unchanged.
+        """
+        replaced = copy.copy(self)
+        replaced.handler = handler
+        return replaced
+
     async def check(
         self, arguments: Mapping[str, Any], earlier: Sequence[EarlierCall] = ()
     ) -> str | None:
-        """The precheck's problem with this call, judged after ``earlier``, or None."""
+        """The precheck's problem with this call, judged after ``earlier``, or None.
+
+        ``earlier`` holds the calls of the same reply that will run before this one and have not
+        run yet (see ``Precheck``); it is () when they already ran.
+        """
         if self.precheck is None:
             return None
         problem = self.precheck(self.definition, arguments, earlier)
@@ -401,3 +555,11 @@ class Tool:
         if inspect.isawaitable(result):
             return await result
         return result
+
+
+def wrap(tool: Tool, middleware: ToolMiddleware) -> Tool:
+    """``tool`` with its handler decorated by ``middleware``, keeping every hook.
+
+    ``wrap(tool, logged)`` is ``tool.with_handler(logged(tool.handler))``.
+    """
+    return tool.with_handler(middleware(tool.handler))

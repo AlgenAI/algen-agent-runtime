@@ -105,9 +105,11 @@ from algen_agent_runtime.runtime.guards import (
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.security.redaction import redact, redact_parameters
 from algen_agent_runtime.tools.contracts import (
+    MAX_TOOL_NOTES_PER_CALL,
     EarlierCall,
+    NoteSink,
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
@@ -115,12 +117,15 @@ from algen_agent_runtime.tools.contracts import (
     ToolDefinition,
     ToolExecutionRecord,
     ToolExecutionStatus,
+    ToolNote,
     ToolResult,
     read_only_credentials,
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import (
+    MAX_PENDING_STEERING,
+    MAX_STEERING_CHARS,
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
@@ -137,6 +142,7 @@ from algen_agent_runtime.types.contracts import (
     RunState,
     RunStatus,
     SkillSelection,
+    SteeringMessage,
     TextBlock,
     TokenUsage,
     ToolSpec,
@@ -294,6 +300,9 @@ class AgentRuntime:
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
         self._credentials: dict[str, Mapping[str, str]] = {}
+        # Steering messages for runs executing in this process, by run id, until the run's next
+        # transition checkpoints them into RunState.pending_steering.
+        self._steering: dict[str, list[SteeringMessage]] = {}
         self._task_lock = asyncio.Lock()
         self._accepting_runs = True
         self._shutdown_cancellation = False
@@ -402,7 +411,16 @@ class AgentRuntime:
         current = await self._require_state(run_id, tenant_id)
         agent = self.agents.get(current.request.agent, current.request.agent_version)
         composer = self.composers.get(agent.response_composer)
-        return await composer.compose(current)
+        result = await composer.compose(current)
+        if (
+            current.status in TERMINAL_STATUSES
+            and current.pending_steering
+            and not result.undelivered_steering
+        ):
+            result = result.model_copy(
+                update={"undelivered_steering": tuple(current.pending_steering)}
+            )
+        return result
 
     async def status(self, run_id: str, tenant_id: str) -> RunState:
         return await self._require_state(run_id, tenant_id)
@@ -433,6 +451,46 @@ class AgentRuntime:
             await self._transition(state, RunStatus.CANCELLED)
             await self._emit(state, "run.cancelled", {})
         return state
+
+    async def steer(self, run_id: str, tenant_id: str, text: str) -> SteeringMessage:
+        """Queue a user message for a run that has not ended, and return it.
+
+        The model gets it at the run's next step boundary, after the current tool results and
+        before the next model call, as a user message; a ``steer.delivered`` event follows. A
+        paused run keeps it until it is resumed. Messages still waiting when the run ends are
+        its ``RunResult.undelivered_steering``, announced by a ``steer.undelivered`` event.
+
+        Raises ``ValueError`` for empty text or text over ``MAX_STEERING_CHARS``, and
+        ``ConflictError`` when the run has ended, already has ``MAX_PENDING_STEERING`` messages
+        waiting, or is executing in another process.
+        """
+        text = text.strip() if isinstance(text, str) else ""
+        if not text:
+            raise ValueError("steering text is required")
+        if len(text) > MAX_STEERING_CHARS:
+            raise ValueError(f"steering text is at most {MAX_STEERING_CHARS} characters")
+        state = await self._require_state(run_id, tenant_id)
+        if state.status in TERMINAL_STATUSES:
+            raise ConflictError(f"run in {state.status.value!r} has ended and cannot be steered")
+        message = SteeringMessage(text=text)
+        async with self._task_lock:
+            task = self._tasks.get(run_id)
+            running = task is not None and not task.done()
+            queued = self._steering.get(run_id, [])
+            if len(state.pending_steering) + len(queued) >= MAX_PENDING_STEERING:
+                raise ConflictError(
+                    f"run already has {MAX_PENDING_STEERING} steering messages waiting"
+                )
+            if running:
+                # The drive checkpoints it at its next transition and delivers it.
+                self._steering.setdefault(run_id, []).append(message)
+            elif state.status in PAUSED_STATUSES:
+                state.pending_steering.append(message)
+                state.updated_at = utc_now()
+                await self.runs.save(state, state.version)
+            else:
+                raise ConflictError("run is executing in another process; steer it there")
+        return message
 
     async def resume(
         self,
@@ -580,6 +638,88 @@ class AgentRuntime:
             # However the drive ends (paused, finished, failed, cancelled, shut down), the
             # caller's credentials go with it.
             self._credentials.pop(run_id, None)
+            await self._keep_late_steering(run_id, tenant_id)
+
+    async def _keep_late_steering(self, run_id: str, tenant_id: str) -> None:
+        """Checkpoint steering that arrived after the drive's last transition."""
+        queued = self._steering.pop(run_id, None)
+        if not queued:
+            return
+        try:
+            state = await self._require_state(run_id, tenant_id)
+            state.pending_steering.extend(queued)
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            if state.status in TERMINAL_STATUSES:
+                await self._emit(state, "steer.undelivered", self._steering_data(queued))
+        except Exception:
+            self._logger.exception("steering_checkpoint_failed", run_id=run_id)
+
+    def _steering_data(self, messages: Sequence[SteeringMessage]) -> dict[str, Any]:
+        """Event data for steering messages: ids and sizes, and text only with content on."""
+        return {
+            "count": len(messages),
+            "messages": [
+                {
+                    "id": message.id,
+                    "chars": len(message.text),
+                    **({"text": message.text} if self.telemetry_include_content else {}),
+                }
+                for message in messages
+            ],
+        }
+
+    async def _deliver_steering(self, state: RunState, agent: AgentDefinition) -> None:
+        """Give the model the run's waiting steering messages, before its next model call.
+
+        Nothing is delivered while calls from the model's last reply wait for their results,
+        or once the run has its answer: those messages are delivered later or not at all.
+        """
+        state.pending_steering.extend(self._steering.pop(state.id, ()))
+        if (
+            not state.pending_steering
+            or state.output_text is not None
+            or any(
+                call.id not in state.completed_tool_call_ids for call in state.pending_tool_calls
+            )
+        ):
+            return
+        messages = list(state.pending_steering)
+        blocks: list[TextBlock] = []
+        for message in messages:
+            # Checked like the run's input: it is the same user speaking.
+            checked = await self._policy_value(
+                "input", message.text, state, {"agent": agent, "operation": "steering"}
+            )
+            blocks.append(TextBlock(text=checked if isinstance(checked, str) else message.text))
+        state.pending_steering = []
+        state.append_message(Message(role=Role.USER, content=tuple(blocks)))
+        await self._emit(state, "steer.delivered", self._steering_data(messages))
+        await self._audit(
+            state,
+            "run.steer",
+            "delivered",
+            state.id,
+            {"steer_ids": [message.id for message in messages]},
+        )
+
+    def _tool_note_sink(self, state: RunState, action: PlannedAction, tool_name: str) -> NoteSink:
+        """Where a call's ``ToolContext.emit_note`` writes: a ``tool.note`` event for the call."""
+        emitted = 0
+
+        async def sink(note: ToolNote) -> None:
+            nonlocal emitted
+            if emitted >= MAX_TOOL_NOTES_PER_CALL:
+                raise ValueError(f"a tool call emits at most {MAX_TOOL_NOTES_PER_CALL} notes")
+            emitted += 1
+            await self._emit(
+                state,
+                "tool.note",
+                {"tool": tool_name, "call_id": action.id.removeprefix("tool-"), **note.payload()},
+                action.id,
+            )
+
+        return sink
 
     def _forget_task(self, completed: asyncio.Task[None]) -> None:
         for run_id, task in tuple(self._tasks.items()):
@@ -896,6 +1036,7 @@ class AgentRuntime:
                 )
                 await self._transition(state, RunStatus.PLANNING)
             if state.status == RunStatus.PLANNING:
+                await self._deliver_steering(state, agent)
                 planner = self.planners.get(agent.planning_strategy)
                 with self._tracer.start_as_current_span(
                     "agent.planning",
@@ -1604,6 +1745,7 @@ class AgentRuntime:
             },
             "additional governed execution",
             policy.approval_expires_seconds,
+            agent=state.request.agent,
         )
         state.pause_payload = {
             "kind": "execution_continuation",
@@ -1801,9 +1943,10 @@ class AgentRuntime:
                 action.id,
                 state.request.tenant_id,
                 f"Execute {tool.definition.name}",
-                self._redact_mapping(action.arguments),
+                redact_parameters(action.arguments),
                 decision.audit_metadata.get("risk", tool.definition.side_effect.value),
                 agent.approval_policy.expires_seconds,
+                agent=state.request.agent,
             )
             state.pause_payload = {
                 "kind": "tool_approval",
@@ -1836,7 +1979,10 @@ class AgentRuntime:
 
         Arguments that do not fit the tool's input schema, or a call its precheck refuses, are
         refused; a read repeated with nothing changed since, or a call past the tool's limit,
-        is held back. ``batch_keys`` holds the reads admitted earlier in the same parallel reply.
+        is held back. ``earlier`` holds the calls of the same reply that will run before this
+        one and have not run yet: the parallel path passes the batch's admitted calls, the
+        single path () because the reply's earlier calls have already run. ``batch_keys`` holds
+        the reads admitted earlier in the same parallel reply.
         """
         definition = tool.definition
         name = definition.name
@@ -1899,7 +2045,10 @@ class AgentRuntime:
         state: RunState, agent: AgentDefinition, definition: ToolDefinition, arguments: Any
     ) -> None:
         """A successful read is remembered for the repeat guard; a successful change forgets
-        every read, since looking again may now show something new."""
+        every read, since looking again may now show something new. A successful call also
+        starts its tool's refusal count again, unless refusals count per run."""
+        if agent.tool_policy.refusal_count == "consecutive":
+            state.tool_refusals.pop(definition.name, None)
         if not agent.tool_policy.repeat_guard or definition.volatile:
             return
         if read_only(definition):
@@ -1915,9 +2064,19 @@ class AgentRuntime:
         held: _HeldCall,
         *,
         settle: bool = True,
+        announced: bool = False,
     ) -> None:
-        """Answer a call a guard held back with the guard's note, and record why."""
+        """Answer a call a guard held back with the guard's note, and record why.
+
+        A held call gets a ``tool.started`` like one that runs, with the guard's status
+        (``refused``, ``repeated`` or ``over_limit``) instead of ``running``, so consumers that
+        track calls from their start see it; ``announced`` means it was already emitted.
+        """
         name = action.tool_name or ""
+        if not announced:
+            # A guard only holds a call to a registered tool.
+            definition = self.tools.get(name).definition
+            await self._announce_tool_call(state, action, definition, held.status)
         with self._tracer.start_as_current_span(
             "agent.tool.call", attributes=self._span_attributes(state, action.id)
         ) as span:
@@ -1945,7 +2104,13 @@ class AgentRuntime:
                 {"step_id": action.id, "reason_code": held.reason_code, **held.details},
             )
             await self._finish_tool_call_without_result(
-                state, action, held.payload, status=held.status, settle=settle, agent=agent
+                state,
+                action,
+                held.payload,
+                status=held.status,
+                settle=settle,
+                agent=agent,
+                reason_code=held.reason_code,
             )
 
     async def _wrap_up_blocks(
@@ -1984,21 +2149,38 @@ class AgentRuntime:
         )
         return (TextBlock(text=wrap_up_note(calls)),)
 
-    async def _run_tool_call(
-        self, state: RunState, agent: AgentDefinition, action: PlannedAction, tool: Tool
-    ) -> _ToolCallOutcome:
-        call_id = action.id.removeprefix("tool-")
+    async def _announce_tool_call(
+        self,
+        state: RunState,
+        action: PlannedAction,
+        definition: ToolDefinition,
+        status: str = "running",
+    ) -> None:
+        """Emit a call's ``tool.started``: ``running``, or the status a guard held it with."""
         await self._emit(
             state,
             "tool.started",
             {
-                "tool": tool.definition.name,
-                "status": "running",
-                "side_effect": tool.definition.side_effect.value,
+                "tool": definition.name,
+                "status": status,
+                "side_effect": definition.side_effect.value,
                 "argument_keys": sorted(action.arguments),
             },
             action.id,
         )
+
+    async def _run_tool_call(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        action: PlannedAction,
+        tool: Tool,
+        *,
+        announced: bool = False,
+    ) -> _ToolCallOutcome:
+        call_id = action.id.removeprefix("tool-")
+        if not announced:
+            await self._announce_tool_call(state, action, tool.definition)
         context = ToolContext(
             run_id=state.id,
             step_id=action.id,
@@ -2008,6 +2190,7 @@ class AgentRuntime:
             idempotency_key=f"{state.id}:{call_id}",
             credentials=self._run_credentials(state.id),
         )
+        context._note_sink = self._tool_note_sink(state, action, tool.definition.name)
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
         memory_receipt: MemoryReceipt | None = None
@@ -2108,7 +2291,7 @@ class AgentRuntime:
                 span.set_attribute("tool.status", "failed")
                 span.set_attribute("error.type", type(exc).__name__)
                 raise
-            span.set_attribute("tool.status", "completed")
+            span.set_attribute("tool.status", "failed" if result.failed else "completed")
             span.set_attribute("tool.result_chars", len(tool_text))
             span.set_attribute("tool.result.redacted", result.redacted)
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
@@ -2138,7 +2321,11 @@ class AgentRuntime:
         call_id = action.id.removeprefix("tool-")
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
-        self._remember_tool_call(state, agent, tool.definition, action.arguments)
+        # A failure the tool returned as data reaches the model like any result, whatever
+        # on_error, but is not a success the guards remember.
+        status = "failed" if result.failed else "completed"
+        if not result.failed:
+            self._remember_tool_call(state, agent, tool.definition, action.arguments)
         state.append_message(
             Message(
                 role=Role.TOOL,
@@ -2159,7 +2346,7 @@ class AgentRuntime:
             "tool.completed",
             {
                 "tool": tool.definition.name,
-                "status": "completed",
+                "status": status,
                 "side_effect": tool.definition.side_effect.value,
                 "result_redacted": result.redacted,
                 "result_chars": len(tool_text),
@@ -2171,7 +2358,7 @@ class AgentRuntime:
         await self._audit(
             state,
             "tool.call",
-            "completed",
+            status,
             tool.definition.name,
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )
@@ -2283,12 +2470,17 @@ class AgentRuntime:
         state.step_count += len(actions)
         for action in actions:
             await self._emit(state, "step.started", {"action": action.type.value}, action.id)
+        # Every call's start is announced in the model's order before any of them runs, so a
+        # running call's start never comes before an earlier call a guard held back.
+        for action, tool, hold in zip(actions, tools, held, strict=True):
+            status = "running" if hold is None else hold.status
+            await self._announce_tool_call(state, action, tool.definition, status)
         await self._transition(state, RunStatus.INVOKING_TOOL)
         limit = asyncio.Semaphore(agent.tool_policy.max_parallel_calls)
 
         async def run_one(action: PlannedAction, tool: Tool) -> _ToolCallOutcome:
             async with limit:
-                return await self._run_tool_call(state, agent, action, tool)
+                return await self._run_tool_call(state, agent, action, tool, announced=True)
 
         with self._tracer.start_as_current_span(
             "agent.step",
@@ -2325,7 +2517,9 @@ class AgentRuntime:
             if waiting is not None:
                 continue
             if isinstance(outcome, _HeldCall):
-                await self._hold_tool_call(state, agent, action, outcome, settle=False)
+                await self._hold_tool_call(
+                    state, agent, action, outcome, settle=False, announced=True
+                )
             elif isinstance(outcome, BaseException):
                 assert isinstance(outcome, Exception)
                 await self._tool_call_failed(state, agent, action, outcome, settle=False)
@@ -2495,10 +2689,12 @@ class AgentRuntime:
         status: str,
         settle: bool = True,
         agent: AgentDefinition | None = None,
+        reason_code: str | None = None,
     ) -> None:
         """Answer a tool call the model made with ``payload`` instead of the tool's result.
 
-        With ``agent``, the answer carries the agent's wrap-up notice when it applies.
+        With ``agent``, the answer carries the agent's wrap-up notice when it applies;
+        ``reason_code`` (a guard's) goes on the ``tool.completed`` event.
         """
         call_id = action.id.removeprefix("tool-")
         name = action.tool_name or ""
@@ -2521,7 +2717,10 @@ class AgentRuntime:
         state.summary = state.summary.model_copy(
             update={"tool_calls": state.summary.tool_calls + 1}
         )
-        await self._emit(state, "tool.completed", {"tool": name, "status": status}, action.id)
+        completed: dict[str, Any] = {"tool": name, "status": status}
+        if reason_code is not None:
+            completed["reason_code"] = reason_code
+        await self._emit(state, "tool.completed", completed, action.id)
         if settle and state.status == RunStatus.INVOKING_TOOL:
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
 
@@ -2689,10 +2888,16 @@ class AgentRuntime:
         expected = state.version
         state.status = target
         state.updated_at = utc_now()
+        # Steering queued since the last checkpoint is saved with this one.
+        state.pending_steering.extend(self._steering.pop(state.id, ()))
         await self.runs.save(state, expected)
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
+        if target in TERMINAL_STATUSES and state.pending_steering:
+            await self._emit(
+                state, "steer.undelivered", self._steering_data(state.pending_steering)
+            )
 
     async def _emit(
         self,
@@ -2893,13 +3098,6 @@ class AgentRuntime:
             cache_write_tokens=left.cache_write_tokens + right.cache_write_tokens,
             estimated_cost_usd=left.estimated_cost_usd + right.estimated_cost_usd,
         )
-
-    @staticmethod
-    def _redact_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
-        sensitive = {"password", "secret", "token", "api_key", "authorization"}
-        return {
-            key: "[REDACTED]" if key.lower() in sensitive else item for key, item in value.items()
-        }
 
     @staticmethod
     def _meter_call(

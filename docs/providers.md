@@ -23,6 +23,45 @@ compatibility never weakens the application contract.
 
 Secrets are references (`env://NAME`) resolved immediately before a request. Never accept or log literal secret configuration.
 
+## Hosted OpenAI-compatible vendors
+
+`gemini`, `xai` and `groq` are first-class types: the vendor base URL and default secret are built in,
+and `base_url`, `capabilities` and `stream_usage` can still be set.
+
+```yaml
+providers:
+  gemini: {type: gemini, default_model: gemini-flash-latest}        # env://GEMINI_API_KEY
+  groq: {type: groq, default_model: openai/gpt-oss-120b}            # env://GROQ_API_KEY
+  xai: {type: xai, default_model: grok-4}                           # env://XAI_API_KEY
+```
+
+## When the router falls back
+
+A model call that fails moves on to the next candidate (by rank, or by declaration order with
+`ordered`) when the failure is specific to that provider: authentication or authorization errors,
+rate limits, timeouts (including HTTP 408), 5xx and transport failures, an invalid response, or an
+HTTP error such as 404 for a model the provider does not serve. A request the provider rejects as
+invalid (HTTP 400 or 422, `invalid_request`) is raised without trying other models, since they
+would reject it too, and it does not count against the provider's circuit breaker. A streamed call
+falls back only before it starts, and only when the request does not fit a candidate's context
+budget.
+
+## Ordered fallback
+
+By default (`routing_preference: balanced`) candidates are ranked by `quality_tier`, observed
+latency and cost, so a consistently faster fallback can be chosen ahead of the default model. Set
+`routing_preference: ordered` on the default model and every fallback to try them strictly in
+declaration order; providers with an open circuit breaker, missing capabilities or exceeded
+latency/cost limits are still skipped. `ordered` describes the whole list, so configuration that sets
+it on only some of an agent's profiles is rejected at load time. When profiles are built in code, the
+first (default) profile decides the mode.
+
+```yaml
+default_model: {name: primary, provider: gemini, model: gemini-flash-latest, routing_preference: ordered}
+fallback_models:
+  - {name: fast, provider: groq, model: openai/gpt-oss-120b, routing_preference: ordered}
+```
+
 ## Provider instances vs. adapter types
 
 Configuration keys under `providers:` in `agent.yaml` represent **provider instance IDs** (deployment identities), while the `type:` field specifies the underlying adapter implementation.

@@ -14,7 +14,7 @@ The purpose of this document is to identify work that belongs in Studio. It is n
 
 The previous version contained several stale or incorrect claims. They should not be carried into implementation work:
 
-- Runtime does **not** currently implement a Gemini provider, a `deployment_name` provider field, Bedrock, or Vertex endpoints. The provider construction code currently supports `mock`, `openai`, `azure_openai`, `anthropic`, `deepseek`, `mistral`, `ollama`, `huggingface_inference`, `local_transformers`, and `openai_compatible`.
+- Runtime does **not** currently implement a `deployment_name` provider field, Bedrock, or Vertex endpoints. The provider construction code supports `mock`, `openai`, `azure_openai`, `anthropic`, `deepseek`, `mistral`, `gemini` (Gemini API), `xai`, `groq`, `ollama`, `huggingface_inference`, `local_transformers`, and `openai_compatible`.
 - Runtime's safe starter pack is `starter.calculator`, `starter.json_query`, `starter.file_read`, `starter.directory_list`, and `starter.clock`. It does not contain the previously documented web-search, web-fetch, shell, or write-file tools.
 - `WorkflowHookLoader` accepts `allowed_modules` and exposes `load()` / `aload()`. It does not accept `trusted_roots`, modify `sys.path`, or provide lifecycle teardown for the object returned by a hook factory.
 - Studio already composes its server with Runtime's `create_app()`. Consequently the Studio host already inherits Runtime request-body middleware, API admission middleware, and `/health/live` and `/health/ready`. The remaining API gap is in per-project configuration and the generated export service, not the Studio composition root.

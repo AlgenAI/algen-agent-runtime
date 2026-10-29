@@ -11,11 +11,20 @@ import pytest
 from pydantic import ValidationError
 
 import algen_agent_runtime.tools.http_api as http_api
+from algen_agent_runtime.cache import CachePolicy, CacheScope, CacheService, InMemoryCacheStore
 from algen_agent_runtime.config.settings import AppSettings, SecuritySettings
 from algen_agent_runtime.exceptions.errors import ToolExecutionError
 from algen_agent_runtime.orchestration.container import build_container
-from algen_agent_runtime.tools.contracts import Idempotency, SideEffect, ToolContext
+from algen_agent_runtime.policies.engine import CompositePolicyEngine
+from algen_agent_runtime.tools.contracts import (
+    Idempotency,
+    SideEffect,
+    ToolContext,
+    ToolExecutionStatus,
+)
+from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.http_api import HttpToolConfig, http_api_tool
+from algen_agent_runtime.tools.registry import ToolRegistry
 
 CONTEXT = ToolContext(
     run_id="r",
@@ -109,6 +118,54 @@ async def test_a_call_fills_the_url_query_and_auth_and_selects_the_answer(
     assert no_dns == ["https://api.example.com/repos/algen%20ai/studio/issues/7"]
     assert tool.definition.side_effect == SideEffect.READ
     assert tool.definition.idempotency == Idempotency.IDEMPOTENT
+
+
+@pytest.mark.parametrize("value", ["..", ".", "%2e%2e", "%2E", ".%2e", ""])
+async def test_a_path_value_cannot_be_a_dot_segment(value: str) -> None:
+    server = Server(_json({}))
+    tool = _tool(ISSUE, server, {"GITHUB_TOKEN": "ghs_secret"})
+
+    with pytest.raises(ToolExecutionError, match="must name one path segment"):
+        await tool.handler({"owner": "algen", "repo": value, "number": 7}, CONTEXT)
+
+    assert server.requests == []
+
+
+async def test_a_path_value_with_dots_is_still_one_segment() -> None:
+    server = Server(_json({"issue": {}}), _json({"issue": {}}))
+    tool = _tool(ISSUE, server, {"GITHUB_TOKEN": "ghs_secret"})
+
+    await tool.handler({"owner": "algen", "repo": "...", "number": 7}, CONTEXT)
+    await tool.handler({"owner": "algen", "repo": "../secrets", "number": 7}, CONTEXT)
+
+    assert [r.url.raw_path for r in server.requests] == [
+        b"/repos/algen/.../issues/7?v=3",
+        b"/repos/algen/..%2Fsecrets/issues/7?v=3",
+    ]
+
+
+async def test_the_urls_own_query_is_kept_with_templates_and_pages() -> None:
+    server = Server(_json({"items": [1]}), _json({"items": []}))
+    search = {
+        "name": "api.search",
+        "description": "Search",
+        "url": "https://api.example.com/search?q={term}&v=2&page=9",
+        "parameters": {
+            "type": "object",
+            "properties": {"term": {"type": "string"}},
+            "required": ["term"],
+        },
+        "query": {"sort": "new"},
+        "pagination": {"type": "page_param", "items_pointer": "/items"},
+    }
+
+    result = await _tool(search, server).handler({"term": "a b"}, CONTEXT)
+
+    assert result["data"] == [1]
+    assert [str(r.url) for r in server.requests] == [
+        "https://api.example.com/search?q=a+b&v=2&sort=new&page=1",
+        "https://api.example.com/search?q=a+b&v=2&sort=new&page=2",
+    ]
 
 
 async def test_a_body_keeps_argument_types_and_basic_and_header_auth_work() -> None:
@@ -301,3 +358,222 @@ def test_declared_tools_are_registered_in_the_container() -> None:
     container = build_container(settings)
     tool = container.runtime.tools.get("status.read")
     assert tool.definition.description == "d"
+
+
+CALLER = {
+    "name": "lms.me",
+    "description": "Read the signed-in user's profile",
+    "url": "https://api.example.com/me",
+    "auth": {"type": "caller"},
+}
+USER_TOKEN = "Bearer user-token-3f9a1c"
+
+
+def _caller_context(**credentials: str) -> ToolContext:
+    return CONTEXT.model_copy(update={"credentials": credentials})
+
+
+async def test_caller_auth_forwards_the_runs_credential_as_given() -> None:
+    server = Server(_json({"id": "u"}))
+    tool = _tool(CALLER, server)
+
+    result = await tool.handler({}, _caller_context(authorization=USER_TOKEN))
+
+    assert result["ok"] is True
+    [request] = server.requests
+    assert request.headers["authorization"] == USER_TOKEN
+    assert "cookie" not in request.headers
+    assert USER_TOKEN not in json.dumps(result)
+
+
+@pytest.mark.parametrize("given", ["user-token-3f9a1c", "bearer user-token-3f9a1c"])
+async def test_caller_auth_applies_a_scheme_and_a_custom_header(given: str) -> None:
+    server = Server(_json({}), _json({}))
+    bearer = _tool({**CALLER, "auth": {"type": "caller", "scheme": "Bearer"}}, server)
+    custom = _tool(
+        {**CALLER, "auth": {"type": "caller", "credential": "lms_key", "header_name": "X-Key"}},
+        server,
+    )
+
+    await bearer.handler({}, _caller_context(authorization=given))
+    await custom.handler({}, _caller_context(lms_key="key-1", authorization=USER_TOKEN))
+
+    assert server.requests[0].headers["authorization"] == "Bearer user-token-3f9a1c"
+    assert server.requests[1].headers["x-key"] == "key-1"
+    assert "authorization" not in server.requests[1].headers
+
+
+async def test_caller_auth_without_the_credential_sends_nothing() -> None:
+    server = Server(_json({}))
+    plain = _tool(CALLER, server)
+    bearer = _tool({**CALLER, "auth": {"type": "caller", "scheme": "Bearer"}}, server)
+    contexts = [
+        CONTEXT,
+        _caller_context(other="x"),
+        _caller_context(authorization=""),
+        _caller_context(authorization="   "),
+        _caller_context(authorization="\t"),
+    ]
+
+    for tool in (plain, bearer):
+        for context in contexts:
+            with pytest.raises(ToolExecutionError, match="authentication required"):
+                await tool.handler({}, context)
+    # With a scheme, the scheme alone is no credential either.
+    for given in ("Bearer ", "bearer", "  Bearer\t "):
+        with pytest.raises(ToolExecutionError, match="authentication required"):
+            await bearer.handler({}, _caller_context(authorization=given))
+
+    assert server.requests == []
+
+
+async def test_caller_auth_refuses_a_credential_of_another_scheme() -> None:
+    server = Server(_json({}))
+    tool = _tool({**CALLER, "auth": {"type": "caller", "scheme": "Bearer"}}, server)
+
+    for given in ("Basic dXNlcjpwdw==", "Bearer Bearer tok", "tok en"):
+        with pytest.raises(ToolExecutionError, match="not a Bearer credential") as raised:
+            await tool.handler({}, _caller_context(authorization=given))
+        assert "dXNl" not in str(raised.value) and "tok" not in str(raised.value)
+
+    assert server.requests == []
+
+
+async def test_caller_auth_refuses_a_credential_that_is_not_a_header_value() -> None:
+    server = Server(_json({}))
+    tool = _tool(CALLER, server)
+    # A trailing line break is refused too, not silently dropped.
+    for injected in ("Bearer abc\r\nX-Injected: 1", "Bearer abc\r\n", "\nBearer abc"):
+        with pytest.raises(ToolExecutionError, match="not a valid header value") as raised:
+            await tool.handler({}, _caller_context(authorization=injected))
+        assert "abc" not in str(raised.value)
+
+    assert server.requests == []
+
+
+async def test_caller_auth_never_follows_a_link_to_another_origin() -> None:
+    paged = {
+        **CALLER,
+        "name": "lms.items",
+        "url": "https://api.example.com/items",
+        "pagination": {"type": "link_header", "items_pointer": "/items"},
+    }
+    same = Server(
+        _json({"items": [1]}, headers={"link": '<https://api.example.com/items?c=2>; rel="next"'}),
+        _json({"items": [2]}),
+    )
+    other = Server(
+        _json(
+            {"items": [1]},
+            headers={"link": '<https://files.api.example.com/items?c=2>; rel="next"'},
+        ),
+        _json({"items": [2]}),
+    )
+
+    result = await _tool(paged, same).handler({}, _caller_context(authorization=USER_TOKEN))
+    assert result["data"] == [1, 2]
+    assert [r.headers["authorization"] for r in same.requests] == [USER_TOKEN] * 2
+    with pytest.raises(ToolExecutionError, match="another origin"):
+        await _tool(paged, other).handler({}, _caller_context(authorization=USER_TOKEN))
+    assert len(other.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("auth", "message"),
+    [
+        ({"type": "caller", "token": "env://T"}, "takes no token"),
+        ({"type": "caller", "header_name": "Cookie"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "Proxy-Authorization"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "TE"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "Upgrade"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "Keep-Alive"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "Trailer"}, "cannot be sent as"),
+        ({"type": "caller", "header_name": "Proxy-Connection"}, "cannot be sent as"),
+        ({"type": "caller", "credential": "bad key"}, "credential"),
+        ({"type": "caller", "scheme": "Bearer token"}, "scheme"),
+        ({"type": "bearer", "token": "env://T", "scheme": "Bearer"}, "caller authentication only"),
+    ],
+)
+def test_caller_auth_declarations_are_checked(auth: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        HttpToolConfig.model_validate({**CALLER, "auth": auth})
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"type": "caller", "header_name": "X-User-Token"},
+        {"type": "header", "header_name": "X-User-Token", "token": "env://T"},
+    ],
+)
+def test_a_header_template_cannot_write_into_the_auth_header(auth: dict[str, Any]) -> None:
+    config = {
+        **CALLER,
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}}},
+        "auth": auth,
+        "headers": {"x-user-token": "{id}"},
+    }
+    with pytest.raises(ValidationError, match="use auth for credentials"):
+        HttpToolConfig.model_validate(config)
+
+
+async def test_a_write_refused_before_any_request_is_a_definite_failure() -> None:
+    server = Server(_json({"enrolled": True}))
+    enrol = {
+        **CALLER,
+        "name": "lms.enrol",
+        "method": "POST",
+        "url": "https://api.example.com/enrolments",
+        "body": {"course": "c1"},
+    }
+    registry = ToolRegistry()
+    registry.register(_tool(enrol, server))
+    executor = ToolExecutor(registry, CompositePolicyEngine())
+
+    with pytest.raises(ToolExecutionError, match="authentication required"):
+        await executor.execute("lms.enrol", {}, CONTEXT)
+
+    record = await executor.executions.get("k", "t")  # type: ignore[attr-defined]
+    # Nothing was sent, so there is nothing to reconcile: the same call can run once signed in.
+    assert record.status == ToolExecutionStatus.FAILED
+    result = await executor.execute("lms.enrol", {}, _caller_context(authorization=USER_TOKEN))
+    assert result.value["data"] == {"enrolled": True}
+    assert len(server.requests) == 1
+
+
+async def test_calls_with_caller_credentials_bypass_the_tool_result_cache() -> None:
+    server = Server(*(_json({"profile": index}) for index in range(3)))
+    registry = ToolRegistry()
+    registry.register(_tool(CALLER, server))
+    cache = CacheService(
+        InMemoryCacheStore(), {"tool_results": CachePolicy(enabled=True, scope=CacheScope.TENANT)}
+    )
+    executor = ToolExecutor(registry, CompositePolicyEngine(), cache=cache)
+
+    def context(user: str, key: str) -> ToolContext:
+        return CONTEXT.model_copy(
+            update={
+                "user_id": user,
+                "idempotency_key": key,
+                "credentials": {"authorization": f"Bearer {user}"},
+            }
+        )
+
+    first = await executor.execute("lms.me", {}, context("alice", "k1"))
+    second = await executor.execute("lms.me", {}, context("bob", "k2"))
+
+    # Same tool, arguments and tenant, but each call carries a different caller's credential.
+    assert first.value["data"] == {"profile": 0}
+    assert second.value["data"] == {"profile": 1}
+    assert not second.metadata.get("runtime_cache_hit")
+    assert [r.headers["authorization"] for r in server.requests] == ["Bearer alice", "Bearer bob"]
+    assert len(cache.store._items) == 0  # type: ignore[attr-defined]
+
+    # The same read without credentials is cached as before.
+    public = Server(_json({"status": "up"}))
+    registry.register(_tool({**CALLER, "name": "lms.status", "auth": {"type": "none"}}, public))
+    plain = [CONTEXT.model_copy(update={"idempotency_key": key}) for key in ("k3", "k4")]
+    await executor.execute("lms.status", {}, plain[0])
+    cached = await executor.execute("lms.status", {}, plain[1])
+    assert cached.metadata.get("runtime_cache_hit") is True
+    assert len(public.requests) == 1

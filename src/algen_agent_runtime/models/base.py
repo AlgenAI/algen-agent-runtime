@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -98,6 +99,16 @@ class SlidingWindowRateLimiter:
             await asyncio.sleep(max(0.001, delay))
 
 
+_REQUEST_REJECTED_STATUSES = frozenset({400, 422})
+
+
+def _rejects_request(exc: ProviderError) -> bool:
+    """Whether ``exc`` rejects the request itself, so another provider would fail the same way."""
+    return exc.error_kind == ErrorKind.INVALID_REQUEST and (
+        exc.status_code is None or exc.status_code in _REQUEST_REJECTED_STATUSES
+    )
+
+
 class ModelRouter:
     def __init__(
         self,
@@ -105,7 +116,17 @@ class ModelRouter:
         circuit_reset_seconds: float = 30,
         cache: CacheService | None = None,
         usage_meter: UsageMeter | None = None,
+        reserve_input_margin: float = 1.0,
     ) -> None:
+        """``reserve_input_margin`` scales the estimated input tokens the ``usage_meter``
+        reserves (``estimate_request_tokens`` assumes four characters a token, and code, JSON
+        and non-English text often run under that). It applies only to metered reservations,
+        never to context packing or the run's token budget; it must be at least 1.0.
+        """
+        if not math.isfinite(reserve_input_margin) or reserve_input_margin < 1.0:
+            raise ValueError(
+                f"reserve_input_margin must be a finite number >= 1.0, not {reserve_input_margin}"
+            )
         self._providers: dict[str, ModelProvider] = {}
         self._profiles: dict[str, ModelProfile] = {}
         self._health: dict[str, ProviderHealth] = {}
@@ -122,6 +143,7 @@ class ModelRouter:
         self._cache = cache
         # Reserves before and settles after every provider dispatch; see models/metering.py.
         self._usage_meter = usage_meter
+        self._reserve_input_margin = reserve_input_margin
         # Inspected once here, never per call: a 0.1.0a14 meter is called without ``call``.
         self._meter_takes_call = usage_meter is None or reserve_accepts_call(usage_meter)
 
@@ -225,7 +247,10 @@ class ModelRouter:
     ) -> tuple[tuple[ModelProvider, ModelProfile], ...]:
         ranked: list[tuple[float, ModelProvider, ModelProfile]] = []
         now = time.monotonic()
-        for profile in profiles:
+        # "ordered" describes the whole list, so the first (default) profile decides it. Settings
+        # reject mixed lists; an "ordered" fallback behind a scored default is scored as balanced.
+        ordered = bool(profiles) and profiles[0].routing_preference == "ordered"
+        for position, profile in enumerate(profiles):
             if profile.provider is None or profile.model is None:
                 continue
             identity = f"{profile.provider}/{profile.model}"
@@ -259,9 +284,17 @@ class ModelRouter:
                 preference_score = 10_000 if locality else 0
             elif profile.routing_preference == "cloud_first":
                 preference_score = 10_000 if not locality else 0
-            score = (
-                profile.quality_tier * 1000 + preference_score - health.latency_ms - average_cost
-            )
+            if ordered:
+                # Declaration order wins (primary, then fallbacks); health, capability, latency
+                # and cost filters above still remove candidates.
+                score = -float(position)
+            else:
+                score = (
+                    profile.quality_tier * 1000
+                    + preference_score
+                    - health.latency_ms
+                    - average_cost
+                )
             ranked.append((score, provider, profile))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return tuple((provider, profile) for _, provider, profile in ranked)
@@ -275,6 +308,11 @@ class ModelRouter:
         meter_call: MeterCall | None = None,
     ) -> ModelResponse:
         """Dispatch to the best candidate, falling back to the next on a provider error.
+
+        Authentication and authorization failures, rate limits, timeouts, unavailability and
+        errors only one provider raises (such as a 404 for a model it does not serve) fall back.
+        A request rejected as invalid (HTTP 400/422 ``invalid_request``) is raised as is, since
+        every candidate would reject it.
 
         ``meter_call`` is the run context the usage meter receives; the router fills in
         ``provider``, ``model`` and ``streaming`` for each candidate it tries.
@@ -321,14 +359,18 @@ class ModelRouter:
                     await self._usage_meter.settle(ticket, priced.usage)
                 return priced
             except ProviderError as exc:
+                if _rejects_request(exc):
+                    # Every provider would reject this request the same way, so falling back
+                    # would only hide the error behind another model's answer. The request is at
+                    # fault, not the provider, so its health is untouched. The reservation was
+                    # released by _dispatch.
+                    raise
                 errors.append(f"{rid}: {exc}")
                 failures.append(exc)
                 health = self._health[rid]
                 health.consecutive_failures += 1
                 if health.consecutive_failures >= self._threshold:
                     health.opened_at = time.monotonic()
-                if not exc.retryable:
-                    continue
         if not failures:
             raise BudgetExceededError("no model candidate fits the configured context budget")
         kinds = {failure.error_kind for failure in failures}
@@ -436,7 +478,7 @@ class ModelRouter:
         if self._usage_meter is None:
             return None
         model = request.model or profile.model or ""
-        max_input_tokens = estimate_request_tokens(request)
+        max_input_tokens = math.ceil(estimate_request_tokens(request) * self._reserve_input_margin)
         max_output_tokens = request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS
         try:
             if not self._meter_takes_call:

@@ -9,6 +9,9 @@ Capabilities depend on the selected model and server. These adapter defaults are
 | Anthropic | yes | yes | yes | yes | no | yes | Messages |
 | DeepSeek | yes | yes | model-dependent | no strict guarantee | endpoint-dependent | no | OpenAI-compatible |
 | Mistral AI | yes | yes | model-dependent | model-dependent | yes | model-dependent | Mistral Chat/Embeddings |
+| Google Gemini | yes | yes | yes | yes | yes | yes | OpenAI-compatible (Gemini API) |
+| xAI Grok | yes | yes | yes | yes | no | yes (model-dependent) | OpenAI-compatible |
+| Groq | yes | yes | yes | gpt-oss models (others best-effort) | no | no | OpenAI-compatible |
 | Ollama | yes | yes | model-dependent | model-dependent | yes | model-dependent | OpenAI-compatible |
 | Hugging Face Inference | yes | yes | model-dependent | no guarantee | endpoint-dependent | model-dependent | OpenAI-compatible router |
 | Local Transformers | yes | completion only | no | no | no | no | in-process |
@@ -23,6 +26,31 @@ OpenAI-style adapters ask for token usage on streamed calls (`stream_options.inc
 budgets and metering count them. A server that rejects the field is configured with
 `stream_usage: false` on its provider entry; Mistral defaults to off because its API reports usage
 unasked. `stream_options` from profile extensions are kept.
+
+## Gemini notes
+
+- `type: gemini` calls `https://generativelanguage.googleapis.com/v1beta/openai`; set `base_url` to
+  use another endpoint. Thinking models accept `reasoning_effort` (`low`, `medium`, `high`) as a
+  profile extension; without it, a small `max_output_tokens` can be spent on hidden reasoning.
+- The endpoint keeps only the last system message, so the adapter merges the leading run of system
+  messages (agent instructions, retrieved evidence, pinned compaction summaries), in order, into
+  one. A system message later in the conversation, such as the verification-repair instruction, is
+  sent in place as a user message prefixed `[system] ` so it keeps its position.
+- Embedding models (`gemini-embedding-*`) report `chat: false, embeddings: true`.
+
+## Groq notes
+
+- Groq enforces strict JSON-schema output only on the gpt-oss family (`openai/gpt-oss-*`). For
+  those models the adapter reports `json_schema: true` and sends `strict: true`; for other models it
+  reports `json_schema: false` (best-effort `structured_output` only) and sends `strict: false`, so
+  a `response_schema` is not rejected and Runtime's JSON-schema verifier checks the answer.
+- Setting `capabilities` on the provider entry replaces this per-model default; `json_schema` in it
+  then decides `strict`. Narrow `tools` there for Groq models without tool calling.
+
+## xAI notes
+
+- The adapter reports `images: true`. Not every Grok model accepts image input; narrow
+  `capabilities` on the provider entry for a text-only model.
 
 ## Anthropic notes
 

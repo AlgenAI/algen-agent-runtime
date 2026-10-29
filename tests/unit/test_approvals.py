@@ -16,10 +16,10 @@ class _ApprovalDatabase:
     """Stores the approval as JSON text, as asyncpg returns jsonb columns."""
 
     def __init__(self, approval: ApprovalRequest) -> None:
-        self.approval_json = approval.model_dump_json()
+        self.approval_json = approval.model_dump_json(exclude={"agent", "created_at"})
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, str]:
-        return {"approval": self.approval_json}
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any]:
+        return {"approval": self.approval_json, "agent": None, "created_at": utc_now()}
 
     async def execute(self, query: str, *args: Any) -> str:
         self.approval_json = args[0]

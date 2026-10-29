@@ -89,10 +89,13 @@ from algen_agent_runtime.models.providers.adapters import (
     AnthropicProvider,
     AzureOpenAIProvider,
     DeepSeekProvider,
+    GeminiProvider,
+    GroqProvider,
     HuggingFaceInferenceProvider,
     MistralProvider,
     OllamaProvider,
     OpenAIProvider,
+    XAIProvider,
 )
 from algen_agent_runtime.models.providers.local_transformers import LocalTransformersProvider
 from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
@@ -133,7 +136,7 @@ from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
-from algen_agent_runtime.retrieval.ingestion import TextChunker
+from algen_agent_runtime.retrieval.ingestion import Chunker, MarkdownChunker, TextChunker
 from algen_agent_runtime.retrieval.memory import (
     HashingEmbedder,
     InMemoryRetriever,
@@ -371,6 +374,9 @@ DEFAULT_PROVIDER_API_KEYS: dict[str, str] = {
     "deepseek": "env://DEEPSEEK_API_KEY",
     "mistral": "env://MISTRAL_API_KEY",
     "huggingface_inference": "env://HF_TOKEN",
+    "gemini": "env://GEMINI_API_KEY",
+    "xai": "env://XAI_API_KEY",
+    "groq": "env://GROQ_API_KEY",
 }
 """The secret a provider type reads when its ``api_key`` is not configured."""
 
@@ -451,6 +457,7 @@ def build_container(
     mcp_servers: Sequence[MCPServerConfigBase] = (),
     framework_adapters: Sequence[FrameworkAdapter] = (),
     usage_meter: UsageMeter | None = None,
+    usage_meter_margin: float = 1.0,
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -458,7 +465,9 @@ def build_container(
     references. Values are never copied into settings or serialized manifests.
 
     ``usage_meter`` reserves and settles the token cost of every model call the
-    router dispatches (see ``algen_agent_runtime.models.metering``).
+    router dispatches (see ``algen_agent_runtime.models.metering``). ``usage_meter_margin``
+    scales the input tokens it reserves (``ModelRouter(reserve_input_margin=...)``), for
+    example ``4 / 3`` to reserve as if a token were three characters; it must be at least 1.0.
     """
     environment = environment or {}
     secret_provider = _ScopedEnvironmentSecretProvider(environment)
@@ -499,6 +508,7 @@ def build_container(
             initialize_schema=storage.initialize_schema,
             min_pool_size=storage.postgres_min_pool_size,
             max_pool_size=storage.postgres_max_pool_size,
+            schema=storage.postgres_schema,
         )
         if "postgres" in selected_backends
         else None
@@ -637,7 +647,9 @@ def build_container(
         if storage.tool_execution_store == "postgres"
         else InMemoryToolExecutionStore()
     )
-    router = ModelRouter(cache=cache, usage_meter=usage_meter)
+    router = ModelRouter(
+        cache=cache, usage_meter=usage_meter, reserve_input_margin=usage_meter_margin
+    )
     for name, provider_config in settings.providers.items():
         kwargs: dict[str, Any] = {
             "default_model": provider_config.default_model,
@@ -687,6 +699,23 @@ def build_container(
         elif provider_config.type == "ollama":
             provider = OllamaProvider(
                 base_url=provider_config.base_url or "http://127.0.0.1:11434/v1",
+                **kwargs,
+            )
+        elif provider_config.type in {"gemini", "xai", "groq"}:
+            hosted = {"gemini": GeminiProvider, "xai": XAIProvider, "groq": GroqProvider}
+            provider_class = hosted[provider_config.type]
+            hosted_kwargs: dict[str, Any] = {}
+            if provider_config.base_url:
+                hosted_kwargs["base_url"] = provider_config.base_url
+            provider = provider_class(
+                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS[provider_config.type],
+                capabilities=(
+                    provider_config.capabilities
+                    if "capabilities" in provider_config.model_fields_set
+                    else None
+                ),
+                secret_provider=secret_provider,
+                **hosted_kwargs,
                 **kwargs,
             )
         elif provider_config.type == "huggingface_inference":
@@ -741,7 +770,11 @@ def build_container(
             if retrieval_config.embedding_provider
             else HashingEmbedder(retrieval_config.embedding_dimensions)
         )
-        chunker = TextChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+        chunker: Chunker = (
+            MarkdownChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+            if retrieval_config.chunker == "markdown"
+            else TextChunker(retrieval_config.chunk_size, retrieval_config.chunk_overlap)
+        )
         if retrieval_config.type == "memory":
             retriever = InMemoryRetriever(
                 source_documents=retrieval_config.documents,

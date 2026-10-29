@@ -45,6 +45,18 @@ providers:
       embeddings: true
       images: true
       files: false
+  gemini:
+    type: gemini
+    api_key: env://GEMINI_API_KEY
+    default_model: gemini-flash-latest
+  xai:
+    type: xai
+    api_key: env://XAI_API_KEY
+    default_model: grok-4
+  groq:
+    type: groq
+    api_key: env://GROQ_API_KEY
+    default_model: openai/gpt-oss-120b
   ollama:
     type: ollama
     base_url: http://127.0.0.1:11434/v1

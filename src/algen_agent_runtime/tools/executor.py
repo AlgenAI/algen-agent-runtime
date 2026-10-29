@@ -11,7 +11,11 @@ import structlog
 from opentelemetry import trace
 
 from algen_agent_runtime.cache import CacheContext, CacheService
-from algen_agent_runtime.exceptions.errors import PolicyDeniedError, ToolExecutionError
+from algen_agent_runtime.exceptions.errors import (
+    PolicyDeniedError,
+    ToolExecutionError,
+    ToolNotAttemptedError,
+)
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.tools.contracts import (
@@ -147,6 +151,9 @@ class ToolExecutor:
             cache is not None
             and definition.side_effect in {SideEffect.NONE, SideEffect.READ}
             and definition.idempotency == Idempotency.IDEMPOTENT
+            # A call made with the caller's credentials may return what only that caller may
+            # see: it is never served from, or stored in, a cache shared beyond the call.
+            and not context.credentials
         )
         cache_context = CacheContext(
             tenant_id=context.tenant_id,
@@ -154,11 +161,17 @@ class ToolExecutor:
             run_id=context.run_id,
             authorization_fingerprint=",".join(sorted(context.permissions)),
         )
-        cache_material = {
+        cache_material: dict[str, Any] = {
             "tool": definition.name,
             "version": definition.version,
             "arguments": arguments,
         }
+        if definition.cache_context:
+            # The context values the result depends on join the digested key material; a tool
+            # declaring none keeps exactly the key it always had.
+            cache_material["context"] = {
+                field: getattr(context, field) for field in sorted(definition.cache_context)
+            }
         if cacheable:
             assert cache is not None
             cached = await cache.get_json(
@@ -208,7 +221,12 @@ class ToolExecutor:
                     )
                     await asyncio.sleep(delay)
             except BaseException as exc:
-                indeterminate = definition.side_effect not in {SideEffect.NONE, SideEffect.READ}
+                # A call the tool refused before sending anything had no effect: it is a
+                # definite failure, not an unknown outcome for an operator to reconcile.
+                indeterminate = definition.side_effect not in {
+                    SideEffect.NONE,
+                    SideEffect.READ,
+                } and not isinstance(exc, ToolNotAttemptedError)
                 await self._executions.fail(
                     context.idempotency_key,
                     type(exc).__name__,
@@ -216,10 +234,17 @@ class ToolExecutor:
                 )
                 raise
             try:
-                result = await self._checked_output(name, definition, result, context, agent)
-                wrapped = ToolResult(value=result)
+                # A handler may return a ToolResult to report a failure it returns as data.
+                returned = result if isinstance(result, ToolResult) else ToolResult(value=result)
+                failed = returned.failed or definition.reports_failure(returned.value)
+                result = await self._checked_output(
+                    name, definition, returned.value, context, agent
+                )
+                wrapped = returned.model_copy(update={"value": result, "failed": failed})
+                # A returned failure finished: it is recorded completed, so a replay returns
+                # it rather than running the call again, but it is never cached.
                 await self._executions.complete(context.idempotency_key, wrapped)
-                if cacheable:
+                if cacheable and not failed:
                     assert cache is not None
                     await cache.set_json(
                         "tool_results",
@@ -306,7 +331,11 @@ class ToolExecutor:
             metadata: dict[str, Any] = {"reconciled": True}
             if outcome.result_reference:
                 metadata["result_reference"] = outcome.result_reference
-            result = ToolResult(value=value, metadata=metadata)
+            result = ToolResult(
+                value=value,
+                metadata=metadata,
+                failed=tool.definition.reports_failure(outcome.value),
+            )
             status = ToolExecutionStatus.COMPLETED
         else:
             status = ToolExecutionStatus.FAILED

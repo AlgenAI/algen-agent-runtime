@@ -32,6 +32,8 @@ def _error_kind(status: int) -> tuple[ErrorKind, bool]:
         return ErrorKind.AUTHENTICATION, False
     if status == 403:
         return ErrorKind.AUTHORIZATION, False
+    if status == 408:
+        return ErrorKind.TIMEOUT, True
     if status == 429:
         return ErrorKind.RATE_LIMIT, True
     if status >= 500:
@@ -355,7 +357,12 @@ class OpenAICompatibleProvider:
             )
             if response.is_error:
                 kind, retryable = _error_kind(response.status_code)
-                raise ProviderError(_error_message(response, self.provider_id), kind, retryable)
+                raise ProviderError(
+                    _error_message(response, self.provider_id),
+                    kind,
+                    retryable,
+                    status_code=response.status_code,
+                )
             return self._response(response.json(), started, request.raw_response_enabled)
         except httpx.TimeoutException as exc:
             raise ProviderError(f"{self.provider_id} timed out", ErrorKind.TIMEOUT, True) from exc
@@ -391,7 +398,12 @@ class OpenAICompatibleProvider:
                 if response.is_error:
                     kind, retryable = _error_kind(response.status_code)
                     await response.aread()
-                    raise ProviderError(_error_message(response, self.provider_id), kind, retryable)
+                    raise ProviderError(
+                        _error_message(response, self.provider_id),
+                        kind,
+                        retryable,
+                        status_code=response.status_code,
+                    )
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -479,7 +491,12 @@ class OpenAICompatibleProvider:
         )
         if response.is_error:
             kind, retryable = _error_kind(response.status_code)
-            raise ProviderError(_error_message(response, self.provider_id), kind, retryable)
+            raise ProviderError(
+                _error_message(response, self.provider_id),
+                kind,
+                retryable,
+                status_code=response.status_code,
+            )
         return [item["embedding"] for item in response.json()["data"]]
 
     async def health(self) -> bool:

@@ -29,14 +29,38 @@ class CapabilityError(AlgenAgentRuntimeError):
 
 
 class ProviderError(AlgenAgentRuntimeError):
-    def __init__(self, message: str, kind: ErrorKind = ErrorKind.UNKNOWN, retryable: bool = False):
+    """A model provider call failed.
+
+    ``status_code`` is the provider's HTTP status when there was one. The router uses it with
+    ``error_kind`` to tell a request every provider would reject (400/422 ``invalid_request``,
+    raised without falling back) from one only this provider rejects (for example a 404 for a
+    model it does not serve), which falls back to the next candidate.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        kind: ErrorKind = ErrorKind.UNKNOWN,
+        retryable: bool = False,
+        *,
+        status_code: int | None = None,
+    ):
         super().__init__(message)
         self.error_kind = kind
         self.retryable = retryable
+        self.status_code = status_code
 
 
 class ToolExecutionError(AlgenAgentRuntimeError):
     pass
+
+
+class ToolNotAttemptedError(ToolExecutionError):
+    """A tool refused a call before sending anything (no credential, an unsafe argument).
+
+    The call had no effect, so the executor records it ``failed``, never ``indeterminate``, even
+    for a tool that writes: there is nothing for an operator to reconcile.
+    """
 
 
 class BudgetExceededError(AlgenAgentRuntimeError):

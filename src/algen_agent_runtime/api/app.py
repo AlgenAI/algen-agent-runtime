@@ -8,10 +8,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -38,6 +38,12 @@ from algen_agent_runtime.api.rate_limiting import (
 )
 from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
+from algen_agent_runtime.approvals.service import (
+    MAX_APPROVAL_OFFSET,
+    MAX_APPROVAL_PAGE,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
@@ -52,9 +58,15 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
 )
-from algen_agent_runtime.observability.setup import configure_logging, configure_telemetry
+from algen_agent_runtime.observability.setup import (
+    configure_logging,
+    configure_telemetry,
+    flush_telemetry,
+)
 from algen_agent_runtime.orchestration.container import Container, build_container
+from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.types.contracts import (
+    MAX_STEERING_CHARS,
     AgentDefinition,
     Artifact,
     ArtifactStatus,
@@ -80,6 +92,11 @@ class CreateRunBody(BaseModel):
 class ClarificationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clarification: str = Field(min_length=1)
+
+
+class SteerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=MAX_STEERING_CHARS)
 
 
 class ApprovalBody(BaseModel):
@@ -169,6 +186,7 @@ def create_app(
             # Drains the workflow service first (attach_workflows), then the runtime.
             await dependencies.aclose()
             await workflows.aclose()
+            flush_telemetry()
 
     app = FastAPI(title="Algen Agent Runtime", version=__version__, lifespan=lifespan)
     app.state.container = dependencies
@@ -306,6 +324,31 @@ def create_app(
     add_auth_routes(app, dependencies, identity_dependency)
     add_tool_execution_routes(app, dependencies, identity_dependency)
 
+    async def require_conversation_owner(run_id: str, identity: Principal) -> None:
+        """A run started for a conversation turn is its owner's, as on the conversation routes:
+        another user of the tenant gets the same 404 as for an unknown run."""
+        state = await dependencies.runtime.status(run_id, identity.tenant_id)
+        conversation_id = state.request.conversation_id
+        if conversation_id is None:
+            return
+        try:
+            conversation = await dependencies.conversations.get(conversation_id, identity.tenant_id)
+            owner = conversation.user_id
+        except NotFoundError:  # the conversation was deleted; the run keeps its user
+            owner = state.request.user_id
+        if owner != identity.user_id:
+            raise NotFoundError(f"run {run_id!r} not found")
+
+    def approval_view(approval: ApprovalRequest) -> dict[str, Any]:
+        """An approval as the inbox routes return it. ``redacted_parameters`` were redacted
+        before they were stored; ``modified_parameters`` are stored as the approver sent them,
+        so they are redacted here the same way."""
+        if approval.modified_parameters is not None:
+            approval = approval.model_copy(
+                update={"modified_parameters": redact_parameters(approval.modified_parameters)}
+            )
+        return approval.model_dump(mode="json")
+
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(
         body: CreateRunBody, identity: Principal = identity_dependency
@@ -319,20 +362,25 @@ def create_app(
     @app.get("/v1/runs/{run_id}")
     async def read_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:read")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.status(run_id, identity.tenant_id)
-        return state.model_dump(mode="json", exclude={"messages", "pending_tool_calls"})
+        return state.model_dump(
+            mode="json", exclude={"messages", "pending_tool_calls", "pending_steering"}
+        )
 
     @app.get("/v1/runs/{run_id}/narrative")
     async def read_run_narrative(
         run_id: str, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:read")
+        await require_conversation_owner(run_id, identity)
         narrative = await dependencies.runtime.narrative(run_id, identity.tenant_id)
         return narrative.model_dump(mode="json")
 
     @app.delete("/v1/runs/{run_id}")
     async def cancel_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.cancel(run_id, identity.tenant_id)
         return {"run_id": state.id, "status": state.status}
 
@@ -341,16 +389,63 @@ def create_app(
         run_id: str, body: ClarificationBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
+
+    @app.post("/v1/runs/{run_id}/steer", status_code=202)
+    async def steer_run(
+        run_id: str, body: SteerBody, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_scope(identity, "runs:write")
+        # Steering puts text in front of the model as the user: only a conversation's owner may.
+        await require_conversation_owner(run_id, identity)
+        try:
+            message = await dependencies.runtime.steer(run_id, identity.tenant_id, body.text)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"run_id": run_id, "steer_id": message.id, "status": "queued"}
 
     @app.post("/v1/runs/{run_id}/approval", status_code=202)
     async def approve_run(
         run_id: str, body: ApprovalBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
+
+    @app.get("/v1/approvals")
+    async def list_approvals(
+        approval_status: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
+        run_id: str | None = None,
+        agent: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=MAX_APPROVAL_PAGE)] = 50,
+        offset: Annotated[int, Query(ge=0, le=MAX_APPROVAL_OFFSET)] = 0,
+        identity: Principal = identity_dependency,
+    ) -> list[dict[str, Any]]:
+        # Every user's pending actions in the tenant, conversation turns included: a grant an
+        # operator gives on purpose, not a side effect of runs:read.
+        require_scope(identity, "approvals:read")
+        approvals = await dependencies.runtime.approvals.list(
+            identity.tenant_id,
+            status=approval_status,
+            run_id=run_id,
+            agent=agent,
+            limit=limit,
+            offset=offset,
+        )
+        return [approval_view(approval) for approval in approvals]
+
+    @app.get("/v1/approvals/{approval_id}")
+    async def read_approval(
+        approval_id: str, identity: Principal = identity_dependency
+    ) -> dict[str, Any]:
+        require_scope(identity, "approvals:read")
+        approval = await dependencies.runtime.approvals.get(approval_id, identity.tenant_id)
+        if approval is None:
+            raise NotFoundError("approval request not found")
+        return approval_view(approval.effective(utc_now()))
 
     @app.get("/v1/runs/{run_id}/events")
     async def stream_events(
@@ -359,7 +454,7 @@ def create_app(
         identity: Principal = identity_dependency,
     ) -> StreamingResponse:
         require_any_scope(identity, "artifacts:read", "runs:read")
-        await dependencies.runtime.status(run_id, identity.tenant_id)
+        await require_conversation_owner(run_id, identity)
         last_id = int(request.headers.get("last-event-id", "0") or 0)
 
         async def generate() -> AsyncIterator[bytes]:

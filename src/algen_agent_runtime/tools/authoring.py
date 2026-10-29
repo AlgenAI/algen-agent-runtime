@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.tools.contracts import (
+    CacheContextValue,
     CompensationHandler,
     Idempotency,
     Precheck,
@@ -271,16 +272,22 @@ def build_tool(
     cost_usd: float = 0,
     audit_metadata: dict[str, str] | None = None,
     volatile: bool = False,
+    cache_context: Iterable[CacheContextValue] = (),
     precheck: Precheck | None = None,
     reconcile: Reconciler | None = None,
     compensation: CompensationHandler | None = None,
+    failure_field: str | None = None,
 ) -> Tool:
     """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this.
 
     ``volatile`` marks a read of state that changes on its own, which the repeat guard never
-    holds back; ``precheck`` refuses a call before anyone is asked to approve it. ``reconcile``
+    holds back; ``cache_context`` names the ``ToolContext`` values (``tenant_id``, ``user_id``,
+    ``run_id``, ``step_id``) the result depends on, which the tool-result cache then keys on
+    too. ``precheck`` refuses a call before anyone is asked to approve it. ``reconcile``
     asks the external system, by idempotency key, whether a call whose outcome is unknown took
-    effect; ``compensation`` undoes a call when an operator asks for it.
+    effect; ``compensation`` undoes a call when an operator asks for it. ``failure_field`` names
+    a field of the result that reports failure when it is ``false`` (``"ok"`` for
+    ``{"ok": false, "error": ...}``): the call is recorded as failed and the model still gets it.
     """
     preset = preset or read()
     tool_name = name or function.__name__
@@ -315,6 +322,8 @@ def build_tool(
         audit_metadata=metadata,
         requires_approval=preset.requires_approval,
         volatile=volatile,
+        cache_context=frozenset(cache_context),
+        failure_field=failure_field,
     )
 
     # The advertised schema closes every object, but a caller's Pydantic model may ignore unknown
