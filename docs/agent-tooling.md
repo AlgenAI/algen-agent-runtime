@@ -124,6 +124,13 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))
 `max_output_tokens` is the request's output cap. `settle` receives the provider's reported
 usage, with `estimated_cost_usd` filled in when the provider has configured rates.
 
+Code, JSON and non-English text often run under four characters a token, so a reservation can
+fall short of the settled charge. `build_container(settings, usage_meter=..., usage_meter_margin=4
+/ 3)` (or `ModelRouter(usage_meter=..., reserve_input_margin=4 / 3)`) scales the reserved input
+estimate, here as if a token were three characters, rounding up. The default is 1.0 and a margin
+below 1.0 is rejected. It changes only what the meter reserves: context packing, compaction and
+the run's token budget keep the unscaled estimate, and `settle` still gets the reported usage.
+
 `call` is a frozen `MeterCall` that says whose call it is and which model is being tried. One
 router serves every tenant and run, so a multi-tenant meter charges from it rather than from
 host context variables, which do not survive a pause or a restart. `settle` and `release` get

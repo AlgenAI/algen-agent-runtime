@@ -86,7 +86,8 @@ class UsageMeter(Protocol):
         """Hold the most a call could cost and return a ticket for it.
 
         ``max_input_tokens`` is the router's estimate of the request sent to the selected
-        model (``estimate_request_tokens``); ``max_output_tokens`` is the request's output cap;
+        model (``estimate_request_tokens``, times the router's ``reserve_input_margin``);
+        ``max_output_tokens`` is the request's output cap;
         ``call`` says whose call it is and which model is being tried. Raise
         ``MeterRefusedError`` to refuse the call.
 

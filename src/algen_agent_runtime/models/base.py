@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -115,7 +116,17 @@ class ModelRouter:
         circuit_reset_seconds: float = 30,
         cache: CacheService | None = None,
         usage_meter: UsageMeter | None = None,
+        reserve_input_margin: float = 1.0,
     ) -> None:
+        """``reserve_input_margin`` scales the estimated input tokens the ``usage_meter``
+        reserves (``estimate_request_tokens`` assumes four characters a token, and code, JSON
+        and non-English text often run under that). It applies only to metered reservations,
+        never to context packing or the run's token budget; it must be at least 1.0.
+        """
+        if not math.isfinite(reserve_input_margin) or reserve_input_margin < 1.0:
+            raise ValueError(
+                f"reserve_input_margin must be a finite number >= 1.0, not {reserve_input_margin}"
+            )
         self._providers: dict[str, ModelProvider] = {}
         self._profiles: dict[str, ModelProfile] = {}
         self._health: dict[str, ProviderHealth] = {}
@@ -132,6 +143,7 @@ class ModelRouter:
         self._cache = cache
         # Reserves before and settles after every provider dispatch; see models/metering.py.
         self._usage_meter = usage_meter
+        self._reserve_input_margin = reserve_input_margin
         # Inspected once here, never per call: a 0.1.0a14 meter is called without ``call``.
         self._meter_takes_call = usage_meter is None or reserve_accepts_call(usage_meter)
 
@@ -466,7 +478,7 @@ class ModelRouter:
         if self._usage_meter is None:
             return None
         model = request.model or profile.model or ""
-        max_input_tokens = estimate_request_tokens(request)
+        max_input_tokens = math.ceil(estimate_request_tokens(request) * self._reserve_input_margin)
         max_output_tokens = request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS
         try:
             if not self._meter_takes_call:

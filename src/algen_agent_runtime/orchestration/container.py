@@ -457,6 +457,7 @@ def build_container(
     mcp_servers: Sequence[MCPServerConfigBase] = (),
     framework_adapters: Sequence[FrameworkAdapter] = (),
     usage_meter: UsageMeter | None = None,
+    usage_meter_margin: float = 1.0,
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -464,7 +465,9 @@ def build_container(
     references. Values are never copied into settings or serialized manifests.
 
     ``usage_meter`` reserves and settles the token cost of every model call the
-    router dispatches (see ``algen_agent_runtime.models.metering``).
+    router dispatches (see ``algen_agent_runtime.models.metering``). ``usage_meter_margin``
+    scales the input tokens it reserves (``ModelRouter(reserve_input_margin=...)``), for
+    example ``4 / 3`` to reserve as if a token were three characters; it must be at least 1.0.
     """
     environment = environment or {}
     secret_provider = _ScopedEnvironmentSecretProvider(environment)
@@ -644,7 +647,9 @@ def build_container(
         if storage.tool_execution_store == "postgres"
         else InMemoryToolExecutionStore()
     )
-    router = ModelRouter(cache=cache, usage_meter=usage_meter)
+    router = ModelRouter(
+        cache=cache, usage_meter=usage_meter, reserve_input_margin=usage_meter_margin
+    )
     for name, provider_config in settings.providers.items():
         kwargs: dict[str, Any] = {
             "default_model": provider_config.default_model,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import math
 import warnings
 from collections.abc import AsyncIterator
 from typing import Any
@@ -154,6 +155,44 @@ async def test_every_step_reserves_the_router_estimate_and_settles_reported_usag
     assert [ticket for ticket, _ in meter.settled] == [0]
     assert meter.settled[0][1].total_tokens == result.execution_summary.usage.total_tokens
     assert meter.released == []
+
+
+async def test_reserve_input_margin_scales_only_the_metered_input_estimate() -> None:
+    meter = RecordingMeter()
+    provider = MockModelProvider(["answer"])
+    runtime = make_runtime(provider)
+    router = ModelRouter(usage_meter=meter, reserve_input_margin=4 / 3)
+    router.register_provider(provider, registration_id="mock")
+    runtime.router = router
+
+    result = await runtime.run(request())
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    sent = provider.requests[0]
+    estimate = estimate_request_tokens(sent)
+    # Rounded up; the output cap and the request sent to the provider are unchanged.
+    assert meter.reserved == [(0, math.ceil(estimate * 4 / 3), sent.max_output_tokens)]
+    assert meter.reserved[0][1] > estimate
+    assert_balanced(meter)
+
+
+@pytest.mark.parametrize("margin", [0.99, 0.0, -1.0, math.inf, math.nan])
+def test_reserve_input_margin_below_one_is_rejected(margin: float) -> None:
+    with pytest.raises(ValueError, match="reserve_input_margin"):
+        ModelRouter(usage_meter=RecordingMeter(), reserve_input_margin=margin)
+
+
+async def test_build_container_passes_the_usage_meter_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plain, scaled = RecordingMeter(), RecordingMeter()
+    for meter, margin in ((plain, 1.0), (scaled, 1.5)):
+        built, _ = container(monkeypatch, meter, margin)
+        await AlgenAgentRuntimeClient(built.runtime).run(metered_request())
+        await built.aclose()
+    [(_, unscaled, _)] = plain.reserved
+    [(_, reserved, _)] = scaled.reserved
+    assert reserved == math.ceil(unscaled * 1.5)
 
 
 async def test_refusal_ends_the_run_without_retry_fallback_or_provider_blame() -> None:
@@ -482,7 +521,7 @@ class RecordingAdapter(NoopObservabilityAdapter):
 
 
 def container(
-    monkeypatch: pytest.MonkeyPatch, meter: UsageMeter
+    monkeypatch: pytest.MonkeyPatch, meter: UsageMeter, margin: float = 1.0
 ) -> tuple[Container, RecordingAdapter]:
     adapter = RecordingAdapter("minimal")
     monkeypatch.setattr(
@@ -510,6 +549,7 @@ def container(
         settings,
         additional_tools=(lookup_tool("kb.write", SideEffect.WRITE),),
         usage_meter=meter,
+        usage_meter_margin=margin,
     )
     model = built.runtime.router.provider("mock")
     assert isinstance(model, MockModelProvider)
