@@ -38,7 +38,7 @@ hybrid retrieval. Chroma uses persistent storage when `persistence_path` is set.
 index and metadata sidecar at `persistence_path`. Qdrant uses `connection_url`, `collection_name`, and
 an optional `api_key: env://QDRANT_API_KEY`.
 
-See `examples/text_to_sql_pgvector_agent` for schema ingestion, retrieval, citations, and grounded tool
+See `examples/pattern_text_to_sql/advanced` for schema ingestion, retrieval, citations, and grounded tool
 execution.
 
 Algen Agent Runtime implements RAG as composition rather than as a special agent type. A versioned agent
@@ -212,4 +212,6 @@ A production adapter should provide:
 - Retrieval latency, result count, and selected-source telemetry
 
 The complete runnable example is in `examples/quickstart_rag` and supports both OpenAI and Mistral for
-generation while using local deterministic embeddings by default.
+generation while using local deterministic embeddings by default. `--offline` runs it on the mock
+provider with a scripted, cited answer, so retrieval and citation verification can be tried without
+a key.

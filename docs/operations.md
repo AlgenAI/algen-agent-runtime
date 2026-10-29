@@ -775,6 +775,9 @@ tenant gets `404`, as on the approval and clarification routes.
 - **Not yet:** conversation turns do not expose steering; a host steers the turn's run by its id
   (`pending.run_id`).
 
+`examples/quickstart_conversation` steers a conversation turn's run while its tool runs, and prints
+the `steer.delivered` event and the tool's `tool.note` beside the turn's streamed deltas.
+
 ## Maintenance and data retention
 
 Runtime tables grow with every run. A maintenance sweep keeps them bounded and moves stale paused
@@ -928,6 +931,9 @@ passing credentials to a handler that does not is a `ConfigurationError`.
 for input. The awaiting, completed, failed and expired events carry the assistant message, with
 `turn_id` on awaiting events. A resumed turn opens a new `conversation.turn` span with
 `conversation.turn.resumed=true`; its agent run continues the run's original trace.
+
+`examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
+for approval and resumes, driven from Python with `ConversationService.submit` and `respond`.
 
 Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
 

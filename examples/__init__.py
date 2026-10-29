@@ -7,16 +7,22 @@ Tier 1 — Quickstarts (prefix: quickstart_)
     quickstart_rag             Retrieval-augmented generation with citation verification
     quickstart_cloud_chat      Smallest hosted-provider path
     quickstart_tool            Typed read-only workflow resource
+    quickstart_agent_tool      Typed @tool functions in a Toolkit, registered by a plugin
     quickstart_approval        Human checkpoint, resume, and apply-or-abort
+    quickstart_conversation    Streamed conversation turns, steering, tool notes and approvals
 
 Tier 2 — Focused patterns (prefix: pattern_)
-    pattern_provider_fallback      Multi-provider fallback with routing evidence
-    pattern_governed_research      Evidence-oriented research with citations (WIP)
-    pattern_approval_workflow      Approval-gated CRM workflow (WIP)
-    pattern_text_to_sql            Read-only Text-to-SQL; advanced/ adds pgvector schema retrieval
-    pattern_langgraph_governance   Graph execution through the Runtime adapter
-    pattern_multi_agent_fanout     Bounded dynamic agent fan-out and join
-    pattern_evaluation_gate        Evaluation fixtures and promotion gate
+    pattern_provider_fallback          Multi-provider fallback with routing evidence
+    pattern_guarded_tools              Prechecks, tool-call guards, scoped cache and usage meter
+    pattern_governed_research          Evidence-oriented research with citations
+    pattern_approval_workflow          Approval-gated CRM workflow
+    pattern_text_to_sql                Read-only Text-to-SQL; advanced/ adds pgvector schema retrieval
+    pattern_langgraph_governance       Graph execution through the Runtime adapter
+    pattern_openai_agents_integration  An OpenAI Agents SDK agent behind the Runtime adapter
+    pattern_mcp_governance             MCP server tools with operator policy overrides
+    pattern_multi_agent_fanout         Bounded dynamic agent fan-out and join
+    pattern_child_workflow             Exact-version parent/child workflow dispatch
+    pattern_evaluation_gate            Evaluation fixtures and promotion gate
 
 Tier 3 — Enterprise reference applications (prefix: reference_)
     reference_customer_support         Customer support case resolution
@@ -26,6 +32,14 @@ Tier 3 — Enterprise reference applications (prefix: reference_)
 Case studies (prefix: case_study_)
     case_study_responsible_hiring      Responsible-AI hiring reference (formerly hiring_agent)
     case_study_teaching_assistant      Policy-extension teaching example (formerly virtual_teaching_assistant)
+
+Context engineering (single modules)
+    context_compaction, context_evaluation, context_offloading, learned_memory,
+    progressive_skills, working_state
+
+Every runnable example runs offline in CI (tests/integration/test_all_examples_run.py), with
+``--offline`` for those that call a hosted provider (see ``offline.py``), unless it is listed
+there as needing a service such as Ollama or pgvector.
 
 Naming conventions
 ------------------

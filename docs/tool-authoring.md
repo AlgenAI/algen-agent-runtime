@@ -2,7 +2,9 @@
 
 A tool is a typed function with a docstring and one decorator. `@tool` builds the strict schemas
 and the governance fields, and returns an ordinary `Tool`, so the executor, policies and ledger
-treat it like any other. `examples/quickstart_agent_tool` is a complete project.
+treat it like any other. `examples/quickstart_agent_tool` is a complete project;
+`examples/pattern_guarded_tools` runs a precheck, a failure returned as data, `cache_context` and a
+wrapped handler through the guards below.
 
 ```python
 from pydantic import BaseModel

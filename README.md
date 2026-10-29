@@ -415,7 +415,9 @@ retrieval, memory, services, storage, and telemetry.
 
 ### Running examples from the CLI
 
-Workflow examples can be executed directly from your terminal using deterministic mock providers without API keys:
+Every example runs from the terminal without API keys or services, except those that need Ollama or
+pgvector. `tests/integration/test_all_examples_run.py` runs each one in CI, so a new example must
+be runnable offline or listed there with the service it needs.
 
 ```bash
 # Multi-agent dynamic fan-out, evidence join, and synthesis
@@ -429,12 +431,31 @@ python -m examples.pattern_approval_workflow.app --approve-all
 
 # Governed research with retrieval and cited synthesis
 python -m examples.pattern_governed_research.app
+
+# A streamed conversation: deltas, a steering message, a tool note, an approval pause and resume
+python -m examples.quickstart_conversation.app
+
+# Typed tools behind a precheck, tool-call guards, a user-keyed cache and a usage meter
+python -m examples.pattern_guarded_tools.app
+
+# Hosted-provider examples: the real provider by default, the mock provider with --offline
+python -m examples.quickstart_rag.app --offline
+python -m examples.quickstart_cloud_chat.app --offline
+python -m examples.pattern_provider_fallback.app --offline
+python -m examples.pattern_text_to_sql.app --offline
 ```
 
 All workflow examples support non-interactive execution in automated environments and CI pipelines:
 - `--approve-all`: automatically approve all approval checkpoints
 - `--reject-all`: automatically reject all approval checkpoints
 - `--answers-file PATH`: supply ordered approval/clarification decisions from a JSON file
+
+Examples that call a hosted provider (`quickstart_rag`, `quickstart_cloud_chat`,
+`pattern_provider_fallback`, `pattern_text_to_sql`, `case_study_teaching_assistant`) take
+`--offline`: the same `agent.yaml` with the provider swapped for the mock provider and a scripted
+reply (see `examples/offline.py`). Without `--offline` they need the provider's key and say so when
+it is missing. Traccia export is opt-in in every example
+(`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true` with the `traccia` extra).
 
 
 ## Development
