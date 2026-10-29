@@ -105,7 +105,7 @@ from algen_agent_runtime.runtime.guards import (
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.security.redaction import redact, redact_parameters
 from algen_agent_runtime.tools.contracts import (
     EarlierCall,
     ReconcilableToolExecutionStore,
@@ -1802,7 +1802,7 @@ class AgentRuntime:
                 action.id,
                 state.request.tenant_id,
                 f"Execute {tool.definition.name}",
-                self._redact_mapping(action.arguments),
+                redact_parameters(action.arguments),
                 decision.audit_metadata.get("risk", tool.definition.side_effect.value),
                 agent.approval_policy.expires_seconds,
                 agent=state.request.agent,
@@ -2895,13 +2895,6 @@ class AgentRuntime:
             cache_write_tokens=left.cache_write_tokens + right.cache_write_tokens,
             estimated_cost_usd=left.estimated_cost_usd + right.estimated_cost_usd,
         )
-
-    @staticmethod
-    def _redact_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
-        sensitive = {"password", "secret", "token", "api_key", "authorization"}
-        return {
-            key: "[REDACTED]" if key.lower() in sensitive else item for key, item in value.items()
-        }
 
     @staticmethod
     def _meter_call(
