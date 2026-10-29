@@ -95,7 +95,7 @@ def test_defaults_are_generous() -> None:
     budget = Budget()
     assert budget.max_model_calls == 1_000
     assert budget.max_response_chars == 1_000_000
-    assert budget.max_events == 10_000
+    assert budget.max_events == 100_000
 
 
 async def test_model_call_limit_fails_the_run_with_a_reason() -> None:

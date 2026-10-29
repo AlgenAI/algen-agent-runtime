@@ -145,7 +145,7 @@ for later. Items 1, 2, 5 and 7 remain open.
    `UsageMeter` can enforce per-tenant model quotas. Each run is limited by `budget.max_model_calls`
    (1,000; extended by a continuation, counted by the wrap-up notice), `budget.max_response_chars`
    per model response (1,000,000 characters of text plus tool-call arguments, enforced while a
-   response streams) and `budget.max_events` (10,000; past it only events that end or pause the run
+   response streams) and `budget.max_events` (100,000; past it only events that end or pause the run
    are recorded and the run fails at its next step); streamed text is recorded as at most one
    `model.delta` per `runtime.stream_delta_interval_ms` (50 ms). A run that reaches a limit fails
    with `run.failed` `reason: limit_exceeded` and a `run.limit_exceeded` audit record.

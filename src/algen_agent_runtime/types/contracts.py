@@ -208,7 +208,7 @@ class Budget(StrictModel):
         "arguments as JSON. A longer response fails the run, streamed or not.",
     )
     max_events: int = Field(
-        default=10_000,
+        default=100_000,
         ge=100,
         description="Run events one run may record. Past it, only events that end or pause the "
         "run are recorded, and the run fails at its next step.",

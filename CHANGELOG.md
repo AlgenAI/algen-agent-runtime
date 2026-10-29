@@ -95,7 +95,7 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Per-run limits on `budget`: `max_model_calls` (default 1,000; a continuation adds
   `step_increment`; the wrap-up notice counts it, `reason: model_calls`), `max_response_chars` per
   model response (default 1,000,000 characters of text plus tool-call arguments, enforced while a
-  response streams) and `max_events` (default 10,000; past it only events that end or pause the run
+  response streams) and `max_events` (default 100,000; past it only events that end or pause the run
   are recorded and the run fails at its next step). A run that ends at a limit fails with
   `run.failed` `reason: limit_exceeded` and `limit`, a `run.limit_exceeded` audit record and the
   `agent.run.limit_exceeded` span attribute; the existing step, token and cost limits report the
