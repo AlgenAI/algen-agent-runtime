@@ -307,6 +307,7 @@ api:
           role_scopes:
             runtime-operators: [runs:read, runs:write, conversations:read]
             runtime-admins: [auth:revoke]
+            runtime-approvers: [approvals:read, runs:write]
 ```
 
 - **Discovery.** Without `jwks_url` the Runtime reads `{issuer}/.well-known/openid-configuration`,
@@ -692,25 +693,44 @@ requests instead of polling runs:
 
 | Route | Scope | Returns |
 | --- | --- | --- |
-| `GET /v1/approvals` | `runs:read` | The tenant's approval requests, newest first. Query: `status` (`pending`, `approved`, `rejected`, `modified`, `expired`), `run_id`, `agent`, `limit` (1 to 500, default 50), `offset` (default 0). |
-| `GET /v1/approvals/{approval_id}` | `runs:read` | One request; `404` for another tenant's. |
+| `GET /v1/approvals` | `approvals:read` | The tenant's approval requests, newest first. Query: `status` (`pending`, `approved`, `rejected`, `modified`, `expired`), `run_id`, `agent`, `limit` (1 to 500, default 50), `offset` (default 0). |
+| `GET /v1/approvals/{approval_id}` | `approvals:read` | One request; `404` for another tenant's. |
+
+**Scope.** The inbox lists every user's pending actions in the tenant, conversation turns
+included, so it needs its own scope, `approvals:read`, rather than `runs:read`, which most agent
+clients hold. Grant it to approvers and operators on purpose (for example through `role_scopes`
+above). `limit` is 1 to 500 and `offset` 0 to 1,000,000; anything else is a `422`.
 
 Decide as before with `POST /v1/runs/{run_id}/approval` (scope `runs:write`), or for a
-conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`.
+conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`. A run started for a
+conversation turn can be decided (or clarified, `POST /v1/runs/{run_id}/clarification`) only by
+the conversation's owner, as on the conversation routes: another user of the tenant gets `404`,
+whatever their scopes.
 
 Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id`, `agent`,
 `proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
 the same values as the run's `pause_payload`), `risk`, `created_at`, `expires_at`, `status` and, after
-a `modified` decision, `modified_parameters`. A pending request past `expires_at` is reported as
-`expired`: `status=pending` leaves it out and `status=expired` includes it. Reading never changes the
-stored request; it moves to `expired` when someone tries to decide it, as before. Requests stored by
-releases before this one have no `agent` (an `agent` filter leaves them out) and, from the in-memory
-store, no `created_at`; the PostgreSQL store reports the row's creation time.
+a `modified` decision, `modified_parameters`. The approver's `modified_parameters` are stored as
+sent; the inbox routes return them with the same redaction as `redacted_parameters` (top-level
+`password`, `secret`, `token`, `api_key` and `authorization` keys, any case, become `[REDACTED]`).
+A pending request past `expires_at` is reported as `expired`: `status=pending` leaves it out and
+`status=expired` includes it. Reading never changes the stored request; it moves to `expired` when
+someone tries to decide it, as before.
+
+**Storage.** Migration `015_approval_agent.sql` adds an `agent` column to
+`algen_agent_runtime_approvals` and an index on `(tenant_id, agent, created_at DESC)`. The
+PostgreSQL store keeps `agent` and `created_at` in columns, not in the approval JSON, so the JSON
+keeps the 0.1.0a17 shape and an a17 process can still read and resume these requests during a
+rolling deploy or after a rollback. `created_at` is the row's creation time (the database clock),
+used both to order and to display. Requests stored before this release have no `agent` (an `agent`
+filter leaves them out); in the in-memory store they also have no `created_at`.
 
 In Python, `runtime.approvals.list(tenant_id, status=..., run_id=..., agent=..., limit=...,
 offset=...)` returns the same list. Results are tenant-scoped by the authenticated principal, like
 every run route. Paging is by offset over a list ordered by creation time, so a request created
 between two page reads shifts later pages by one; page with a small `limit` and de-duplicate by `id`.
+Requests created at the same instant are ordered by insertion in the in-memory store and by `id` in
+PostgreSQL; both are stable between calls.
 
 ## Maintenance and data retention
 

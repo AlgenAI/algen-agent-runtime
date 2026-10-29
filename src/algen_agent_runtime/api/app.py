@@ -38,7 +38,12 @@ from algen_agent_runtime.api.rate_limiting import (
 )
 from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
-from algen_agent_runtime.approvals.service import MAX_APPROVAL_PAGE, ApprovalStatus
+from algen_agent_runtime.approvals.service import (
+    MAX_APPROVAL_OFFSET,
+    MAX_APPROVAL_PAGE,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
@@ -59,6 +64,7 @@ from algen_agent_runtime.observability.setup import (
     flush_telemetry,
 )
 from algen_agent_runtime.orchestration.container import Container, build_container
+from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
     Artifact,
@@ -312,6 +318,31 @@ def create_app(
     add_auth_routes(app, dependencies, identity_dependency)
     add_tool_execution_routes(app, dependencies, identity_dependency)
 
+    async def require_conversation_owner(run_id: str, identity: Principal) -> None:
+        """A run started for a conversation turn is its owner's, as on the conversation routes:
+        another user of the tenant gets the same 404 as for an unknown run."""
+        state = await dependencies.runtime.status(run_id, identity.tenant_id)
+        conversation_id = state.request.conversation_id
+        if conversation_id is None:
+            return
+        try:
+            conversation = await dependencies.conversations.get(conversation_id, identity.tenant_id)
+            owner = conversation.user_id
+        except NotFoundError:  # the conversation was deleted; the run keeps its user
+            owner = state.request.user_id
+        if owner != identity.user_id:
+            raise NotFoundError(f"run {run_id!r} not found")
+
+    def approval_view(approval: ApprovalRequest) -> dict[str, Any]:
+        """An approval as the inbox routes return it. ``redacted_parameters`` were redacted
+        before they were stored; ``modified_parameters`` are stored as the approver sent them,
+        so they are redacted here the same way."""
+        if approval.modified_parameters is not None:
+            approval = approval.model_copy(
+                update={"modified_parameters": redact_parameters(approval.modified_parameters)}
+            )
+        return approval.model_dump(mode="json")
+
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(
         body: CreateRunBody, identity: Principal = identity_dependency
@@ -347,6 +378,7 @@ def create_app(
         run_id: str, body: ClarificationBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
 
@@ -355,6 +387,7 @@ def create_app(
         run_id: str, body: ApprovalBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_conversation_owner(run_id, identity)
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
 
@@ -363,17 +396,13 @@ def create_app(
         approval_status: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
         run_id: str | None = None,
         agent: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_APPROVAL_PAGE)] = 50,
+        offset: Annotated[int, Query(ge=0, le=MAX_APPROVAL_OFFSET)] = 0,
         identity: Principal = identity_dependency,
     ) -> list[dict[str, Any]]:
-        require_scope(identity, "runs:read")
-        if not 1 <= limit <= MAX_APPROVAL_PAGE:
-            raise HTTPException(
-                status_code=422, detail=f"limit must be between 1 and {MAX_APPROVAL_PAGE}"
-            )
-        if offset < 0:
-            raise HTTPException(status_code=422, detail="offset must not be negative")
+        # Every user's pending actions in the tenant, conversation turns included: a grant an
+        # operator gives on purpose, not a side effect of runs:read.
+        require_scope(identity, "approvals:read")
         approvals = await dependencies.runtime.approvals.list(
             identity.tenant_id,
             status=approval_status,
@@ -382,17 +411,17 @@ def create_app(
             limit=limit,
             offset=offset,
         )
-        return [approval.model_dump(mode="json") for approval in approvals]
+        return [approval_view(approval) for approval in approvals]
 
     @app.get("/v1/approvals/{approval_id}")
     async def read_approval(
         approval_id: str, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
-        require_scope(identity, "runs:read")
+        require_scope(identity, "approvals:read")
         approval = await dependencies.runtime.approvals.get(approval_id, identity.tenant_id)
         if approval is None:
             raise NotFoundError("approval request not found")
-        return approval.effective(utc_now()).model_dump(mode="json")
+        return approval_view(approval.effective(utc_now()))
 
     @app.get("/v1/runs/{run_id}/events")
     async def stream_events(

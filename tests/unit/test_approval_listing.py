@@ -31,6 +31,7 @@ from algen_agent_runtime.conversations.stores import (
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.orchestration.container import Container
 from algen_agent_runtime.persistence.memory import InMemoryArtifactStore
+from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.types.contracts import RunRequest, RunStatus, utc_now
 
@@ -186,11 +187,11 @@ async def test_postgres_list_status_clauses(status: ApprovalStatus | None, claus
         assert args[1] == "rejected"
 
 
-SCOPES = "runs:read runs:write"
+SCOPES = "runs:read runs:write approvals:read"
 
 
-def _headers(tenant: str = "tenant", scopes: str = SCOPES) -> dict[str, str]:
-    return {"x-tenant-id": tenant, "x-user-id": "user", "x-scopes": scopes}
+def _headers(tenant: str = "tenant", scopes: str = SCOPES, user: str = "user") -> dict[str, str]:
+    return {"x-tenant-id": tenant, "x-user-id": user, "x-scopes": scopes}
 
 
 def _container() -> Container:
@@ -266,9 +267,15 @@ async def test_http_routes_list_and_read_the_runs_approvals() -> None:
         assert (await client.get("/v1/approvals", headers=_headers("other"))).json() == []
         missing = await client.get(f"/v1/approvals/{approval_id}", headers=_headers("other"))
         assert missing.status_code == 404
-        denied = await client.get("/v1/approvals", headers=_headers(scopes="artifacts:read"))
-        assert denied.status_code == 403
-        for query in ("limit=0", "limit=501", "offset=-1", "status=unknown"):
+        # runs:read is not enough: the inbox shows every user's pending actions.
+        for scopes in ("artifacts:read", "runs:read runs:write"):
+            denied = await client.get("/v1/approvals", headers=_headers(scopes=scopes))
+            assert denied.status_code == 403, scopes
+            denied = await client.get(
+                f"/v1/approvals/{approval_id}", headers=_headers(scopes=scopes)
+            )
+            assert denied.status_code == 403, scopes
+        for query in ("limit=0", "limit=501", "offset=-1", "offset=1000001", "status=unknown"):
             invalid = await client.get(f"/v1/approvals?{query}", headers=_headers())
             assert invalid.status_code == 422, query
 
@@ -373,3 +380,93 @@ async def test_postgres_store_writes_json_that_0_1_0a17_can_read() -> None:
     }
     await service.decide(legacy.id, "tenant-a", ApprovalStatus.APPROVED)
     _A17ApprovalRequest.model_validate_json(table.rows[legacy.id]["approval"])
+
+
+def test_redact_parameters_redacts_sensitive_top_level_keys() -> None:
+    assert redact_parameters(
+        {"value": "x", "API_KEY": "k", "token": "t", "nested": {"password": "p"}}
+    ) == {"value": "x", "API_KEY": "[REDACTED]", "token": "[REDACTED]", "nested": {"password": "p"}}
+
+
+async def _await_pending(container: Container, run_id: str | None = None) -> ApprovalRequest:
+    for _ in range(400):
+        pending = await container.runtime.approvals.list("tenant", status=ApprovalStatus.PENDING)
+        matching = [item for item in pending if run_id is None or item.run_id == run_id]
+        if matching:
+            return matching[0]
+        await asyncio.sleep(0.005)
+    raise AssertionError("no pending approval")
+
+
+async def test_http_routes_redact_modified_parameters() -> None:
+    container = _container()
+    transport = httpx.ASGITransport(app=create_app(AppSettings(), container))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        started = await client.post(
+            "/v1/runs", headers=_headers(), json={"agent": "test-agent", "input": "update it"}
+        )
+        run_id = started.json()["run_id"]
+        approval = await _await_pending(container, run_id)
+
+        decided = await client.post(
+            f"/v1/runs/{run_id}/approval",
+            headers=_headers(),
+            json={
+                "decision": "modified",
+                "modified_parameters": {"value": "x", "api_key": "sk-live-123"},
+            },
+        )
+        assert decided.status_code == 202, decided.text
+
+        listed = await client.get("/v1/approvals", headers=_headers())
+        read = await client.get(f"/v1/approvals/{approval.id}", headers=_headers())
+        for response in (listed, read):
+            assert response.status_code == 200
+            assert "sk-live-123" not in response.text
+        [item] = listed.json()
+        assert item["status"] == "modified"
+        assert item["modified_parameters"] == {"value": "x", "api_key": "[REDACTED]"}
+        assert read.json()["modified_parameters"] == item["modified_parameters"]
+        await container.runtime.shutdown(grace_seconds=5)
+
+
+async def test_another_user_cannot_list_or_decide_a_conversation_turn_approval() -> None:
+    container = _container()
+    transport = httpx.ASGITransport(app=create_app(AppSettings(), container))
+    alice = _headers(user="alice", scopes="conversations:read conversations:write runs:write")
+    bob = _headers(user="bob", scopes="runs:read runs:write")
+    carol = _headers(user="carol", scopes="approvals:read")
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        conversation = await client.post(
+            "/v1/conversations", headers=alice, json={"agent": "test-agent"}
+        )
+        assert conversation.status_code == 201, conversation.text
+        conversation_id = conversation.json()["id"]
+        sent = await client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            headers=alice,
+            json={"text": "update it"},
+        )
+        assert sent.status_code < 300, sent.text
+        approval = await _await_pending(container)
+        run_id = approval.run_id
+
+        assert (await client.get("/v1/approvals", headers=bob)).status_code == 403
+        for route, body in (
+            ("approval", {"decision": "approved"}),
+            ("clarification", {"clarification": "yes"}),
+        ):
+            denied = await client.post(f"/v1/runs/{run_id}/{route}", headers=bob, json=body)
+            assert denied.status_code == 404, (route, denied.text)
+        stored = await container.runtime.approvals.get(approval.id, "tenant")
+        assert stored is not None and stored.status == ApprovalStatus.PENDING
+
+        # An operator granted approvals:read sees it; the owner can still decide it.
+        listed = await client.get("/v1/approvals", headers=carol)
+        assert [item["id"] for item in listed.json()] == [approval.id]
+        decided = await client.post(
+            f"/v1/runs/{run_id}/approval", headers=alice, json={"decision": "approved"}
+        )
+        assert decided.status_code == 202, decided.text
+        await container.conversations.shutdown()
+        await container.runtime.shutdown(grace_seconds=5)
