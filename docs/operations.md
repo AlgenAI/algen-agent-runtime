@@ -124,24 +124,31 @@ storage:
 
 - Every connection of the Runtime's pool starts with `search_path` set to that schema alone (an
   asyncpg startup parameter), so the migrations, the migration history table and every PostgreSQL
-  store (runs, events, audits, approvals, memory, learned memory, artifacts, tool executions,
-  conversations, workflow checkpoints, analytical graphs, the work queue and MCP OAuth tokens) use
-  it. A table missing from the schema is never looked up in `public`. Two Runtimes, or a Runtime and
+  store (runs, events, audits, approvals, memory, learned memory, artifacts and S3 artifact
+  metadata, tool executions, conversations and conversation feedback, workflow checkpoints,
+  analytical graphs, the work queue, MCP OAuth tokens and token revocations) use it. A table missing from the schema is never looked up in `public`. Two Runtimes, or a Runtime and
   its tests, can share one database with different schemas.
 - With `initialize_schema: true` the schema is created when missing (`CREATE SCHEMA`, which needs
   the `CREATE` privilege on the database). With `false` it must exist, and start-up fails if it does
   not. The database role needs `USAGE` and `CREATE` on the schema to migrate.
 - The name must be 1 to 63 lowercase letters, digits or underscores, start with a letter or
-  underscore, and not start with `pg_`; it is always quoted as an identifier. Settings validation
-  refuses anything else.
+  underscore, and not start with `pg_` or be `information_schema`; it is always quoted as an
+  identifier. Settings validation refuses anything else. `postgres_schema: public` is allowed, but
+  it is stricter than leaving the setting unset: only `public` is on the `search_path`.
 - At start-up the Runtime checks `current_schema()` and refuses to start if the schema is not in
   effect. A connection pooler in transaction mode may drop the `search_path` startup parameter:
   with PgBouncer 1.20 or later add `search_path` to `track_extra_parameters`, or use session pooling.
+  The same check fails when the schema exists but the role lacks `USAGE` on it.
+- Schema creation and migrations run under a PostgreSQL advisory lock, so several replicas
+  starting at once against a fresh schema apply them one at a time.
 - Unset (the default), nothing changes: no `search_path` is sent and existing deployments keep their
   tables. Moving an existing deployment into a schema is a database operation
   (`ALTER TABLE ... SET SCHEMA` for each `algen_agent_runtime_*` table, including
   `algen_agent_runtime_schema_migrations`) done while the Runtime is stopped; the Runtime does not
-  move tables itself.
+  move tables itself. If the setting is turned on while the tables are still in `public`, the
+  Runtime starts with an empty schema, and existing runs, pending approvals and tool-execution
+  records are not visible to it; start-up logs the warning
+  `postgres_schema_is_empty_but_public_has_runtime_tables` naming both schemas.
 - The pgvector retriever opens its own connection and keeps its table in `retrieval.<name>.table_name`;
   this setting does not apply to it.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from uuid import uuid4
@@ -98,3 +99,15 @@ async def test_a_missing_schema_is_refused_without_initialization(schemas: list[
     with pytest.raises(ConfigurationError, match="does not exist"):
         await database.start()
     await database.close()
+
+
+async def test_concurrent_first_starts_into_a_fresh_schema_all_succeed(schemas: list[str]) -> None:
+    databases = [PostgresDatabase(os.environ["POSTGRES_DSN"], schema=schemas[0]) for _ in range(4)]
+    try:
+        # Without the migration lock, CREATE SCHEMA and the first migrations race and fail.
+        await asyncio.gather(*(database.start() for database in databases))
+        rows = await databases[0].fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
+        assert len(rows) == len({row["name"] for row in rows})
+    finally:
+        for database in databases:
+            await database.close()

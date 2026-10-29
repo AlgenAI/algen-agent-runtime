@@ -20,7 +20,7 @@ from algen_agent_runtime.config.authentication import (
 )
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
-from algen_agent_runtime.persistence.postgres import check_schema_name
+from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.tools.http_api import HttpToolConfig

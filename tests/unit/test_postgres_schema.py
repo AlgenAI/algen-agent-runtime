@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import sys
 import types
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from structlog.testing import capture_logs
 
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.exceptions.errors import ConfigurationError
@@ -15,18 +18,37 @@ from algen_agent_runtime.persistence.postgres import PostgresDatabase, check_sch
 
 
 class _FakePool:
-    def __init__(self, *, existing: set[str], search_path: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        existing: set[str],
+        search_path: str | None,
+        usable: bool = True,
+        legacy_public: bool = False,
+    ) -> None:
         self.existing = existing
         self.search_path = search_path
+        self.usable = usable
+        self.legacy_public = legacy_public
         self.executed: list[str] = []
+        self.locks: list[str] = []
         self.closed = False
 
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[_FakePool]:
+        yield self
+
     async def fetchval(self, query: str, *args: Any) -> Any:
+        if "pg_advisory" in query:
+            self.locks.append(query.split("(")[0].removeprefix("SELECT "))
+            return True
         if "pg_namespace" in query:
             return 1 if args[0] in self.existing else None
         if "current_schema()" in query:
             name = (self.search_path or '"public"').strip('"')
-            return name if name in self.existing else None
+            return name if name in self.existing and self.usable else None
+        if "to_regclass" in query:
+            return self.legacy_public
         raise AssertionError(query)
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -43,7 +65,12 @@ class _FakePool:
 
 
 def _fake_asyncpg(
-    monkeypatch: pytest.MonkeyPatch, *, existing: set[str], honour_search_path: bool = True
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    existing: set[str],
+    honour_search_path: bool = True,
+    usable: bool = True,
+    legacy_public: bool = False,
 ) -> dict[str, Any]:
     seen: dict[str, Any] = {}
 
@@ -53,6 +80,8 @@ def _fake_asyncpg(
         pool = _FakePool(
             existing=existing,
             search_path=settings.get("search_path") if honour_search_path else None,
+            usable=usable,
+            legacy_public=legacy_public,
         )
         seen["pool"] = pool
         return pool
@@ -80,8 +109,10 @@ async def test_schema_sets_search_path_and_creates_a_missing_schema(
     assert seen["kwargs"]["server_settings"] == {"search_path": '"lms_agent"'}
     assert seen["pool"].executed == ['CREATE SCHEMA IF NOT EXISTS "lms_agent"']
     assert database.schema == "lms_agent"
-    # The schema is in place before the migrations run on the same pool.
+    # The schema is in place before the migrations run on the same connection, and both happen
+    # under the migration lock.
     assert migrated == [seen["pool"]]
+    assert seen["pool"].locks == ["pg_advisory_lock", "pg_advisory_unlock"]
 
 
 async def test_existing_schema_is_used_without_create(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,6 +146,48 @@ async def test_a_dropped_search_path_fails_fast(monkeypatch: pytest.MonkeyPatch)
         await database.start()
 
     assert seen["pool"].closed
+
+
+async def test_a_schema_the_role_cannot_use_names_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_asyncpg(monkeypatch, existing={"public", "lms_agent"}, usable=False)
+    database = PostgresDatabase("postgresql://db", schema="lms_agent", initialize_schema=False)
+
+    with pytest.raises(ConfigurationError, match="lacks USAGE"):
+        await database.start()
+
+
+async def test_runtime_tables_left_in_public_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_asyncpg(monkeypatch, existing={"public", "lms_agent"}, legacy_public=True)
+    database = PostgresDatabase("postgresql://db", schema="lms_agent")
+
+    async def migrate(connection: Any) -> None:
+        return None
+
+    monkeypatch.setattr(database, "_migrate", migrate)
+
+    with capture_logs() as logs:
+        await database.start()
+
+    warning = next(
+        log
+        for log in logs
+        if log["event"] == "postgres_schema_is_empty_but_public_has_runtime_tables"
+    )
+    assert warning["log_level"] == "warning"
+    assert warning["postgres_schema"] == "lms_agent"
+    assert warning["legacy_schema"] == "public"
+
+
+async def test_a_schema_that_already_holds_the_tables_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_asyncpg(monkeypatch, existing={"public", "lms_agent"}, legacy_public=False)
+    database = PostgresDatabase("postgresql://db", schema="lms_agent", initialize_schema=False)
+
+    with capture_logs() as logs:
+        await database.start()
+
+    assert not [log for log in logs if log["log_level"] == "warning"]
 
 
 async def test_without_schema_the_pool_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

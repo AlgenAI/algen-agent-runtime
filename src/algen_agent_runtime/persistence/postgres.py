@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -12,6 +11,7 @@ from typing import Any
 import structlog
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
+from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -27,26 +27,12 @@ from algen_agent_runtime.types.contracts import (
 )
 
 _logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
+_database_logger = structlog.get_logger("algen_agent_runtime.persistence.postgres")
 
 
-_SCHEMA_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
-
-
-def check_schema_name(schema: str) -> str:
-    """``schema`` if it is a usable PostgreSQL schema name for the Runtime's tables.
-
-    Only lowercase letters, digits and underscores, starting with a letter or underscore, at
-    most 63 characters, and not a system schema: the name is put in ``search_path`` and in
-    ``CREATE SCHEMA`` as a quoted identifier, so it must never need escaping.
-    """
-    if not _SCHEMA_NAME.fullmatch(schema) or schema.startswith("pg_"):
-        raise ConfigurationError(
-            "postgres_schema must be 1-63 lowercase letters, digits or underscores, start with a "
-            "letter or underscore, and not start with pg_"
-        )
-    if schema == "information_schema":
-        raise ConfigurationError("postgres_schema cannot be information_schema")
-    return schema
+# One key for every Runtime sharing the database: concurrent first starts create the schema and
+# run the migrations one at a time instead of racing on CREATE SCHEMA and CREATE TABLE.
+_MIGRATION_LOCK_KEY = 0x616C67656E5F7274  # "algen_rt"
 
 
 class PostgresDatabase:
@@ -102,14 +88,25 @@ class PostgresDatabase:
                 **options,
             )
             try:
-                if self._schema is not None:
+                if self._initialize_schema:
+                    async with pool.acquire() as connection:
+                        await connection.fetchval(
+                            "SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY
+                        )
+                        try:
+                            if self._schema is not None:
+                                await self._use_schema(connection, self._schema)
+                            await self._migrate(connection)
+                        finally:
+                            await connection.fetchval(
+                                "SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY
+                            )
+                elif self._schema is not None:
                     await self._use_schema(pool, self._schema)
             except BaseException:
                 await pool.close()
                 raise
             self._pool = pool
-            if self._initialize_schema:
-                await self._migrate(pool)
 
     async def _use_schema(self, pool: Any, schema: str) -> None:
         exists = await pool.fetchval(
@@ -123,19 +120,36 @@ class PostgresDatabase:
             # The name was validated by check_schema_name and is quoted as an identifier.
             await pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         current = await pool.fetchval("SELECT current_schema()")
+        if current is None:
+            raise ConfigurationError(
+                f"PostgreSQL schema {schema!r} exists but is not in effect: this role lacks USAGE "
+                "on it, or the search_path startup parameter was dropped (a connection pooler may "
+                "drop it)"
+            )
         if current != schema:
             raise ConfigurationError(
                 f"PostgreSQL connections use schema {current!r}, not postgres_schema {schema!r}: "
                 "the search_path startup parameter was not applied (a connection pooler may "
                 "drop it)"
             )
+        if schema != "public" and await pool.fetchval(
+            "SELECT to_regclass('algen_agent_runtime_schema_migrations') IS NULL "
+            "AND to_regclass('public.algen_agent_runtime_schema_migrations') IS NOT NULL"
+        ):
+            # Tables left in public would otherwise vanish from the Runtime's view without a word.
+            _database_logger.warning(
+                "postgres_schema_is_empty_but_public_has_runtime_tables",
+                postgres_schema=schema,
+                legacy_schema="public",
+                docs="docs/operations.md#sharing-a-database-postgres_schema",
+            )
 
-    async def _migrate(self, pool: Any) -> None:
+    async def _migrate(self, connection: Any) -> None:
         # Preserve the applied-migration history when upgrading from the former
         # runtime package name. This must happen before creating the new table so
         # existing installations do not replay the initial schema into empty,
         # newly named tables and leave their data behind.
-        await pool.execute(
+        await connection.execute(
             "DO $$ BEGIN "
             "IF to_regclass('algen_agent_runtime_schema_migrations') IS NULL "
             "AND to_regclass('traccia_runtime_schema_migrations') IS NOT NULL THEN "
@@ -143,17 +157,17 @@ class PostgresDatabase:
             "RENAME TO algen_agent_runtime_schema_migrations; "
             "END IF; END $$"
         )
-        await pool.execute(
+        await connection.execute(
             "CREATE TABLE IF NOT EXISTS algen_agent_runtime_schema_migrations "
             "(name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
         )
-        rows = await pool.fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
+        rows = await connection.fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
         applied = {str(row["name"]) for row in rows}
         directory = Path(__file__).with_name("migrations")
         for migration in sorted(directory.glob("*.sql")):
             if migration.name in applied:
                 continue
-            async with pool.acquire() as connection, connection.transaction():
+            async with connection.transaction():
                 await connection.execute(migration.read_text(encoding="utf-8"))
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_schema_migrations (name) VALUES ($1)",
