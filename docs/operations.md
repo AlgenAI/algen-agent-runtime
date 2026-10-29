@@ -744,7 +744,9 @@ PostgreSQL; both are stable between calls.
 A user can add to a run while it works: `runtime.steer(run_id, tenant_id, text)` queues a message
 and returns it as a `SteeringMessage` (`id`, `text`, `queued_at`). Over HTTP it is
 `POST /v1/runs/{run_id}/steer` with `{"text": "..."}` (scope `runs:write`, tenant-scoped like every
-run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`.
+run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`. A run started
+for a conversation turn can be steered only by the conversation's owner; any other user of the
+tenant gets `404`, as on the approval and clarification routes.
 
 - **When the model sees it.** At the run's next step boundary: after the results of every call in
   the model's last reply and before the next model call, as one user message with a text block
@@ -762,8 +764,9 @@ run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}
   restart loses at most those sent since the last one.
 - **Events.** `steer.delivered` and `steer.undelivered` carry `count` and `messages`, a list of
   `{id, chars}`; the text is added (`text`) only when `telemetry_include_content` is on. The run
-  narrative tells them as `steering` entries without the text. `GET /v1/runs/{run_id}` includes
-  `pending_steering`, text included, to callers with `runs:read`.
+  narrative tells them as `steering` entries without the text. `GET /v1/runs/{run_id}` leaves
+  `pending_steering` out, like `messages`. An empty `pending_steering` is also left out of the
+  stored checkpoint, so 0.1.0a17 replicas can load it during a rolling deploy.
 - **Limits and errors.** At most `MAX_PENDING_STEERING` (16) messages wait per run and each is at
   most `MAX_STEERING_CHARS` (8,000) characters after trimming. Empty or longer text raises
   `ValueError` (HTTP `422`); a full queue, an ended run, or a run executing in another process

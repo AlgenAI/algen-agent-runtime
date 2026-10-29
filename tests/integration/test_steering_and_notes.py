@@ -284,8 +284,11 @@ async def test_steering_waits_while_calls_from_the_same_reply_are_pending() -> N
 async def test_a_checkpoint_saved_without_steering_still_loads() -> None:
     state = RunState(request=_request())
     data = json.loads(state.model_dump_json())
-    data.pop("pending_steering")
+    # Empty, it is left out of the checkpoint: 0.1.0a17 forbids unknown fields.
+    assert "pending_steering" not in data
     assert RunState.model_validate(data).pending_steering == []
+    state.pending_steering.append(SteeringMessage(text="hi"))
+    assert json.loads(state.model_dump_json())["pending_steering"][0]["text"] == "hi"
     assert SteeringMessage(text="hi").id
 
 
@@ -424,3 +427,32 @@ async def test_a_call_emits_a_bounded_number_of_notes() -> None:
     assert result.status == RunStatus.COMPLETED
     notes = [e for e in await runtime.events.history(result.run_id) if e.type == "tool.note"]
     assert len(notes) == MAX_TOOL_NOTES_PER_CALL and len(raised) == 1
+
+
+async def test_only_the_conversation_owner_can_steer_a_conversation_turn_run() -> None:
+    runtime = _runtime(MockModelProvider(["done"]))
+    container = Container(
+        runtime=runtime,
+        agents=runtime.agents,
+        tools=runtime.tools,
+        artifacts=InMemoryArtifactStore(),
+        events=runtime.events,
+        conversations=ConversationService(
+            InMemoryConversationStore(),
+            InMemoryConversationEventBus(),
+            ConversationHandlerRegistry(),
+        ),
+    )
+    transport = httpx.ASGITransport(app=create_app(AppSettings(), container))
+    request = _request().model_copy(update={"conversation_id": "c1"})
+    result = await runtime.run(request)
+    headers = {"x-tenant-id": "t", "x-scopes": "runs:read runs:write"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        url = f"/v1/runs/{result.run_id}/steer"
+        other = await client.post(url, headers={**headers, "x-user-id": "bob"}, json={"text": "x"})
+        # Another user of the tenant is told the run does not exist, before any steering check.
+        assert other.status_code == 404
+        owner = await client.post(url, headers={**headers, "x-user-id": "u"}, json={"text": "x"})
+        assert owner.status_code == 409  # the run has ended
+        read = await client.get(f"/v1/runs/{result.run_id}", headers={**headers, "x-user-id": "u"})
+        assert "pending_steering" not in read.json()

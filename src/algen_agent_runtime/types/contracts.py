@@ -7,7 +7,14 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 
 def utc_now() -> datetime:
@@ -687,6 +694,16 @@ class RunState(BaseModel):
     # pause continues the same trace.
     trace_parent: dict[str, str] | None = None
     version: int = 0
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_steering(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a17 validates stored run state with extra="forbid" and has no pending_steering:
+        # leave it out while it is empty, so a17 replicas can still load what a18 checkpoints
+        # during a rolling deploy or after a rollback.
+        data = handler(self)
+        if isinstance(data, dict) and not self.pending_steering:
+            data.pop("pending_steering", None)
+        return data
 
     @model_validator(mode="after")
     def archived_history_is_consistent(self) -> RunState:

@@ -363,7 +363,9 @@ def create_app(
     async def read_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:read")
         state = await dependencies.runtime.status(run_id, identity.tenant_id)
-        return state.model_dump(mode="json", exclude={"messages", "pending_tool_calls"})
+        return state.model_dump(
+            mode="json", exclude={"messages", "pending_tool_calls", "pending_steering"}
+        )
 
     @app.get("/v1/runs/{run_id}/narrative")
     async def read_run_narrative(
@@ -393,6 +395,8 @@ def create_app(
         run_id: str, body: SteerBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        # Steering puts text in front of the model as the user: only a conversation's owner may.
+        await require_conversation_owner(run_id, identity)
         try:
             message = await dependencies.runtime.steer(run_id, identity.tenant_id, body.text)
         except ValueError as exc:
