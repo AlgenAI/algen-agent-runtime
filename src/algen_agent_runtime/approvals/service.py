@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -34,7 +35,8 @@ class ApprovalRequest(BaseModel):
     expires_at: datetime
     status: ApprovalStatus = ApprovalStatus.PENDING
     modified_parameters: dict[str, Any] | None = None
-    # The agent whose run asked, and when. None on approvals stored by earlier releases.
+    # The agent whose run asked, and when. None on approvals stored by earlier releases. The
+    # PostgreSQL store keeps both in columns, not in the stored JSON (see STORED_JSON_EXCLUDE).
     agent: str | None = None
     created_at: datetime | None = None
 
@@ -47,13 +49,19 @@ class ApprovalRequest(BaseModel):
 
 
 MAX_APPROVAL_PAGE = 500
+MAX_APPROVAL_OFFSET = 1_000_000
+
+# Fields the PostgreSQL store keeps in columns instead of the stored JSON. 0.1.0a17 validates the
+# JSON with extra="forbid", so leaving them out keeps rows readable by it during a rolling deploy
+# or after a rollback.
+STORED_JSON_EXCLUDE = frozenset({"agent", "created_at"})
 
 
 def _check_page(limit: int, offset: int) -> None:
     if not 1 <= limit <= MAX_APPROVAL_PAGE:
         raise ValueError(f"limit must be between 1 and {MAX_APPROVAL_PAGE}")
-    if offset < 0:
-        raise ValueError("offset must not be negative")
+    if not 0 <= offset <= MAX_APPROVAL_OFFSET:
+        raise ValueError(f"offset must be between 0 and {MAX_APPROVAL_OFFSET}")
 
 
 class ApprovalService(Protocol):
@@ -95,7 +103,11 @@ class ApprovalService(Protocol):
 
         ``status``, ``run_id`` and ``agent`` narrow the list. ``status=PENDING`` leaves out
         requests past their expiry, and ``status=EXPIRED`` includes them. ``limit`` is 1 to
-        ``MAX_APPROVAL_PAGE``.
+        ``MAX_APPROVAL_PAGE`` and ``offset`` 0 to ``MAX_APPROVAL_OFFSET``.
+
+        Requests created at the same instant are ordered differently by each store: the
+        in-memory store by insertion order, PostgreSQL by ``id`` (random). Both orders are
+        stable between calls, which is all offset paging needs.
         """
         ...
 
@@ -221,17 +233,19 @@ class PostgresApprovalService:
             risk=risk,
             expires_at=now + timedelta(seconds=expires_seconds),
             agent=agent,
-            created_at=now,
         )
-        await self._database.execute(
+        row = await self._database.fetchrow(
             "INSERT INTO algen_agent_runtime_approvals "
-            "(id, run_id, tenant_id, approval) VALUES ($1,$2,$3,$4::jsonb)",
+            "(id, run_id, tenant_id, agent, approval) VALUES ($1,$2,$3,$4,$5::jsonb) "
+            "RETURNING created_at",
             request.id,
             run_id,
             tenant_id,
-            request.model_dump_json(),
+            agent,
+            request.model_dump_json(exclude=set(STORED_JSON_EXCLUDE)),
         )
-        return request
+        # The row's time (the database clock), as get and list report it.
+        return request.model_copy(update={"created_at": row["created_at"]})
 
     async def decide(
         self,
@@ -260,11 +274,12 @@ class PostgresApprovalService:
 
     async def get(self, approval_id: str, tenant_id: str) -> ApprovalRequest | None:
         row = await self._database.fetchrow(
-            "SELECT approval FROM algen_agent_runtime_approvals WHERE id=$1 AND tenant_id=$2",
+            "SELECT approval, agent, created_at FROM algen_agent_runtime_approvals "
+            "WHERE id=$1 AND tenant_id=$2",
             approval_id,
             tenant_id,
         )
-        return ApprovalRequest.model_validate_json(row["approval"]) if row else None
+        return _from_row(row) if row else None
 
     async def list(
         self,
@@ -288,7 +303,7 @@ class PostgresApprovalService:
         if run_id is not None:
             clauses.append(f"run_id={bind(run_id)}")
         if agent is not None:
-            clauses.append(f"approval->>'agent'={bind(agent)}")
+            clauses.append(f"agent={bind(agent)}")
         if status is not None:
             stored = "approval->>'status'"
             if status in {ApprovalStatus.PENDING, ApprovalStatus.EXPIRED}:
@@ -301,26 +316,30 @@ class PostgresApprovalService:
             else:
                 clauses.append(f"{stored}={bind(status.value)}")
         rows = await self._database.fetch(
-            "SELECT approval, created_at FROM algen_agent_runtime_approvals "
+            "SELECT approval, agent, created_at FROM algen_agent_runtime_approvals "
             f"WHERE {' AND '.join(clauses)} "
             f"ORDER BY created_at DESC, id DESC LIMIT {bind(limit)} OFFSET {bind(offset)}",
             *arguments,
         )
-        items: list[ApprovalRequest] = []
-        for row in rows:
-            item = ApprovalRequest.model_validate_json(row["approval"])
-            if item.created_at is None:
-                item = item.model_copy(update={"created_at": row["created_at"]})
-            items.append(item.effective(now))
-        return tuple(items)
+        return tuple(_from_row(row).effective(now) for row in rows)
 
     async def _save(self, item: ApprovalRequest, expected: ApprovalStatus) -> bool:
         result = await self._database.execute(
             "UPDATE algen_agent_runtime_approvals SET approval=$1::jsonb, updated_at=now() "
             "WHERE id=$2 AND tenant_id=$3 AND approval->>'status'=$4",
-            item.model_dump_json(),
+            item.model_dump_json(exclude=set(STORED_JSON_EXCLUDE)),
             item.id,
             item.tenant_id,
             expected.value,
         )
         return str(result) == "UPDATE 1"
+
+
+def _from_row(row: Any) -> ApprovalRequest:
+    """An approval row as a request: the stored JSON, with ``agent`` and ``created_at`` from
+    their columns."""
+    stored = row["approval"]
+    # asyncpg returns jsonb as text.
+    values = json.loads(stored) if isinstance(stored, (str, bytes)) else dict(stored)
+    values.update(agent=row["agent"], created_at=row["created_at"])
+    return ApprovalRequest.model_validate(values)

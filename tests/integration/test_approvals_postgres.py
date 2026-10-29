@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 from datetime import timedelta
@@ -89,3 +90,56 @@ async def test_postgres_approval_list_filters_pages_and_isolates_tenants(
     ]
     assert [item.id for item in pages] == [item.id for item in listed]
     assert (await service.list(tenant, agent="a"))[-1].redacted_parameters == {"k": "v"}
+
+
+# The fields 0.1.0a17 accepts in the stored JSON (its ApprovalRequest has extra="forbid").
+A17_FIELDS = {
+    "id",
+    "run_id",
+    "step_id",
+    "tenant_id",
+    "proposed_action",
+    "side_effect_summary",
+    "redacted_parameters",
+    "risk",
+    "expires_at",
+    "status",
+    "modified_parameters",
+}
+
+
+async def _stored_json(db: PostgresDatabase, approval_id: str) -> dict[str, object]:
+    row = await db.fetchrow(
+        "SELECT approval FROM algen_agent_runtime_approvals WHERE id=$1", approval_id
+    )
+    raw = row["approval"]
+    return dict(json.loads(raw) if isinstance(raw, str) else raw)
+
+
+async def test_postgres_approval_agent_and_time_live_in_columns(
+    database: PostgresDatabase,
+) -> None:
+    tenant = f"tenant-{uuid4()}"
+    service = PostgresApprovalService(database)
+    run_id = await _run(database, tenant)
+
+    created = await service.create(run_id, "s1", tenant, "Write", {}, "write", 600, agent="a")
+    row = await database.fetchrow(
+        "SELECT agent, created_at FROM algen_agent_runtime_approvals WHERE id=$1", created.id
+    )
+    assert (row["agent"], row["created_at"]) == ("a", created.created_at)
+    assert set(await _stored_json(database, created.id)) <= A17_FIELDS
+    read = await service.get(created.id, tenant)
+    assert read is not None and (read.agent, read.created_at) == ("a", created.created_at)
+
+    await service.decide(created.id, tenant, ApprovalStatus.MODIFIED, {"value": "x"})
+    assert set(await _stored_json(database, created.id)) <= A17_FIELDS
+
+    # A row written by 0.1.0a17: no agent column value, JSON in the a17 shape.
+    legacy = await service.create(run_id, "s2", tenant, "Old", {}, "write", 600)
+    await database.execute(
+        "UPDATE algen_agent_runtime_approvals SET agent=NULL WHERE id=$1", legacy.id
+    )
+    [item] = [entry for entry in await service.list(tenant) if entry.id == legacy.id]
+    assert item.agent is None and item.created_at is not None
+    assert [entry.id for entry in await service.list(tenant, agent="a")] == [created.id]

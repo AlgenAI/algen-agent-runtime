@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
 from conftest import make_agent, make_runtime
+from pydantic import BaseModel, ConfigDict
 
 from algen_agent_runtime.api.app import create_app
 from algen_agent_runtime.approvals.service import (
@@ -89,7 +90,7 @@ async def test_list_returns_copies_and_validates_paging() -> None:
     listed = await service.list("tenant-a", agent="a")
     listed[0].redacted_parameters["changed"] = True
     assert "changed" not in service._items[created["a1"].id].redacted_parameters
-    for kwargs in ({"limit": 0}, {"limit": 501}, {"offset": -1}):
+    for kwargs in ({"limit": 0}, {"limit": 501}, {"offset": -1}, {"offset": 1_000_001}):
         with pytest.raises(ValueError):
             await service.list("tenant-a", **kwargs)
 
@@ -102,6 +103,11 @@ class _RecordingDatabase:
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         self.queries.append((query, args))
         return self.rows
+
+
+def _row_json(item: ApprovalRequest) -> str:
+    """The approval column as the PostgreSQL store writes it, and asyncpg returns it."""
+    return item.model_dump_json(exclude={"agent", "created_at"})
 
 
 def _stored(**updates: Any) -> ApprovalRequest:
@@ -121,12 +127,12 @@ def _stored(**updates: Any) -> ApprovalRequest:
 
 async def test_postgres_list_binds_every_filter_and_decodes_json_rows() -> None:
     created_at = utc_now() - timedelta(minutes=1)
-    legacy = _stored()  # stored by an earlier release: no agent, no created_at
-    lapsed = _stored(expires_at=utc_now() - timedelta(seconds=1), agent="a", created_at=created_at)
+    legacy = _stored()  # stored by an earlier release: no agent column
+    lapsed = _stored(expires_at=utc_now() - timedelta(seconds=1))
     database = _RecordingDatabase(
         [
-            {"approval": legacy.model_dump_json(), "created_at": created_at},
-            {"approval": lapsed.model_dump_json(), "created_at": created_at},
+            {"approval": _row_json(legacy), "agent": None, "created_at": created_at},
+            {"approval": _row_json(lapsed), "agent": "a", "created_at": created_at},
         ]
     )
     service = PostgresApprovalService(database)
@@ -138,14 +144,19 @@ async def test_postgres_list_binds_every_filter_and_decodes_json_rows() -> None:
     query, args = database.queries[0]
     assert "FROM algen_agent_runtime_approvals WHERE tenant_id=$1" in query
     assert "run_id=$2" in query
-    assert "approval->>'agent'=$3" in query
+    assert "agent=$3" in query
+    assert "approval->>'agent'" not in query
     assert "approval->>'status'='pending' AND NOT (approval->>'expires_at')::timestamptz <= $4" in (
         query
     )
     assert query.endswith("ORDER BY created_at DESC, id DESC LIMIT $5 OFFSET $6")
     assert args[:3] == ("tenant-a", "run-1", "a")
     assert args[4:] == (10, 20)
-    assert items[0].created_at == created_at
+    assert "SELECT approval, agent, created_at FROM" in query
+    assert [(item.agent, item.created_at) for item in items] == [
+        (None, created_at),
+        ("a", created_at),
+    ]
     assert items[1].status == ApprovalStatus.EXPIRED
 
 
@@ -285,3 +296,80 @@ async def test_runtime_records_the_agent_on_approval_requests() -> None:
     [approval] = await container.runtime.approvals.list("tenant")
     assert approval.agent == "test-agent"
     assert approval.run_id == state.id
+
+
+class _A17ApprovalRequest(BaseModel):
+    """``ApprovalRequest`` exactly as 0.1.0a17 validates the stored JSON."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    run_id: str
+    step_id: str
+    tenant_id: str
+    proposed_action: str
+    side_effect_summary: str
+    redacted_parameters: dict[str, Any]
+    risk: str
+    expires_at: datetime
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    modified_parameters: dict[str, Any] | None = None
+
+
+class _ApprovalTable:
+    """The approvals table: the JSON column as text (as asyncpg returns jsonb) and the columns."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, Any]] = {}
+        self.inserted: list[tuple[Any, ...]] = []
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        if query.startswith("INSERT"):
+            self.inserted.append(args)
+            approval_id, _run_id, _tenant_id, agent, approval = args
+            created_at = utc_now()
+            self.rows[approval_id] = {
+                "approval": approval,
+                "agent": agent,
+                "created_at": created_at,
+            }
+            return {"created_at": created_at}
+        return self.rows.get(args[0])
+
+    async def execute(self, query: str, *args: Any) -> str:
+        approval, approval_id = args[0], args[1]
+        self.rows[approval_id]["approval"] = approval
+        return "UPDATE 1"
+
+
+async def test_postgres_store_writes_json_that_0_1_0a17_can_read() -> None:
+    table = _ApprovalTable()
+    service = PostgresApprovalService(table)
+
+    created = await service.create("run-1", "s1", "tenant-a", "Write", {}, "write", 600, agent="a")
+
+    [inserted] = table.inserted
+    assert inserted[3] == "a"  # the agent column
+    stored = table.rows[created.id]
+    _A17ApprovalRequest.model_validate_json(stored["approval"])
+    assert created.created_at == stored["created_at"]
+    read = await service.get(created.id, "tenant-a")
+    assert read is not None
+    assert (read.agent, read.created_at) == ("a", stored["created_at"])
+
+    await service.decide(
+        created.id, "tenant-a", ApprovalStatus.MODIFIED, modified_parameters={"value": "x"}
+    )
+    decided = _A17ApprovalRequest.model_validate_json(table.rows[created.id]["approval"])
+    assert decided.status == ApprovalStatus.MODIFIED
+
+    # A row written by 0.1.0a17 is read, and decided, in the same shape.
+    legacy = _stored()
+    table.rows[legacy.id] = {
+        "approval": _A17ApprovalRequest.model_validate(
+            legacy.model_dump(exclude={"agent", "created_at"})
+        ).model_dump_json(),
+        "agent": None,
+        "created_at": utc_now(),
+    }
+    await service.decide(legacy.id, "tenant-a", ApprovalStatus.APPROVED)
+    _A17ApprovalRequest.model_validate_json(table.rows[legacy.id]["approval"])
