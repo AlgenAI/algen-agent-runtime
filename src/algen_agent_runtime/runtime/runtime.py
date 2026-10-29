@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
+from uuid import uuid4
 
 import structlog
 from opentelemetry import context as otel_context
@@ -89,7 +90,7 @@ from algen_agent_runtime.observability.trace_levels import TraceLevel, TraceLeve
 from algen_agent_runtime.planning.contracts import ActionType, Plan, PlannedAction
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
-from algen_agent_runtime.policies.engine import looks_like_instruction_override
+from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.runtime.guards import (
@@ -105,7 +106,7 @@ from algen_agent_runtime.runtime.guards import (
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
-from algen_agent_runtime.security.redaction import redact, redact_parameters
+from algen_agent_runtime.security.redaction import redact, redact_parameters, redact_text
 from algen_agent_runtime.tools.contracts import (
     MAX_TOOL_NOTES_PER_CALL,
     EarlierCall,
@@ -145,6 +146,7 @@ from algen_agent_runtime.types.contracts import (
     SteeringMessage,
     TextBlock,
     TokenUsage,
+    ToolCall,
     ToolSpec,
     WorkingState,
     WorkingStateContent,
@@ -212,6 +214,9 @@ def _attach_trace_parent(parent: dict[str, str] | None) -> Token[Context] | None
     if not context.is_valid:
         return None
     return otel_context.attach(trace.set_span_in_context(NonRecordingSpan(context)))
+
+
+_TELEMETRY_PII = PIIRedactionPolicy()
 
 
 @dataclass
@@ -1426,6 +1431,7 @@ class AgentRuntime:
             response = response.model_copy(
                 update={"message": Message.text(Role.ASSISTANT, str(checked_output))}
             )
+        response = self._fresh_tool_call_ids(state, response)
         state.output_text = response.message.text_content or None
         state.pending_tool_calls = list(response.tool_calls)
         if response.message.text_content or response.tool_calls:
@@ -1930,6 +1936,17 @@ class AgentRuntime:
             state,
             {"tool": tool.definition, "approval_policy": agent.approval_policy},
         )
+        if decision.action == PolicyAction.DENY:
+            # A denial at planning refuses the call before any approval is asked for, the same
+            # as one at before_tool would refuse it before it runs.
+            await self._audit(
+                state,
+                "policy.decision",
+                decision.action.value,
+                "plan_tool",
+                {"reason_code": decision.reason_code, "audit_metadata": decision.audit_metadata},
+            )
+            raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
         approved = call_id in state.approved_tool_call_ids
         if not approved:
             # Checked before anyone is asked; an approved call passed them when it was planned.
@@ -2447,10 +2464,11 @@ class AgentRuntime:
                 state,
                 {"tool": tool.definition, "approval_policy": agent.approval_policy},
             )
-            if (
+            if decision.action == PolicyAction.DENY or (
                 decision.action == PolicyAction.REQUIRE_APPROVAL
                 and action.id.removeprefix("tool-") not in state.approved_tool_call_ids
             ):
+                # One at a time: the single path pauses for the approval or refuses the call.
                 return False
             tools.append(tool)
         # Guards judge each call after the ones the model sent before it that will run.
@@ -2994,18 +3012,20 @@ class AgentRuntime:
         invoked = tuple(decision.audit_metadata.get("policies_invoked", ()))
         triggered = tuple(decision.audit_metadata.get("policies_triggered", ()))
         skipped = tuple(decision.audit_metadata.get("policies_skipped", ()))
-        await self._emit(
-            state,
-            "policy.evaluated",
-            {
-                "boundary": str(point),
-                "action": decision.action.value,
-                "reason_code": decision.reason_code,
-                "invoked_count": len(invoked),
-                "triggered_count": len(triggered),
-                "skipped_count": len(skipped),
-            },
-        )
+        data: dict[str, Any] = {
+            "boundary": str(point),
+            "action": decision.action.value,
+            "reason_code": decision.reason_code,
+            "invoked_count": len(invoked),
+            "triggered_count": len(triggered),
+            "skipped_count": len(skipped),
+        }
+        errors = decision.audit_metadata.get("policy_errors")
+        if errors:
+            # A policy raised or timed out and the boundary failed open or closed.
+            data["fail_mode"] = decision.audit_metadata.get("fail_mode")
+            data["error_count"] = len(errors)
+        await self._emit(state, "policy.evaluated", data)
         return decision
 
     async def _audit(
@@ -3083,7 +3103,9 @@ class AgentRuntime:
         return self._telemetry_content(prompt)
 
     def _telemetry_content(self, value: Any) -> str:
-        safe = redact(value)
+        # Opt-in content capture still carries no credentials or direct identifiers: spans go to
+        # backends with weaker access control than the run's own stores.
+        safe = _TELEMETRY_PII.redact_value(redact(value))
         rendered = safe if isinstance(safe, str) else json.dumps(safe, default=str)
         if len(rendered) <= self.telemetry_max_content_chars:
             return rendered
@@ -3131,9 +3153,29 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _fresh_tool_call_ids(state: RunState, response: ModelResponse) -> ModelResponse:
+        """The reply with a new id for any call that reuses an id from earlier in the run or
+        from the same reply.
+
+        A call's id keys its approval and its execution record, so a model that repeated an
+        approved call's id would otherwise have its new call treated as the old one.
+        """
+        seen = set(state.completed_tool_call_ids)
+        calls: list[ToolCall] = []
+        for call in response.tool_calls:
+            if call.id in seen:
+                call = call.model_copy(update={"id": str(uuid4())})
+            seen.add(call.id)
+            calls.append(call)
+        if all(new is old for new, old in zip(calls, response.tool_calls, strict=True)):
+            return response
+        return response.model_copy(update={"tool_calls": tuple(calls)})
+
+    @staticmethod
     def _safe_error(exc: Exception) -> str:
         if isinstance(exc, AlgenAgentRuntimeError):
-            return str(exc)
+            # A tool's own error text may quote a credential it was given or sent.
+            return redact_text(str(exc))
         if isinstance(exc, ImportError) and re.fullmatch(
             r"install algen-agent-runtime\[[a-z0-9-]+\](?: for [A-Za-z0-9 ._-]+)?",
             str(exc),

@@ -93,6 +93,29 @@ contracts are explicitly marked experimental during the `0.x` series.
   reserves as if a token were three characters. Context packing and the token budget are
   unchanged. (#71)
 
+- Signed policy bundles (`policies.bundles`, `policies.trusted_keys`, `policies.require_signed`):
+  a YAML or JSON file of declarative rules (`deny_tools`, `require_approval_tools`,
+  `deny_patterns`, `redact_patterns`) whose name, version, `issued_at` and `expires_at` are inside
+  a detached Ed25519 signature (`<bundle>.sig`) verified at start-up against `env://` or `file://`
+  public keys. With `require_signed: true` an unsigned bundle stops start-up; a signature that does
+  not verify, an expired or future-dated bundle, and a version below the bundle's `min_version`
+  (rollback) are always refused. Each bundle runs as the policy `bundle:<name>` for every agent,
+  whatever its guardrail selection. Verifying needs the `encryption` extra; unsigned bundles do
+  not. `algen-agent-runtime policy keygen|sign|verify` creates keys, signs and checks bundles.
+  `CompositePolicyEngine.register(..., mandatory=True)` adds a policy every agent runs. See
+  docs/operations.md#signed-policy-bundles.
+- Explicit fail modes at every policy boundary: `policies.on_error` (`closed` or `open`),
+  `policies.boundary_on_error` per boundary, and `policies.evaluation_timeout_seconds` (per
+  policy, unset by default). `closed` refuses the value as a deny would (`reason_code:
+  policy.error`); `open` skips only the failed policy. Each handled error writes a `policy.error`
+  audit record (`fail_closed` / `fail_open`), adds to the `algen_agent_runtime.policy.errors`
+  counter and logs `policy_error` with the error's type, never its text; the run's
+  `policy.evaluated` event carries `fail_mode` and `error_count`. See
+  docs/operations.md#boundaries-and-fail-modes.
+- `tests/adversarial` (marker `adversarial`): scripted agent runs in which the mock model obeys an
+  attacker, covering prompt injection, data loss, PII and secrets, and cross-tenant access through
+  agent behaviour. It runs in the normal test suite.
+
 ### Changed
 
 - `tool_policy.max_refusals_per_tool` counts refusals in a row: a call to the tool that runs
@@ -117,8 +140,28 @@ contracts are explicitly marked experimental during the `0.x` series.
   is used (a pending steering message, a failed tool result), so a17 replicas can read them during
   a rolling deploy or after a rollback.
 
+- A policy that raises or times out now ends its boundary with a `policy.error` deny
+  (`PolicyDeniedError`) instead of its own exception propagating. Every boundary defaults to
+  `closed`, which is what each already did (the run or the call failed), so no boundary becomes
+  open unless configured.
+- At one boundary a `deny` from any policy now wins over an earlier policy's
+  `require_approval` or `require_clarification`: the later policies still run, so a call a
+  policy bundle denies is refused instead of first being put to an approver.
+- The `secrets` policy also redacts bearer tokens (`Bearer <token>` with a digit or separator in
+  the token), and the `pii` policy redacts card numbers (`[REDACTED_CARD]`): digit runs with a
+  card network's prefix and length (Visa, Mastercard, Amex, Discover, JCB, Diners, UnionPay) that
+  pass the Luhn check, so timestamps and other long identifiers are left alone. As with any redaction of tool arguments, such a value in a tool call's
+  arguments refuses the call at `before_tool`.
+- `redact()` (audit metadata, logs, conversation records) also redacts `key=value` credential
+  assignments, and opt-in telemetry content (`telemetry.include_content`) is also redacted for
+  emails, phone, Aadhaar and card numbers.
+
 ### Fixed
 
+- The `pii` policy no longer redacts digit runs inside UUIDs, hashes and other tokens as phone or
+  Aadhaar numbers (an identifier must not touch a letter, digit, `_` or `-`). About 1.7% of random
+  UUIDs were altered, and because a redacted tool argument refuses the call, roughly one in sixty
+  tool calls carrying a run, record or order UUID was refused at `before_tool`.
 - Every `/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification and approval)
   enforces conversation ownership: a run started for a conversation turn answers `404` to any
   other user of the tenant. Before, any `runs:write` principal in the tenant could decide or cancel
@@ -136,6 +179,22 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
   Runtime metric was recorded and silently dropped, and the process-global provider was taken, so
   an application could not install its own afterwards.
+- A `deny` decision at `plan_tool` refuses the call; before, only `require_approval` was honoured
+  there and a denial was ignored until `before_tool`, after an approval could have been asked for.
+
+### Security
+
+- A model reply that reuses an earlier tool call's id (or repeats an id within the reply) gets a
+  fresh id. Before, a new call under an approved call's id was treated as that call: it skipped
+  approval and was answered with the recorded result without running, and the model got no result
+  for it.
+- Approval requests (`redacted_parameters`, the pause payload and `approval.required`) redact
+  bearer tokens and `key=value` credentials inside argument values, not only top-level keys named
+  like secrets.
+- The text of a runtime error a tool raised (shown to the model with `return_to_model`, or kept as
+  the run's error) is redacted for credentials; tools write these messages themselves.
+- Opt-in telemetry content no longer carries a model reply's credentials or personal data before
+  the `after_model` policy redacts the reply.
 
 ## [0.1.0a17] - 2026-10-28
 

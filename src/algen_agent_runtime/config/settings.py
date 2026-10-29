@@ -21,6 +21,11 @@ from algen_agent_runtime.config.authentication import (
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.persistence.naming import check_schema_name
+from algen_agent_runtime.policies.contracts import (
+    PolicyErrorHandling,
+    PolicyFailMode,
+    PolicyPoint,
+)
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.tools.http_api import HttpToolConfig
@@ -308,6 +313,65 @@ class SecuritySettings(StrictSettings):
     allow_private_networks: bool = False
     allow_subprocess_tools: bool = False
     trusted_plugin_prefixes: tuple[str, ...] = ()
+
+
+def _check_key_reference(value: str, name: str) -> str:
+    if not value.startswith(("env://", "file://")) or len(value) <= len("file://"):
+        raise ValueError(f"{name} must be an env:// or file:// reference, never a literal key")
+    return value
+
+
+class PolicyBundleSettings(StrictSettings):
+    """One signed policy bundle (see ``algen_agent_runtime.policies.bundles``)."""
+
+    path: str = Field(min_length=1)
+    signature: str | None = Field(
+        default=None, description="Detached signature file; <path>.sig when it exists"
+    )
+    trusted_keys: tuple[str, ...] = Field(
+        default=(),
+        description="env:// or file:// Ed25519 public keys; policies.trusted_keys if empty",
+    )
+    min_version: int | None = Field(
+        default=None, ge=1, description="Refuse an older bundle version (rollback protection)"
+    )
+
+    @model_validator(mode="after")
+    def _references(self) -> PolicyBundleSettings:
+        for key in self.trusted_keys:
+            _check_key_reference(key, "policies.bundles[].trusted_keys")
+        return self
+
+
+class PolicySettings(StrictSettings):
+    """Policy distribution and what each boundary does when a policy cannot decide."""
+
+    on_error: PolicyFailMode = Field(
+        default=PolicyFailMode.CLOSED,
+        description="closed refuses the value when a policy raises or times out; open skips it",
+    )
+    boundary_on_error: dict[PolicyPoint, PolicyFailMode] = Field(default_factory=dict)
+    evaluation_timeout_seconds: float | None = Field(
+        default=None, gt=0, le=300, description="Per-policy evaluation limit; none by default"
+    )
+    require_signed: bool = Field(
+        default=False, description="Refuse to start with an unsigned bundle"
+    )
+    trusted_keys: tuple[str, ...] = ()
+    bundles: tuple[PolicyBundleSettings, ...] = ()
+
+    @model_validator(mode="after")
+    def _references(self) -> PolicySettings:
+        for key in self.trusted_keys:
+            _check_key_reference(key, "policies.trusted_keys")
+        return self
+
+    def error_handling(self) -> PolicyErrorHandling:
+        return PolicyErrorHandling(
+            on_error=self.on_error,
+            boundary_on_error=self.boundary_on_error,
+            timeout_seconds=self.evaluation_timeout_seconds,
+        )
 
 
 class RouteLimitSettings(StrictSettings):
@@ -615,6 +679,7 @@ class AppSettings(StrictSettings):
     retrieval: dict[str, RetrievalSettings] = Field(default_factory=dict)
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    policies: PolicySettings = Field(default_factory=PolicySettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
