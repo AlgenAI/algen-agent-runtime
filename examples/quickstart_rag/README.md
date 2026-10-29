@@ -15,6 +15,19 @@ export MISTRAL_API_KEY=...
 python -m examples.quickstart_rag.app --provider mistral "When is support available?"
 ```
 
+Without the selected provider's key the CLI stops with a hint. `--offline` runs the same
+`agent.yaml` with both providers swapped for the deterministic mock provider (see
+`examples/offline.py`). Retrieval, the citation guardrail and the citation verifier are real; the
+mock's answer is scripted from the handbook topic the question names (leave, support hours or
+incidents) and cites `[S1]`:
+
+```bash
+python -m examples.quickstart_rag.app --offline "When is support available?"
+```
+
+Tests: `python -m pytest tests/end_to_end/test_rag_example.py -q` (the live OpenAI test runs only
+when `OPENAI_API_KEY` is set).
+
 Documents without `metadata.tenant_id` are shared. Tenant-scoped documents are only visible to
 that tenant. Per-request metadata keys prefixed with `retrieval_filter.` narrow configured
 filters; they cannot widen tenant scope.

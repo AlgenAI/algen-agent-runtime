@@ -11,7 +11,7 @@ external_services: []
 secrets:
   - name: OPENAI_API_KEY
     description: OpenAI API key (planned default provider)
-    required: true
+    required: false  # not with --offline
 
 entry_points:
   cli: examples.quickstart_cloud_chat.app
@@ -19,8 +19,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.quickstart_cloud_chat.app"
-  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  test: "python -m pytest tests/integration/test_all_examples_run.py -q -k quickstart_cloud_chat"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 15
-deterministic_mock_support: false
+deterministic_mock_support: true

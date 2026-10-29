@@ -1,6 +1,6 @@
 # pattern_provider_fallback
 
-**Tier:** Pattern | **Credential requirement:** At least one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or a local Ollama instance
+**Tier:** Pattern | **Credential requirement:** `ANTHROPIC_API_KEY` (and `OPENAI_API_KEY` or a local Ollama instance for the fallbacks); none with `--offline`
 
 Demonstrates provider-neutral multi-provider fallback with visible routing decisions. The `resilient` agent attempts Anthropic first, then OpenAI, then a local Ollama model.
 
@@ -15,7 +15,7 @@ The deterministic mode also exercises explicit windows with a 256-token output r
 | Requirement | Notes |
 |---|---|
 | Python 3.12+ | — |
-| At least one provider credential | See secrets below |
+| `ANTHROPIC_API_KEY` | The primary's key is resolved before the call; a missing key is a configuration error, which does not fall back |
 
 Set the credentials you have:
 
@@ -24,6 +24,8 @@ export ANTHROPIC_API_KEY=...   # Primary
 export OPENAI_API_KEY=...      # Cloud fallback
 # Ollama on http://127.0.0.1:11434 is the local fallback (no key needed)
 ```
+
+Without `ANTHROPIC_API_KEY` the CLI stops with a hint to use `--offline`.
 
 ## Setup
 
@@ -37,19 +39,21 @@ pip install -e '.[dev]'
 python -m examples.pattern_provider_fallback.app "What year did the first moon landing occur?"
 ```
 
-**Expected output** (example with Anthropic as primary):
+**Expected output** (example with Anthropic as primary). The route is the provider and model of the
+run's last `model.completed` event:
 
 ```
-[Route: primary/claude-sonnet-4-5]
+[Route: anthropic/claude-sonnet-4-5]
 The first moon landing occurred in 1969, when Apollo 11 landed on the lunar surface on July 20th.
 ```
 
-## Deterministic failure scenario
+## Offline: a planned failure
 
-The CLI includes a credential-free planned primary failure followed by an in-memory fallback:
+`--offline` (also accepted as `--deterministic`) needs no credentials: a planned primary failure
+followed by the in-memory mock fallback:
 
 ```bash
-python -m examples.pattern_provider_fallback.app --deterministic
+python -m examples.pattern_provider_fallback.app --offline
 ```
 
 This uses the real `ModelRouter` and prints `mock/deterministic` as the selected route. The default

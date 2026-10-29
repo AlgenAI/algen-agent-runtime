@@ -27,7 +27,7 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.quickstart_local_chat.app"
-  test: "python -m pytest examples/quickstart_local_chat/tests/ -q"
+  test: "python -m pytest tests/unit/test_agent_ui.py -q"
   reset: "echo 'No persistent state to reset.'"
 
 expected_duration_seconds: 10

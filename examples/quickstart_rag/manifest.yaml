@@ -30,8 +30,8 @@ entry_points:
 commands:
   setup: "pip install -e '.[dev]'"
   run: "python -m examples.quickstart_rag.app \"How much annual leave do employees receive?\""
-  test: "python -m pytest examples/quickstart_rag/tests/ -q"
+  test: "python -m pytest tests/end_to_end/test_rag_example.py -q"
   reset: "echo 'No persistent state to reset. Retrieval index is in-memory.'"
 
 expected_duration_seconds: 30
-deterministic_mock_support: false
+deterministic_mock_support: true

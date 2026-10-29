@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from algen_agent_runtime.config.settings import load_settings
+from algen_agent_runtime.models.providers.mock import tool_call_response
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.tools.contracts import (
@@ -18,6 +19,7 @@ from algen_agent_runtime.tools.contracts import (
     ToolDefinition,
 )
 from algen_agent_runtime.types.contracts import RunRequest
+from examples.offline import offline_settings, require_key, script
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 ALLOWED_TABLES = frozenset({"customers", "orders"})
@@ -187,10 +189,38 @@ def create_query_tool(database: ReadOnlyAnalyticsDatabase) -> Tool:
     )
 
 
-async def ask(question: str, provider: ProviderName = "openai") -> str:
+KEY_BY_PROVIDER: dict[ProviderName, str] = {
+    "openai": "OPENAI_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+# Offline, the scripted model always asks for completed revenue by region, then answers. The query
+# still runs through analytics.query, its schema check, the SQLite authorizer and the row limit.
+OFFLINE_QUERY = (
+    "SELECT c.region, SUM(o.total_amount) AS revenue FROM customers c "
+    "JOIN orders o ON o.customer_id = c.id WHERE o.status = :status "
+    "GROUP BY c.region ORDER BY revenue DESC"
+)
+OFFLINE_ANSWER = (
+    f"The North region has the highest completed order revenue.\n\n```sql\n{OFFLINE_QUERY}\n```"
+)
+
+
+async def ask(question: str, provider: ProviderName = "openai", *, offline: bool = False) -> str:
     # The settings declare AnalyticsPlugin (plugin.py), which registers analytics.query and
     # hands its database to the container to close.
-    container = build_container(load_settings((EXAMPLE_DIR / "agent.yaml",)))
+    config = (EXAMPLE_DIR / "agent.yaml",)
+    settings = offline_settings(config, AGENT_BY_PROVIDER) if offline else load_settings(config)
+    container = build_container(settings)
+    if offline:
+        script(
+            container,
+            provider,
+            tool_call_response(
+                "analytics.query",
+                {"statement": OFFLINE_QUERY, "parameters": {"status": "completed"}},
+            ),
+            OFFLINE_ANSWER,
+        )
     try:
         result = await AlgenAgentRuntimeClient(container.runtime).run(
             RunRequest(
@@ -222,12 +252,21 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         default="openai",
         help="Model provider to use (default: openai).",
     )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use the deterministic mock provider with a scripted query; needs no API key.",
+    )
     return parser.parse_args(arguments)
 
 
-def main() -> None:
-    arguments = parse_args()
-    print(asyncio.run(ask(arguments.question, arguments.provider)))
+def main(argv: Sequence[str] | None = None) -> None:
+    arguments = parse_args(argv)
+    if arguments.offline:
+        print("[offline: scripted mock model; it always asks for completed revenue by region]")
+    else:
+        require_key(KEY_BY_PROVIDER[arguments.provider])
+    print(asyncio.run(ask(arguments.question, arguments.provider, offline=arguments.offline)))
 
 
 if __name__ == "__main__":
