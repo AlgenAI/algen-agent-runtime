@@ -65,6 +65,22 @@ class ToolDefinition(BaseModel):
         "the key on the tool, version and arguments within the policy's scope.",
     )
 
+    failure_field: str | None = Field(
+        default=None,
+        min_length=1,
+        description="A field of the tool's result object that reports failure: a result whose "
+        "field is ``false`` (``failure_field='ok'`` and ``{\"ok\": false, ...}``) is recorded "
+        "and emitted as failed, and still goes back to the model as the call's result.",
+    )
+
+    def reports_failure(self, value: Any) -> bool:
+        """Whether a result value reports a failure through ``failure_field``."""
+        return (
+            self.failure_field is not None
+            and isinstance(value, Mapping)
+            and value.get(self.failure_field) is False
+        )
+
 
 class _ReadOnlyCredentials(Mapping[str, str]):
     """A caller's credentials: read-only, never shown by ``repr`` and never pickled."""
@@ -181,11 +197,21 @@ class ToolContext(BaseModel):
 
 
 class ToolResult(BaseModel):
+    """What a call returned. A handler may return one instead of a bare value, to set
+    ``failed`` or ``metadata``; its ``value`` is checked like any other result."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     value: Any
     metadata: dict[str, Any] = Field(default_factory=dict)
     artifact_ids: tuple[str, ...] = ()
     redacted: bool = False
+    failed: bool = Field(
+        default=False,
+        description="The tool ran and returned an expected failure as data for the model to "
+        "correct (``ToolResult(value=..., failed=True)``, or ``ToolDefinition.failure_field``). "
+        "The call is recorded and emitted as failed, the value still goes to the model, and the "
+        "result is never cached. It is not retried: the call finished.",
+    )
 
 
 class ToolExecutionStatus(StrEnum):

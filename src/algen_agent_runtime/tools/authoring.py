@@ -276,6 +276,7 @@ def build_tool(
     precheck: Precheck | None = None,
     reconcile: Reconciler | None = None,
     compensation: CompensationHandler | None = None,
+    failure_field: str | None = None,
 ) -> Tool:
     """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this.
 
@@ -284,7 +285,9 @@ def build_tool(
     ``run_id``, ``step_id``) the result depends on, which the tool-result cache then keys on
     too. ``precheck`` refuses a call before anyone is asked to approve it. ``reconcile``
     asks the external system, by idempotency key, whether a call whose outcome is unknown took
-    effect; ``compensation`` undoes a call when an operator asks for it.
+    effect; ``compensation`` undoes a call when an operator asks for it. ``failure_field`` names
+    a field of the result that reports failure when it is ``false`` (``"ok"`` for
+    ``{"ok": false, "error": ...}``): the call is recorded as failed and the model still gets it.
     """
     preset = preset or read()
     tool_name = name or function.__name__
@@ -320,6 +323,7 @@ def build_tool(
         requires_approval=preset.requires_approval,
         volatile=volatile,
         cache_context=frozenset(cache_context),
+        failure_field=failure_field,
     )
 
     # The advertised schema closes every object, but a caller's Pydantic model may ignore unknown

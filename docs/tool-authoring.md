@@ -163,6 +163,41 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   call `failed`, not `indeterminate`, even for a write, so it needs no reconciliation and runs
   again normally with the same idempotency key once the user signs in.
 
+## Reporting a failure the model should fix
+
+A tool that returns an expected failure as data, so the model can correct itself, can say so.
+The call is then recorded and emitted as failed (`tool.completed` with `status: "failed"`, a
+`failed` audit record, `tool.status = failed` on its span) while the payload still goes back to
+the model as the call's result, whatever `tool_policy.on_error`:
+
+```python
+@tool(write(), failure_field="ok")
+async def change_setting(name: str, value: str) -> ChangeReceipt:
+    """Change a setting; ``{"ok": false, "error": ...}`` when the name is not a setting."""
+    ...
+
+
+# A hand-built tool can name the field on its definition or return a ToolResult:
+ToolDefinition(..., failure_field="ok")
+
+
+async def handler(arguments, context):
+    return ToolResult(value={"error": "unknown setting 'colour'"}, failed=True)
+```
+
+- `failure_field` marks a result object whose field is exactly `false` (not missing, `0` or
+  `null`) as failed.
+- A returned `ToolResult` keeps its `metadata`; its `value` is checked against the output schema
+  and the `after_tool` policies like any result, so the schema must allow the failure payload.
+- The call finished, so it is not retried. Its ledger record is `completed` with
+  `result.failed = true`: a recovered run replays the same failed result instead of running the
+  call again. A failed result is never stored in the tool-result cache.
+- To the guards it is not a success: it does not reset the tool's refusal count, a failed read
+  is not remembered by the repeat guard, and a failed change does not let earlier reads run
+  again. It counts against `max_calls_per_tool`, since it ran.
+- Raise instead when the run should fail (with `on_error: fail_run`), or for an error the model
+  cannot act on.
+
 ## Unknown outcomes: reconcile and compensation
 
 A call that changes something can fail without saying whether it took effect: the request left,

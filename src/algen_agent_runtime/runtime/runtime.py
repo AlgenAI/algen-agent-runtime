@@ -2113,7 +2113,7 @@ class AgentRuntime:
                 span.set_attribute("tool.status", "failed")
                 span.set_attribute("error.type", type(exc).__name__)
                 raise
-            span.set_attribute("tool.status", "completed")
+            span.set_attribute("tool.status", "failed" if result.failed else "completed")
             span.set_attribute("tool.result_chars", len(tool_text))
             span.set_attribute("tool.result.redacted", result.redacted)
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
@@ -2143,7 +2143,11 @@ class AgentRuntime:
         call_id = action.id.removeprefix("tool-")
         state.completed_tool_call_ids.add(call_id)
         state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
-        self._remember_tool_call(state, agent, tool.definition, action.arguments)
+        # A failure the tool returned as data reaches the model like any result, whatever
+        # on_error, but is not a success the guards remember.
+        status = "failed" if result.failed else "completed"
+        if not result.failed:
+            self._remember_tool_call(state, agent, tool.definition, action.arguments)
         state.append_message(
             Message(
                 role=Role.TOOL,
@@ -2164,7 +2168,7 @@ class AgentRuntime:
             "tool.completed",
             {
                 "tool": tool.definition.name,
-                "status": "completed",
+                "status": status,
                 "side_effect": tool.definition.side_effect.value,
                 "result_redacted": result.redacted,
                 "result_chars": len(tool_text),
@@ -2176,7 +2180,7 @@ class AgentRuntime:
         await self._audit(
             state,
             "tool.call",
-            "completed",
+            status,
             tool.definition.name,
             {"step_id": action.id, "side_effect": tool.definition.side_effect.value},
         )

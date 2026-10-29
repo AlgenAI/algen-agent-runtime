@@ -227,8 +227,9 @@ the model that many times, not to call it again, and to tell the user what was r
 With `refusal_count: consecutive` (the default) a call to the tool that runs successfully starts
 its count again: the limit is for a model that cannot get a call right, not one that fixes its
 mistakes along the way, so refused, succeeded, refused, refused is two refusals, not three. A
-call that fails or is held back by another guard does not reset the count, and neither does a
-successful call to another tool. `refusal_count: per_run` counts every
+call that fails, is held back by another guard or reports a failure it returned (see
+[Reporting a failure the model should fix](tool-authoring.md#reporting-a-failure-the-model-should-fix))
+does not reset the count, and neither does a successful call to another tool. `refusal_count: per_run` counts every
 refusal in the run, as 0.1.0a17 did. The count is part of `RunState`, so either way it survives
 an approval pause and a restart.
 

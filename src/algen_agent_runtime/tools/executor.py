@@ -234,10 +234,17 @@ class ToolExecutor:
                 )
                 raise
             try:
-                result = await self._checked_output(name, definition, result, context, agent)
-                wrapped = ToolResult(value=result)
+                # A handler may return a ToolResult to report a failure it returns as data.
+                returned = result if isinstance(result, ToolResult) else ToolResult(value=result)
+                failed = returned.failed or definition.reports_failure(returned.value)
+                result = await self._checked_output(
+                    name, definition, returned.value, context, agent
+                )
+                wrapped = returned.model_copy(update={"value": result, "failed": failed})
+                # A returned failure finished: it is recorded completed, so a replay returns
+                # it rather than running the call again, but it is never cached.
                 await self._executions.complete(context.idempotency_key, wrapped)
-                if cacheable:
+                if cacheable and not failed:
                     assert cache is not None
                     await cache.set_json(
                         "tool_results",
@@ -324,7 +331,11 @@ class ToolExecutor:
             metadata: dict[str, Any] = {"reconciled": True}
             if outcome.result_reference:
                 metadata["result_reference"] = outcome.result_reference
-            result = ToolResult(value=value, metadata=metadata)
+            result = ToolResult(
+                value=value,
+                metadata=metadata,
+                failed=tool.definition.reports_failure(outcome.value),
+            )
             status = ToolExecutionStatus.COMPLETED
         else:
             status = ToolExecutionStatus.FAILED
