@@ -35,6 +35,17 @@ providers:
   xai: {type: xai, default_model: grok-4}                           # env://XAI_API_KEY
 ```
 
+## When the router falls back
+
+A model call that fails moves on to the next candidate (by rank, or by declaration order with
+`ordered`) when the failure is specific to that provider: authentication or authorization errors,
+rate limits, timeouts (including HTTP 408), 5xx and transport failures, an invalid response, or an
+HTTP error such as 404 for a model the provider does not serve. A request the provider rejects as
+invalid (HTTP 400 or 422, `invalid_request`) is raised without trying other models, since they
+would reject it too, and it does not count against the provider's circuit breaker. A streamed call
+falls back only before it starts, and only when the request does not fit a candidate's context
+budget.
+
 ## Ordered fallback
 
 By default (`routing_preference: balanced`) candidates are ranked by `quality_tier`, observed

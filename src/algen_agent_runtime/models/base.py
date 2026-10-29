@@ -98,6 +98,16 @@ class SlidingWindowRateLimiter:
             await asyncio.sleep(max(0.001, delay))
 
 
+_REQUEST_REJECTED_STATUSES = frozenset({400, 422})
+
+
+def _rejects_request(exc: ProviderError) -> bool:
+    """Whether ``exc`` rejects the request itself, so another provider would fail the same way."""
+    return exc.error_kind == ErrorKind.INVALID_REQUEST and (
+        exc.status_code is None or exc.status_code in _REQUEST_REJECTED_STATUSES
+    )
+
+
 class ModelRouter:
     def __init__(
         self,
@@ -287,6 +297,11 @@ class ModelRouter:
     ) -> ModelResponse:
         """Dispatch to the best candidate, falling back to the next on a provider error.
 
+        Authentication and authorization failures, rate limits, timeouts, unavailability and
+        errors only one provider raises (such as a 404 for a model it does not serve) fall back.
+        A request rejected as invalid (HTTP 400/422 ``invalid_request``) is raised as is, since
+        every candidate would reject it.
+
         ``meter_call`` is the run context the usage meter receives; the router fills in
         ``provider``, ``model`` and ``streaming`` for each candidate it tries.
         """
@@ -332,14 +347,18 @@ class ModelRouter:
                     await self._usage_meter.settle(ticket, priced.usage)
                 return priced
             except ProviderError as exc:
+                if _rejects_request(exc):
+                    # Every provider would reject this request the same way, so falling back
+                    # would only hide the error behind another model's answer. The request is at
+                    # fault, not the provider, so its health is untouched. The reservation was
+                    # released by _dispatch.
+                    raise
                 errors.append(f"{rid}: {exc}")
                 failures.append(exc)
                 health = self._health[rid]
                 health.consecutive_failures += 1
                 if health.consecutive_failures >= self._threshold:
                     health.opened_at = time.monotonic()
-                if not exc.retryable:
-                    continue
         if not failures:
             raise BudgetExceededError("no model candidate fits the configured context budget")
         kinds = {failure.error_kind for failure in failures}
