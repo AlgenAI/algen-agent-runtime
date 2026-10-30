@@ -78,8 +78,8 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and item 1 in the
-unreleased changes; each lists what is left for later. Items 2, 5 and 7 remain open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1 and 2 in the
+unreleased changes; each lists what is left for later. Items 5 and 7 remain open.
 
 1. **Close persistence validation gaps.** *Done (single node, unreleased):* a drill suite
    (`tests/drills`, marker `drill`, run in CI by the `persistence-drills` job on throwaway
@@ -109,14 +109,32 @@ unreleased changes; each lists what is left for later. Items 2, 5 and 7 remain o
    run instead of retrying it; a published long-running soak (hours) with load and noisy-neighbor
    tenants; resuming outage-interrupted workflow and conversation drives in process (they are
    recovered by the next start).
-2. **Harden policy distribution and coverage.** Workflow approval and clarification outcomes are
-   implemented. Tool calls are now refused before approval when their arguments fail the input schema
-   or a precheck, and documents in seven formats are inspected for hidden content and injection.
-   Store-level tenant isolation is tested for PostgreSQL, Redis, retrieval, cache, workflow
-   checkpoints, MCP OAuth tokens and the API. *Remaining:* signed policy bundles, explicit
-   fail-open/fail-closed behavior at every remaining policy boundary, and an adversarial suite for
-   prompt injection, data loss, PII, secrets, and cross-tenant access through agent behavior rather
-   than store calls.
+2. **Harden policy distribution and coverage.** *Done (unreleased):* policy bundles
+   (`policies.bundles`) carry declarative rules (denied tools, tools that need approval, deny and
+   redact patterns per boundary) with their name, version, issue and expiry times inside a
+   detached Ed25519 signature verified at start-up against `env://` or `file://` trusted keys;
+   `policies.require_signed` refuses to start on an unsigned bundle, and a signature that does not
+   verify, an expired or future-dated bundle, or a version below `min_version` (rollback) is always
+   refused; bundle policies run for every agent; `algen-agent-runtime policy keygen|sign|verify`.
+   Every policy boundary (`input`, `before_retrieval`, `after_retrieval`, `before_model`,
+   `after_model`, `plan_tool`, `before_tool`, `after_tool`, `final_response`,
+   `before_memory_write`, `after_memory_write`) has an explicit fail mode when a policy raises or
+   times out (`policies.on_error`, `policies.boundary_on_error`,
+   `policies.evaluation_timeout_seconds`), `closed` by default everywhere as before, with a
+   `policy.error` audit record, the `algen_agent_runtime.policy.errors` metric and a type-only log
+   line. `tests/adversarial` runs scripted attacks through agent behaviour (prompt injection, data
+   loss, PII and secrets, cross-tenant access) in normal CI; the gaps it found are fixed (a deny at
+   `plan_tool` was ignored, a deny could be shadowed by an earlier approval requirement, a reused
+   tool-call id could inherit an approval, bearer tokens and card numbers were not redacted, and
+   credentials leaked through approval parameters, runtime error text and opt-in telemetry
+   content). Workflow approval and clarification outcomes, tool-call guards, document inspection
+   and store-level tenant isolation were done earlier. *Later:* a persisted version high-water mark
+   (rollback protection is the operator's `min_version`); fetching bundles from a remote source
+   and reloading them without a restart; a key revocation list beyond editing `trusted_keys`; fail
+   modes for custom (non-`CompositePolicyEngine`) engines, which keep their own error behaviour;
+   run events for the tool executor's boundaries (they are audited, not announced); a
+   model-based injection classifier in place of the deterministic patterns; the adversarial suite
+   against live providers and PostgreSQL stores; verifying `PluginManifest.signature` (item 5).
 3. **Complete side-effect operations.** *Done (`0.1.0a17`):* a tenant-scoped reconciliation API
    (`runtime.reconciliation`, `/v1/tool-executions`, scope `tools:reconcile`) lists indeterminate and
    stale started calls; operators resolve them as completed or failed with actor and reason, audited

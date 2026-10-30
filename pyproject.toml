@@ -132,6 +132,7 @@ filterwarnings = [
   "ignore:database_tool is deprecated:DeprecationWarning",
 ]
 markers = [
+  "adversarial: scripted agent runs where the model or a tool behaves maliciously",
   "live: tests requiring external credentials",
   "integration: tests requiring external or behavioral storage/network integration",
   "postgres: tests targeting PostgreSQL persistence stores",

@@ -138,6 +138,7 @@ from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutio
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
+from algen_agent_runtime.policies.bundles import BundlePolicy, load_policy_bundles
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.retrieval.ingestion import Chunker, MarkdownChunker, TextChunker
@@ -650,7 +651,13 @@ def build_container(
     audits: AuditLog = (
         PostgresAuditLog(database) if storage.audit_store == "postgres" else InMemoryAuditLog()
     )
-    policies = CompositePolicyEngine(guardrail_scope=observability.guardrail_scope)
+    policies = CompositePolicyEngine(
+        guardrail_scope=observability.guardrail_scope,
+        error_handling=settings.policies.error_handling(),
+        audits=audits,
+    )
+    for bundle in load_policy_bundles(settings.policies, environment):
+        policies.register(BundlePolicy(bundle), mandatory=True)
     planners = PlannerRegistry()
     contexts = ContextBuilderRegistry(DefaultContextBuilder(memory))
     verifiers = VerificationService()

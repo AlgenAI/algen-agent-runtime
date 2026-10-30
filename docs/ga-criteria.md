@@ -51,7 +51,7 @@ A breaking change after `0.2.0b1` restarts the stability window.
 
 - [ ] All seven P0 items in [production readiness](production-readiness.md) are complete:
   - [x] 1. Persistence drills against live stores (single node; unreleased).
-  - [ ] 2. Policy distribution and adversarial coverage.
+  - [x] 2. Policy distribution and adversarial coverage (unreleased).
   - [x] 3. Side-effect reconciliation, operator resolution and compensation (`0.1.0a17`).
   - [x] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit) (`0.1.0a17`).
   - [ ] 5. Network, plugin and local-execution hardening.

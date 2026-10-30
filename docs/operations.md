@@ -737,6 +737,147 @@ from `tool.started` sees every call. A reply's calls are announced in the order 
 them: in a parallel reply every call's `step.started`, then every call's `tool.started`, before
 any of them runs, and their results and `tool.completed` events follow in the same order.
 
+## Policy boundaries, fail modes and signed bundles
+
+### Boundaries and fail modes
+
+The Runtime evaluates its policy engine at eleven boundaries. When a policy raises, returns
+something other than a `PolicyDecision`, or runs past `policies.evaluation_timeout_seconds`, the
+boundary's fail mode decides what happens:
+
+- `closed` refuses the value, exactly as a `deny` decision would (`reason_code: policy.error`).
+- `open` skips that policy and lets the boundary's other policies decide; it never skips them.
+  A redaction policy that still runs still redacts.
+
+A policy that raises `PolicyDeniedError` has decided; that is a denial, not a policy error, in
+either mode.
+
+| Boundary | Evaluated on | A refusal (deny or `closed` error) | Default |
+| --- | --- | --- | --- |
+| `input` | the run's input; each steering message before it is delivered | the run fails | `closed` |
+| `before_retrieval` | the request text before context is built | the run fails | `closed` |
+| `after_retrieval` | loaded conversation history; the built context messages | the run fails | `closed` |
+| `before_model` | every model request, compaction included | the run fails | `closed` |
+| `after_model` | every model reply's text, a compaction summary | the run fails | `closed` |
+| `plan_tool` | each requested tool call, before guards and approval | the call is refused (`tool_policy.on_error`) | `closed` |
+| `before_tool` | the call's arguments in the tool executor (agent runs and workflow tool steps); a redaction here also refuses the call | the call is refused | `closed` |
+| `after_tool` | the tool's output, before it is recorded, cached or shown to the model | the call fails | `closed` |
+| `final_response` | the verified answer | the run fails | `closed` |
+| `before_memory_write` | conversation memory, learned-memory proposals, working state, loaded skills, compaction archives | the run (or the memory tool call) fails | `closed` |
+| `after_memory_write` | the count of messages just written | the run fails (the memory is already written) | `closed` |
+
+Every default is `closed`, which is what each boundary already did before fail modes were
+configurable: an exception from a policy failed the run or the call. What changed is the shape of
+that failure (a `policy.error` denial instead of the policy's own exception) and that it is now
+recorded. No boundary is `open` unless you configure it.
+
+```yaml
+policies:
+  on_error: closed                 # closed | open, for every boundary
+  boundary_on_error:               # per-boundary overrides
+    after_memory_write: open
+  evaluation_timeout_seconds: 5    # per policy; unset (no limit) by default
+```
+
+Each handled policy error leaves:
+
+- an audit record `action: policy.error`, `outcome: fail_closed | fail_open`, with the boundary,
+  policy, error type, fail mode, `timed_out` and, at tool boundaries, the tool name, in the run's
+  tenant;
+- the counter `algen_agent_runtime.policy.errors` with `boundary`, `policy`, `fail_mode` and
+  `error_type`;
+- a `policy_error` warning log line with the same fields. The error's message is never recorded:
+  it may quote the payload.
+
+At the run's own boundaries the `policy.evaluated` event also carries `fail_mode` and
+`error_count`. Alert on any `fail_open` record: a boundary let a value through without one of its
+policies.
+
+Fail modes apply to the built-in `CompositePolicyEngine`, which the container builds. An engine
+you pass to `AgentRuntime` yourself keeps its own error behaviour. Other checks are deterministic
+and always refuse: tool-call guards, approvals, tool-result injection screening, query governance,
+learned-memory and context-artifact scope checks. Two settings outside the engine have their own
+fail modes: `telemetry.traccia.governance_fail_open` (default `false`) and
+`api.rate_limiting.fail_closed` (default `true`).
+
+### Signed policy bundles
+
+A bundle distributes policy rules as one YAML or JSON file. Its metadata is part of the signed
+bytes:
+
+```yaml
+format: 1
+name: acme-baseline          # lowercase letters, digits, ., _ and -
+version: 7                   # an integer; raise it for every release
+issued_at: 2026-10-29T00:00:00Z
+expires_at: 2027-01-31T00:00:00Z   # optional
+description: Company-wide agent rules
+rules:
+  deny_tools: ["payments.*", "admin.*"]        # refused at plan_tool and before_tool
+  require_approval_tools: ["crm.export"]       # a person approves first, whatever the side effect
+  deny_patterns:
+    - name: project-codename
+      pattern: "(?i)project\\s+nightingale"
+      boundaries: [input, after_model, final_response]
+  redact_patterns:
+    - name: employee-id
+      pattern: "EMP-\\d{6}"
+      replacement: "[EMPLOYEE_ID]"
+      boundaries: [after_tool, after_retrieval, final_response]
+```
+
+Tool names are `fnmatch` globs. A pattern rule applies to every boundary except
+`after_memory_write` unless it lists its own. Each bundle becomes the policy `bundle:<name>`, which
+runs for every agent whatever its `guardrail_policy` (like authorization), so an agent definition
+cannot opt out of it. A deny from any policy wins over another policy's approval requirement at the
+same boundary.
+
+Sign and verify with the CLI. Signing needs the `encryption` extra (`cryptography`); an unsigned
+bundle loads without it.
+
+```bash
+algen-agent-runtime policy keygen --private-key signing.pem --public-key signing.pub
+algen-agent-runtime policy sign acme-baseline.yaml --key env://POLICY_SIGNING_KEY   # or file://signing.pem
+algen-agent-runtime policy verify acme-baseline.yaml --trusted-key file://signing.pub --min-version 7
+```
+
+`keygen` writes the private key readable by its owner only and refuses to overwrite a file. Keep it
+in your secret manager and sign in your release pipeline, not on Runtime hosts. `sign` writes
+`<bundle>.sig` (base64 Ed25519 over the file's exact bytes). `verify` checks a bundle exactly as
+start-up does and prints its name, version, times, SHA-256 and the signer's key id.
+
+```yaml
+policies:
+  require_signed: true
+  trusted_keys:                      # Ed25519 public keys: PEM or base64 raw 32 bytes
+    - env://POLICY_PUBLIC_KEY
+    - file:///etc/algen/policy-signing-2026.pub
+  bundles:
+    - path: /etc/algen/policies/acme-baseline.yaml
+      # signature: /etc/algen/policies/acme-baseline.yaml.sig   (the default)
+      min_version: 7                 # refuse an older signed bundle put back in place
+      # trusted_keys: [...]          # this bundle only; policies.trusted_keys otherwise
+```
+
+Start-up refuses (and the container does not build) when:
+
+- `require_signed` is true and a bundle has no signature file;
+- a signature file exists but does not verify against any trusted key, whatever `require_signed`
+  says, or a bundle is signed and no trusted keys are configured;
+- the bundle has expired, is issued more than five minutes in the future, or its version is below
+  `min_version`;
+- the file is not a valid bundle, or two bundles have the same name.
+
+Key references must be `env://` or `file://`; a literal key in configuration is refused. They are
+resolved before `cryptography` is imported, so a missing variable is reported as such. Each loaded
+bundle logs `policy_bundle_loaded` with its name, version, SHA-256, whether it was signed and the
+key id. With `require_signed: false` (the default) an unsigned bundle loads with a warning, for
+development.
+
+To rotate a key, add the new public key to `trusted_keys`, sign new bundles with it, deploy, then
+remove the old key. To roll a bundle forward, raise its `version`, sign it, and raise
+`min_version` with the deployment that ships it.
+
 ## Resolving indeterminate tool calls
 
 Every side-effecting tool call is reserved in the tool-execution ledger under its idempotency key

@@ -1,3 +1,5 @@
+import pytest
+
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyPoint
 from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedactionPolicy
 from algen_agent_runtime.types.contracts import Message, Role
@@ -208,3 +210,50 @@ async def test_pii_ignores_tool_schemas_outside_tool_arguments() -> None:
     )
 
     assert decision.action == PolicyAction.REDACT
+
+
+async def test_card_numbers_that_pass_luhn_are_redacted_and_others_are_kept() -> None:
+    decision = await CompositePolicyEngine().evaluate(
+        "after_tool",
+        "visa 4111-1111-1111-1111, amex 3782 822463 10005, order 1234567890123456",
+        {},
+    )
+
+    assert decision.action == PolicyAction.TRANSFORM
+    assert decision.value == ("visa [REDACTED_CARD], amex [REDACTED_CARD], order 1234567890123456")
+
+
+async def test_luhn_valid_identifiers_without_a_card_prefix_are_kept() -> None:
+    # Both pass the Luhn check, as one in ten digit runs do; neither has a card network's
+    # prefix and length, so tool arguments carrying them are not refused.
+    text = "at 1761750000008 for account 9876543210123452"
+    decision = await CompositePolicyEngine().evaluate("after_tool", text, {})
+
+    assert decision.action == PolicyAction.ALLOW
+    assert "REDACTED" not in str(decision.value or text)
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        # Each was redacted as an Aadhaar or phone number before identifiers had to stand alone,
+        # and a redacted tool argument refuses the call.
+        "c5dccbb1-112b-40b1-92ef-212523393740",
+        "f049524e-d882-4c45-b03c-7724199152d9",
+        "52709698-40f9-4301-b89d-695811232191",
+        "603c28d1-0453-4e4a-806d-6488418786f7",
+        "9e107d9d372bb6826bd81d3542a419d6a7c2ba8f9876543210",
+    ],
+)
+async def test_digit_runs_inside_uuids_and_hashes_are_not_pii(identifier: str) -> None:
+    decision = await CompositePolicyEngine().evaluate("after_tool", {"id": identifier}, {})
+
+    assert decision.action == PolicyAction.ALLOW
+
+
+async def test_bearer_tokens_are_redacted_but_prose_is_kept() -> None:
+    decision = await CompositePolicyEngine().evaluate(
+        "after_tool", "Authorization: Bearer abc.def-123_xyz; bearer instruments", {}
+    )
+
+    assert decision.value == "Authorization: Bearer [REDACTED]; bearer instruments"

@@ -8,14 +8,14 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 
 | Threat | Primary controls |
 |---|---|
-| Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks |
+| Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks, tool context set by the Runtime (never by tool arguments); adversarial tests drive a model at another tenant's runs, approvals, conversations, memory, retrieval, context artifacts and cache |
 | Forged, stolen or replayed caller tokens | verified JWT/OIDC only outside loopback development, JWKS from allowlisted issuer hosts, asymmetric algorithms bound to key type, bounded clock skew, audience/issuer checks, fail-closed tenant mapping, short-lived tokens plus optional tenant-scoped revocation, content-minimal authentication audits |
 | Spoofed service identity | trusted-proxy identity off by default, honoured only from configured proxy CIDRs for exactly mapped identities, spoof attempts refused and audited, proxy-header peer rewriting disabled |
-| Prompt injection | pre/post policy points, tool/model allowlists, model output never executes directly |
-| Secret/PII leakage | secret references, redaction middleware, content telemetry off, memory policy |
+| Prompt injection | pre/post policy points (input and steering included), tool-result injection flag/block, document inspection, tool/model allowlists, centrally signed deny rules no agent can opt out of, approvals keyed to declared side effects (not arguments), model output never executes directly |
+| Secret/PII leakage | secret references, redaction of key=value credentials, bearer tokens, emails, phone and card numbers at policy boundaries, in approval parameters, audit metadata, logs, runtime error text and opt-in telemetry content; content telemetry off, memory policy |
 | SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
-| Replay/double side effect | durable call IDs, idempotency keys, completed-call checkpoints, approvals |
+| Replay/double side effect | durable call IDs (a reused id from the model is replaced), idempotency keys, completed-call checkpoints, approvals |
 | Malicious plugin / hook provider | explicit module allowlist before import (`WorkflowHookLoader`, `PluginLoader` with `trusted_plugin_prefixes`), prefix-confusion defense, callable shape & API version checks, secret-free audit metadata |
 | Resource exhaustion | payload/result/artifact limits, semaphores, API admission rate limits & in-flight run concurrency quotas, time/token/cost/step budgets |
 | Unauthorized filesystem access | workspace root containment, path traversal and symlink-escape denial, starter tools disabled by default |
@@ -25,6 +25,8 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Untrusted MCP server / tool | operator tool allowlists, strict header/secret reference validation, DNS-pinned safe egress for remote transports (streamable_http/sse), untrusted annotations by default, operator policy precedence |
 | MCP stdio subprocess execution | trusted operator configuration assumption (SR-12), minimal system environment filtering, process isolation deferred |
 | Audit tampering | immutable audit contracts, append-only external sink, separate diagnostic logs |
+| Tampered, stale or rolled-back policy | Ed25519-signed policy bundles verified at start-up against trusted keys, `require_signed`, signed version/issue/expiry checked (expired, future-dated and below-`min_version` bundles refused) |
+| Policy engine failure or hang | explicit per-boundary fail mode (`closed` by default), per-policy evaluation timeout, `policy.error` audit records and metric for every handled error |
 
 ### Outbound Network Security and SSRF / DNS Rebinding Mitigation
 
@@ -169,6 +171,33 @@ that outlives its request, one user's response shown to another, and header inje
   authentication challenges do not reach the model. The response body is the API's answer for that
   user and is treated like any tool result: untrusted data for the model.
 
+### Policy distribution and failure
+
+Policy rules distributed as [signed bundles](operations.md#signed-policy-bundles) are trusted only
+as far as their signing key. The signature covers the bundle's whole file, metadata included, so
+an attacker who can write the bundle directory cannot change a rule, extend an expiry, or put an
+older signed version back without `min_version` refusing it. Keys come from `env://` or `file://`
+references, never literals, and the private key never needs to be on a Runtime host. A signature
+that does not verify is refused even when signing is not required. What remains trusted: whoever
+can change `policies.trusted_keys` or `min_version` in configuration, and the Runtime host itself.
+
+A policy that raises or hangs must not silently open a boundary. Each boundary's fail mode is
+explicit and `closed` by default; `open` is a per-boundary decision for availability, skips only
+the failed policy, and every handled error is audited and counted
+([fail modes](operations.md#boundaries-and-fail-modes)).
+
+### Adversarial coverage
+
+`tests/adversarial` (pytest marker `adversarial`) runs scripted agent runs in normal CI, with a mock
+model that obeys the attacker, and checks that the Runtime's controls hold end to end: injected
+tool results, hidden document text, retrieved documents, input and steering; unapproved side
+effects, parallel replies, reused tool-call ids and retried declined actions; credentials and
+personal data in tool output, model output, tool arguments, errors, logs and telemetry; and a
+model reaching for another tenant's runs, approvals, conversations, session memory, retrieval,
+learned memory, context artifacts and cached results. Each test states its threat and control.
+The suite runs against in-memory stores and deterministic patterns; it does not measure how well
+a real model resists injection.
+
 ## Deployment checklist
 
 - Use `oidc` (or `jwt`) authentication outside loopback development; require short-lived tokens
@@ -182,6 +211,11 @@ that outlives its request, one user's response shown to another, and header inje
 - Enforce `WorkflowHookLoader` with explicit module allowlists for dynamic workflow manifests.
 - Disable dynamic plugins unless packages are pinned, signed, scanned, and trusted.
 - Require approval for write, external, and destructive tools.
+- Distribute organisation-wide policy as signed bundles with `policies.require_signed: true`, keep
+  the signing key out of Runtime hosts, and raise `min_version` with each bundle release.
+- Keep `policies.on_error: closed`; set a boundary `open` only on purpose, and alert on
+  `policy.error` audit records with `fail_open`. Set `policies.evaluation_timeout_seconds` when a
+  policy calls a remote classifier.
 - Configure encryption at rest/in transit and tenant-aware database row security.
 - Disable raw provider metadata and content telemetry unless explicitly reviewed.
 - Treat Traccia and secondary OTLP destinations as data processors; review residency, retention, endpoint allowlists, SDK upgrades, and any automatic instrumentation before enabling them.
