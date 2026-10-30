@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a18] - 2026-10-30
+
 ### Added
 
 - An approval inbox. `GET /v1/approvals` lists the tenant's approval requests, newest first,
@@ -108,7 +110,6 @@ contracts are explicitly marked experimental during the `0.x` series.
   stores for connection, timeout and server-shutdown errors, and answered by the API with 503 and
   `Retry-After`. `RunConflictError`, a `ConflictError` the run stores raise when a checkpoint's
   version moved on.
-
 - Signed policy bundles (`policies.bundles`, `policies.trusted_keys`, `policies.require_signed`):
   a YAML or JSON file of declarative rules (`deny_tools`, `require_approval_tools`,
   `deny_patterns`, `redact_patterns`) whose name, version, `issued_at` and `expires_at` are inside
@@ -202,11 +203,11 @@ contracts are explicitly marked experimental during the `0.x` series.
   exits 0.
 
 ### Changed
+
 - `core.http` in a built container now uses the SSRF-safe, DNS-pinned client (it used a plain
   client after validating the URL), and every container client honours `network` settings.
 - `PluginManifest.signature` is documented as unused; signatures live in the package's signature
   file, which can be verified before import.
-
 - `tool_policy.max_refusals_per_tool` counts refusals in a row: a call to the tool that runs
   successfully starts its count again. Set `tool_policy.refusal_count: per_run` to count every
   refusal in the run, as in 0.1.0a17. (#71)
@@ -242,7 +243,6 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Configuration rejects `event_store`, `approval_store` or `tool_execution_store` `postgres` with a
   `run_store` other than `postgres`: their rows reference the run in PostgreSQL, so every run
   failed on its first event.
-
 - A policy that raises or times out now ends its boundary with a `policy.error` deny
   (`PolicyDeniedError`) instead of its own exception propagating. Every boundary defaults to
   `closed`, which is what each already did (the run or the call failed), so no boundary becomes
@@ -310,9 +310,6 @@ contracts are explicitly marked experimental during the `0.x` series.
   the run's error) is redacted for credentials; tools write these messages themselves.
 - Opt-in telemetry content no longer carries a model reply's credentials or personal data before
   the `after_model` policy redacts the reply.
-
-### Security
-
 - A `proxy=` passed to `create_safe_http_client` was used without any check of the proxy host
   against the IP pinning, and could route requests around the allowlist. It is now refused
   unless it is the configured `network.egress_proxy`, and `mounts=` is refused.
@@ -348,6 +345,31 @@ contracts are explicitly marked experimental during the `0.x` series.
   to `tests/end_to_end/test_rag_example.py`.
 - Example READMEs: the `--offline` paths, the extras the MCP and OpenAI Agents examples need, the
   local chat test command, and `docs/rag.md`'s path to the pgvector Text-to-SQL example.
+
+### Upgrade notes
+
+- Migrations `015_approval_agent.sql` and `016_resource_bounds.sql` run on startup. Migration 016
+  locks the artifact, memory and learned-memory tables until it commits; run the upgrade in a
+  quiet period on large tables.
+- Clients that retry only on 500 should also retry on 503: store outages now answer 503 with
+  `Retry-After`.
+- A PostgreSQL command that needs longer than 60 seconds needs `storage.postgres_command_timeout_seconds`
+  raised; Redis calls time out after 10 seconds (`storage.redis_socket_timeout_seconds`).
+- Pass credentials to tools as `env://` references or caller credentials, not as argument values: a
+  bearer token or card number in a tool call's arguments now refuses the call.
+- `core.http` refuses private and internal addresses unless they are allowlisted in `network`, and
+  `core.subprocess` stops a command after 60 seconds.
+- A host's own `ApprovalService` implementation should add `list(...)` and the keyword-only `agent`
+  argument to `create`.
+
+### Known limitations
+
+- Conversation turns do not expose steering yet; a host steers the turn's run by its id
+  (`pending.run_id`). Steering a run that another worker is driving is not supported.
+- Workflow nodes, declared HTTP tools and MCP tools (`isError`) do not yet return a failure as data
+  the way `failure_field` does for Python tools.
+- P0 items are complete for the single-node scope; multi-node operation, HA failover and
+  cross-region recovery remain out of scope (see `docs/production-readiness.md`).
 
 ## [0.1.0a17] - 2026-10-28
 
@@ -1426,7 +1448,8 @@ without a deprecation window during the `0.x` series.
   outputs: all object fields are required, additional properties are forbidden, and defaults and
   unsupported wire constraints are removed while Runtime retains full result validation.
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a17...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a18...HEAD
+[0.1.0a18]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a17...v0.1.0a18
 [0.1.0a17]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a16...v0.1.0a17
 [0.1.0a16]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a15...v0.1.0a16
 [0.1.0a15]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a14...v0.1.0a15

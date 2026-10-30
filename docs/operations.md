@@ -425,7 +425,8 @@ results, approval requests) is written so the previous release can read it, so:
 
 | Migration | Since | Change | Safe to leave on rollback |
 | --- | --- | --- | --- |
-| `015_approval_agent.sql` | unreleased (after `0.1.0a17`) | Nullable `agent` column and an index on approvals. | Yes; `0.1.0a17` does not read it. Approvals created by the previous release have no `agent`. |
+| `015_approval_agent.sql` | `0.1.0a18` | Nullable `agent` column and an index on approvals. | Yes; `0.1.0a17` does not read it. Approvals created by the previous release have no `agent`. |
+| `016_resource_bounds.sql` | `0.1.0a18` | Per-tenant storage usage table, triggers that keep it current on artifact, memory and learned-memory writes, and retention indexes. | Yes; `0.1.0a17` does not read the usage table, and its writes still fire the triggers, so usage stays current. |
 
 Restore from backup instead of rolling back only when a release's notes say a migration is not
 backward compatible; none is so far. Take a backup before every upgrade.

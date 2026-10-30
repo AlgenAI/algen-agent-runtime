@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a17">v0.1.0a17 · latest</option>
+                    <option value="0.1.0a18">v0.1.0a18 · latest</option>
+                    <option value="0.1.0a17">v0.1.0a17</option>
                     <option value="0.1.0a16">v0.1.0a16</option>
                     <option value="0.1.0a15">v0.1.0a15</option>
                     <option value="0.1.0a14">v0.1.0a14</option>
@@ -1393,7 +1394,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a17</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a18</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1413,7 +1414,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a17 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a18 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1470,7 +1471,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a17 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a18 0.1.0a17 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2100,7 +2101,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a17</span>.</footer>
+                    data-version-field="version">0.1.0a18</span>.</footer>
         </main>
     </div>
 
@@ -2226,9 +2227,48 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17'];
-        const LATEST_VERSION = '0.1.0a17';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18'];
+        const LATEST_VERSION = '0.1.0a18';
         const RELEASES = {
+            '0.1.0a18': {
+                date: '2026-10-30',
+                kind: 'Production hardening',
+                title: 'Persistence drills, signed policy bundles, network and plugin hardening, resource bounds',
+                summary: 'Every P0 item for a hardened single-node deployment is complete. Store outages answer 503 and runs survive them; policies can be distributed as signed bundles with explicit fail modes; outbound traffic can go through an egress proxy with mTLS, subprocesses run sandboxed and plugins are verified before import; runs, tenants and tables are bounded. Also: an approval inbox, an optional PostgreSQL schema, HTTP tools that call as the signed-in user, Gemini, xAI and Groq providers, and steering a running run.',
+                fields: {
+                    tag: 'v0.1.0a18',
+                    package: '0.1.0a18 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a18',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>Persistence drills.</strong> <code>tests/drills</code> crashes, restarts, cuts and restores PostgreSQL and Redis, decides one approval from two replicas, and upgrades and rolls back against <code>0.1.0a17</code>. Store failures raise <code>StoreUnavailableError</code> and answer 503 with <code>Retry-After</code>.',
+                            '<strong>Signed policy bundles.</strong> <code>policies.bundles</code> with Ed25519 signatures, <code>policies.on_error</code> and per-boundary fail modes, an evaluation timeout, and <code>algen-agent-runtime policy keygen|sign|verify</code>.',
+                            '<strong>Network and plugins.</strong> <code>network.egress_proxy</code>, outbound mTLS and certificate pins for remotes, sandboxed subprocesses and stdio MCP servers, and plugin signatures verified before import (<code>plugin keygen|sign|verify</code>).',
+                            '<strong>Resource bounds.</strong> Per-run <code>max_model_calls</code>, <code>max_response_chars</code> and <code>max_events</code>; per-tenant storage quotas (413 <code>QUOTA_EXCEEDED</code>, <code>GET /v1/storage/usage</code>); retention for conversations, workflow checkpoints, analytical graphs and work items.',
+                            '<strong>Approval inbox and more.</strong> <code>GET /v1/approvals</code>, <code>storage.postgres_schema</code>, HTTP tools with <code>auth.type: caller</code>, Gemini, xAI and Groq provider types with ordered fallback, steering a running run, and tool results that return a failure as data.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            'Store outages answer 503 instead of 500; PostgreSQL commands time out after 60 seconds and Redis calls after 10.',
+                            'A policy error denies by default, and a deny wins over an approval requirement at the same boundary. A bearer token or card number in a tool call\'s arguments refuses the call.',
+                            '<code>core.http</code> uses the SSRF-safe client and <code>core.subprocess</code> stops a command after 60 seconds.',
+                            'Migrations <code>015_approval_agent.sql</code> and <code>016_resource_bounds.sql</code> run on startup; 016 locks the artifact and memory tables while it runs.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            'The <code>pii</code> policy no longer redacts digit runs inside UUIDs and hashes, which refused about one in sixty tool calls carrying a UUID.',
+                            'Every <code>/v1/runs/{run_id}</code> route enforces conversation ownership.',
+                            'Recovered runs no longer count an interrupted step twice, and a run resumed right after it paused no longer gets stuck.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a17': {
                 date: '2026-10-28',
                 kind: 'Identity and side effects',
@@ -2237,7 +2277,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a17',
                     package: '0.1.0a17 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a18',
                     version: '0.1.0a17',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
