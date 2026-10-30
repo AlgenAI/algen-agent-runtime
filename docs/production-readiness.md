@@ -78,8 +78,8 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2 and 5 in the
-unreleased changes; each lists what is left for later. Item 7 remains open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2, 5 and 7 in the
+unreleased changes; each lists what is left for later. No P0 item remains open.
 
 1. **Close persistence validation gaps.** *Done (single node, unreleased):* a drill suite
    (`tests/drills`, marker `drill`, run in CI by the `persistence-drills` job on throwaway
