@@ -200,7 +200,29 @@ jobs:
         env:
           POSTGRES_DSN: postgresql://algen:algen_password@localhost:5432/algen_test
           REDIS_URL: redis://localhost:6379/0
-        run: pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+        # The persistence drills run in their own job, on containers they can pause and restart.
+        run: pytest -q -p no:cacheprovider -m "(integration or postgres or redis) and not drill"
+
+  persistence-drills:
+    name: Persistence drills (PostgreSQL & Redis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The upgrade and rollback drills run the previous release from its tag.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev,postgres,redis]'
+      - name: Run the drills against throwaway PostgreSQL 17 and Redis 7 containers
+        env:
+          PYTHON: python
+        # Restart, crash, concurrent approval, outage, failover, backup/restore, upgrade and
+        # rollback; the soak drill stays off (ALGEN_DRILL_SOAK_RUNS unset).
+        run: scripts/integration-tests.sh tests/drills -m drill -o faulthandler_timeout=300
 
   optional-integration:
     name: Optional Integration (Python ${{ matrix.python-version }})

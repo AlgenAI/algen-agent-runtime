@@ -8,6 +8,12 @@ from typing import Annotated, Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.plugins.signing import (
+    PluginSettings,
+    SignedPackage,
+    plugin_module,
+    verify_module,
+)
 
 ENTRY_POINT_GROUP = "algen_agent_runtime.plugins"
 CORE_API_VERSION = "1"
@@ -19,7 +25,11 @@ class PluginManifest(BaseModel):
     version: str
     core_api_version: str = CORE_API_VERSION
     publisher: str
-    signature: str | None = None
+    signature: str | None = Field(
+        default=None,
+        description="Unused: signatures live in the package's algen-plugin-signature.json, "
+        "verified before import (see algen_agent_runtime.plugins.signing).",
+    )
     capabilities: frozenset[str] = Field(default_factory=frozenset)
     env: frozenset[Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]] = Field(
         default_factory=frozenset,
@@ -112,12 +122,19 @@ def is_trusted(reference: str, trusted_prefixes: tuple[str, ...]) -> bool:
 class PluginLoader:
     """Load plugins named by ``module:attribute`` or by an installed entry point name.
 
-    Trust is checked before anything is imported. Allowlisting is an application-level trust
-    check, not sandboxing: untrusted code must run in an isolated process.
+    Trust is checked before anything is imported: the module prefix must be trusted and, with
+    ``signing`` (``plugins`` settings), the plugin package's signature must verify against a
+    trusted publisher's key (see ``algen_agent_runtime.plugins.signing``). Neither is
+    sandboxing: a trusted plugin runs with the Runtime's privileges, so untrusted code must
+    run in an isolated process.
     """
 
-    def __init__(self, trusted_prefixes: tuple[str, ...]) -> None:
+    def __init__(
+        self, trusted_prefixes: tuple[str, ...], signing: PluginSettings | None = None
+    ) -> None:
         self._trusted_prefixes = trusted_prefixes
+        self._signing = signing
+        self._verified: dict[str, SignedPackage | None] = {}
 
     def load(self, names: tuple[str, ...], context: PluginContext) -> tuple[PluginManifest, ...]:
         self.authorize(names)
@@ -136,10 +153,20 @@ class PluginLoader:
                     f"plugin {name!r} is not from a trusted namespace; add its package to "
                     "security.trusted_plugin_prefixes"
                 )
+        for name in names:
+            self._verify(name)
+
+    def _verify(self, name: str) -> SignedPackage | None:
+        if self._signing is None or not self._signing.enabled:
+            return None
+        if name not in self._verified:
+            self._verified[name] = verify_module(plugin_module(name), self._signing)
+        return self._verified[name]
 
     def load_one(self, name: str, context: PluginContext) -> PluginManifest:
         if not is_trusted(name, self._trusted_prefixes):
             raise ConfigurationError(f"plugin {name!r} is not from a trusted namespace")
+        signed = self._verify(name)
         instance = _instantiate(name, _resolve(name))
         manifest = getattr(instance, "manifest", None)
         if not isinstance(manifest, PluginManifest) or not callable(
@@ -150,6 +177,15 @@ class PluginLoader:
             )
         if manifest.core_api_version != CORE_API_VERSION:
             raise ConfigurationError(f"plugin {name!r} targets an incompatible core API")
+        if signed is not None and (
+            manifest.publisher != signed.publisher
+            or (signed.name is not None and manifest.name != signed.name)
+            or (signed.version is not None and manifest.version != signed.version)
+        ):
+            raise ConfigurationError(
+                f"plugin {name!r}: its manifest does not match the publisher, name and version "
+                "it was signed with"
+            )
         instance.register(context)
         return manifest
 

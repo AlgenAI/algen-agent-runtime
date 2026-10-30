@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from algen_agent_runtime.distributed.contracts import WorkItem, WorkStatus
@@ -80,6 +80,26 @@ class InMemoryWorkQueue:
             item.lease_owner = None
             item.lease_expires_at = None
             item.updated_at = utc_now()
+
+    async def purge_finished(self, cutoff: datetime, limit: int) -> int:
+        """Delete up to ``limit`` completed or failed items last updated before ``cutoff``.
+
+        Their deduplication keys are released: enqueueing the same key again creates a new item.
+        """
+        async with self._lock:
+            doomed = sorted(
+                (
+                    item
+                    for item in self._items.values()
+                    if item.status in {WorkStatus.COMPLETED, WorkStatus.FAILED}
+                    and item.updated_at < cutoff
+                ),
+                key=lambda item: item.updated_at,
+            )[:limit]
+            for item in doomed:
+                del self._items[item.id]
+                self._deduplication.pop((item.tenant_id, item.deduplication_key), None)
+            return len(doomed)
 
     def _owned(self, item_id: str, worker_id: str) -> WorkItem:
         item = self._items.get(item_id)

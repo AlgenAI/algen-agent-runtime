@@ -10,8 +10,19 @@ from typing import Any
 
 import structlog
 
-from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
+from algen_agent_runtime.exceptions.errors import (
+    ConfigurationError,
+    ConflictError,
+    RunConflictError,
+    StoreUnavailableError,
+)
 from algen_agent_runtime.persistence.naming import check_schema_name
+from algen_agent_runtime.persistence.quotas import (
+    ResourceUsage,
+    StorageQuotas,
+    postgres_quota_write,
+    read_usage,
+)
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -33,6 +44,35 @@ _database_logger = structlog.get_logger("algen_agent_runtime.persistence.postgre
 # One key for every Runtime sharing the database: concurrent first starts create the schema and
 # run the migrations one at a time instead of racing on CREATE SCHEMA and CREATE TABLE.
 _MIGRATION_LOCK_KEY = 0x616C67656E5F7274  # "algen_rt"
+# A migration may rewrite a large table: it is not held to the per-command timeout of store calls.
+_MIGRATION_TIMEOUT_SECONDS = 24 * 3600.0
+# SQLSTATE classes and codes that mean the server is unreachable or going away, not that the
+# statement was wrong: connection exceptions (08), admin/crash shutdown and "cannot connect now"
+# (57P01-57P03), and too many connections (53300).
+_UNAVAILABLE_SQLSTATES = frozenset({"57P01", "57P02", "57P03", "53300"})
+
+
+def _unavailable(exc: BaseException) -> StoreUnavailableError | None:
+    """The runtime error for a driver error that means PostgreSQL is unavailable, else None.
+
+    asyncpg is optional, so its errors are recognised by SQLSTATE rather than imported.
+    ``TimeoutError`` is a command or connect timeout of the pool: a deadline set around a store
+    call cancels it instead, so the caller's own timeout is never mistaken for one.
+    """
+    if isinstance(exc, StoreUnavailableError):
+        return None
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and (
+        sqlstate.startswith("08") or sqlstate in _UNAVAILABLE_SQLSTATES
+    ):
+        reason = type(exc).__name__
+    elif isinstance(exc, TimeoutError):
+        reason = "timed out"
+    elif isinstance(exc, OSError):
+        reason = type(exc).__name__
+    else:
+        return None
+    return StoreUnavailableError(f"PostgreSQL is unavailable ({reason})")
 
 
 class PostgresDatabase:
@@ -51,11 +91,17 @@ class PostgresDatabase:
         min_pool_size: int = 1,
         max_pool_size: int = 10,
         schema: str | None = None,
+        connect_timeout_seconds: float = 10.0,
+        command_timeout_seconds: float | None = 60.0,
     ) -> None:
         self._dsn = dsn
         self._initialize_schema = initialize_schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
+        # Bounds on an unresponsive server: without them a call (and the cancellation of one)
+        # waits on the network for minutes. See docs/operations.md#database-outages.
+        self._connect_timeout = connect_timeout_seconds
+        self._command_timeout = command_timeout_seconds
         self._schema = check_schema_name(schema) if schema is not None else None
         self._pool: Any | None = None
         self._lock = asyncio.Lock()
@@ -68,6 +114,15 @@ class PostgresDatabase:
     async def start(self) -> None:
         if self._pool is not None:
             return
+        try:
+            await self._start()
+        except Exception as exc:
+            unavailable = _unavailable(exc)
+            if unavailable is not None:
+                raise unavailable from exc
+            raise
+
+    async def _start(self) -> None:
         async with self._lock:
             if self._pool is not None:
                 return
@@ -85,6 +140,8 @@ class PostgresDatabase:
                 self._dsn,
                 min_size=self._min_pool_size,
                 max_size=self._max_pool_size,
+                timeout=self._connect_timeout,
+                command_timeout=self._command_timeout,
                 **options,
             )
             try:
@@ -168,7 +225,9 @@ class PostgresDatabase:
             if migration.name in applied:
                 continue
             async with connection.transaction():
-                await connection.execute(migration.read_text(encoding="utf-8"))
+                await connection.execute(
+                    migration.read_text(encoding="utf-8"), timeout=_MIGRATION_TIMEOUT_SECONDS
+                )
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_schema_migrations (name) VALUES ($1)",
                     migration.name,
@@ -179,29 +238,48 @@ class PostgresDatabase:
         await self.start()
         if self._pool is None:
             raise RuntimeError("PostgreSQL pool did not initialize")
-        async with self._pool.acquire() as connection, connection.transaction():
-            yield connection
+        try:
+            async with self._pool.acquire() as connection, connection.transaction():
+                yield connection
+        except Exception as exc:
+            raise await self._normalized(exc) from exc
+
+    async def _pool_call(self, method: str, query: str, arguments: tuple[Any, ...]) -> Any:
+        await self.start()
+        pool = self._pool
+        if pool is None:
+            raise RuntimeError("PostgreSQL pool did not initialize")
+        try:
+            return await getattr(pool, method)(query, *arguments)
+        except Exception as exc:
+            raise await self._normalized(exc) from exc
+
+    async def _normalized(self, exc: Exception) -> Exception:
+        """``exc`` as the caller sees it: StoreUnavailableError when the server is unavailable.
+
+        A lost server (a restart or failover) leaves every idle pooled connection dead, and
+        asyncpg only finds out when one is used: the pool is told to replace them all, so one
+        call fails rather than one per pooled connection.
+        """
+        unavailable = _unavailable(exc)
+        if unavailable is None:
+            return exc
+        pool = self._pool
+        if pool is not None:
+            try:
+                await pool.expire_connections()
+            except Exception:  # the pool may be closing
+                _database_logger.debug("postgres_expire_connections_failed", exc_info=True)
+        return unavailable
 
     async def execute(self, query: str, *arguments: Any) -> str:
-        await self.start()
-        pool = self._pool
-        if pool is None:
-            raise RuntimeError("PostgreSQL pool did not initialize")
-        return str(await pool.execute(query, *arguments))
+        return str(await self._pool_call("execute", query, arguments))
 
     async def fetchrow(self, query: str, *arguments: Any) -> Any:
-        await self.start()
-        pool = self._pool
-        if pool is None:
-            raise RuntimeError("PostgreSQL pool did not initialize")
-        return await pool.fetchrow(query, *arguments)
+        return await self._pool_call("fetchrow", query, arguments)
 
     async def fetch(self, query: str, *arguments: Any) -> Sequence[Any]:
-        await self.start()
-        pool = self._pool
-        if pool is None:
-            raise RuntimeError("PostgreSQL pool did not initialize")
-        return tuple(await pool.fetch(query, *arguments))
+        return tuple(await self._pool_call("fetch", query, arguments))
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -256,7 +334,7 @@ class PostgresRunStore:
             expected_version,
         )
         if result != "UPDATE 1":
-            raise ConflictError(f"run {state.id!r} was concurrently modified")
+            raise RunConflictError(f"run {state.id!r} was concurrently modified")
         state.version = next_version
 
     async def list_active(self, limit: int = 1000) -> Sequence[RunState]:
@@ -270,21 +348,36 @@ class PostgresRunStore:
 
 
 class PostgresMemoryStore:
-    def __init__(self, database: Any, retention_seconds: int = 86_400) -> None:
+    def __init__(
+        self,
+        database: Any,
+        retention_seconds: int = 86_400,
+        quotas: StorageQuotas | None = None,
+    ) -> None:
         self._database = database
         self._retention_seconds = retention_seconds
+        self._quotas = quotas
 
     async def append(self, tenant_id: str, session_id: str, messages: Sequence[Message]) -> None:
-        for message in messages:
-            await self._database.execute(
-                "INSERT INTO algen_agent_runtime_memory "
-                "(tenant_id, session_id, message, expires_at) "
-                "VALUES ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'))",
-                tenant_id,
-                session_id,
-                message.model_dump_json(),
-                self._retention_seconds,
-            )
+        if not messages:
+            return
+
+        async def write(connection: Any) -> None:
+            for message in messages:
+                await connection.execute(
+                    "INSERT INTO algen_agent_runtime_memory "
+                    "(tenant_id, session_id, message, expires_at) "
+                    "VALUES ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'))",
+                    tenant_id,
+                    session_id,
+                    message.model_dump_json(),
+                    self._retention_seconds,
+                )
+
+        await postgres_quota_write(self._database, self._quotas, tenant_id, "memory", write)
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        return await read_usage(self._database, tenant_id, "memory")
 
     async def get(self, tenant_id: str, session_id: str, limit: int) -> Sequence[Message]:
         rows = await self._database.fetch(
@@ -306,15 +399,32 @@ class PostgresMemoryStore:
 
 
 class PostgresArtifactStore:
-    def __init__(self, database: Any, max_bytes: int = 10_485_760) -> None:
+    def __init__(
+        self, database: Any, max_bytes: int = 10_485_760, quotas: StorageQuotas | None = None
+    ) -> None:
         self._database = database
         self._max_bytes = max_bytes
+        self._quotas = quotas
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        """Stored artifacts of every backend, expired ones included until they are purged."""
+        return await read_usage(self._database, tenant_id, "artifacts")
 
     async def put(self, artifact: Artifact) -> None:
         if len(artifact.data) > self._max_bytes:
             raise ValueError(f"artifact exceeds {self._max_bytes} byte limit")
+        await postgres_quota_write(
+            self._database,
+            self._quotas,
+            artifact.tenant_id,
+            "artifacts",
+            lambda connection: self._insert(connection, artifact),
+        )
+
+    @staticmethod
+    async def _insert(connection: Any, artifact: Artifact) -> None:
         descriptor = artifact.descriptor()
-        await self._database.execute(
+        await connection.execute(
             "INSERT INTO algen_agent_runtime_artifacts "
             "(id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
             "metadata, expires_at, created_at, storage_backend, storage_key) "

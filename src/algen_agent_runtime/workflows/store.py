@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Protocol
 
 from algen_agent_runtime.exceptions.errors import ConflictError
@@ -60,6 +61,32 @@ class InMemoryWorkflowCheckpointStore:
             ]
         states.sort(key=lambda state: state.updated_at)
         return tuple(states[:limit])
+
+    async def purge_finished(self, cutoff: datetime, limit: int) -> int:
+        """Delete up to ``limit`` finished runs last updated before ``cutoff``, keeping a child
+        whose parent is unfinished; return how many went."""
+        terminal = {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}
+        async with self._lock:
+
+            def parent_unfinished(state: WorkflowExecutionState) -> bool:
+                if state.parent_workflow_id is None:
+                    return False
+                parent = self._states.get((state.tenant_id, state.parent_workflow_id))
+                return parent is not None and parent.status not in terminal
+
+            doomed = sorted(
+                (
+                    state
+                    for state in self._states.values()
+                    if state.status in terminal
+                    and state.updated_at < cutoff
+                    and not parent_unfinished(state)
+                ),
+                key=lambda state: state.updated_at,
+            )[:limit]
+            for state in doomed:
+                del self._states[(state.tenant_id, state.id)]
+            return len(doomed)
 
 
 class PostgresWorkflowCheckpointStore:

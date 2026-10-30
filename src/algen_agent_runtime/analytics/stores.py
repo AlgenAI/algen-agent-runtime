@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
-from algen_agent_runtime.analytics.contracts import AnalyticalGraphState
+from algen_agent_runtime.analytics.contracts import AnalyticalGraphState, GraphStatus
 from algen_agent_runtime.exceptions.errors import ConflictError
 
 
@@ -32,6 +33,22 @@ class InMemoryAnalyticalGraphStore:
                 raise ConflictError(f"analytical graph {state.id!r} was concurrently modified")
             state.version = expected_version + 1
             self._states[state.id] = state.model_copy(deep=True)
+
+    async def purge_finished(self, cutoff: datetime, limit: int) -> int:
+        """Delete up to ``limit`` finished graphs last updated before ``cutoff``."""
+        terminal = {GraphStatus.COMPLETED, GraphStatus.FAILED, GraphStatus.CANCELLED}
+        async with self._lock:
+            doomed = sorted(
+                (
+                    state
+                    for state in self._states.values()
+                    if state.status in terminal and state.updated_at < cutoff
+                ),
+                key=lambda state: state.updated_at,
+            )[:limit]
+            for state in doomed:
+                del self._states[state.id]
+            return len(doomed)
 
 
 class PostgresAnalyticalGraphStore:

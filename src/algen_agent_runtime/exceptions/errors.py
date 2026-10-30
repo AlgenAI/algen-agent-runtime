@@ -20,6 +20,26 @@ class ConflictError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_REQUEST
 
 
+class RunConflictError(ConflictError):
+    """A run's checkpoint changed since this writer read it (its optimistic version moved on).
+
+    Raised by the run stores' ``save``. A run drive that gets it stands down without touching
+    the run: another drive (a cancel, another process's recovery) has taken it over.
+    """
+
+
+class StoreUnavailableError(AlgenAgentRuntimeError):
+    """A durable store (PostgreSQL, Redis) could not be reached or did not answer in time.
+
+    Raised in place of the driver's own connection, timeout and server-shutdown errors. The
+    store may be back on the next call: connection pools reconnect without a restart. When it
+    interrupts a write, the write may or may not have been applied. The API answers 503.
+    """
+
+    error_kind = ErrorKind.UNAVAILABLE
+    retryable = True
+
+
 class PolicyDeniedError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.AUTHORIZATION
 
@@ -64,7 +84,45 @@ class ToolNotAttemptedError(ToolExecutionError):
 
 
 class BudgetExceededError(AlgenAgentRuntimeError):
-    pass
+    """A run reached one of its limits.
+
+    ``limit`` names the limit (``execution_steps``, ``model_tokens``, ``estimated_cost``,
+    ``model_calls``, ``response_chars`` or ``events``) when the run ended because of it; the
+    run's ``run.failed`` event then carries ``reason: limit_exceeded`` and ``limit``.
+    """
+
+    def __init__(self, message: str, *, limit: str | None = None) -> None:
+        super().__init__(message)
+        self.limit = limit
+
+
+class QuotaExceededError(AlgenAgentRuntimeError):
+    """A write would take a tenant past its storage quota.
+
+    Nothing was written. ``resource`` is ``artifacts``, ``memory`` or ``learned_memory``;
+    ``dimension`` is ``items`` or ``bytes``; ``used`` is the tenant's usage the write would have
+    reached. The API answers 413 with ``code: quota_exceeded``.
+    """
+
+    error_kind = ErrorKind.INVALID_REQUEST
+
+    def __init__(self, resource: str, dimension: str, limit: int, used: int) -> None:
+        super().__init__(
+            f"storage quota exceeded: {resource} {dimension} would reach {used} of a {limit} limit"
+        )
+        self.resource = resource
+        self.dimension = dimension
+        self.limit = limit
+        self.used = used
+
+    def details(self) -> dict[str, object]:
+        return {
+            "code": "quota_exceeded",
+            "resource": self.resource,
+            "dimension": self.dimension,
+            "limit": self.limit,
+            "used": self.used,
+        }
 
 
 class MeterRefusedError(AlgenAgentRuntimeError):

@@ -8,7 +8,11 @@ from algen_agent_runtime.model_services.contracts import (
     ModelServiceRequest,
     ModelServiceResponse,
 )
-from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_safe_http_client,
+    validate_outbound_url,
+)
 
 
 class HTTPModelService:
@@ -23,6 +27,7 @@ class HTTPModelService:
         allowed_hosts: tuple[str, ...] = (),
         health_endpoint: str | None = None,
         client: httpx.AsyncClient | None = None,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         self.manifest = manifest
         self._endpoint = endpoint
@@ -30,6 +35,7 @@ class HTTPModelService:
         self._allowed_hosts = allowed_hosts
         self._health_endpoint = health_endpoint
         self._client = client
+        self._outbound = outbound
 
     async def predict(self, request: ModelServiceRequest) -> ModelServiceResponse:
         await validate_outbound_url(self._endpoint, allowed_hosts=self._allowed_hosts)
@@ -44,6 +50,7 @@ class HTTPModelService:
             async with create_safe_http_client(
                 allowed_hosts=self._allowed_hosts,
                 timeout=timeout,
+                outbound=self._outbound,
             ) as client:
                 response = await client.post(
                     self._endpoint,
@@ -68,6 +75,7 @@ class HTTPModelService:
                 async with create_safe_http_client(
                     allowed_hosts=self._allowed_hosts,
                     timeout=5.0,
+                    outbound=self._outbound,
                 ) as client:
                     response = await client.get(self._health_endpoint, headers=self._headers)
             return ModelServiceHealth(

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
+from uuid import uuid4
 
 import structlog
 from opentelemetry import context as otel_context
@@ -70,6 +71,9 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
+    QuotaExceededError,
+    RunConflictError,
+    StoreUnavailableError,
     ToolExecutionError,
     VerificationError,
 )
@@ -89,7 +93,7 @@ from algen_agent_runtime.observability.trace_levels import TraceLevel, TraceLeve
 from algen_agent_runtime.planning.contracts import ActionType, Plan, PlannedAction
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
-from algen_agent_runtime.policies.engine import looks_like_instruction_override
+from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.runtime.guards import (
@@ -105,7 +109,7 @@ from algen_agent_runtime.runtime.guards import (
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
-from algen_agent_runtime.security.redaction import redact, redact_parameters
+from algen_agent_runtime.security.redaction import redact, redact_parameters, redact_text
 from algen_agent_runtime.tools.contracts import (
     MAX_TOOL_NOTES_PER_CALL,
     EarlierCall,
@@ -129,6 +133,7 @@ from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
+    Budget,
     ContextCompaction,
     ErrorKind,
     FinishReason,
@@ -145,6 +150,7 @@ from algen_agent_runtime.types.contracts import (
     SteeringMessage,
     TextBlock,
     TokenUsage,
+    ToolCall,
     ToolSpec,
     WorkingState,
     WorkingStateContent,
@@ -154,7 +160,27 @@ from algen_agent_runtime.types.contracts import (
 from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
 from algen_agent_runtime.verification.verifiers import VerificationService
 
+# Events recorded even past ``Budget.max_events``: they end or pause the run, or say why.
+_ALWAYS_RECORDED_EVENTS = frozenset(
+    {
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "approval.required",
+        "clarification.required",
+        "tool.reconciliation_required",
+        "mcp.auth_required",
+        "budget.refused",
+        "steer.undelivered",
+    }
+)
+
 # Tools whose completion updates run state (memory, skills, working state): never batched.
+# How long a run interrupted by a store outage waits before its drive is tried again: doubling
+# from the first value up to the second.
+_OUTAGE_RETRY_SECONDS = (0.5, 30.0)
+# How long resume waits for the drive that paused a run to finish its tail (events, trace).
+_PAUSED_DRIVE_WAIT_SECONDS = 10.0
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
 
 
@@ -214,6 +240,9 @@ def _attach_trace_parent(parent: dict[str, str] | None) -> Token[Context] | None
     return otel_context.attach(trace.set_span_in_context(NonRecordingSpan(context)))
 
 
+_TELEMETRY_PII = PIIRedactionPolicy()
+
+
 @dataclass
 class _ToolCallOutcome:
     """What one tool call produced, before it is recorded on the run."""
@@ -264,6 +293,7 @@ class AgentRuntime:
         telemetry_include_content: bool = False,
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
+        stream_delta_interval_seconds: float = 0.0,
     ) -> None:
         self.agents = agents
         self.router = router
@@ -296,6 +326,11 @@ class AgentRuntime:
             self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
         self.telemetry_max_content_chars = telemetry_max_content_chars
+        # Streamed text is recorded as at most one model.delta event per interval; 0 records
+        # every chunk the provider sends.
+        self.stream_delta_interval_seconds = max(0.0, stream_delta_interval_seconds)
+        # Runs in this process that reached Budget.max_events: they fail at their next step.
+        self._event_overflow: set[str] = set()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
@@ -304,6 +339,10 @@ class AgentRuntime:
         # transition checkpoints them into RunState.pending_steering.
         self._steering: dict[str, list[SteeringMessage]] = {}
         self._task_lock = asyncio.Lock()
+        # Runs whose drive in this process a store outage interrupted, by run id, with their
+        # tenant and the drive's credentials, until _resume_after_outage drives them again.
+        self._outage_runs: dict[str, tuple[str, Mapping[str, str] | None]] = {}
+        self._outage_task: asyncio.Task[None] | None = None
         self._accepting_runs = True
         self._shutdown_cancellation = False
         self._tracer = TraceLevelTracer(
@@ -402,12 +441,21 @@ class AgentRuntime:
         return await self.wait(state.id, request.tenant_id)
 
     async def wait(self, run_id: str, tenant_id: str) -> RunResult:
-        """Wait for an already-started run and compose its current result."""
+        """Wait for an already-started run and compose its current result.
+
+        A run a store outage interrupted is waited for until it is driven again and that drive
+        ends, or until the runtime shuts down.
+        """
         await self._require_state(run_id, tenant_id)
-        async with self._task_lock:
-            task = self._tasks.get(run_id)
-        if task is not None:
-            await task
+        while True:
+            async with self._task_lock:
+                task = self._tasks.get(run_id)
+            if task is not None and not task.done():
+                await task
+            elif run_id in self._outage_runs and self._accepting_runs:
+                await asyncio.sleep(0.05)
+            else:
+                break
         current = await self._require_state(run_id, tenant_id)
         agent = self.agents.get(current.request.agent, current.request.agent_version)
         composer = self.composers.get(agent.response_composer)
@@ -505,6 +553,7 @@ class AgentRuntime:
         The resumed run sees only the ``credentials`` passed here; none from before the pause.
         """
         credentials = read_only_credentials(credentials)
+        await self._await_paused_drive(run_id)
         state = await self._require_state(run_id, tenant_id)
         if state.status == RunStatus.AWAITING_CLARIFICATION:
             clarification = str(payload.get("clarification", "")).strip()
@@ -611,6 +660,22 @@ class AgentRuntime:
         await self._schedule(run_id, tenant_id, credentials)
         return state
 
+    async def _await_paused_drive(self, run_id: str) -> None:
+        """Let the drive that paused a run finish before the run is resumed.
+
+        The pause is checkpointed (and visible to an approver) before that drive has finished
+        its events and trace, so an immediate resume would find it still running: the decision
+        would be recorded but the run not driven again. Raises ``ConflictError``, before
+        anything is decided, when the run is still executing after the wait.
+        """
+        async with self._task_lock:
+            task = self._tasks.get(run_id)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        await asyncio.wait({task}, timeout=_PAUSED_DRIVE_WAIT_SECONDS)
+        if not task.done():
+            raise ConflictError("run is already executing")
+
     async def _schedule(
         self,
         run_id: str,
@@ -634,6 +699,9 @@ class AgentRuntime:
     async def _drive_with_credentials(self, run_id: str, tenant_id: str) -> None:
         try:
             await self._drive(run_id, tenant_id)
+        except StoreUnavailableError:
+            # The run keeps its last checkpoint; it is driven again once the store answers.
+            self._interrupted_by_outage(run_id, tenant_id)
         finally:
             # However the drive ends (paused, finished, failed, cancelled, shut down), the
             # caller's credentials go with it.
@@ -654,6 +722,52 @@ class AgentRuntime:
                 await self._emit(state, "steer.undelivered", self._steering_data(queued))
         except Exception:
             self._logger.exception("steering_checkpoint_failed", run_id=run_id)
+
+    def _interrupted_by_outage(self, run_id: str, tenant_id: str) -> None:
+        self._logger.warning(
+            "agent_run_interrupted_store_unavailable", run_id=run_id, tenant_id=tenant_id
+        )
+        if not self._accepting_runs:
+            return  # shutting down: the next start recovers it
+        self._outage_runs[run_id] = (tenant_id, self._credentials.get(run_id))
+        if self._outage_task is None or self._outage_task.done():
+            self._outage_task = asyncio.create_task(self._resume_after_outage())
+
+    async def _resume_after_outage(self) -> None:
+        """Drive the runs a store outage interrupted again, from their checkpoints.
+
+        Only runs this process was driving, so it is safe beside other processes on the same
+        stores. A run that ended, paused or changed elsewhere meanwhile is left alone.
+        """
+        delay, longest = _OUTAGE_RETRY_SECONDS
+        while self._outage_runs and self._accepting_runs:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, longest)
+            for run_id, (tenant_id, credentials) in tuple(self._outage_runs.items()):
+                try:
+                    state = await self.runs.get(run_id, tenant_id)
+                    if state is not None and self._recovery_status(state.status) != state.status:
+                        expected = state.version
+                        self._rewind_for_recovery(state)
+                        state.updated_at = utc_now()
+                        await self.runs.save(state, expected)
+                except StoreUnavailableError:
+                    break  # still down: try again later
+                except ConflictError:
+                    state = None  # taken over elsewhere
+                if self._outage_runs.pop(run_id, None) is None or not self._accepting_runs:
+                    continue
+                if (
+                    state is None
+                    or state.status in TERMINAL_STATUSES
+                    or state.status in PAUSED_STATUSES
+                ):
+                    continue
+                self._logger.info("agent_run_resumed_after_outage", run_id=run_id)
+                try:
+                    await self._schedule(run_id, tenant_id, credentials)
+                except ConflictError:
+                    pass  # already executing
 
     def _steering_data(self, messages: Sequence[SteeringMessage]) -> dict[str, Any]:
         """Event data for steering messages: ids and sizes, and text only with content on."""
@@ -755,10 +869,9 @@ class AgentRuntime:
                 await self.runs.save(state, expected)
                 await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
                 continue
-            target = self._recovery_status(state.status)
-            if target != state.status:
+            if self._recovery_status(state.status) != state.status:
                 expected = state.version
-                state.status = target
+                self._rewind_for_recovery(state)
                 state.updated_at = utc_now()
                 await self.runs.save(state, expected)
             await self._schedule(state.id, state.request.tenant_id)
@@ -809,6 +922,11 @@ class AgentRuntime:
     async def shutdown(self, grace_seconds: float = 10.0) -> None:
         """Stop accepting runs, drain active work, then cooperatively cancel leftovers."""
         self._accepting_runs = False
+        # Runs a store outage interrupted keep their checkpoints for the next start.
+        self._outage_runs.clear()
+        if self._outage_task is not None and not self._outage_task.done():
+            self._outage_task.cancel()
+            await asyncio.gather(self._outage_task, return_exceptions=True)
         tasks = tuple(task for task in self._tasks.values() if not task.done())
         if not tasks:
             return
@@ -892,12 +1010,18 @@ class AgentRuntime:
             current = await self._require_state(run_id, tenant_id)
             if self._shutdown_cancellation and current.status not in TERMINAL_STATUSES:
                 expected = current.version
-                current.status = self._recovery_status(current.status)
+                self._rewind_for_recovery(current)
                 current.updated_at = utc_now()
                 await self.runs.save(current, expected)
             elif current.status not in TERMINAL_STATUSES:
                 await self._transition(current, RunStatus.CANCELLED)
                 await self._emit(current, "run.cancelled", {})
+        except StoreUnavailableError:
+            raise  # _drive_with_credentials keeps the run for a later drive
+        except RunConflictError:
+            # Another drive changed the run (a cancel, another process's recovery): it owns
+            # the run now, so this one stops without writing.
+            self._logger.warning("agent_run_superseded", run_id=run_id, tenant_id=tenant_id)
         except MeterRefusedError as exc:
             # The deployment's usage meter declined a model call: end the run with its reason,
             # without retrying or counting it against the provider.
@@ -932,8 +1056,25 @@ class AgentRuntime:
             )
             if current.status not in TERMINAL_STATUSES:
                 current.error = self._safe_error(exc)
+                failed: dict[str, Any] = {"error": current.error}
+                limit = exc.limit if isinstance(exc, BudgetExceededError) else None
+                if limit is not None:
+                    failed.update(reason="limit_exceeded", limit=limit)
+                    trace.get_current_span().set_attribute("agent.run.limit_exceeded", limit)
+                    await self._audit(
+                        current,
+                        "run.limit_exceeded",
+                        "failed",
+                        current.id,
+                        {
+                            "limit": limit,
+                            "step_count": current.step_count,
+                            "model_calls": current.summary.model_calls,
+                            "total_tokens": current.summary.usage.total_tokens,
+                        },
+                    )
                 await self._transition(current, RunStatus.FAILED)
-                await self._emit(current, "run.failed", {"error": current.error})
+                await self._emit(current, "run.failed", failed)
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
         self._validate_context_policy(agent)
@@ -954,6 +1095,10 @@ class AgentRuntime:
             RunStatus.AWAITING_CLARIFICATION,
             RunStatus.AWAITING_RECONCILIATION,
         }:
+            if state.id in self._event_overflow:
+                raise BudgetExceededError(
+                    f"run reached its limit of {agent.budget.max_events} events", limit="events"
+                )
             limit_reason = self._limit_reason(state, agent)
             if limit_reason:
                 if await self._continue_or_pause(state, agent, limit_reason):
@@ -1426,6 +1571,7 @@ class AgentRuntime:
             response = response.model_copy(
                 update={"message": Message.text(Role.ASSISTANT, str(checked_output))}
             )
+        response = self._fresh_tool_call_ids(state, response)
         state.output_text = response.message.text_content or None
         state.pending_tool_calls = list(response.tool_calls)
         if response.message.text_content or response.tool_calls:
@@ -1542,6 +1688,9 @@ class AgentRuntime:
                     completed = None
                     stream_started = time.monotonic()
                     first_chunk = True
+                    streamed_chars = 0
+                    unsent: list[str] = []
+                    last_delta: float | None = None
                     # Closing the stream on every exit lets the router release a metered call
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
@@ -1558,11 +1707,25 @@ class AgentRuntime:
                                 )
                             if event.delta:
                                 text_parts.append(event.delta)
-                                await self._emit(
-                                    state, "model.delta", {"delta": event.delta}, step_id
-                                )
+                                streamed_chars += len(event.delta)
+                                if streamed_chars > agent.budget.max_response_chars:
+                                    raise self._response_too_large(agent, streamed_chars)
+                                unsent.append(event.delta)
+                                now = time.monotonic()
+                                if (
+                                    last_delta is None
+                                    or now - last_delta >= self.stream_delta_interval_seconds
+                                ):
+                                    # Chunks that arrive within the interval share one event.
+                                    await self._emit(
+                                        state, "model.delta", {"delta": "".join(unsent)}, step_id
+                                    )
+                                    unsent.clear()
+                                    last_delta = now
                             if event.response:
                                 completed = event.response
+                    if unsent:
+                        await self._emit(state, "model.delta", {"delta": "".join(unsent)}, step_id)
                     if completed is None:
                         raise ProviderError(
                             "stream ended without a completed response", retryable=True
@@ -1571,6 +1734,7 @@ class AgentRuntime:
                         completed = completed.model_copy(
                             update={"message": Message.text(Role.ASSISTANT, "".join(text_parts))}
                         )
+                    await self._check_response_size(state, agent, completed)
                     try:
                         return self._validate_model_completion(completed, request)
                     except ProviderError:
@@ -1579,6 +1743,7 @@ class AgentRuntime:
                 response = await self.router.generate(
                     request, profiles, agent.model_allowlist, meter_call=meter_call
                 )
+                await self._check_response_size(state, agent, response)
                 try:
                     return self._validate_model_completion(response, request)
                 except ProviderError:
@@ -1662,6 +1827,28 @@ class AgentRuntime:
             )
         return response
 
+    async def _check_response_size(
+        self, state: RunState, agent: AgentDefinition, response: Any
+    ) -> None:
+        size = len(response.message.text_content) + sum(
+            len(json.dumps(call.arguments, separators=(",", ":"), default=str))
+            for call in response.tool_calls
+        )
+        if size > agent.budget.max_response_chars:
+            # The oversized response was generated and paid for: charge it to the run.
+            self._record_model_usage(state, response)
+            state.updated_at = utc_now()
+            await self.runs.save(state, state.version)
+            raise self._response_too_large(agent, size)
+
+    @staticmethod
+    def _response_too_large(agent: AgentDefinition, size: int) -> BudgetExceededError:
+        return BudgetExceededError(
+            f"model response of at least {size} characters exceeds the "
+            f"{agent.budget.max_response_chars} character limit",
+            limit="response_chars",
+        )
+
     def _record_model_usage(self, state: RunState, response: Any) -> None:
         """Charge auxiliary or rejected completions to the same run budget."""
         state.summary = state.summary.model_copy(
@@ -1689,10 +1876,19 @@ class AgentRuntime:
     def _step_limit(state: RunState, agent: AgentDefinition) -> int:
         return agent.max_steps + state.continuation_count * agent.continuation_policy.step_increment
 
+    @staticmethod
+    def _model_call_limit(state: RunState, agent: AgentDefinition) -> int:
+        return (
+            agent.budget.max_model_calls
+            + state.continuation_count * agent.continuation_policy.step_increment
+        )
+
     @classmethod
     def _limit_reason(cls, state: RunState, agent: AgentDefinition) -> str | None:
         if state.step_count >= cls._step_limit(state, agent):
             return "execution_steps"
+        if state.summary.model_calls >= cls._model_call_limit(state, agent):
+            return "model_calls"
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             return "model_tokens"
@@ -1705,16 +1901,16 @@ class AgentRuntime:
         """Enforce local termination ceilings; platform governance remains external."""
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
-            raise BudgetExceededError("model_tokens budget exhausted")
+            raise BudgetExceededError("model_tokens budget exhausted", limit="model_tokens")
         if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
-            raise BudgetExceededError("estimated_cost budget exhausted")
+            raise BudgetExceededError("estimated_cost budget exhausted", limit="estimated_cost")
 
     async def _continue_or_pause(
         self, state: RunState, agent: AgentDefinition, reason: str
     ) -> bool:
         policy = agent.continuation_policy
         if not policy.enabled:
-            raise BudgetExceededError(f"{reason} budget exhausted")
+            raise BudgetExceededError(f"{reason} budget exhausted", limit=reason)
         if state.continuation_count < policy.automatic_extensions:
             expected = state.version
             state.continuation_count += 1
@@ -1930,6 +2126,17 @@ class AgentRuntime:
             state,
             {"tool": tool.definition, "approval_policy": agent.approval_policy},
         )
+        if decision.action == PolicyAction.DENY:
+            # A denial at planning refuses the call before any approval is asked for, the same
+            # as one at before_tool would refuse it before it runs.
+            await self._audit(
+                state,
+                "policy.decision",
+                decision.action.value,
+                "plan_tool",
+                {"reason_code": decision.reason_code, "audit_metadata": decision.audit_metadata},
+            )
+            raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
         approved = call_id in state.approved_tool_call_ids
         if not approved:
             # Checked before anyone is asked; an approved call passed them when it was planned.
@@ -2129,6 +2336,11 @@ class AgentRuntime:
             return ()
         calls = tool_calls_left(self._step_limit(state, agent), state.step_count)
         reason = "steps"
+        # Each further tool call needs the model call that reads its result, and the answer
+        # needs one more.
+        model_calls = max(0, self._model_call_limit(state, agent) - state.summary.model_calls - 1)
+        if model_calls < calls:
+            calls, reason = model_calls, "model_calls"
         share = state.summary.usage.total_tokens / self._token_limit(state, agent)
         if share >= policy.token_answer_share:
             calls, reason = 0, "tokens"
@@ -2447,10 +2659,11 @@ class AgentRuntime:
                 state,
                 {"tool": tool.definition, "approval_policy": agent.approval_policy},
             )
-            if (
+            if decision.action == PolicyAction.DENY or (
                 decision.action == PolicyAction.REQUIRE_APPROVAL
                 and action.id.removeprefix("tool-") not in state.approved_tool_call_ids
             ):
+                # One at a time: the single path pauses for the approval or refuses the call.
                 return False
             tools.append(tool)
         # Guards judge each call after the ones the model sent before it that will run.
@@ -2866,7 +3079,17 @@ class AgentRuntime:
                 span.set_attribute(
                     "memory.retention_seconds", agent.memory_policy.retention_seconds
                 )
-                await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+                quota_error: QuotaExceededError | None = None
+                try:
+                    await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+                except QuotaExceededError as exc:
+                    # The answer stands; only the turn's memory is not kept.
+                    quota_error = exc
+                    span.set_attribute("memory.quota_exceeded", True)
+            if quota_error is not None:
+                await self._audit(
+                    state, "storage.quota_exceeded", "refused", state.id, quota_error.details()
+                )
             await self._emit(
                 state,
                 "memory.written",
@@ -2874,6 +3097,13 @@ class AgentRuntime:
                     "operation": "append",
                     "item_count": len(persisted),
                     "retention_seconds": agent.memory_policy.retention_seconds,
+                }
+                if quota_error is None
+                else {
+                    "operation": "skipped",
+                    "item_count": 0,
+                    "retention_seconds": agent.memory_policy.retention_seconds,
+                    "reason": "quota_exceeded",
                 },
                 step_id,
             )
@@ -2894,6 +3124,8 @@ class AgentRuntime:
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
+        if target in TERMINAL_STATUSES:
+            self._event_overflow.discard(state.id)
         if target in TERMINAL_STATUSES and state.pending_steering:
             await self._emit(
                 state, "steer.undelivered", self._steering_data(state.pending_steering)
@@ -2907,6 +3139,11 @@ class AgentRuntime:
         step_id: str | None = None,
     ) -> None:
         sequence = await self.events.next_sequence(state.id)
+        if event_type not in _ALWAYS_RECORDED_EVENTS and sequence > self._event_limit(state):
+            # A runaway run must not fill the event store: drop the event and fail the run at
+            # its next step. Events that end or pause a run are always recorded.
+            self._event_overflow.add(state.id)
+            return
         span_context = trace.get_current_span().get_span_context()
         await self.events.publish(
             RunEvent(
@@ -2926,6 +3163,13 @@ class AgentRuntime:
                 data=data,
             )
         )
+
+    def _event_limit(self, state: RunState) -> int:
+        try:
+            agent = self.agents.get(state.request.agent, state.request.agent_version)
+        except NotFoundError:
+            return Budget().max_events
+        return agent.budget.max_events
 
     async def _require_state(self, run_id: str, tenant_id: str) -> RunState:
         state = await self.runs.get(run_id, tenant_id)
@@ -2994,18 +3238,20 @@ class AgentRuntime:
         invoked = tuple(decision.audit_metadata.get("policies_invoked", ()))
         triggered = tuple(decision.audit_metadata.get("policies_triggered", ()))
         skipped = tuple(decision.audit_metadata.get("policies_skipped", ()))
-        await self._emit(
-            state,
-            "policy.evaluated",
-            {
-                "boundary": str(point),
-                "action": decision.action.value,
-                "reason_code": decision.reason_code,
-                "invoked_count": len(invoked),
-                "triggered_count": len(triggered),
-                "skipped_count": len(skipped),
-            },
-        )
+        data: dict[str, Any] = {
+            "boundary": str(point),
+            "action": decision.action.value,
+            "reason_code": decision.reason_code,
+            "invoked_count": len(invoked),
+            "triggered_count": len(triggered),
+            "skipped_count": len(skipped),
+        }
+        errors = decision.audit_metadata.get("policy_errors")
+        if errors:
+            # A policy raised or timed out and the boundary failed open or closed.
+            data["fail_mode"] = decision.audit_metadata.get("fail_mode")
+            data["error_count"] = len(errors)
+        await self._emit(state, "policy.evaluated", data)
         return decision
 
     async def _audit(
@@ -3083,7 +3329,9 @@ class AgentRuntime:
         return self._telemetry_content(prompt)
 
     def _telemetry_content(self, value: Any) -> str:
-        safe = redact(value)
+        # Opt-in content capture still carries no credentials or direct identifiers: spans go to
+        # backends with weaker access control than the run's own stores.
+        safe = _TELEMETRY_PII.redact_value(redact(value))
         rendered = safe if isinstance(safe, str) else json.dumps(safe, default=str)
         if len(rendered) <= self.telemetry_max_content_chars:
             return rendered
@@ -3131,9 +3379,29 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _fresh_tool_call_ids(state: RunState, response: ModelResponse) -> ModelResponse:
+        """The reply with a new id for any call that reuses an id from earlier in the run or
+        from the same reply.
+
+        A call's id keys its approval and its execution record, so a model that repeated an
+        approved call's id would otherwise have its new call treated as the old one.
+        """
+        seen = set(state.completed_tool_call_ids)
+        calls: list[ToolCall] = []
+        for call in response.tool_calls:
+            if call.id in seen:
+                call = call.model_copy(update={"id": str(uuid4())})
+            seen.add(call.id)
+            calls.append(call)
+        if all(new is old for new, old in zip(calls, response.tool_calls, strict=True)):
+            return response
+        return response.model_copy(update={"tool_calls": tuple(calls)})
+
+    @staticmethod
     def _safe_error(exc: Exception) -> str:
         if isinstance(exc, AlgenAgentRuntimeError):
-            return str(exc)
+            # A tool's own error text may quote a credential it was given or sent.
+            return redact_text(str(exc))
         if isinstance(exc, ImportError) and re.fullmatch(
             r"install algen-agent-runtime\[[a-z0-9-]+\](?: for [A-Za-z0-9 ._-]+)?",
             str(exc),
@@ -3142,6 +3410,19 @@ class AgentRuntime:
             # remain hidden because they can disclose local module names and filesystem details.
             return str(exc)
         return f"Internal error ({type(exc).__name__})"
+
+    @classmethod
+    def _rewind_for_recovery(cls, state: RunState) -> None:
+        """Move an interrupted checkpoint back to where its next drive starts.
+
+        A model or tool step checkpoints its status (and its step count) before the call and
+        its result only after it, so the interrupted step is planned and counted again: its
+        first count is taken back, or a run interrupted repeatedly would use up its step budget
+        on replays. A parallel tool batch counts each call; one is taken back, never more.
+        """
+        if state.status in {RunStatus.INVOKING_MODEL, RunStatus.INVOKING_TOOL}:
+            state.step_count = max(0, state.step_count - 1)
+        state.status = cls._recovery_status(state.status)
 
     @staticmethod
     def _recovery_status(status: RunStatus) -> RunStatus:

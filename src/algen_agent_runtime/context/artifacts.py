@@ -6,7 +6,11 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid5
 
-from algen_agent_runtime.exceptions.errors import PolicyDeniedError, ToolExecutionError
+from algen_agent_runtime.exceptions.errors import (
+    PolicyDeniedError,
+    QuotaExceededError,
+    ToolExecutionError,
+)
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -137,6 +141,8 @@ class ContextArtifactService:
             )
             try:
                 await self.store.put(artifact)
+            except QuotaExceededError as exc:
+                raise ToolExecutionError(f"could not store context artifact: {exc}") from exc
             except Exception as exc:
                 # Preserve the completed tool execution; never repeat its side effect
                 # just because artifact storage failed. Surface no driver payloads.

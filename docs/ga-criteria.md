@@ -50,16 +50,18 @@ A breaking change after `0.2.0b1` restarts the stability window.
 ## P0: hardened single-node production
 
 - [ ] All seven P0 items in [production readiness](production-readiness.md) are complete:
-  - [ ] 1. Persistence drills against live stores.
-  - [ ] 2. Policy distribution and adversarial coverage.
+  - [x] 1. Persistence drills against live stores (single node; unreleased).
+  - [x] 2. Policy distribution and adversarial coverage (unreleased).
   - [x] 3. Side-effect reconciliation, operator resolution and compensation (`0.1.0a17`).
   - [x] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit) (`0.1.0a17`).
-  - [ ] 5. Network, plugin and local-execution hardening.
+  - [x] 5. Network, plugin and local-execution hardening (`0.1.0a18`).
   - [x] 6. Readiness and lifecycle (`0.1.0a16`).
-  - [ ] 7. Resource bounds and retention.
+  - [x] 7. Resource bounds and retention (run limits, storage quotas, retention sweeps).
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated
-      process failure.
+      process failure. Schema upgrade and rollback (against `0.1.0a17`), restart-safe approvals and
+      tool execution, and recovery under repeated process failure have evidence in the persistence
+      drills (`tests/drills`); the rest of the gate does not yet.
 
 ## Public API
 
@@ -77,8 +79,12 @@ A breaking change after `0.2.0b1` restarts the stability window.
 ## Upgrades and data
 
 - [ ] Every migration has an upgrade test from the previous minor release and a documented rollback
-      or restore procedure.
-- [ ] Checkpoints written by the previous minor release resume on the new one (tested).
+      or restore procedure. The drills test upgrade from and rollback to the previous release's tag
+      (`ALGEN_DRILL_PREVIOUS_RELEASE`, today `v0.1.0a17`); the procedures are in
+      [operations](operations.md#upgrades-and-rollback). Pointing them at the previous minor
+      release is left for `0.2`.
+- [ ] Checkpoints written by the previous minor release resume on the new one (tested). A run
+      `0.1.0a17` paused resumes on the current code in the upgrade drill.
 - [ ] An upgrade guide covers each `0.x` minor release up to `1.0`.
 
 ## Release engineering
@@ -91,6 +97,9 @@ A breaking change after `0.2.0b1` restarts the stability window.
 ## Operations
 
 - [ ] Load, soak, fault-injection, crash-recovery and noisy-neighbor tests with published results.
+      Crash-recovery, store fault-injection and a bounded soak exist as persistence drills, with a
+      first local result in [operations](operations.md#running-the-drills); load and
+      noisy-neighbor tests and a published long soak do not.
 - [ ] Golden telemetry and redaction tests across model, tool, retrieval, approval, verification and
       failure paths.
 - [ ] Published SLOs, capacity guidance, dashboards, alerts and runbooks for the single-node scope.

@@ -254,7 +254,9 @@ recovery, measure checkpoint size, and inspect compaction decisions without logg
 
 ## Storage bounds and scanning
 
-`security.max_artifact_bytes` is enforced by the API and every built-in store. Bucket lifecycle
+`security.max_artifact_bytes` is enforced by the API and every built-in store. `storage.quotas` can
+also cap each tenant's artifact count and total bytes; past it an upload answers 413
+(`QUOTA_EXCEEDED`). See [Storage quotas](operations.md#storage-quotas). Bucket lifecycle
 rules should complement—not replace—Runtime expiry cleanup. `purge_expired()` deletes the blob before
 its metadata record and is safe to retry when provider deletion is idempotent.
 

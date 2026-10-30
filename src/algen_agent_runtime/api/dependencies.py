@@ -10,6 +10,7 @@ from algen_agent_runtime.auth.authenticator import ApiAuthenticator
 from algen_agent_runtime.auth.contracts import AuthenticationFailure
 from algen_agent_runtime.auth.revocation import TokenRevocationStore
 from algen_agent_runtime.config.settings import ApiSettings
+from algen_agent_runtime.security.network import OutboundNetwork
 from algen_agent_runtime.types.interfaces import AuditLog
 
 
@@ -49,6 +50,7 @@ def principal_dependency(
     audits: AuditLog | None = None,
     revocations: TokenRevocationStore | None = None,
     oidc_transport: httpx.AsyncBaseTransport | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> Any:
     """The FastAPI dependency that authenticates a request into a ``Principal``.
 
@@ -62,7 +64,11 @@ def principal_dependency(
         return principal
 
     authenticator = ApiAuthenticator(
-        settings, audits=audits, revocations=revocations, oidc_transport=oidc_transport
+        settings,
+        audits=audits,
+        revocations=revocations,
+        oidc_transport=oidc_transport,
+        outbound=outbound,
     )
     proxy_header = authenticator.proxy.header if authenticator.proxy is not None else None
 
