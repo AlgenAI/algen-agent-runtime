@@ -21,13 +21,27 @@ python -m examples.pattern_text_to_sql.app \
   "Show completed revenue by customer, highest first"
 ```
 
-The provider definitions, model profiles, and allowlists live in `agent.yaml`. Only the selected provider's API key is required. OpenAI remains the default, so existing commands continue to work.
+The provider definitions, model profiles, and allowlists live in `agent.yaml`. Only the selected provider's API key is required; without it the CLI stops with a hint. OpenAI remains the default, so existing commands continue to work.
+
+To try it without a key or network, add `--offline`. The same `agent.yaml` runs with both providers swapped for the deterministic mock provider (see `examples/offline.py`). The scripted model always asks for completed revenue by region, whatever the question; the query still goes through `analytics.query`, its schema check, the SQLite authorizer and the row limit:
+
+```bash
+python -m examples.pattern_text_to_sql.app --offline
+```
 
 The Mistral example uses `ministral-3b-2512`, which supports function calling. When changing models, update the provider's `default_model`, the agent's `default_model.model`, and `model_allowlist` together; the agent model profile takes precedence during routing.
 
 The example schema documents its valid order statuses (`completed`, `pending`, and `cancelled`) in the system instructions. Consequently, phrases such as “completed orders” map directly to `orders.status = 'completed'` and do not trigger clarification.
 
 If Mistral returns an HTTP error, Algen Agent Runtime includes its bounded, redacted error message and code. A `403 Forbidden` is a provider-side authorization or guardrail decision; verify that Studio is active, the API key belongs to the intended workspace, and that workspace can use the configured model.
+
+Traccia export is off in `agent.yaml` (`telemetry.traccia.enabled: false`), so the example runs without the `traccia` extra. To turn it on, install the extra and enable it through the environment:
+
+```bash
+pip install -e '.[dev,traccia]'
+export TRACCIA_API_KEY='...'
+export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true
+```
 
 When Traccia is enabled, the CLI closes the Algen Agent Runtime container before exiting so its batched spans are flushed to the ingestion endpoint. For exporter diagnostics, set `TRACCIA_DEBUG=true`; do not enable prompt/content capture when troubleshooting production data unless policy permits it.
 

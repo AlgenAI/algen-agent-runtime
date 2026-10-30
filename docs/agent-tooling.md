@@ -119,6 +119,9 @@ class CreditMeter:  # satisfies UsageMeter
 container = build_container(settings, usage_meter=CreditMeter(wallets))
 ```
 
+`examples/pattern_guarded_tools/app.py` has a runnable in-memory version that refuses a user with no
+allowance.
+
 `max_input_tokens` is the router's estimate of the request sent to the chosen model
 (`estimate_request_tokens`, about four characters a token, tools and schema included) and
 `max_output_tokens` is the request's output cap. `settle` receives the provider's reported
@@ -262,4 +265,5 @@ notice while `continuation_policy` still has automatic extensions left, since th
 final yet.
 
 Events, audit records and span attributes for these guards are listed in
-[Operations](operations.md#tool-call-guards).
+[Operations](operations.md#tool-call-guards). `examples/pattern_guarded_tools` runs every guard
+above, a wrap-up notice and a refusing usage meter offline and prints what each did.

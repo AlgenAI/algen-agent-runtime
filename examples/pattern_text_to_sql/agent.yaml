@@ -119,7 +119,9 @@ telemetry:
   max_content_chars: 16384
   include_content: true
   traccia:
-    enabled: true
+    # Off by default, so the example runs without the traccia extra. To export traces, install
+    # '.[traccia]', export TRACCIA_API_KEY and ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true.
+    enabled: false
     api_key: env://TRACCIA_API_KEY
     endpoint: https://api.traccia.ai/v2/traces
     environment: production

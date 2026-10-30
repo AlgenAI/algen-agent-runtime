@@ -9,6 +9,10 @@ This pattern demonstrates how an application-owned OpenAI Agents SDK `Agent` is 
 
 ## Running the Example
 
+It needs the `openai-agents` extra (also in `frameworks`). The SDK agent runs offline on the SDK's
+`ScriptedModel`, so no key is needed:
+
 ```bash
+pip install -e '.[dev,openai-agents]'
 python -m examples.pattern_openai_agents_integration.app
 ```

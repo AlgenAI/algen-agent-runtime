@@ -1,0 +1,23 @@
+id: pattern_side_effect_reconciliation
+display_name: "Side-Effect Reconciliation"
+tier: pattern
+description: >
+  Shows a write whose outcome is unknown pausing the run, a reconcile hook that asks the
+  external system by idempotency key, operator resolution over Python and HTTP, compensation on
+  request, and a refusal before sending recorded as failed rather than indeterminate.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.pattern_side_effect_reconciliation.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.pattern_side_effect_reconciliation.app"
+  test: "python -m pytest tests/integration/test_reconciliation_and_secured_api_examples.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 5
+deterministic_mock_support: true

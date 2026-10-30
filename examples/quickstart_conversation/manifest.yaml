@@ -1,0 +1,23 @@
+id: quickstart_conversation
+display_name: "Conversation Quickstart"
+tier: quickstart
+status: runnable
+description: >
+  A streamed conversation: assistant.message.delta events, a tool note for the UI, a steering
+  message sent mid-turn, and a turn that pauses for approval and resumes.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: examples.quickstart_conversation.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m examples.quickstart_conversation.app"
+  test: "python -m pytest tests/integration/test_all_examples_run.py -q -k quickstart_conversation"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 5
+deterministic_mock_support: true

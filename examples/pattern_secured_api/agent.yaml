@@ -1,0 +1,71 @@
+# The HTTP API behind OIDC. app.py serves it in-process with a local identity provider stub and a
+# fake upstream API, so nothing here is reachable over a network and no secret is configured.
+providers:
+  ops-model: {type: mock, default_model: deterministic}
+  chat-model: {type: mock, default_model: deterministic}
+  lms-model: {type: mock, default_model: deterministic}
+agents:
+  - name: webhook-admin
+    version: 1.0.0
+    description: Registers outbound webhooks once an approver agrees
+    system_instructions: Use webhooks.register to register a webhook.
+    default_model: {name: deterministic, provider: ops-model, model: deterministic, required_capabilities: [chat, tools]}
+    planning_strategy: direct
+    enabled_tools: [webhooks.register]
+    tool_permissions: [webhooks.write]
+    domain_plugins: ["examples.pattern_secured_api.plugin:WebhookPlugin"]
+  - name: helpdesk
+    version: 1.0.0
+    description: Answers questions in a conversation
+    system_instructions: Answer briefly.
+    default_model: {name: deterministic, provider: chat-model, model: deterministic}
+    planning_strategy: direct
+  - name: course-assistant
+    version: 1.0.0
+    description: Lists the signed-in user's courses from the LMS, as that user
+    system_instructions: Use lms.my_courses to see the user's courses.
+    default_model: {name: deterministic, provider: lms-model, model: deterministic, required_capabilities: [chat, tools]}
+    planning_strategy: direct
+    enabled_tools: [lms.my_courses]
+
+security:
+  trusted_plugin_prefixes: [examples.pattern_secured_api]
+  allowed_http_hosts: [lms.example.com]
+http_tools:
+  - name: lms.my_courses
+    description: List the courses the signed-in user is enrolled in.
+    url: https://lms.example.com/api/me/courses
+    # Forward the run's "authorization" credential (the signed-in user's bearer token). A run
+    # without it fails before any request is sent.
+    auth: {type: caller, credential: authorization, scheme: Bearer}
+
+api:
+  auth_mode: oidc
+  oidc:
+    issuers:
+      - issuer: https://idp.example.com/realms/demo
+        audiences: [algen-agent-runtime]
+        algorithms: [ES256]
+        max_token_lifetime_seconds: 900
+        claims:
+          tenant_claim: tenant_id
+          allowed_tenants: [acme]
+          # Scopes come from the "scope" claim and from roles mapped here.
+          scope_claims: [scope]
+          role_claims: [roles]
+          role_scopes:
+            member: [runs:read, runs:write, conversations:read, conversations:write]
+            approver: [runs:read, runs:write, approvals:read]
+  token_revocation: {enabled: true, store: memory, require_jti: true}
+
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+  workflow_store: memory
+telemetry: {enabled: false}

@@ -93,9 +93,9 @@ arguments moves with the steps in `docs/plugins.md` ("Moving from constructor ar
 - Choose guardrails, verification, approvals, and model allowlists based on actual risk.
 - Use in-memory stores for examples; document PostgreSQL/Redis settings for durable deployments.
 
-Use `examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`, and
-`pattern_text_to_sql` as current working references. Copy concepts, not stale versions of internal
-classes.
+Use `examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
+`quickstart_conversation`, `pattern_guarded_tools` and `pattern_text_to_sql` as current working
+references. Copy concepts, not stale versions of internal classes.
 
 ## Tool-heavy and acting agents
 

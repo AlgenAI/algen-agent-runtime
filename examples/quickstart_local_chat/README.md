@@ -42,8 +42,11 @@ The capital of France is Paris.
 
 ## Test
 
+The configuration is checked by `tests/unit/test_agent_ui.py`. Running the agent needs Ollama, so
+`tests/integration/test_all_examples_run.py` lists this example as skipped.
+
 ```bash
-python -m pytest examples/quickstart_local_chat/tests/ -q
+python -m pytest tests/unit/test_agent_ui.py -q
 ```
 
 ## Reset

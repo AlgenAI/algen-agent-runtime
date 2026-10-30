@@ -82,6 +82,10 @@ jobs:
                   "algen_agent_runtime/tools/starter/__init__.py",
                   "algen_agent_runtime/mcp/__init__.py",
                   "examples/quickstart_approval/__init__.py",
+                  "examples/quickstart_conversation/agent.yaml",
+                  "examples/pattern_guarded_tools/agent.yaml",
+                  "examples/pattern_side_effect_reconciliation/agent.yaml",
+                  "examples/pattern_secured_api/agent.yaml",
               }
               missing = required - names
               if missing:
@@ -111,7 +115,7 @@ jobs:
           /tmp/algen-release-smoke/bin/algen-agent-runtime serve --help
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
-          for example in context_evaluation context_compaction context_offloading working_state progressive_skills learned_memory; do
+          for example in context_evaluation context_compaction context_offloading working_state progressive_skills learned_memory quickstart_conversation.app pattern_guarded_tools.app pattern_side_effect_reconciliation.app pattern_secured_api.app; do
             /tmp/algen-release-smoke/bin/python -m "examples.${example}"
           done
           rm -rf /tmp/smoke-scaffold-release

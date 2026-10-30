@@ -187,6 +187,19 @@ contracts are explicitly marked experimental during the `0.x` series.
   and child workflow runs whose parent is unfinished are kept. Migration 016 adds the supporting
   indexes. `CompositeRetentionSweeper` and `InMemoryRetentionSweeper` are new. See
   docs/operations.md#maintenance-and-data-retention.
+- Example `pattern_side_effect_reconciliation`: a billing write whose response times out pauses
+  its run (`tool_policy.on_indeterminate: pause`); the tool's `reconcile` hook finds the credit by
+  idempotency key and the run resumes; an operator resolves another call `failed` with a reason
+  over `/v1/tool-executions` (`tools:reconcile`); compensation runs on request (`compensating` to
+  `compensated`); and a `ToolNotAttemptedError` refusal is recorded `failed`, not `indeterminate`.
+  Offline, with a mock model and an in-process fake billing system.
+- Example `pattern_secured_api`: the HTTP API in-process with `api.auth_mode: oidc` against a local
+  JWKS stub and a key generated at start-up: scopes from claims, the approval inbox and its
+  `approvals:read` scope, redacted `modified_parameters`, conversation ownership (another user of
+  the tenant gets 404), token revocation by `jti`, and an `http_tools` entry with
+  `auth.type: caller` that forwards the signed-in user's token through a host route and fails
+  closed without one. Needs the `auth` extra; without it the example says how to install it and
+  exits 0.
 
 ### Changed
 - `core.http` in a built container now uses the SSRF-safe, DNS-pinned client (it used a plain
@@ -303,6 +316,38 @@ contracts are explicitly marked experimental during the `0.x` series.
 - A `proxy=` passed to `create_safe_http_client` was used without any check of the proxy host
   against the IP pinning, and could route requests around the allowlist. It is now refused
   unless it is the configured `network.egress_proxy`, and `mounts=` is refused.
+
+### Examples
+
+- `examples/quickstart_conversation`: a streamed two-turn conversation through `ConversationService`
+  and `RuntimeConversationHandler`, offline. It prints `assistant.message.delta` events, a
+  `tool.note` from `ToolContext.emit_note`, a `runtime.steer` message sent while a tool runs, and a
+  turn that pauses for approval and resumes (`--reject` to reject it).
+- `examples/pattern_guarded_tools`: typed tools (`@tool`, `build_tool`) behind a `precheck`, a
+  failure returned as data (`failure_field="ok"`), `cache_context={"user_id"}` with the tool-result
+  cache on, `wrap` middleware that keeps the hooks, `tool_policy` guards (consecutive
+  `max_refusals_per_tool`, `max_calls_per_tool`, `repeat_guard`), `wrap_up_policy`, and a
+  `UsageMeter` that charges from `MeterCall` with `usage_meter_margin` and refuses a user with no
+  allowance. Offline; prints what each control did.
+- `--offline` for `quickstart_rag`, `quickstart_cloud_chat`, `pattern_text_to_sql` and
+  `case_study_teaching_assistant` (the same `agent.yaml` with the hosted provider swapped for the
+  mock provider and a scripted reply, `examples/offline.py`) and for `pattern_provider_fallback`
+  (the former `--deterministic`, still accepted). Without `--offline` they use the real provider
+  as before and stop with a hint when its key is missing.
+- `pattern_text_to_sql` and `case_study_teaching_assistant` run without the `traccia` extra:
+  `telemetry.traccia.enabled` is now `false` in their `agent.yaml`. Turn it on with
+  `ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true`; the teaching assistant's
+  `config/ecs.yaml` still enables it for the ECS deployment.
+- `pattern_provider_fallback` printed its route from `RunResult.model_used`, which does not exist,
+  so a successful live run raised `AttributeError`; it now reads the run's last `model.completed`
+  event.
+- `tests/integration/test_all_examples_run.py` runs every runnable example module as a subprocess,
+  offline and non-interactively, in parallel with a 60-second timeout each. A runnable module that
+  is neither run nor listed as skipped (Ollama, pgvector, the HTTP dashboards, the MCP server
+  process) fails the test. The never-collected `examples/quickstart_rag/tests/test_smoke.py` moved
+  to `tests/end_to_end/test_rag_example.py`.
+- Example READMEs: the `--offline` paths, the extras the MCP and OpenAI Agents examples need, the
+  local chat test command, and `docs/rag.md`'s path to the pgvector Text-to-SQL example.
 
 ## [0.1.0a17] - 2026-10-28
 

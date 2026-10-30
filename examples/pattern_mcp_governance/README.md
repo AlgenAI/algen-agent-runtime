@@ -14,6 +14,9 @@ This pattern demonstrates declarative configuration of external Model Context Pr
 
 ## Running the Example
 
+It needs the `mcp` extra, which starts the bundled stdio server:
+
 ```bash
+pip install -e '.[dev,mcp]'
 python -m examples.pattern_mcp_governance.app
 ```

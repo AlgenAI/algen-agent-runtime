@@ -1,3 +1,5 @@
+"""Decision inputs of the workflow examples' CLI; test_all_examples_run.py runs every example."""
+
 from __future__ import annotations
 
 import json
@@ -5,49 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).parents[2]
-
-
-@pytest.mark.parametrize(
-    ("module_name", "extra_args"),
-    [
-        ("examples.quickstart_approval.app", ["--approve-all"]),
-        ("examples.quickstart_approval.app", ["--reject-all"]),
-        ("examples.quickstart_tool.app", []),
-        ("examples.pattern_approval_workflow.app", ["--approve-all"]),
-        ("examples.pattern_governed_research.app", []),
-        ("examples.pattern_langgraph_governance.app", []),
-        ("examples.pattern_multi_agent_fanout.app", []),
-        ("examples.pattern_child_workflow.app", []),
-        ("examples.pattern_evaluation_gate.app", []),
-        (
-            "examples.reference_customer_support.app",
-            [
-                "--answers-file",
-                "examples/reference_customer_support/fixtures/automation-answers.json",
-            ],
-        ),
-        ("examples.reference_incident_response.app", ["--approve-all"]),
-        ("examples.reference_invoice_exceptions.app", ["--approve-all"]),
-    ],
-)
-def test_portable_examples_terminate_non_interactively(
-    module_name: str, extra_args: list[str]
-) -> None:
-    cmd = [sys.executable, "-m", module_name, *extra_args]
-    result = subprocess.run(
-        cmd,
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        stdin=subprocess.DEVNULL,  # non-interactive
-    )
-    assert result.returncode == 0, (
-        f"Command {cmd} failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    )
 
 
 def test_quickstart_approval_with_answers_file(tmp_path: Path) -> None:

@@ -1,0 +1,44 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: pricing-assistant
+    version: 1.0.0
+    description: Looks up products and sets discounts within the shop's pricing rules
+    system_instructions: >
+      Use shop.search and shop.stock to find products, shop.my_orders for the customer's own
+      orders, and shop.set_discount to discount a product. Discounts above 30% are refused.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    enabled_tools: [shop.search, shop.stock, shop.set_discount, shop.my_orders]
+    tool_permissions: [shop.read, shop.write]
+    domain_plugins: ["examples.pattern_guarded_tools.plugin:ShopPlugin"]
+    # The demo runs its writes without asking; the precheck runs either way, before any approval.
+    approval_policy: {require_for_side_effects: false}
+    tool_policy:
+      on_error: return_to_model       # a refused or failed call goes back to the model
+      max_refusals_per_tool: 2        # from the second refusal in a row: stop and tell the user
+      refusal_count: consecutive      # a call that succeeds starts the count again
+      repeat_guard: true              # an identical read with nothing changed returns a note
+      max_calls_per_tool:
+        shop.search: 2                # a search the model could keep rephrasing
+    wrap_up_policy:
+      enabled: true
+      tool_calls_left: 2              # warn while two or fewer tool calls are affordable
+    budget: {max_output_tokens: 256}
+    max_steps: 26
+cache:
+  backend: memory
+  policies:
+    # Tenant-scoped: without cache_context, users of one tenant would share a cached result.
+    tool_results: {enabled: true, scope: tenant, ttl_seconds: 300}
+security:
+  trusted_plugin_prefixes: [examples.pattern_guarded_tools]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

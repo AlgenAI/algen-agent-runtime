@@ -180,7 +180,9 @@ telemetry:
   include_conversation_content: true
   max_content_chars: 8192
   traccia:
-    enabled: true
+    # Off by default, so the example runs without the traccia extra; see README.md to turn it on.
+    # config/ecs.yaml turns it on for the ECS deployment.
+    enabled: false
     api_key: env://TRACCIA_API_KEY
     environment: development
     project_id: cerai-responsible-ai-demo

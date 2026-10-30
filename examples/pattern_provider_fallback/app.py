@@ -22,6 +22,7 @@ from algen_agent_runtime.types.contracts import (
     RunRequest,
     RunResult,
 )
+from examples.offline import require_key
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -43,17 +44,18 @@ class PlannedFailureProvider:
         return False
 
 
-async def ask(message: str) -> RunResult:
+async def ask(message: str) -> tuple[RunResult, str | None]:
     """Run a message through the resilient multi-provider agent.
 
     The agent will attempt the primary Anthropic provider first, fall back to
-    OpenAI on failure, and finally fall back to a local Ollama model. The
-    selected provider route is visible in the run result metadata.
+    OpenAI on failure, and finally fall back to a local Ollama model. The route
+    that answered is the provider and model of the run's last ``model.completed``
+    event, returned beside the result.
     """
     settings = load_settings((EXAMPLE_DIR / "agent.yaml",))
     container = build_container(settings)
     try:
-        return await AlgenAgentRuntimeClient(container.runtime).run(
+        result = await AlgenAgentRuntimeClient(container.runtime).run(
             RunRequest(
                 agent="resilient",
                 input=message,
@@ -61,8 +63,15 @@ async def ask(message: str) -> RunResult:
                 user_id="example-user",
             )
         )
+        completed = [
+            event.data
+            for event in await container.runtime.events.history(result.run_id)
+            if event.type == "model.completed"
+        ]
+        route = f"{completed[-1]['provider']}/{completed[-1]['model']}" if completed else None
+        return result, route
     finally:
-        container.close()
+        await container.aclose()
 
 
 async def deterministic_fallback(message: str) -> tuple[str, str]:
@@ -106,25 +115,31 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         help="Message to send (default: a simple factual question).",
     )
     parser.add_argument(
+        "--offline",
         "--deterministic",
+        dest="offline",
         action="store_true",
-        help="Use a planned primary failure and in-memory fallback; requires no credentials.",
+        help="Use a planned primary failure and the mock fallback; requires no credentials.",
     )
     return parser.parse_args(arguments)
 
 
-def main() -> None:
-    arguments = parse_args()
-    if arguments.deterministic:
+def main(argv: Sequence[str] | None = None) -> None:
+    arguments = parse_args(argv)
+    if arguments.offline:
+        print("[offline: the primary provider fails on purpose; the router falls back to mock]")
         route, output = asyncio.run(deterministic_fallback(arguments.message))
         print(f"[Route: {route}]")
         print(output)
         return
-    result = asyncio.run(ask(arguments.message))
+    # The primary's key is resolved first; a missing key is a configuration error, not a
+    # provider failure, so it does not fall back.
+    require_key("ANTHROPIC_API_KEY")
+    result, route = asyncio.run(ask(arguments.message))
     if result.error:
         raise RuntimeError(result.error)
-    if result.model_used:
-        print(f"[Route: {result.model_used}]")
+    if route:
+        print(f"[Route: {route}]")
     print(result.output or "")
 
 

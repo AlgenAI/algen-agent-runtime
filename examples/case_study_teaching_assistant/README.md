@@ -31,15 +31,17 @@ Traccia Platform policy enforcement and Runtime guardrails are separate:
 ## Run locally
 
 ```bash
-pip install -e '.[dev,traccia]'
+pip install -e '.[dev]'
 export OPENAI_API_KEY='...'
 python -m examples.case_study_teaching_assistant.dashboard
 ```
 
 Open <http://localhost:8091>. Local mode uses in-memory persistence and development identity headers.
-To send traces to Traccia:
+Traccia export is off in `config/agent.yaml`, so the example runs without the `traccia` extra;
+`config/ecs.yaml` turns it on for the ECS deployment. To send traces to Traccia locally:
 
 ```bash
+pip install -e '.[dev,traccia]'
 export TRACCIA_API_KEY='...'
 export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true
 export ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__GOVERNANCE_ENABLED=true
@@ -58,6 +60,10 @@ The CLI uses the same agent and tool contracts:
 python -m examples.case_study_teaching_assistant.app \
   'I missed probability class and have 7 days with 60 minutes daily to catch up. Make a plan.'
 ```
+
+`--offline` runs the CLI without a key or network: the `openai` provider is swapped for the
+deterministic mock provider (see `examples/offline.py`) with one scripted, cited answer, while
+retrieval, the education guardrails and the citation verifier run as usual.
 
 ## Suggested live demo sequence
 

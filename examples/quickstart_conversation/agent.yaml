@@ -1,0 +1,29 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: order-assistant
+    version: 1.0.0
+    description: Tracks orders and changes a delivery address after the customer approves
+    system_instructions: >
+      Use orders.track to say where an order is and orders.change_address to change where it is
+      delivered. Follow any extra request the customer sends while you work.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    enabled_tools: [orders.track, orders.change_address]
+    tool_permissions: [orders.read, orders.write]
+    domain_plugins: ["examples.quickstart_conversation.plugin:OrdersPlugin"]
+    max_steps: 8
+# Send every streamed chunk as its own assistant.message.delta event (the default coalesces
+# chunks into at most one event per 50 ms).
+conversation_streaming: {enabled: true, delta_interval_ms: 0}
+security:
+  trusted_plugin_prefixes: [examples.quickstart_conversation]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}
