@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-28 (Runtime `0.1.0a17`)
+Last reviewed: 2026-10-29 (Runtime `0.1.0a17` and unreleased changes)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -78,17 +78,37 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and item 2 in the
-unreleased changes; each lists what is left for later. Items 1, 5 and 7 remain open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1 and 2 in the
+unreleased changes; each lists what is left for later. Items 5 and 7 remain open.
 
-1. **Close persistence validation gaps.** CI runs storage integration tests against live PostgreSQL 16,
-   including schema migrations, run state, optimistic conflicts, artifacts, tool deduplication, and
-   workflow checkpoints. CI also runs the Redis run, memory, and cache stores against live Redis 7
-   through `REDIS_URL`, including WATCH-conflict handling. Restart recovery, approval pause and resume
-   across a new runtime instance, and workflow recovery are covered by unit tests on in-memory stores.
-   *Remaining:* startup, restart recovery, concurrent approval, backup/restore,
-   database-unavailability, failover, and soak drills against live stores in supported deployment
-   topologies.
+1. **Close persistence validation gaps.** *Done (single node, unreleased):* a drill suite
+   (`tests/drills`, marker `drill`, run in CI by the `persistence-drills` job on throwaway
+   PostgreSQL 17 and Redis 7 containers) builds real Runtime processes on live stores and covers
+   first start on an empty database, restart on a migrated one and four concurrent first starts;
+   SIGKILL crashes mid-model-call and mid-tool-call recovered by a new process with one ledger
+   record and one external effect per run, a run paused for approval, a workflow run and conversation
+   turns across a crash, and five crashes in a row; two processes deciding one approval at once
+   (one wins, the other gets 409/`ConflictError`, the run resumes once); PostgreSQL and Redis paused
+   under load (readiness down, new work refused with `StoreUnavailableError`/503 within bounded
+   timeouts, the run in flight kept and driven again once the store is back, no restart); a
+   database restart as a single-node failover with no committed state lost; `pg_dump` of a live
+   database restored into a new one where the paused run resumes with its approvals, ledger and
+   events; schema upgrade from the `0.1.0a17` migration set and from data `0.1.0a17` itself wrote,
+   and rollback to `0.1.0a17` on a database the current code migrated and wrote; and a bounded soak
+   (marker `soak`, off by default) of runs, approvals and turns at concurrency. Fixed on the way:
+   unbounded PostgreSQL/Redis calls (connect and command timeouts), raw driver errors (now
+   `StoreUnavailableError`, HTTP 503), runs failed by a transient outage (now kept and resumed), one
+   failure per dead pooled connection after a restart (the pool is renewed), a drive superseded by
+   another failing the run (it stands down), step budget used up by repeated recovery, a resume right
+   after the pause consuming the approval without driving the run, and a `run_store` other than
+   PostgreSQL accepted with PostgreSQL stores whose rows reference runs. The runbook is in
+   [operations](operations.md#persistence-restarts-outages-backup-and-rollback). *Later:*
+   coordinated recovery across processes (leader election) and multi-replica drills; true HA
+   failover (replica promotion, asynchronous-replication loss) against a managed or replicated
+   PostgreSQL; S3 artifact restore drills; workflow agent nodes that reattach to their interrupted
+   run instead of retrying it; a published long-running soak (hours) with load and noisy-neighbor
+   tenants; resuming outage-interrupted workflow and conversation drives in process (they are
+   recovered by the next start).
 2. **Harden policy distribution and coverage.** *Done (unreleased):* policy bundles
    (`policies.bundles`) carry declarative rules (denied tools, tools that need approval, deny and
    redact patterns per boundary) with their name, version, issue and expiry times inside a
@@ -194,7 +214,9 @@ Remaining release and operational gates:
 
 - Reproducible dependency lock files, SBOM and license reports, signed tags/releases or equivalent
   provenance attestations, and a container runtime smoke test rather than build/scan alone.
-- Provider sandbox contracts plus load, soak, fault-injection, crash-recovery, and noisy-neighbor tests.
+- Provider sandbox contracts plus load and noisy-neighbor tests. Crash-recovery, store
+  fault-injection (outage, failover) and a bounded soak run as persistence drills (`tests/drills`);
+  a long-running published soak remains.
 - Golden telemetry/redaction tests across model, tool, retrieval, approval, verification, and failures.
 - SLOs, capacity guidance, dashboards, alerts, runbooks, profiling, and benchmark baselines.
 - Stable extension APIs and explicit compatibility levels for framework adapters; observation
@@ -206,3 +228,7 @@ Do not call a release production-ready until automated tests demonstrate restart
 tool execution, cross-tenant isolation, authenticated access, bounded resource use, provider
 cancellation, schema upgrade and rollback, redacted telemetry, and recovery under repeated process
 failure.
+
+Evidence so far: restart-safe approvals and tool execution, schema upgrade and rollback (against
+`0.1.0a17`) and recovery under repeated process failure are covered by the persistence drills in
+`tests/drills` on live PostgreSQL and Redis.

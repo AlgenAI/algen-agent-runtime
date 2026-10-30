@@ -137,6 +137,8 @@ markers = [
   "integration: tests requiring external or behavioral storage/network integration",
   "postgres: tests targeting PostgreSQL persistence stores",
   "redis: tests targeting Redis cache/run stores",
+  "drill: persistence drills against live stores (tests/drills; restart, outage, backup)",
+  "soak: the bounded soak drill; off unless ALGEN_DRILL_SOAK_RUNS is set",
 ]
 
 [tool.ruff]
