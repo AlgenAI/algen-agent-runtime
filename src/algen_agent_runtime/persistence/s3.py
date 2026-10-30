@@ -7,6 +7,12 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from algen_agent_runtime.persistence.quotas import (
+    ResourceUsage,
+    StorageQuotas,
+    postgres_quota_write,
+    read_usage,
+)
 from algen_agent_runtime.types.contracts import Artifact, ArtifactDescriptor, ArtifactStatus
 
 
@@ -26,8 +32,10 @@ class S3ArtifactStore:
         kms_key_id: str | None = None,
         max_bytes: int = 10_485_760,
         client: Any | None = None,
+        quotas: StorageQuotas | None = None,
     ) -> None:
         self._database = database
+        self._quotas = quotas
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._max_bytes = max_bytes
@@ -51,6 +59,16 @@ class S3ArtifactStore:
         if len(artifact.data) > self._max_bytes:
             raise ValueError(f"artifact exceeds {self._max_bytes} byte limit")
         descriptor = artifact.descriptor()
+        quotas = self._quotas
+        if quotas is not None and quotas.enforced(artifact.tenant_id, "artifacts"):
+            # Refuse before uploading; the metadata insert below checks again under the lock.
+            before = await read_usage(self._database, artifact.tenant_id, "artifacts")
+            quotas.check(
+                artifact.tenant_id,
+                "artifacts",
+                before,
+                ResourceUsage(before.items + 1, before.bytes + descriptor.size_bytes),
+            )
         key = self._object_key(artifact.tenant_id, artifact.id)
         kwargs: dict[str, Any] = {
             "Bucket": self._bucket,
@@ -69,8 +87,9 @@ class S3ArtifactStore:
         if self._kms_key_id:
             kwargs["SSEKMSKeyId"] = self._kms_key_id
         await asyncio.to_thread(self._client.put_object, **kwargs)
-        try:
-            await self._database.execute(
+
+        async def insert(connection: Any) -> None:
+            await connection.execute(
                 "INSERT INTO algen_agent_runtime_artifacts "
                 "(id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
                 "metadata, expires_at, created_at, storage_backend, storage_key) "
@@ -89,9 +108,18 @@ class S3ArtifactStore:
                 artifact.created_at,
                 key,
             )
+
+        try:
+            await postgres_quota_write(
+                self._database, quotas, artifact.tenant_id, "artifacts", insert
+            )
         except Exception:
             await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
             raise
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        """Stored artifacts of every backend, expired ones included until they are purged."""
+        return await read_usage(self._database, tenant_id, "artifacts")
 
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None:
         row = await self._database.fetchrow(

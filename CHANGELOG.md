@@ -157,6 +157,36 @@ contracts are explicitly marked experimental during the `0.x` series.
   imported, for `domain_plugins` and workflow hook packages. `algen-agent-runtime plugin keygen`,
   `plugin sign` and `plugin verify`. Needs the `encryption` extra. See
   docs/operations.md#plugin-signing.
+- Per-run limits on `budget`: `max_model_calls` (default 1,000; a continuation adds
+  `step_increment`; the wrap-up notice counts it, `reason: model_calls`), `max_response_chars` per
+  model response (default 1,000,000 characters of text plus tool-call arguments, enforced while a
+  response streams) and `max_events` (default 100,000; past it only events that end or pause the run
+  are recorded and the run fails at its next step). A run that ends at a limit fails with
+  `run.failed` `reason: limit_exceeded` and `limit`, a `run.limit_exceeded` audit record and the
+  `agent.run.limit_exceeded` span attribute; the existing step, token and cost limits report the
+  same way. See docs/operations.md#run-limits.
+- `runtime.stream_delta_interval_ms` (default 50): streamed model text is recorded as at most one
+  `model.delta` run event per interval, so long streams do not fill the event store. `0` records
+  every chunk; `AgentRuntime(stream_delta_interval_seconds=...)` defaults to 0.
+- Per-tenant storage quotas, `storage.quotas` (`default` plus per-tenant overrides; unlimited by
+  default): item and byte limits for artifacts, session memory and learned memory, enforced on
+  write by the in-memory, PostgreSQL, S3 and (when a quota is set) Redis stores. A write past a
+  limit writes nothing and raises `QuotaExceededError`; the API answers 413 with
+  `code: QUOTA_EXCEEDED`. On PostgreSQL, migration `016_resource_bounds.sql` adds
+  `algen_agent_runtime_tenant_usage`, kept by triggers in the same transaction as every write and
+  backfilled from existing rows; a quota-checked write locks the tenant's usage row, so concurrent
+  writes cannot overshoot. A full session-memory quota keeps a run's answer and skips the turn's
+  memory (`memory.written` with `operation: skipped`). `GET /v1/storage/usage` (new scope `usage:read`) and
+  `Container.storage_usage` report a tenant's usage and limits. See
+  docs/operations.md#storage-quotas.
+- Retention for conversations (with messages, events and feedback), finished workflow checkpoints,
+  finished analytical graphs and completed or dead work items: `maintenance.conversation_retention_days`,
+  `workflow_checkpoint_retention_days`, `analytical_graph_retention_days` and
+  `work_item_retention_days` (all off by default), on PostgreSQL and in-memory stores, in batches
+  like the existing purges. Conversations with a turn in progress or waiting, or a recent message,
+  and child workflow runs whose parent is unfinished are kept. Migration 016 adds the supporting
+  indexes. `CompositeRetentionSweeper` and `InMemoryRetentionSweeper` are new. See
+  docs/operations.md#maintenance-and-data-retention.
 
 ### Changed
 - `core.http` in a built container now uses the SSRF-safe, DNS-pinned client (it used a plain
@@ -215,6 +245,9 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `redact()` (audit metadata, logs, conversation records) also redacts `key=value` credential
   assignments, and opt-in telemetry content (`telemetry.include_content`) is also redacted for
   emails, phone, Aadhaar and card numbers.
+- Migration 016 creates triggers on the artifact, memory and learned-memory tables, which locks them
+  against writes until it commits; on large tables run it in a quiet period, and create its indexes
+  `CONCURRENTLY` beforehand.
 
 ### Fixed
 

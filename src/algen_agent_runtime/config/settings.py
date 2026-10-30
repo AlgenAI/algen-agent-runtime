@@ -21,6 +21,7 @@ from algen_agent_runtime.config.authentication import (
 from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeniedError
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.persistence.naming import check_schema_name
+from algen_agent_runtime.persistence.quotas import StorageQuotaSettings
 from algen_agent_runtime.plugins.signing import PluginSettings
 from algen_agent_runtime.policies.contracts import (
     PolicyErrorHandling,
@@ -119,6 +120,11 @@ class StorageSettings(StrictSettings):
         "fails with StoreUnavailableError; None waits indefinitely.",
     )
     memory_retention_seconds: int = Field(default=86_400, ge=0)
+    quotas: StorageQuotaSettings = Field(
+        default_factory=StorageQuotaSettings,
+        description="Per-tenant limits on stored artifacts, session memory and learned memory; "
+        "unlimited by default.",
+    )
     mcp_oauth_token_store: Literal["memory", "postgres"] = Field(
         default="memory",
         description="Where MCP OAuth tokens live. 'postgres' encrypts them at rest and needs "
@@ -572,6 +578,14 @@ class RuntimeSettings(StrictSettings):
         "executor keep calling executor.recover themselves.",
     )
     readiness: ReadinessSettings = Field(default_factory=ReadinessSettings)
+    stream_delta_interval_ms: int = Field(
+        default=50,
+        ge=0,
+        le=5_000,
+        description="Streamed model text is recorded as at most one model.delta run event per "
+        "interval (chunks in between are joined), so a long stream does not use up "
+        "budget.max_events; 0 records every chunk.",
+    )
 
 
 class MaintenanceSettings(StrictSettings):
@@ -591,6 +605,29 @@ class MaintenanceSettings(StrictSettings):
     clarification_timeout_seconds: int | None = Field(default=None, ge=60)
     terminal_run_retention_days: int | None = Field(default=None, ge=1)
     audit_retention_days: int | None = Field(default=None, ge=1)
+    conversation_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Delete conversations (with messages, events and feedback) idle this long, "
+        "unless a turn is in progress or waiting.",
+    )
+    workflow_checkpoint_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Delete completed, failed and cancelled workflow runs not updated this long, "
+        "unless their parent run is unfinished.",
+    )
+    analytical_graph_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Delete completed, failed and cancelled analytical graphs not updated this long.",
+    )
+    work_item_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Delete completed and failed work items not updated this long; their "
+        "deduplication keys are released.",
+    )
 
 
 class ConversationPresentationSettings(StrictSettings):

@@ -84,6 +84,7 @@ from algen_agent_runtime.events.bus import (
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
 from algen_agent_runtime.frameworks import FrameworkAdapter, FrameworkAdapterRegistry
 from algen_agent_runtime.governance import QueryGovernanceEngine, QueryGovernancePolicy
+from algen_agent_runtime.memory.contracts import LearnedMemoryStore
 from algen_agent_runtime.memory.store import InMemoryLearnedMemoryStore, PostgresLearnedMemoryStore
 from algen_agent_runtime.methods import AnalyticalMethodRegistry
 from algen_agent_runtime.model_services import ModelServiceRegistry
@@ -131,8 +132,19 @@ from algen_agent_runtime.persistence.postgres import (
     PostgresRunStore,
     PostgresToolExecutionStore,
 )
+from algen_agent_runtime.persistence.quotas import (
+    QuotaResource,
+    StorageQuotas,
+    StorageUsageService,
+    UsageReader,
+)
 from algen_agent_runtime.persistence.redis import RedisMemoryStore, RedisRunStore
-from algen_agent_runtime.persistence.retention import PostgresRetentionSweeper
+from algen_agent_runtime.persistence.retention import (
+    CompositeRetentionSweeper,
+    InMemoryRetentionSweeper,
+    PostgresRetentionSweeper,
+    RetentionSweeper,
+)
 from algen_agent_runtime.persistence.s3 import S3ArtifactStore
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.planning.planners import PlannerRegistry
@@ -229,6 +241,8 @@ class Container:
     shutdown_grace_seconds: float = 10.0
     maintenance: MaintenanceService | None = None
     run_maintenance_in_background: bool = False
+    # Each tenant's stored items and bytes against its storage quotas (GET /v1/storage/usage).
+    storage_usage: StorageUsageService | None = None
     plugins: tuple[PluginManifest, ...] = ()
     component_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     component_check: Literal["error", "warn"] = "error"
@@ -638,16 +652,22 @@ def build_container(
         runs = RedisRunStore(redis_client)
     else:
         runs = InMemoryRunStore()
+    quotas = StorageQuotas(storage.quotas)
     memory: MemoryStore
     if storage.memory_store == "postgres":
-        memory = PostgresMemoryStore(database, storage.memory_retention_seconds)
+        memory = PostgresMemoryStore(database, storage.memory_retention_seconds, quotas)
     elif storage.memory_store == "redis":
-        memory = RedisMemoryStore(redis_client, retention_seconds=storage.memory_retention_seconds)
+        # Usage accounting on Redis runs Lua scripts; leave it off unless a quota is set.
+        memory = RedisMemoryStore(
+            redis_client,
+            retention_seconds=storage.memory_retention_seconds,
+            quotas=quotas if quotas.configured else None,
+        )
     else:
-        memory = InMemoryMemoryStore()
+        memory = InMemoryMemoryStore(quotas)
     artifacts: ArtifactStore
     if storage.artifact_store == "postgres":
-        artifacts = PostgresArtifactStore(database, settings.security.max_artifact_bytes)
+        artifacts = PostgresArtifactStore(database, settings.security.max_artifact_bytes, quotas)
     elif storage.artifact_store == "s3":
         artifacts = S3ArtifactStore(
             database,
@@ -659,9 +679,10 @@ def build_container(
             server_side_encryption=storage.artifact_s3_server_side_encryption,
             kms_key_id=storage.artifact_s3_kms_key_id,
             max_bytes=settings.security.max_artifact_bytes,
+            quotas=quotas,
         )
     else:
-        artifacts = InMemoryArtifactStore(settings.security.max_artifact_bytes)
+        artifacts = InMemoryArtifactStore(settings.security.max_artifact_bytes, quotas)
     workflow_checkpoints: WorkflowCheckpointStore = (
         PostgresWorkflowCheckpointStore(database)
         if storage.workflow_store == "postgres"
@@ -963,6 +984,21 @@ def build_container(
             observability.tracer("algen_agent_runtime.tools"), settings.telemetry.trace_level
         ),
     )
+    learned_memory_store: LearnedMemoryStore = (
+        PostgresLearnedMemoryStore(database, quotas)
+        if storage.learned_memory_store == "postgres"
+        else InMemoryLearnedMemoryStore(quotas)
+    )
+    usage_sources: tuple[tuple[QuotaResource, object], ...] = (
+        ("artifacts", artifacts),
+        ("memory", memory),
+        ("learned_memory", learned_memory_store),
+    )
+    usage_readers: dict[QuotaResource, UsageReader] = {}
+    for usage_resource, usage_store in usage_sources:
+        reader = getattr(usage_store, "tenant_usage", None)
+        if reader is not None:
+            usage_readers[usage_resource] = reader
     runtime = AgentRuntime(
         agents=agents,
         router=router,
@@ -981,14 +1017,11 @@ def build_container(
         observability=observability,
         cache=cache,
         context_artifacts=ContextArtifactService(artifacts),
-        learned_memory_store=(
-            PostgresLearnedMemoryStore(database)
-            if storage.learned_memory_store == "postgres"
-            else InMemoryLearnedMemoryStore()
-        ),
+        learned_memory_store=learned_memory_store,
         telemetry_include_content=settings.telemetry.include_content,
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,
+        stream_delta_interval_seconds=settings.runtime.stream_delta_interval_ms / 1000,
     )
     _report_unknown_components(
         unknown_agent_components(
@@ -1101,6 +1134,7 @@ def build_container(
         if all(adapter is not resource for resource in lifecycle_resources):
             lifecycle_resources.append(adapter)
     return Container(
+        storage_usage=StorageUsageService(quotas, usage_readers),
         runtime=runtime,
         agents=agents,
         tools=tools,
@@ -1131,7 +1165,15 @@ def build_container(
             runtime,
             artifacts,
             settings.maintenance,
-            PostgresRetentionSweeper(database) if database is not None else None,
+            _retention_sweeper(
+                database,
+                conversation_store,
+                conversation_events,
+                conversation_feedback,
+                workflow_checkpoints,
+                analytical_graph_store,
+                work_queue,
+            ),
             conversations=conversations,
         ),
         run_maintenance_in_background=settings.maintenance.enabled,
@@ -1148,3 +1190,34 @@ def build_container(
         ),
         recover_service_workflows=settings.runtime.recover_service_workflows,
     )
+
+
+def _retention_sweeper(
+    database: PostgresDatabase | None,
+    conversation_store: object,
+    conversation_events: object,
+    conversation_feedback: object,
+    workflow_checkpoints: object,
+    analytical_graph_store: object,
+    work_queue: object,
+) -> RetentionSweeper | None:
+    """The PostgreSQL sweeper, plus one for the stores this deployment keeps in memory."""
+
+    def kept_in_memory(store: object, purge: str) -> object | None:
+        # In-memory stores carry their own purge method; PostgreSQL ones are swept in SQL.
+        return store if callable(getattr(store, purge, None)) else None
+
+    sweepers: list[RetentionSweeper] = []
+    if database is not None:
+        sweepers.append(PostgresRetentionSweeper(database))
+    sweepers.append(
+        InMemoryRetentionSweeper(
+            conversations=kept_in_memory(conversation_store, "purge_inactive"),
+            conversation_events=kept_in_memory(conversation_events, "forget"),
+            conversation_feedback=kept_in_memory(conversation_feedback, "forget_conversations"),
+            workflow_checkpoints=kept_in_memory(workflow_checkpoints, "purge_finished"),
+            analytical_graphs=kept_in_memory(analytical_graph_store, "purge_finished"),
+            work_items=kept_in_memory(work_queue, "purge_finished"),
+        )
+    )
+    return sweepers[0] if len(sweepers) == 1 else CompositeRetentionSweeper(sweepers)

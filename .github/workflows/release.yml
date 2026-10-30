@@ -72,6 +72,7 @@ jobs:
                   "algen_agent_runtime/persistence/migrations/013_token_revocation.sql",
                   "algen_agent_runtime/persistence/migrations/014_tool_execution_reconciliation.sql",
                   "algen_agent_runtime/persistence/migrations/015_approval_agent.sql",
+                  "algen_agent_runtime/persistence/migrations/016_resource_bounds.sql",
                   "algen_agent_runtime/context/compaction.py",
                   "algen_agent_runtime/context/working_state.py",
                   "algen_agent_runtime/context/skills.py",

@@ -9,7 +9,13 @@ from uuid import uuid4
 import pytest
 
 from algen_agent_runtime.cache.stores import RedisCacheStore
-from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.exceptions.errors import ConflictError, QuotaExceededError
+from algen_agent_runtime.persistence.quotas import (
+    ResourceUsage,
+    StorageQuota,
+    StorageQuotas,
+    StorageQuotaSettings,
+)
 from algen_agent_runtime.persistence.redis import RedisMemoryStore, RedisRunStore
 from algen_agent_runtime.types.contracts import (
     Message,
@@ -157,6 +163,40 @@ async def test_memory_store_sets_ttl_and_isolates_sessions(redis_client: Any, pr
 
     await store.delete("tenant-a", "session-1")
     assert await store.get("tenant-a", "session-1", limit=10) == ()
+
+
+async def test_memory_store_enforces_a_tenant_quota(redis_client: Any, prefix: str) -> None:
+    quotas = StorageQuotas(StorageQuotaSettings(default=StorageQuota(memory_items=3)))
+    store = RedisMemoryStore(redis_client, prefix=prefix, retention_seconds=60, quotas=quotas)
+    two = [Message.text(Role.USER, "1"), Message.text(Role.USER, "2")]
+
+    await store.append("tenant-a", "s1", two)
+    with pytest.raises(QuotaExceededError) as raised:
+        await store.append("tenant-a", "s2", two)
+    assert (raised.value.dimension, raised.value.used) == ("items", 4)
+    assert await store.get("tenant-a", "s2", limit=10) == ()
+    usage = await store.tenant_usage("tenant-a")
+    assert usage.items == 2 and usage.bytes > 0
+    # Other tenants have their own usage.
+    await store.append("tenant-b", "s1", two)
+
+    await store.delete("tenant-a", "s1")
+    assert await store.tenant_usage("tenant-a") == ResourceUsage(0, 0)
+    await store.append("tenant-a", "s2", two)
+    assert (await store.tenant_usage("tenant-a")).items == 2
+
+
+async def test_memory_quota_forgets_expired_sessions(redis_client: Any, prefix: str) -> None:
+    quotas = StorageQuotas(StorageQuotaSettings(default=StorageQuota(memory_items=2)))
+    store = RedisMemoryStore(redis_client, prefix=prefix, retention_seconds=1, quotas=quotas)
+    await store.append("tenant-a", "s1", [Message.text(Role.USER, "1")] * 2)
+    with pytest.raises(QuotaExceededError):
+        await store.append("tenant-a", "s2", [Message.text(Role.USER, "2")])
+
+    await asyncio.sleep(1.2)
+
+    await store.append("tenant-a", "s2", [Message.text(Role.USER, "2")])
+    assert (await store.tenant_usage("tenant-a")).items == 1
 
 
 async def test_cache_store_ttl_and_tag_invalidation(redis_client: Any, prefix: str) -> None:

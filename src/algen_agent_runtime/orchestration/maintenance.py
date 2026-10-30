@@ -67,6 +67,10 @@ class MaintenanceService:
         return RetentionPolicy(
             terminal_runs=_days(settings.terminal_run_retention_days),
             audit_events=_days(settings.audit_retention_days),
+            conversations=_days(settings.conversation_retention_days),
+            workflow_checkpoints=_days(settings.workflow_checkpoint_retention_days),
+            analytical_graphs=_days(settings.analytical_graph_retention_days),
+            work_items=_days(settings.work_item_retention_days),
             batch_size=settings.batch_size,
             max_batches=settings.max_batches_per_sweep,
         )

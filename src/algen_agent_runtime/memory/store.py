@@ -11,6 +11,12 @@ from algen_agent_runtime.memory.contracts import (
     MemoryReceipt,
     MemoryScope,
 )
+from algen_agent_runtime.persistence.quotas import (
+    ResourceUsage,
+    StorageQuotas,
+    lock_usage,
+    read_usage,
+)
 from algen_agent_runtime.types.contracts import utc_now
 
 
@@ -27,6 +33,13 @@ def _check_revision(current: LearnedMemory | None, mutation: MemoryMutation) -> 
         raise ConflictError("learned memory write has expired")
 
 
+def _usage_of(record: LearnedMemory | None) -> ResourceUsage:
+    """What a record counts toward the learned-memory quota: only records holding content."""
+    if record is None or record.deleted or record.content is None:
+        return ResourceUsage()
+    return ResourceUsage(1, len(record.model_dump_json().encode()))
+
+
 def _receipt(mutation: MemoryMutation) -> MemoryReceipt:
     return MemoryReceipt(
         key=mutation.record.key, revision=mutation.record.revision, deleted=mutation.record.deleted
@@ -36,10 +49,19 @@ def _receipt(mutation: MemoryMutation) -> MemoryReceipt:
 class InMemoryLearnedMemoryStore:
     """Ephemeral adapter with the same CAS and replay semantics as PostgreSQL."""
 
-    def __init__(self) -> None:
+    def __init__(self, quotas: StorageQuotas | None = None) -> None:
         self._records: dict[tuple[str, str, str, str], LearnedMemory] = {}
         self._operations: dict[tuple[str, str, str, str], tuple[str, MemoryReceipt]] = {}
+        self._quotas = quotas
         self._lock = asyncio.Lock()
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        async with self._lock:
+            return self._usage(tenant_id)
+
+    def _usage(self, tenant_id: str) -> ResourceUsage:
+        counted = [_usage_of(r) for key, r in self._records.items() if key[0] == tenant_id]
+        return ResourceUsage(sum(c.items for c in counted), sum(c.bytes for c in counted))
 
     async def get(self, scope: MemoryScope, key: str) -> LearnedMemory | None:
         record = self._records.get((*_scope(scope), key))
@@ -71,7 +93,16 @@ class InMemoryLearnedMemoryStore:
                     )
                 return previous[1]
             key = (*_scope(mutation.scope), mutation.record.key)
-            _check_revision(self._records.get(key), mutation)
+            current = self._records.get(key)
+            _check_revision(current, mutation)
+            tenant_id = mutation.scope.tenant_id
+            if self._quotas is not None and self._quotas.enforced(tenant_id, "learned_memory"):
+                before = self._usage(tenant_id)
+                old, new = _usage_of(current), _usage_of(mutation.record)
+                after = ResourceUsage(
+                    before.items - old.items + new.items, before.bytes - old.bytes + new.bytes
+                )
+                self._quotas.check(tenant_id, "learned_memory", before, after)
             receipt = _receipt(mutation)
             self._records[key] = mutation.record
             self._operations[operation] = (mutation.fingerprint, receipt)
@@ -94,8 +125,12 @@ class InMemoryLearnedMemoryStore:
 
 
 class PostgresLearnedMemoryStore:
-    def __init__(self, database: Any) -> None:
+    def __init__(self, database: Any, quotas: StorageQuotas | None = None) -> None:
         self._database = database
+        self._quotas = quotas
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        return await read_usage(self._database, tenant_id, "learned_memory")
 
     @staticmethod
     def _decode(value: Any) -> LearnedMemory:
@@ -152,6 +187,13 @@ class PostgresLearnedMemoryStore:
                     mutation.record.key,
                 )
                 _check_revision(self._decode(row["record"]) if row else None, mutation)
+                tenant_id = mutation.scope.tenant_id
+                quotas = self._quotas
+                checked = quotas is not None and quotas.enforced(tenant_id, "learned_memory")
+                # Locked after the record row, in the order the expiry purge takes them.
+                before = (
+                    await lock_usage(connection, tenant_id, "learned_memory") if checked else None
+                )
                 record = mutation.record
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_learned_memory (tenant_id,user_id,agent_id,key,revision,record,deleted,expires_at,updated_at) "
@@ -165,6 +207,13 @@ class PostgresLearnedMemoryStore:
                     record.expires_at,
                     record.updated_at,
                 )
+                if quotas is not None and before is not None:
+                    quotas.check(
+                        tenant_id,
+                        "learned_memory",
+                        before,
+                        await read_usage(connection, tenant_id, "learned_memory"),
+                    )
                 receipt = _receipt(mutation)
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_memory_operations (tenant_id,user_id,agent_id,operation_id,fingerprint,receipt) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",

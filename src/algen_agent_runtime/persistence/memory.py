@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 
 from algen_agent_runtime.exceptions.errors import ConflictError, RunConflictError
+from algen_agent_runtime.persistence.quotas import ResourceUsage, StorageQuotas
 from algen_agent_runtime.types.contracts import (
     Artifact,
     ArtifactDescriptor,
@@ -57,14 +58,39 @@ class InMemoryRunStore:
         return tuple(active[:limit])
 
 
+def _message_bytes(message: Message) -> int:
+    return len(message.model_dump_json().encode())
+
+
 class InMemoryMemoryStore:
-    def __init__(self) -> None:
+    def __init__(self, quotas: StorageQuotas | None = None) -> None:
         self._messages: dict[tuple[str, str], list[Message]] = defaultdict(list)
+        self._quotas = quotas
         self._lock = asyncio.Lock()
 
     async def append(self, tenant_id: str, session_id: str, messages: Sequence[Message]) -> None:
         async with self._lock:
+            if self._quotas is not None and self._quotas.enforced(tenant_id, "memory"):
+                before = self._usage(tenant_id)
+                after = ResourceUsage(
+                    before.items + len(messages),
+                    before.bytes + sum(_message_bytes(message) for message in messages),
+                )
+                self._quotas.check(tenant_id, "memory", before, after)
             self._messages[(tenant_id, session_id)].extend(deepcopy(list(messages)))
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        async with self._lock:
+            return self._usage(tenant_id)
+
+    def _usage(self, tenant_id: str) -> ResourceUsage:
+        stored = [
+            message
+            for (tenant, _), messages in self._messages.items()
+            if tenant == tenant_id
+            for message in messages
+        ]
+        return ResourceUsage(len(stored), sum(_message_bytes(message) for message in stored))
 
     async def get(self, tenant_id: str, session_id: str, limit: int) -> Sequence[Message]:
         async with self._lock:
@@ -76,16 +102,38 @@ class InMemoryMemoryStore:
 
 
 class InMemoryArtifactStore:
-    def __init__(self, max_bytes: int = 10_485_760) -> None:
+    def __init__(self, max_bytes: int = 10_485_760, quotas: StorageQuotas | None = None) -> None:
         self._artifacts: dict[str, Artifact] = {}
         self._max_bytes = max_bytes
+        self._quotas = quotas
         self._lock = asyncio.Lock()
 
     async def put(self, artifact: Artifact) -> None:
         if len(artifact.data) > self._max_bytes:
             raise ValueError(f"artifact exceeds {self._max_bytes} byte limit")
         async with self._lock:
+            tenant_id = artifact.tenant_id
+            if self._quotas is not None and self._quotas.enforced(tenant_id, "artifacts"):
+                before = self._usage(tenant_id)
+                replaced = self._artifacts.get(artifact.id)
+                after = ResourceUsage(before.items + 1, before.bytes + len(artifact.data))
+                if replaced is not None and replaced.tenant_id == tenant_id:
+                    after = ResourceUsage(after.items - 1, after.bytes - len(replaced.data))
+                self._quotas.check(tenant_id, "artifacts", before, after)
             self._artifacts[artifact.id] = artifact.model_copy(deep=True)
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        """Stored artifacts, expired ones included until they are purged."""
+        async with self._lock:
+            return self._usage(tenant_id)
+
+    def _usage(self, tenant_id: str) -> ResourceUsage:
+        sizes = [
+            len(artifact.data)
+            for artifact in self._artifacts.values()
+            if artifact.tenant_id == tenant_id
+        ]
+        return ResourceUsage(len(sizes), sum(sizes))
 
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None:
         async with self._lock:

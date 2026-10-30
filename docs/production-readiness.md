@@ -78,8 +78,8 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2 and 5 in the
-unreleased changes; each lists what is left for later. Item 7 remains open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2, 5 and 7 in the
+unreleased changes; each lists what is left for later. No P0 item remains open.
 
 1. **Close persistence validation gaps.** *Done (single node, unreleased):* a drill suite
    (`tests/drills`, marker `drill`, run in CI by the `persistence-drills` job on throwaway
@@ -192,13 +192,27 @@ unreleased changes; each lists what is left for later. Item 7 remains open.
    PostgreSQL. *Later:* exporter health probes (OTLP and Traccia report `unknown`); a
    `maintenance --workflows` CLI option; HTTP model services in readiness; a closed database that
    refuses reuse.
-7. **Bound every resource.** Request wire sizes, artifact sizes, API request rates, and in-flight
-   run-creation requests are bounded for single-node deployments. The opt-in maintenance sweep purges
-   expired memory and artifacts and deletes terminal runs (with events, approvals, and tool records)
-   and audit events past configured retention windows. Within a run, `max_calls_per_tool`, the repeat
-   guard and the wrap-up notice bound tool use, and a host `UsageMeter` can enforce per-tenant model
-   quotas. *Remaining:* per-run limits for model responses and event counts, per-tenant storage quotas,
-   and retention for conversations, workflow checkpoints, analytical graphs, and work items.
+7. **Bound every resource.** *Done:* request wire sizes, artifact sizes, API request rates, and
+   in-flight run-creation requests are bounded for single-node deployments. Within a run,
+   `max_calls_per_tool`, the repeat guard and the wrap-up notice bound tool use, and a host
+   `UsageMeter` can enforce per-tenant model quotas. Each run is limited by `budget.max_model_calls`
+   (1,000; extended by a continuation, counted by the wrap-up notice), `budget.max_response_chars`
+   per model response (1,000,000 characters of text plus tool-call arguments, enforced while a
+   response streams) and `budget.max_events` (100,000; past it only events that end or pause the run
+   are recorded and the run fails at its next step); streamed text is recorded as at most one
+   `model.delta` per `runtime.stream_delta_interval_ms` (50 ms). A run that reaches a limit fails
+   with `run.failed` `reason: limit_exceeded` and a `run.limit_exceeded` audit record.
+   `storage.quotas` sets per-tenant item and byte limits for artifacts, session memory and learned
+   memory (unlimited by default, with per-tenant overrides), enforced on write in the in-memory,
+   PostgreSQL (trigger-maintained usage table, row-locked check in the write's transaction,
+   migration 016), S3 and Redis stores with `QuotaExceededError` (HTTP 413, `QUOTA_EXCEEDED`);
+   `GET /v1/storage/usage` reports a tenant's usage. The opt-in maintenance sweep purges expired
+   memory and artifacts and deletes terminal runs (with events, approvals, and tool records), audit
+   events, idle conversations (with messages, events and feedback), finished workflow checkpoints,
+   finished analytical graphs and completed or dead work items past configured retention windows,
+   on in-memory and PostgreSQL stores. *Later:* quotas on conversations and their messages and on
+   run and audit records; a per-conversation event limit; a total output limit per run beyond the
+   token budget; Redis quota accounting on a clustered Redis; distributed (cross-replica) limits.
 
 ## Remaining for hardened multi-worker or horizontally scaled use
 

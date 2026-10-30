@@ -17,6 +17,12 @@ from algen_agent_runtime.exceptions.errors import (
     StoreUnavailableError,
 )
 from algen_agent_runtime.persistence.naming import check_schema_name
+from algen_agent_runtime.persistence.quotas import (
+    ResourceUsage,
+    StorageQuotas,
+    postgres_quota_write,
+    read_usage,
+)
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -342,21 +348,36 @@ class PostgresRunStore:
 
 
 class PostgresMemoryStore:
-    def __init__(self, database: Any, retention_seconds: int = 86_400) -> None:
+    def __init__(
+        self,
+        database: Any,
+        retention_seconds: int = 86_400,
+        quotas: StorageQuotas | None = None,
+    ) -> None:
         self._database = database
         self._retention_seconds = retention_seconds
+        self._quotas = quotas
 
     async def append(self, tenant_id: str, session_id: str, messages: Sequence[Message]) -> None:
-        for message in messages:
-            await self._database.execute(
-                "INSERT INTO algen_agent_runtime_memory "
-                "(tenant_id, session_id, message, expires_at) "
-                "VALUES ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'))",
-                tenant_id,
-                session_id,
-                message.model_dump_json(),
-                self._retention_seconds,
-            )
+        if not messages:
+            return
+
+        async def write(connection: Any) -> None:
+            for message in messages:
+                await connection.execute(
+                    "INSERT INTO algen_agent_runtime_memory "
+                    "(tenant_id, session_id, message, expires_at) "
+                    "VALUES ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'))",
+                    tenant_id,
+                    session_id,
+                    message.model_dump_json(),
+                    self._retention_seconds,
+                )
+
+        await postgres_quota_write(self._database, self._quotas, tenant_id, "memory", write)
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        return await read_usage(self._database, tenant_id, "memory")
 
     async def get(self, tenant_id: str, session_id: str, limit: int) -> Sequence[Message]:
         rows = await self._database.fetch(
@@ -378,15 +399,32 @@ class PostgresMemoryStore:
 
 
 class PostgresArtifactStore:
-    def __init__(self, database: Any, max_bytes: int = 10_485_760) -> None:
+    def __init__(
+        self, database: Any, max_bytes: int = 10_485_760, quotas: StorageQuotas | None = None
+    ) -> None:
         self._database = database
         self._max_bytes = max_bytes
+        self._quotas = quotas
+
+    async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
+        """Stored artifacts of every backend, expired ones included until they are purged."""
+        return await read_usage(self._database, tenant_id, "artifacts")
 
     async def put(self, artifact: Artifact) -> None:
         if len(artifact.data) > self._max_bytes:
             raise ValueError(f"artifact exceeds {self._max_bytes} byte limit")
+        await postgres_quota_write(
+            self._database,
+            self._quotas,
+            artifact.tenant_id,
+            "artifacts",
+            lambda connection: self._insert(connection, artifact),
+        )
+
+    @staticmethod
+    async def _insert(connection: Any, artifact: Artifact) -> None:
         descriptor = artifact.descriptor()
-        await self._database.execute(
+        await connection.execute(
             "INSERT INTO algen_agent_runtime_artifacts "
             "(id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
             "metadata, expires_at, created_at, storage_backend, storage_key) "
