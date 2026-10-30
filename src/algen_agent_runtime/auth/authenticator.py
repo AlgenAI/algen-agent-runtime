@@ -18,6 +18,7 @@ from algen_agent_runtime.auth.revocation import TokenRevocationStore
 from algen_agent_runtime.auth.service_identity import TrustedProxyIdentity
 from algen_agent_runtime.config.settings import ApiSettings
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.security.network import OutboundNetwork
 from algen_agent_runtime.types.interfaces import AuditLog
 
 
@@ -107,11 +108,12 @@ class ApiAuthenticator:
         audits: AuditLog | None = None,
         revocations: TokenRevocationStore | None = None,
         oidc_transport: httpx.AsyncBaseTransport | None = None,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         if settings.auth_mode == "development_headers":
             raise ConfigurationError("ApiAuthenticator verifies jwt or oidc authentication only")
         self._verifier: _StaticJwtVerifier | OidcVerifier = (
-            OidcVerifier(settings.oidc, transport=oidc_transport)
+            OidcVerifier(settings.oidc, transport=oidc_transport, outbound=outbound)
             if settings.auth_mode == "oidc"
             else _StaticJwtVerifier(settings)
         )

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 
+from algen_agent_runtime.security.sandbox import SubprocessSandbox
 from algen_agent_runtime.tools.contracts import Idempotency, SideEffect
 from algen_agent_runtime.types.contracts import StrictModel
 
@@ -47,6 +48,11 @@ class MCPStdioServerConfig(MCPServerConfigBase):
         description="Explicit environment variables passed to the child process. Ambient process secrets are never leaked.",
     )
     cwd: str | None = None
+    sandbox: SubprocessSandbox | None = Field(
+        default=None,
+        description="This server's sandbox policy, replacing security.sandbox (whose 'required' "
+        "still applies).",
+    )
 
 
 SENSITIVE_HEADER_NAMES = frozenset(

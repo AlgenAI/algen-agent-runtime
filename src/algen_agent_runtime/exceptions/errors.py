@@ -20,6 +20,26 @@ class ConflictError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_REQUEST
 
 
+class RunConflictError(ConflictError):
+    """A run's checkpoint changed since this writer read it (its optimistic version moved on).
+
+    Raised by the run stores' ``save``. A run drive that gets it stands down without touching
+    the run: another drive (a cancel, another process's recovery) has taken it over.
+    """
+
+
+class StoreUnavailableError(AlgenAgentRuntimeError):
+    """A durable store (PostgreSQL, Redis) could not be reached or did not answer in time.
+
+    Raised in place of the driver's own connection, timeout and server-shutdown errors. The
+    store may be back on the next call: connection pools reconnect without a restart. When it
+    interrupts a write, the write may or may not have been applied. The API answers 503.
+    """
+
+    error_kind = ErrorKind.UNAVAILABLE
+    retryable = True
+
+
 class PolicyDeniedError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.AUTHORIZATION
 

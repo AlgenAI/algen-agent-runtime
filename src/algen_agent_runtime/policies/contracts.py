@@ -38,3 +38,30 @@ class PolicyDecision(BaseModel):
     reason: str
     value: Any = None
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PolicyFailMode(StrEnum):
+    """What a boundary does when a policy raises or times out instead of deciding.
+
+    ``closed`` refuses the value at that boundary, as a ``deny`` decision would. ``open`` skips
+    the failed policy and lets the remaining policies decide; it never skips the others.
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+
+
+#: Reason code of the ``deny`` decision a boundary returns when a policy failed closed.
+POLICY_ERROR_REASON_CODE = "policy.error"
+
+
+class PolicyErrorHandling(BaseModel):
+    """Fail mode per boundary, and how long one policy may take to decide."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    on_error: PolicyFailMode = PolicyFailMode.CLOSED
+    boundary_on_error: dict[PolicyPoint, PolicyFailMode] = Field(default_factory=dict)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+    def mode(self, point: PolicyPoint | str) -> PolicyFailMode:
+        return self.boundary_on_error.get(PolicyPoint(point), self.on_error)

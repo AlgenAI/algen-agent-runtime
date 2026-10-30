@@ -45,7 +45,11 @@ from algen_agent_runtime.cache import (
 )
 from algen_agent_runtime.cache.contracts import CacheStore
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
-from algen_agent_runtime.config.settings import AppSettings, EnvironmentSecretProvider
+from algen_agent_runtime.config.settings import (
+    AppSettings,
+    EnvironmentSecretProvider,
+    StorageSettings,
+)
 from algen_agent_runtime.context.artifacts import ContextArtifactService
 from algen_agent_runtime.context.builder import (
     ContextBuilderRegistry,
@@ -146,6 +150,7 @@ from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutio
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
+from algen_agent_runtime.policies.bundles import BundlePolicy, load_policy_bundles
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.retrieval.ingestion import Chunker, MarkdownChunker, TextChunker
@@ -162,6 +167,12 @@ from algen_agent_runtime.retrieval.vector_stores import (
     QdrantRetriever,
 )
 from algen_agent_runtime.runtime.runtime import AgentRuntime
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_outbound_http_client,
+    create_safe_http_client,
+)
+from algen_agent_runtime.security.outbound import build_outbound_network
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
@@ -219,6 +230,9 @@ class Container:
     """Store checked by verified API authentication when ``api.token_revocation`` is enabled;
     revoke through it from Python or through ``/v1/auth/revocations``."""
     oidc_transport: httpx.AsyncBaseTransport | None = None
+    outbound: OutboundNetwork | None = None
+    """The deployment's egress proxy and remote TLS identities (``network`` settings), for
+    outbound clients built outside the container, such as OIDC and workflow notifications."""
     """Transport for OIDC discovery and JWKS fetches; ``None`` uses the SSRF-safe transport.
     Tests and hosts with their own egress layer may inject one."""
     resources: tuple[object, ...] = ()
@@ -332,13 +346,20 @@ class Container:
                 if inspect.isawaitable(result):
                     await result
         for resource in reversed(self.resources):
-            close = getattr(resource, "close", None) or getattr(resource, "aclose", None)
+            # aclose first: redis-py's Redis.close is deprecated in favour of it.
+            close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
             if close is not None:
                 result = close()
                 if inspect.isawaitable(result):
                     await result
         self.close()
         self.lifecycle.phase = "stopped"
+
+
+def _redis_timeouts(storage: StorageSettings) -> dict[str, Any]:
+    """Bounds on an unresponsive Redis: without them a command waits on the network forever."""
+    timeout = storage.redis_socket_timeout_seconds
+    return {"socket_timeout": timeout, "socket_connect_timeout": timeout}
 
 
 def _token_revocation_store(
@@ -410,6 +431,7 @@ def base_tools(
     *,
     secrets: SecretResolver,
     http_client: httpx.AsyncClient | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> tuple[Tool, ...]:
     """The tools every container registers before plugins: core tools and manifest http_tools."""
     return (
@@ -417,14 +439,18 @@ def base_tools(
             allowed_hosts=settings.security.allowed_http_hosts,
             allow_private_networks=settings.security.allow_private_networks,
             client=http_client,
+            outbound=outbound,
         ),
-        subprocess_tool(enabled=settings.security.allow_subprocess_tools),
+        subprocess_tool(
+            enabled=settings.security.allow_subprocess_tools, sandbox=settings.security.sandbox
+        ),
         *(
             http_api_tool(
                 declared,
                 allowed_hosts=settings.security.allowed_http_hosts,
                 allow_private_networks=settings.security.allow_private_networks,
                 secrets=secrets,
+                outbound=outbound,
             )
             for declared in settings.http_tools
         ),
@@ -454,7 +480,7 @@ def load_declared_plugins(
     settings: AppSettings, context: RuntimePluginContext
 ) -> tuple[PluginManifest, ...]:
     names = declared_plugin_names(settings)
-    loader = PluginLoader(settings.security.trusted_plugin_prefixes)
+    loader = PluginLoader(settings.security.trusted_plugin_prefixes, settings.plugins)
     loader.authorize(names)
     manifests = []
     for name in names:
@@ -490,8 +516,16 @@ def build_container(
     for definition in settings.agents:
         agents.register(definition)
     tools = ToolRegistry()
-    http_client = httpx.AsyncClient(follow_redirects=False)
-    for tool in base_tools(settings, secrets=secret_provider.get, http_client=http_client):
+    outbound = build_outbound_network(settings.network, environment)
+    http_client = create_safe_http_client(
+        allowed_hosts=settings.security.allowed_http_hosts,
+        allow_private_networks=settings.security.allow_private_networks,
+        follow_redirects=False,
+        outbound=outbound,
+    )
+    for tool in base_tools(
+        settings, secrets=secret_provider.get, http_client=http_client, outbound=outbound
+    ):
         tools.register(tool)
     frameworks = FrameworkAdapterRegistry()
     for adapter in framework_adapters:
@@ -523,6 +557,8 @@ def build_container(
             min_pool_size=storage.postgres_min_pool_size,
             max_pool_size=storage.postgres_max_pool_size,
             schema=storage.postgres_schema,
+            connect_timeout_seconds=storage.postgres_connect_timeout_seconds,
+            command_timeout_seconds=storage.postgres_command_timeout_seconds,
         )
         if "postgres" in selected_backends
         else None
@@ -534,7 +570,8 @@ def build_container(
         except ImportError as exc:
             raise ImportError("install algen-agent-runtime[redis]") from exc
         redis_client = Redis.from_url(
-            _resolve_environment_reference(storage.redis_url, "redis_url", environment)
+            _resolve_environment_reference(storage.redis_url, "redis_url", environment),
+            **_redis_timeouts(storage),
         )
     cache_redis_client: object | None = None
     cache_store: CacheStore
@@ -551,7 +588,11 @@ def build_container(
             if redis_client is not None
             else None
         )
-        cache_redis_client = redis_client if storage_url == cache_url else Redis.from_url(cache_url)
+        cache_redis_client = (
+            redis_client
+            if storage_url == cache_url
+            else Redis.from_url(cache_url, **_redis_timeouts(storage))
+        )
     if settings.cache.backend == "redis":
         cache_store = RedisCacheStore(cache_redis_client, settings.cache.key_prefix)
     elif settings.cache.backend == "memory":
@@ -653,7 +694,13 @@ def build_container(
     audits: AuditLog = (
         PostgresAuditLog(database) if storage.audit_store == "postgres" else InMemoryAuditLog()
     )
-    policies = CompositePolicyEngine(guardrail_scope=observability.guardrail_scope)
+    policies = CompositePolicyEngine(
+        guardrail_scope=observability.guardrail_scope,
+        error_handling=settings.policies.error_handling(),
+        audits=audits,
+    )
+    for bundle in load_policy_bundles(settings.policies, environment):
+        policies.register(BundlePolicy(bundle), mandatory=True)
     planners = PlannerRegistry()
     contexts = ContextBuilderRegistry(DefaultContextBuilder(memory))
     verifiers = VerificationService()
@@ -671,11 +718,16 @@ def build_container(
     router = ModelRouter(
         cache=cache, usage_meter=usage_meter, reserve_input_margin=usage_meter_margin
     )
+    provider_clients: list[httpx.AsyncClient] = []
     for name, provider_config in settings.providers.items():
         kwargs: dict[str, Any] = {
             "default_model": provider_config.default_model,
             "stream_usage": provider_config.stream_usage,
         }
+        if outbound is not None and provider_config.type not in {"local_transformers", "mock"}:
+            # Through the egress proxy and with the base_url host's TLS identity.
+            provider_clients.append(create_outbound_http_client(outbound))
+            kwargs["client"] = provider_clients[-1]
         provider: ModelProvider
         if provider_config.type == "openai":
             provider = OpenAIProvider(
@@ -691,6 +743,7 @@ def build_container(
                 provider_config.api_version or "2024-10-21",
                 secret_provider=secret_provider,
                 stream_usage=provider_config.stream_usage,
+                client=kwargs.get("client"),
             )
         elif provider_config.type == "anthropic":
             provider = AnthropicProvider(
@@ -756,6 +809,7 @@ def build_container(
                 provider_config.capabilities,
                 secret_provider=secret_provider,
                 stream_usage=provider_config.stream_usage,
+                client=kwargs.get("client"),
             )
         elif provider_config.type == "mock":
             from algen_agent_runtime.models.providers.mock import MockModelProvider
@@ -916,7 +970,9 @@ def build_container(
                 database=database,
                 environment=environment,
                 security=settings.security,
+                outbound=outbound,
             ),
+            outbound=outbound,
         )
     executor = ToolExecutor(
         tools,
@@ -1067,6 +1123,7 @@ def build_container(
                 cache_redis_client,
                 artifacts if storage.artifact_store == "s3" else None,
                 http_client,
+                *provider_clients,
                 mcp_manager,
                 *plugin_context.resources,
             )
@@ -1099,6 +1156,7 @@ def build_container(
         rate_limiter=rate_limiter,
         resources=tuple(lifecycle_resources),
         mcp=mcp_manager,
+        outbound=outbound,
         token_revocations=_token_revocation_store(settings, database),
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,

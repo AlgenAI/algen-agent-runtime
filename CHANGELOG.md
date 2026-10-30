@@ -92,6 +92,71 @@ contracts are explicitly marked experimental during the `0.x` series.
   1.0, at least 1.0) scale the input tokens reserved with a `UsageMeter`, rounding up; `4/3`
   reserves as if a token were three characters. Context packing and the token budget are
   unchanged. (#71)
+- Persistence drills (`tests/drills`, pytest marker `drill`, CI job `persistence-drills`): real
+  Runtime processes on live PostgreSQL and Redis for first start, restart and concurrent starts;
+  SIGKILL crashes mid-model and mid-tool call, across an approval pause, a workflow run and
+  conversation turns, and five in a row; two processes deciding one approval; PostgreSQL and Redis
+  outages and a database restart (failover); `pg_dump` backup and restore; schema upgrade from and
+  rollback to `0.1.0a17`. A bounded soak drill (marker `soak`) runs with `ALGEN_DRILL_SOAK_RUNS`.
+  `scripts/integration-tests.sh` exports `ALGEN_TEST_CONTAINER_ENGINE`,
+  `ALGEN_TEST_POSTGRES_CONTAINER` and `ALGEN_TEST_REDIS_CONTAINER` for them. See
+  docs/operations.md#persistence-restarts-outages-backup-and-rollback.
+- `storage.postgres_connect_timeout_seconds` (default 10), `storage.postgres_command_timeout_seconds`
+  (default 60, `null` for none; migrations are exempt) and `storage.redis_socket_timeout_seconds`
+  (default 10), also as `PostgresDatabase(connect_timeout_seconds=..., command_timeout_seconds=...)`.
+- `StoreUnavailableError` (`kind: unavailable`, retryable), raised by the PostgreSQL and Redis
+  stores for connection, timeout and server-shutdown errors, and answered by the API with 503 and
+  `Retry-After`. `RunConflictError`, a `ConflictError` the run stores raise when a checkpoint's
+  version moved on.
+
+- Signed policy bundles (`policies.bundles`, `policies.trusted_keys`, `policies.require_signed`):
+  a YAML or JSON file of declarative rules (`deny_tools`, `require_approval_tools`,
+  `deny_patterns`, `redact_patterns`) whose name, version, `issued_at` and `expires_at` are inside
+  a detached Ed25519 signature (`<bundle>.sig`) verified at start-up against `env://` or `file://`
+  public keys. With `require_signed: true` an unsigned bundle stops start-up; a signature that does
+  not verify, an expired or future-dated bundle, and a version below the bundle's `min_version`
+  (rollback) are always refused. Each bundle runs as the policy `bundle:<name>` for every agent,
+  whatever its guardrail selection. Verifying needs the `encryption` extra; unsigned bundles do
+  not. `algen-agent-runtime policy keygen|sign|verify` creates keys, signs and checks bundles.
+  `CompositePolicyEngine.register(..., mandatory=True)` adds a policy every agent runs. See
+  docs/operations.md#signed-policy-bundles.
+- Explicit fail modes at every policy boundary: `policies.on_error` (`closed` or `open`),
+  `policies.boundary_on_error` per boundary, and `policies.evaluation_timeout_seconds` (per
+  policy, unset by default). `closed` refuses the value as a deny would (`reason_code:
+  policy.error`); `open` skips only the failed policy. Each handled error writes a `policy.error`
+  audit record (`fail_closed` / `fail_open`), adds to the `algen_agent_runtime.policy.errors`
+  counter and logs `policy_error` with the error's type, never its text; the run's
+  `policy.evaluated` event carries `fail_mode` and `error_count`. See
+  docs/operations.md#boundaries-and-fail-modes.
+- `tests/adversarial` (marker `adversarial`): scripted agent runs in which the mock model obeys an
+  attacker, covering prompt injection, data loss, PII and secrets, and cross-tenant access through
+  agent behaviour. It runs in the normal test suite.
+- `network.egress_proxy`: send every outbound client the Runtime builds (`core.http`,
+  `http_tools`, `remote_tool`, MCP HTTP transports and OAuth, OIDC discovery and JWKS, workflow
+  notifications, `HTTPModelService` and the HTTP model providers) through one HTTP(S) proxy, with
+  `no_proxy` hosts reached directly. `https://` targets go through a CONNECT tunnel, so TLS stays
+  end to end. Each target passes the allowlist and private-network checks before the proxy is
+  contacted; the proxied pool connects only to the proxy; proxy credentials are `env://`
+  references and never appear in URLs, logs or errors. The proxy makes the final connection, so
+  DNS pinning protects only up to it: give the proxy its own egress policy.
+  See docs/operations.md#egress-proxy.
+- `network.remotes`: per-host (or `*.domain`) CA bundle, mTLS client certificate and key (file or
+  `env://`, never logged) and pinned server certificate SHA-256 fingerprints, for every outbound
+  client, direct or through the proxy. `create_safe_http_client(outbound=...)`,
+  `create_outbound_http_client` and `Container.outbound` expose the same settings to host code.
+- `security.sandbox` (and a per-server `sandbox` on stdio MCP servers): environment allowlist,
+  working directory, POSIX resource limits (CPU seconds, address space, open files, processes,
+  file size) and an operator wrapper command (`bwrap`, `nsjail`, `firejail`, `sandbox-exec`) for
+  MCP stdio servers and `core.subprocess`; `required: true` refuses to start a process without a
+  wrapper. `core.subprocess` gains a wall-clock limit (`subprocess_timeout_seconds`, default 60)
+  and kills the process group on timeout or cancellation. Defaults change nothing.
+  See docs/operations.md#subprocess-and-mcp-stdio-sandboxing.
+- Plugin signatures: `plugins.trusted_publishers` (Ed25519 public keys) and
+  `plugins.require_signed`. A package's `algen-plugin-signature.json` signs its publisher, name,
+  version, package name and the SHA-256 of every file, and is verified before the package is
+  imported, for `domain_plugins` and workflow hook packages. `algen-agent-runtime plugin keygen`,
+  `plugin sign` and `plugin verify`. Needs the `encryption` extra. See
+  docs/operations.md#plugin-signing.
 - Per-run limits on `budget`: `max_model_calls` (default 1,000; a continuation adds
   `step_increment`; the wrap-up notice counts it, `reason: model_calls`), `max_response_chars` per
   model response (default 1,000,000 characters of text plus tool-call arguments, enforced while a
@@ -124,6 +189,10 @@ contracts are explicitly marked experimental during the `0.x` series.
   docs/operations.md#maintenance-and-data-retention.
 
 ### Changed
+- `core.http` in a built container now uses the SSRF-safe, DNS-pinned client (it used a plain
+  client after validating the URL), and every container client honours `network` settings.
+- `PluginManifest.signature` is documented as unused; signatures live in the package's signature
+  file, which can be verified before import.
 
 - `tool_policy.max_refusals_per_tool` counts refusals in a row: a call to the tool that runs
   successfully starts its count again. Set `tool_policy.refusal_count: per_run` to count every
@@ -146,12 +215,46 @@ contracts are explicitly marked experimental during the `0.x` series.
 - Stored approvals, run checkpoints and tool results keep the 0.1.0a17 shape unless a new feature
   is used (a pending steering message, a failed tool result), so a17 replicas can read them during
   a rolling deploy or after a rollback.
+- PostgreSQL and Redis store calls fail with `StoreUnavailableError` instead of the driver's
+  exception (asyncpg `ConnectionDoesNotExistError`, `OSError`, `TimeoutError`; redis-py
+  `ConnectionError`, `TimeoutError`), and the API answers 503 instead of 500. A PostgreSQL command
+  now times out after 60 seconds by default and a connection attempt after 10 (asyncpg's default
+  was 60); a Redis connection or command after 10 seconds (no bound before).
+- A run whose store becomes unavailable mid-run is no longer failed: it keeps its last checkpoint
+  and the process drives it again once the store answers (or the next start recovers it), with the
+  same caller credentials; `AgentRuntime.wait` follows it.
+- A run drive whose checkpoint write loses the version check (`RunConflictError`, for example
+  because another process recovered the run) stops without writing instead of marking the run
+  `failed`.
+- Configuration rejects `event_store`, `approval_store` or `tool_execution_store` `postgres` with a
+  `run_store` other than `postgres`: their rows reference the run in PostgreSQL, so every run
+  failed on its first event.
+
+- A policy that raises or times out now ends its boundary with a `policy.error` deny
+  (`PolicyDeniedError`) instead of its own exception propagating. Every boundary defaults to
+  `closed`, which is what each already did (the run or the call failed), so no boundary becomes
+  open unless configured.
+- At one boundary a `deny` from any policy now wins over an earlier policy's
+  `require_approval` or `require_clarification`: the later policies still run, so a call a
+  policy bundle denies is refused instead of first being put to an approver.
+- The `secrets` policy also redacts bearer tokens (`Bearer <token>` with a digit or separator in
+  the token), and the `pii` policy redacts card numbers (`[REDACTED_CARD]`): digit runs with a
+  card network's prefix and length (Visa, Mastercard, Amex, Discover, JCB, Diners, UnionPay) that
+  pass the Luhn check, so timestamps and other long identifiers are left alone. As with any redaction of tool arguments, such a value in a tool call's
+  arguments refuses the call at `before_tool`.
+- `redact()` (audit metadata, logs, conversation records) also redacts `key=value` credential
+  assignments, and opt-in telemetry content (`telemetry.include_content`) is also redacted for
+  emails, phone, Aadhaar and card numbers.
 - Migration 016 creates triggers on the artifact, memory and learned-memory tables, which locks them
   against writes until it commits; on large tables run it in a quiet period, and create its indexes
   `CONCURRENTLY` beforehand.
 
 ### Fixed
 
+- The `pii` policy no longer redacts digit runs inside UUIDs, hashes and other tokens as phone or
+  Aadhaar numbers (an identifier must not touch a letter, digit, `_` or `-`). About 1.7% of random
+  UUIDs were altered, and because a redacted tool argument refuses the call, roughly one in sixty
+  tool calls carrying a run, record or order UUID was refused at `before_tool`.
 - Every `/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification and approval)
   enforces conversation ownership: a run started for a conversation turn answers `404` to any
   other user of the tenant. Before, any `runs:write` principal in the tenant could decide or cancel
@@ -169,6 +272,37 @@ contracts are explicitly marked experimental during the `0.x` series.
 - `telemetry.otlp_endpoint` no longer installs a meter provider with no reader. Before, every
   Runtime metric was recorded and silently dropped, and the process-global provider was taken, so
   an application could not install its own afterwards.
+- A run recovered after a crash no longer counts the interrupted model or tool step twice, so
+  repeated crashes no longer use up `max_steps` and fail the run.
+- Resuming a run right after it paused for approval could record the decision and then refuse to
+  drive the run (`run is already executing`), leaving it stuck until a restart: `resume` now waits
+  for the drive that paused the run to finish, and decides nothing if it is still running.
+- After a PostgreSQL restart or failover, only the first call fails: the pool replaces all its
+  dead connections at once instead of failing one call per pooled connection.
+- Container shutdown closes resources with `aclose()` when they have it, so a Redis client no
+  longer warns that `close()` is deprecated.
+- A `deny` decision at `plan_tool` refuses the call; before, only `require_approval` was honoured
+  there and a denial was ignored until `before_tool`, after an approval could have been asked for.
+
+### Security
+
+- A model reply that reuses an earlier tool call's id (or repeats an id within the reply) gets a
+  fresh id. Before, a new call under an approved call's id was treated as that call: it skipped
+  approval and was answered with the recorded result without running, and the model got no result
+  for it.
+- Approval requests (`redacted_parameters`, the pause payload and `approval.required`) redact
+  bearer tokens and `key=value` credentials inside argument values, not only top-level keys named
+  like secrets.
+- The text of a runtime error a tool raised (shown to the model with `return_to_model`, or kept as
+  the run's error) is redacted for credentials; tools write these messages themselves.
+- Opt-in telemetry content no longer carries a model reply's credentials or personal data before
+  the `after_model` policy redacts the reply.
+
+### Security
+
+- A `proxy=` passed to `create_safe_http_client` was used without any check of the proxy host
+  against the IP pinning, and could route requests around the allowlist. It is now refused
+  unless it is the configured `network.egress_proxy`, and `mounts=` is refused.
 
 ## [0.1.0a17] - 2026-10-28
 

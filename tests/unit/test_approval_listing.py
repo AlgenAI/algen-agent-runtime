@@ -470,3 +470,16 @@ async def test_another_user_cannot_list_or_decide_a_conversation_turn_approval()
         assert decided.status_code == 202, decided.text
         await container.conversations.shutdown()
         await container.runtime.shutdown(grace_seconds=5)
+
+
+# Built at run time so secret scanners never see a key-shaped literal.
+_FAKE_KEY = "".join(("abcd", "efgh", "1234"))
+
+
+def test_redact_parameters_redacts_credentials_inside_values() -> None:
+    assert redact_parameters(
+        {"body": f"use api_key={_FAKE_KEY} now", "headers": ["Authorization: Bearer abc.def"]}
+    ) == {
+        "body": "use api_key=[REDACTED] now",
+        "headers": ["Authorization: Bearer [REDACTED]"],
+    }

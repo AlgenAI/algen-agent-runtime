@@ -22,8 +22,16 @@ from algen_agent_runtime.exceptions.errors import ConfigurationError, PolicyDeni
 from algen_agent_runtime.mcp.contracts import MCPServerConfig
 from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.persistence.quotas import StorageQuotaSettings
+from algen_agent_runtime.plugins.signing import PluginSettings
+from algen_agent_runtime.policies.contracts import (
+    PolicyErrorHandling,
+    PolicyFailMode,
+    PolicyPoint,
+)
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocument
 from algen_agent_runtime.security.network import check_host_allowlist
+from algen_agent_runtime.security.outbound import NetworkSettings
+from algen_agent_runtime.security.sandbox import SandboxSettings
 from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
@@ -93,6 +101,24 @@ class StorageSettings(StrictSettings):
     initialize_schema: bool = True
     postgres_min_pool_size: int = Field(default=1, ge=1)
     postgres_max_pool_size: int = Field(default=10, ge=1)
+    postgres_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="How long opening a PostgreSQL connection may take before the store call "
+        "fails with StoreUnavailableError.",
+    )
+    postgres_command_timeout_seconds: float | None = Field(
+        default=60.0,
+        gt=0,
+        description="How long one PostgreSQL store command may take before it fails with "
+        "StoreUnavailableError; None waits indefinitely. Migrations are not held to it.",
+    )
+    redis_socket_timeout_seconds: float | None = Field(
+        default=10.0,
+        gt=0,
+        description="How long connecting to Redis, or one Redis command, may take before it "
+        "fails with StoreUnavailableError; None waits indefinitely.",
+    )
     memory_retention_seconds: int = Field(default=86_400, ge=0)
     quotas: StorageQuotaSettings = Field(
         default_factory=StorageQuotaSettings,
@@ -151,6 +177,18 @@ class StorageSettings(StrictSettings):
             value = getattr(self, field_name)
             if value and not value.startswith("env://"):
                 raise ValueError(f"{field_name} must be an env:// secret reference")
+        # These PostgreSQL tables reference algen_agent_runtime_runs: with the runs elsewhere
+        # every write to them would fail its foreign key, at the first run.
+        run_bound = [
+            name
+            for name in ("event_store", "approval_store", "tool_execution_store")
+            if getattr(self, name) == "postgres"
+        ]
+        if run_bound and self.run_store != "postgres":
+            raise ValueError(
+                f"{', '.join(run_bound)} 'postgres' require run_store 'postgres': their rows "
+                "reference the run in PostgreSQL"
+            )
         if self.postgres_min_pool_size > self.postgres_max_pool_size:
             raise ValueError("postgres_min_pool_size cannot exceed postgres_max_pool_size")
         if self.postgres_schema is not None:
@@ -314,6 +352,70 @@ class SecuritySettings(StrictSettings):
     allow_private_networks: bool = False
     allow_subprocess_tools: bool = False
     trusted_plugin_prefixes: tuple[str, ...] = ()
+    sandbox: SandboxSettings = Field(
+        default_factory=SandboxSettings,
+        description="Environment, working directory, resource limits and wrapper for MCP stdio "
+        "servers and core.subprocess.",
+    )
+
+
+def _check_key_reference(value: str, name: str) -> str:
+    if not value.startswith(("env://", "file://")) or len(value) <= len("file://"):
+        raise ValueError(f"{name} must be an env:// or file:// reference, never a literal key")
+    return value
+
+
+class PolicyBundleSettings(StrictSettings):
+    """One signed policy bundle (see ``algen_agent_runtime.policies.bundles``)."""
+
+    path: str = Field(min_length=1)
+    signature: str | None = Field(
+        default=None, description="Detached signature file; <path>.sig when it exists"
+    )
+    trusted_keys: tuple[str, ...] = Field(
+        default=(),
+        description="env:// or file:// Ed25519 public keys; policies.trusted_keys if empty",
+    )
+    min_version: int | None = Field(
+        default=None, ge=1, description="Refuse an older bundle version (rollback protection)"
+    )
+
+    @model_validator(mode="after")
+    def _references(self) -> PolicyBundleSettings:
+        for key in self.trusted_keys:
+            _check_key_reference(key, "policies.bundles[].trusted_keys")
+        return self
+
+
+class PolicySettings(StrictSettings):
+    """Policy distribution and what each boundary does when a policy cannot decide."""
+
+    on_error: PolicyFailMode = Field(
+        default=PolicyFailMode.CLOSED,
+        description="closed refuses the value when a policy raises or times out; open skips it",
+    )
+    boundary_on_error: dict[PolicyPoint, PolicyFailMode] = Field(default_factory=dict)
+    evaluation_timeout_seconds: float | None = Field(
+        default=None, gt=0, le=300, description="Per-policy evaluation limit; none by default"
+    )
+    require_signed: bool = Field(
+        default=False, description="Refuse to start with an unsigned bundle"
+    )
+    trusted_keys: tuple[str, ...] = ()
+    bundles: tuple[PolicyBundleSettings, ...] = ()
+
+    @model_validator(mode="after")
+    def _references(self) -> PolicySettings:
+        for key in self.trusted_keys:
+            _check_key_reference(key, "policies.trusted_keys")
+        return self
+
+    def error_handling(self) -> PolicyErrorHandling:
+        return PolicyErrorHandling(
+            on_error=self.on_error,
+            boundary_on_error=self.boundary_on_error,
+            timeout_seconds=self.evaluation_timeout_seconds,
+        )
 
 
 class RouteLimitSettings(StrictSettings):
@@ -652,6 +754,15 @@ class AppSettings(StrictSettings):
     retrieval: dict[str, RetrievalSettings] = Field(default_factory=dict)
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    policies: PolicySettings = Field(default_factory=PolicySettings)
+    network: NetworkSettings = Field(
+        default_factory=NetworkSettings,
+        description="Egress proxy and per-host TLS identities for every outbound client.",
+    )
+    plugins: PluginSettings = Field(
+        default_factory=PluginSettings,
+        description="Plugin signature verification: trusted publishers and require_signed.",
+    )
     api: ApiSettings = Field(default_factory=ApiSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)

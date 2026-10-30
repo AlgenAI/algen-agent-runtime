@@ -136,6 +136,12 @@ plugin references is checked before any module is imported; an unlisted one fail
 but not `crm_agent_extra`. Trust is an application-level check, not a sandbox: a trusted plugin runs
 in the Runtime's process with its authority. Run untrusted code in an isolated process.
 
+Plugin packages can also be signed with Ed25519 and verified before import:
+`plugins.trusted_publishers` lists publisher keys and `plugins.require_signed: true` refuses
+any plugin (and any workflow hook package) not signed by one of them, even under a trusted
+prefix. `algen-agent-runtime plugin keygen | sign | verify` create keys, sign a package
+directory and check one. See [Plugin signing](operations.md#plugin-signing).
+
 ## Secrets
 
 Components read credentials through `env://` references, never `os.environ`. List the variable

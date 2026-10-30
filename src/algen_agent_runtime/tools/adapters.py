@@ -6,7 +6,11 @@ from typing import Any, Protocol
 
 import httpx
 
-from algen_agent_runtime.security.network import create_safe_http_client, validate_outbound_url
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_safe_http_client,
+    validate_outbound_url,
+)
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -34,11 +38,13 @@ def remote_tool(
     allowed_hosts: tuple[str, ...],
     allow_private_networks: bool = False,
     client: httpx.AsyncClient | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> Tool:
     http_client = client or create_safe_http_client(
         allowed_hosts=allowed_hosts,
         allow_private_networks=allow_private_networks,
         follow_redirects=False,
+        outbound=outbound,
     )
 
     async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:

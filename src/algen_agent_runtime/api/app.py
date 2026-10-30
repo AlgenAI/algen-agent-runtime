@@ -58,6 +58,7 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
     QuotaExceededError,
+    StoreUnavailableError,
 )
 from algen_agent_runtime.observability.setup import (
     configure_logging,
@@ -167,6 +168,7 @@ def create_app(
         audits=dependencies.runtime.audits,
         revocations=dependencies.token_revocations,
         oidc_transport=dependencies.oidc_transport,
+        outbound=dependencies.outbound,
     )
     identity_dependency = Depends(authenticate)
     configure_logging()
@@ -329,6 +331,15 @@ def create_app(
     @app.exception_handler(ConflictError)
     async def conflict(request: Request, exc: ConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(StoreUnavailableError)
+    async def store_unavailable(request: Request, exc: StoreUnavailableError) -> JSONResponse:
+        # A store outage, not a bad request: the client may retry once the store is back.
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc), "kind": exc.error_kind.value},
+            headers={"Retry-After": "5"},
+        )
 
     @app.exception_handler(AlgenAgentRuntimeError)
     async def core_error(request: Request, exc: AlgenAgentRuntimeError) -> JSONResponse:

@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from typing import Any, Protocol
 
-from opentelemetry import trace
+import structlog
+from opentelemetry import metrics, trace
 from pydantic import BaseModel
 
+from algen_agent_runtime.events.contracts import AuditEvent
+from algen_agent_runtime.exceptions.errors import PolicyDeniedError
 from algen_agent_runtime.policies.contracts import (
+    POLICY_ERROR_REASON_CODE,
     PolicyAction,
     PolicyDecision,
+    PolicyErrorHandling,
+    PolicyFailMode,
     PolicyPoint,
 )
 from algen_agent_runtime.tools.contracts import SideEffect
@@ -38,6 +45,11 @@ class SecretRedactionPolicy:
     _pattern = re.compile(
         r"(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*([A-Za-z0-9_\-/.]{8,})"
     )
+    # ``Authorization: Bearer <token>``: a token has a digit or a separator, so prose such as
+    # "bearer instruments" is left alone.
+    _bearer = re.compile(
+        r"(?i)\bbearer\s+((?=[A-Za-z0-9._~+/-]*[0-9._~+/-])[A-Za-z0-9._~+/-]{8,}=*)"
+    )
 
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
@@ -59,10 +71,14 @@ class SecretRedactionPolicy:
             # StrEnum members are str instances; rewriting them would drop the enum type.
             return value, False
         if isinstance(value, str):
-            transformed, count = self._pattern.subn(
-                lambda match: match.group(0).replace(match.group(1), "[REDACTED]"),
-                value,
-            )
+            transformed = value
+            count = 0
+            for pattern in (self._pattern, self._bearer):
+                transformed, found = pattern.subn(
+                    lambda match: match.group(0).replace(match.group(1), "[REDACTED]"),
+                    transformed,
+                )
+                count += found
             return transformed, bool(count)
         if isinstance(value, BaseModel):
             updates: dict[str, Any] = {}
@@ -94,6 +110,46 @@ class SecretRedactionPolicy:
 
 
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
+# 13 to 19 digits, optionally grouped by spaces or hyphens; redacted only when the Luhn check
+# passes, so order numbers and timestamps are left alone.
+_CARD = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
+
+
+# Issuer prefixes and lengths of the major card networks (Visa, Mastercard, American Express,
+# Discover, JCB, Diners Club, UnionPay). Without them, one in ten 13-19 digit identifiers would
+# pass the Luhn check: millisecond timestamps, order and tracking numbers.
+_CARD_BRANDS = (
+    (re.compile(r"4"), frozenset({13, 16, 19})),
+    (re.compile(r"5[1-5]|2(?:2[2-9]|[3-6]\d|7[01]|720)"), frozenset({16})),
+    (re.compile(r"3[47]"), frozenset({15})),
+    (re.compile(r"6(?:011|5|4[4-9])"), frozenset({16, 19})),
+    (re.compile(r"35(?:2[89]|[3-8]\d)"), frozenset({16, 19})),
+    (re.compile(r"3(?:0[0-5]|[689])"), frozenset({14, 16, 19})),
+    (re.compile(r"62"), frozenset({16, 17, 18, 19})),
+)
+
+
+def _is_card(number: str) -> bool:
+    """A grouped or plain digit run that has a card network's prefix and length and passes
+    the Luhn check."""
+    digits = "".join(character for character in number if character.isdigit())
+    return _luhn(digits) and any(
+        prefix.match(digits) and len(digits) in lengths for prefix, lengths in _CARD_BRANDS
+    )
+
+
+def _luhn(number: str) -> bool:
+    digits = [int(character) for character in number if character.isdigit()]
+    total = 0
+    for index, digit in enumerate(reversed(digits)):
+        if index % 2:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
 _TOOL_ARGUMENT_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL})
 
 
@@ -168,15 +224,17 @@ class PIIRedactionPolicy:
     category = "pii"
     enforcement_mode = "warn"
     applies_to = _CONTENT_BOUNDARIES
+    # Identifiers must stand alone: a digit run inside a UUID, hash or other token (a letter,
+    # digit, underscore or hyphen next to it) is not a phone or Aadhaar number.
     _patterns = (
         ("email", _EMAIL),
         (
             "phone",
-            re.compile(r"(?<!\d)(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?!\d)"),
+            re.compile(r"(?<![\w+-])(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?![\w-])"),
         ),
         (
             "aadhaar",
-            re.compile(r"(?<!\d)[2-9]\d{3}[\s-]?\d{4}[\s-]?\d{4}(?!\d)"),
+            re.compile(r"(?<![\w-])[2-9]\d{3}[\s-]?\d{4}[\s-]?\d{4}(?![\w-])"),
         ),
     )
 
@@ -199,14 +257,23 @@ class PIIRedactionPolicy:
             action=PolicyAction.ALLOW, reason_code="pii.clear", reason="No PII detected."
         )
 
+    def redact_value(self, value: Any) -> Any:
+        """``value`` with the identifiers this policy finds replaced, at any depth."""
+        return self._redact(value)[0]
+
     def _redact(self, value: Any, schema: _SchemaNode | None = None) -> tuple[Any, set[str]]:
         if isinstance(value, Enum):
             return value, set()
         if isinstance(value, str):
             if schema is not None and schema.is_email() and _EMAIL.fullmatch(value):
                 return value, set()
-            transformed = value
             labels: set[str] = set()
+            transformed = _CARD.sub(
+                lambda match: "[REDACTED_CARD]" if _is_card(match.group(0)) else match.group(0),
+                value,
+            )
+            if transformed != value:
+                labels.add("card")
             for label, pattern in self._patterns:
                 transformed, count = pattern.subn(f"[REDACTED_{label.upper()}]", transformed)
                 if count:
@@ -409,6 +476,24 @@ class OutputValidationPolicy:
 
 
 _TOOL_POINTS = frozenset({PolicyPoint.BEFORE_TOOL, PolicyPoint.AFTER_TOOL})
+POLICY_ERROR_AUDIT_ACTION = "policy.error"
+POLICY_ERROR_METRIC_NAME = "algen_agent_runtime.policy.errors"
+_logger = structlog.get_logger("algen_agent_runtime.policies")
+
+
+def _error_counter() -> Any:
+    try:
+        return metrics.get_meter("algen_agent_runtime.policies").create_counter(
+            POLICY_ERROR_METRIC_NAME,
+            unit="1",
+            description="Policy evaluations that raised or timed out, by boundary and fail mode",
+        )
+    except Exception:
+        return None
+
+
+class _AuditLog(Protocol):
+    async def append(self, event: AuditEvent) -> None: ...
 
 
 class CompositePolicyEngine:
@@ -416,6 +501,9 @@ class CompositePolicyEngine:
         self,
         policies: Sequence[Policy] | None = None,
         guardrail_scope: Callable[..., AbstractContextManager[Any]] | None = None,
+        *,
+        error_handling: PolicyErrorHandling | None = None,
+        audits: _AuditLog | None = None,
     ) -> None:
         configured = policies or (
             SecretRedactionPolicy(),
@@ -426,6 +514,12 @@ class CompositePolicyEngine:
             SideEffectPolicy(),
         )
         self._policies: dict[str, Policy] = {policy.name: policy for policy in configured}
+        # Authorization and side-effect approval are runtime security invariants; policies from
+        # a policy bundle join them, so every agent runs them whatever its guardrail selection.
+        self._mandatory: set[str] = {"authorization", "side_effects"}
+        self.error_handling = error_handling or PolicyErrorHandling()
+        self._audits = audits
+        self._error_counter = _error_counter()
         self._tracer = trace.get_tracer("algen_agent_runtime.guardrails")
         self._guardrail_scope = guardrail_scope or self._otel_guardrail_scope
 
@@ -449,10 +543,55 @@ class CompositePolicyEngine:
             attributes["guardrail.policy_id"] = policy_id
         return self._tracer.start_as_current_span(f"guardrail.{name}", attributes=attributes)
 
-    def register(self, policy: Policy, *, replace: bool = False) -> None:
+    def register(self, policy: Policy, *, replace: bool = False, mandatory: bool = False) -> None:
+        """Add a policy. A ``mandatory`` one runs for every agent, whatever its selection."""
         if policy.name in self._policies and not replace:
             raise ValueError(f"policy {policy.name!r} is already registered")
         self._policies[policy.name] = policy
+        if mandatory:
+            self._mandatory.add(policy.name)
+
+    def mandatory(self) -> tuple[str, ...]:
+        return tuple(sorted(self._mandatory))
+
+    async def _record_error(self, failure: dict[str, Any], context: Mapping[str, Any]) -> None:
+        """Count, log and audit a policy that raised or timed out. Never the error's text: it
+        may quote the payload."""
+        attributes = {
+            "boundary": failure["boundary"],
+            "policy": failure["policy"],
+            "fail_mode": failure["fail_mode"],
+            "error_type": failure["error_type"],
+        }
+        if self._error_counter is not None:
+            try:
+                self._error_counter.add(1, attributes)
+            except Exception:
+                pass
+        _logger.warning("policy_error", **attributes, timed_out=failure["timed_out"])
+        tool_context = context.get("context")
+        tenant_id = context.get("tenant_id") or getattr(tool_context, "tenant_id", None)
+        if self._audits is None or not tenant_id:
+            return
+        user_id = context.get("user_id") or getattr(tool_context, "user_id", None)
+        run_id = context.get("run_id") or getattr(tool_context, "run_id", None)
+        tool = context.get("tool")
+        metadata = {**failure}
+        if tool is not None and getattr(tool, "name", None):
+            metadata["tool"] = tool.name
+        try:
+            await self._audits.append(
+                AuditEvent(
+                    action=POLICY_ERROR_AUDIT_ACTION,
+                    outcome=f"fail_{failure['fail_mode']}",
+                    tenant_id=str(tenant_id),
+                    actor_id=str(user_id or "system"),
+                    resource_id=str(run_id or failure["boundary"]),
+                    metadata=metadata,
+                )
+            )
+        except Exception:
+            _logger.exception("policy_error_audit_failed", **attributes)
 
     def list(self) -> tuple[str, ...]:
         return tuple(self._policies)
@@ -475,11 +614,13 @@ class CompositePolicyEngine:
         tool_policies = getattr(guardrails, "tool_policies", None)
         if tool_policies is not None and policy_point in _TOOL_POINTS:
             selected = set(tool_policies)
-        # Authorization and side-effect approval are runtime security invariants.
-        selected.update({"authorization", "side_effects"})
+        selected.update(self._mandatory)
         invoked: list[str] = []
         triggered: list[str] = []
         skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        pending: PolicyDecision | None = None
+        timeout = self.error_handling.timeout_seconds
         for policy in self._policies.values():
             if agent is not None and policy.name not in selected:
                 continue
@@ -496,15 +637,48 @@ class CompositePolicyEngine:
                 enforcement_mode=getattr(policy, "enforcement_mode", "unknown"),
             ) as guardrail_span:
                 guardrail_span.set_attribute("guardrail.boundary", point)
-                decision = await policy.evaluate(point, transformed, context)
+                try:
+                    async with asyncio.timeout(timeout):
+                        decision = await policy.evaluate(point, transformed, context)
+                    if not isinstance(decision, PolicyDecision):
+                        raise TypeError("policy returned something other than a PolicyDecision")
+                except PolicyDeniedError:
+                    # A policy that raises a denial has decided; it is not a policy error.
+                    raise
+                except Exception as exc:
+                    mode = self.error_handling.mode(policy_point)
+                    failure = {
+                        "boundary": policy_point.value,
+                        "policy": policy.name,
+                        "error_type": type(exc).__name__,
+                        "fail_mode": mode.value,
+                        "timed_out": isinstance(exc, TimeoutError),
+                    }
+                    guardrail_span.set_attribute("guardrail.error", failure["error_type"])
+                    guardrail_span.set_attribute("guardrail.fail_mode", mode.value)
+                    await self._record_error(failure, context)
+                    errors.append(failure)
+                    if mode == PolicyFailMode.OPEN:
+                        continue
+                    return PolicyDecision(
+                        action=PolicyAction.DENY,
+                        reason_code=POLICY_ERROR_REASON_CODE,
+                        reason=(
+                            f"Policy {policy.name} could not decide at {policy_point.value}; "
+                            "this boundary fails closed."
+                        ),
+                        audit_metadata={
+                            "fail_mode": mode.value,
+                            "policy_errors": errors,
+                            "policies_invoked": invoked,
+                            "policies_triggered": [*triggered, policy.name],
+                            "policies_skipped": skipped,
+                        },
+                    )
                 triggered_now = decision.action != PolicyAction.ALLOW
                 guardrail_span.set_attribute("guardrail.triggered", triggered_now)
                 guardrail_span.set_attribute("guardrail.reason_code", decision.reason_code)
-            if decision.action in {
-                PolicyAction.DENY,
-                PolicyAction.REQUIRE_CLARIFICATION,
-                PolicyAction.REQUIRE_APPROVAL,
-            }:
+            if decision.action == PolicyAction.DENY:
                 return decision.model_copy(
                     update={
                         "audit_metadata": {
@@ -512,13 +686,36 @@ class CompositePolicyEngine:
                             "policies_invoked": invoked,
                             "policies_triggered": [*triggered, policy.name],
                             "policies_skipped": skipped,
+                            **self._errors_metadata(errors),
                         }
                     }
                 )
+            if decision.action in {
+                PolicyAction.REQUIRE_CLARIFICATION,
+                PolicyAction.REQUIRE_APPROVAL,
+            }:
+                # The first such answer stands, but the remaining policies still run: a later
+                # denial must refuse the call rather than put it to a person first.
+                triggered.append(policy.name)
+                if pending is None:
+                    pending = decision
+                continue
             if decision.action in {PolicyAction.REDACT, PolicyAction.TRANSFORM}:
                 transformed = decision.value
                 transforms.append(decision.reason_code)
                 triggered.append(policy.name)
+        if pending is not None:
+            return pending.model_copy(
+                update={
+                    "audit_metadata": {
+                        **pending.audit_metadata,
+                        "policies_invoked": invoked,
+                        "policies_triggered": triggered,
+                        "policies_skipped": skipped,
+                        **self._errors_metadata(errors),
+                    }
+                }
+            )
         if transforms:
             return PolicyDecision(
                 action=PolicyAction.TRANSFORM,
@@ -530,6 +727,7 @@ class CompositePolicyEngine:
                     "policies_invoked": invoked,
                     "policies_triggered": triggered,
                     "policies_skipped": skipped,
+                    **self._errors_metadata(errors),
                 },
             )
         return PolicyDecision(
@@ -540,5 +738,13 @@ class CompositePolicyEngine:
                 "policies_invoked": invoked,
                 "policies_triggered": triggered,
                 "policies_skipped": skipped,
+                **self._errors_metadata(errors),
             },
         )
+
+    @staticmethod
+    def _errors_metadata(errors: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        # Only present when a policy failed open, so ordinary decisions read as they always did.
+        if not errors:
+            return {}
+        return {"fail_mode": PolicyFailMode.OPEN.value, "policy_errors": list(errors)}
