@@ -155,6 +155,12 @@ from algen_agent_runtime.retrieval.vector_stores import (
     QdrantRetriever,
 )
 from algen_agent_runtime.runtime.runtime import AgentRuntime
+from algen_agent_runtime.security.network import (
+    OutboundNetwork,
+    create_outbound_http_client,
+    create_safe_http_client,
+)
+from algen_agent_runtime.security.outbound import build_outbound_network
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
@@ -212,6 +218,9 @@ class Container:
     """Store checked by verified API authentication when ``api.token_revocation`` is enabled;
     revoke through it from Python or through ``/v1/auth/revocations``."""
     oidc_transport: httpx.AsyncBaseTransport | None = None
+    outbound: OutboundNetwork | None = None
+    """The deployment's egress proxy and remote TLS identities (``network`` settings), for
+    outbound clients built outside the container, such as OIDC and workflow notifications."""
     """Transport for OIDC discovery and JWKS fetches; ``None`` uses the SSRF-safe transport.
     Tests and hosts with their own egress layer may inject one."""
     resources: tuple[object, ...] = ()
@@ -408,6 +417,7 @@ def base_tools(
     *,
     secrets: SecretResolver,
     http_client: httpx.AsyncClient | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> tuple[Tool, ...]:
     """The tools every container registers before plugins: core tools and manifest http_tools."""
     return (
@@ -415,14 +425,18 @@ def base_tools(
             allowed_hosts=settings.security.allowed_http_hosts,
             allow_private_networks=settings.security.allow_private_networks,
             client=http_client,
+            outbound=outbound,
         ),
-        subprocess_tool(enabled=settings.security.allow_subprocess_tools),
+        subprocess_tool(
+            enabled=settings.security.allow_subprocess_tools, sandbox=settings.security.sandbox
+        ),
         *(
             http_api_tool(
                 declared,
                 allowed_hosts=settings.security.allowed_http_hosts,
                 allow_private_networks=settings.security.allow_private_networks,
                 secrets=secrets,
+                outbound=outbound,
             )
             for declared in settings.http_tools
         ),
@@ -452,7 +466,7 @@ def load_declared_plugins(
     settings: AppSettings, context: RuntimePluginContext
 ) -> tuple[PluginManifest, ...]:
     names = declared_plugin_names(settings)
-    loader = PluginLoader(settings.security.trusted_plugin_prefixes)
+    loader = PluginLoader(settings.security.trusted_plugin_prefixes, settings.plugins)
     loader.authorize(names)
     manifests = []
     for name in names:
@@ -488,8 +502,16 @@ def build_container(
     for definition in settings.agents:
         agents.register(definition)
     tools = ToolRegistry()
-    http_client = httpx.AsyncClient(follow_redirects=False)
-    for tool in base_tools(settings, secrets=secret_provider.get, http_client=http_client):
+    outbound = build_outbound_network(settings.network, environment)
+    http_client = create_safe_http_client(
+        allowed_hosts=settings.security.allowed_http_hosts,
+        allow_private_networks=settings.security.allow_private_networks,
+        follow_redirects=False,
+        outbound=outbound,
+    )
+    for tool in base_tools(
+        settings, secrets=secret_provider.get, http_client=http_client, outbound=outbound
+    ):
         tools.register(tool)
     frameworks = FrameworkAdapterRegistry()
     for adapter in framework_adapters:
@@ -675,11 +697,16 @@ def build_container(
     router = ModelRouter(
         cache=cache, usage_meter=usage_meter, reserve_input_margin=usage_meter_margin
     )
+    provider_clients: list[httpx.AsyncClient] = []
     for name, provider_config in settings.providers.items():
         kwargs: dict[str, Any] = {
             "default_model": provider_config.default_model,
             "stream_usage": provider_config.stream_usage,
         }
+        if outbound is not None and provider_config.type not in {"local_transformers", "mock"}:
+            # Through the egress proxy and with the base_url host's TLS identity.
+            provider_clients.append(create_outbound_http_client(outbound))
+            kwargs["client"] = provider_clients[-1]
         provider: ModelProvider
         if provider_config.type == "openai":
             provider = OpenAIProvider(
@@ -695,6 +722,7 @@ def build_container(
                 provider_config.api_version or "2024-10-21",
                 secret_provider=secret_provider,
                 stream_usage=provider_config.stream_usage,
+                client=kwargs.get("client"),
             )
         elif provider_config.type == "anthropic":
             provider = AnthropicProvider(
@@ -760,6 +788,7 @@ def build_container(
                 provider_config.capabilities,
                 secret_provider=secret_provider,
                 stream_usage=provider_config.stream_usage,
+                client=kwargs.get("client"),
             )
         elif provider_config.type == "mock":
             from algen_agent_runtime.models.providers.mock import MockModelProvider
@@ -920,7 +949,9 @@ def build_container(
                 database=database,
                 environment=environment,
                 security=settings.security,
+                outbound=outbound,
             ),
+            outbound=outbound,
         )
     executor = ToolExecutor(
         tools,
@@ -1059,6 +1090,7 @@ def build_container(
                 cache_redis_client,
                 artifacts if storage.artifact_store == "s3" else None,
                 http_client,
+                *provider_clients,
                 mcp_manager,
                 *plugin_context.resources,
             )
@@ -1090,6 +1122,7 @@ def build_container(
         rate_limiter=rate_limiter,
         resources=tuple(lifecycle_resources),
         mcp=mcp_manager,
+        outbound=outbound,
         token_revocations=_token_revocation_store(settings, database),
         recover_incomplete_runs=settings.runtime.recover_incomplete_runs,
         recovery_limit=settings.runtime.recovery_limit,

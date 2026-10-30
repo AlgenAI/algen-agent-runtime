@@ -58,7 +58,11 @@ from algen_agent_runtime.mcp.tokens import (
     PostgresMCPTokenStore,
 )
 from algen_agent_runtime.security.encryption import AesGcmCipher
-from algen_agent_runtime.security.network import DNSResolver, create_safe_http_client
+from algen_agent_runtime.security.network import (
+    DNSResolver,
+    OutboundNetwork,
+    create_safe_http_client,
+)
 from algen_agent_runtime.types.contracts import ErrorKind, utc_now
 
 if TYPE_CHECKING:
@@ -178,6 +182,7 @@ class MCPOAuthManager:
         dns_resolver: DNSResolver | None = None,
         http_client: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] = utc_now,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         # Only the HTTP transports take `auth`, so every OAuth server has a URL.
         self._servers: dict[str, tuple[str, OAuthClientAuth]] = {}
@@ -191,6 +196,7 @@ class MCPOAuthManager:
         self._environment = dict(environment or {})
         self._security = security
         self._dns_resolver = dns_resolver
+        self._outbound = outbound
         self._http = http_client
         self._owns_http = http_client is None
         self._clock = clock
@@ -629,6 +635,7 @@ class MCPOAuthManager:
                 dns_resolver=self._dns_resolver,
                 timeout=15.0,
                 follow_redirects=False,
+                outbound=self._outbound,
             )
         return self._http
 
@@ -766,6 +773,7 @@ def build_mcp_oauth_manager(
     database: Any,
     environment: Mapping[str, str] | None = None,
     security: SecuritySettings | None = None,
+    outbound: OutboundNetwork | None = None,
 ) -> MCPOAuthManager | None:
     """The manager for the OAuth servers among ``servers``, or None when none uses OAuth."""
     if not any(oauth_config(server) is not None for server in servers):
@@ -782,4 +790,6 @@ def build_mcp_oauth_manager(
         store = PostgresMCPTokenStore(database, cipher)
     else:
         store = InMemoryMCPTokenStore()
-    return MCPOAuthManager(servers, store, environment=environment, security=security)
+    return MCPOAuthManager(
+        servers, store, environment=environment, security=security, outbound=outbound
+    )

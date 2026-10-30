@@ -34,6 +34,7 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
 )
+from algen_agent_runtime.plugins.signing import verify_module
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.security.network import create_safe_http_client
 from algen_agent_runtime.workflows.contracts import (
@@ -72,6 +73,8 @@ class WorkflowService:
         self._hooks: dict[str, WorkflowHookRegistry] = {}
         self._registry: WorkflowRegistry | None = None
         self._untrusted: dict[str, str] = {}
+        # Hook module -> why its signature was refused, or None once it verified.
+        self._signatures: dict[str, str | None] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         # (tenant_id, workflow_id) of runs a task in this process is driving.
         self._active: set[tuple[str, str]] = set()
@@ -333,12 +336,22 @@ class WorkflowService:
             return None
         module = manifest.hook_provider.split(":", 1)[0]
         loader = WorkflowHookLoader(allowed_modules=self._settings.security.trusted_plugin_prefixes)
-        if loader.is_module_allowed(module):
+        if not loader.is_module_allowed(module):
+            return (
+                f"workflow {manifest.name!r} runs code from {module!r}, which is not under "
+                "security.trusted_plugin_prefixes"
+            )
+        signing = self._settings.plugins
+        if not signing.enabled:
             return None
-        return (
-            f"workflow {manifest.name!r} runs code from {module!r}, which is not under "
-            "security.trusted_plugin_prefixes"
-        )
+        if module not in self._signatures:
+            # Verified before the hook module is imported, like a plugin.
+            try:
+                verify_module(module, signing)
+                self._signatures[module] = None
+            except ConfigurationError as error:
+                self._signatures[module] = str(error)
+        return self._signatures[module]
 
     async def _executor(self, name: str) -> MultiAgentWorkflowExecutor:
         async with self._ready:
@@ -437,6 +450,7 @@ class WorkflowService:
                 allowed_hosts=tuple(security.allowed_http_hosts),
                 allow_private_networks=security.allow_private_networks,
                 timeout=10.0,
+                outbound=self._container.outbound,
             ) as client:
                 response = await client.post(settings.webhook_url, content=body, headers=headers)
                 response.raise_for_status()

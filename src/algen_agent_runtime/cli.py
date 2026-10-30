@@ -168,6 +168,59 @@ def _run_check(
     return 0 if report.ok and not (strict and report.warnings) else 1
 
 
+def _run_plugin(args: argparse.Namespace) -> int:
+    """``plugin keygen``, ``plugin sign`` and ``plugin verify``."""
+    from algen_agent_runtime.config.settings import AppSettings, load_settings
+    from algen_agent_runtime.exceptions.errors import ConfigurationError
+    from algen_agent_runtime.plugins import signing
+
+    try:
+        if args.plugin_command == "keygen":
+            target = Path(args.output)
+            pem, public_key = signing.generate_private_key_pem()
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(pem)
+            print(f"wrote the private key to {target} (keep it secret)")
+            print(f"public key: {public_key}")
+            return 0
+        if args.plugin_command == "sign":
+            if args.key.startswith("env://"):
+                key_text = os.environ.get(args.key.removeprefix("env://"), "")
+                if not key_text:
+                    raise ConfigurationError(f"{args.key} is not set")
+            else:
+                key_text = Path(args.key).read_text(encoding="utf-8")
+            document = signing.sign_package(
+                Path(args.package_dir),
+                signing.load_private_key(key_text),
+                publisher=args.publisher,
+                package=args.package,
+                name=args.name,
+                version=args.version,
+            )
+            print(
+                f"signed {document['package']} ({len(document['files'])} files) as "
+                f"{args.publisher}; wrote {signing.SIGNATURE_FILE}"
+            )
+            return 0
+        for path in reversed(args.path or []):
+            sys.path.insert(0, str(Path(path).resolve()))
+        config_paths = _discover_config_paths(args.config)
+        settings = load_settings(config_paths) if config_paths else AppSettings()
+        plugin_settings = settings.plugins.model_copy(update={"require_signed": True})
+        signed = signing.verify_module(signing.plugin_module(args.module), plugin_settings)
+        assert signed is not None
+        print(
+            f"{signed.package}: signed by {signed.publisher} "
+            f"({signed.name or '-'} {signed.version or '-'}, {signed.files} files)"
+        )
+        return 0
+    except (ConfigurationError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _run_generate_ui(
     config: list[str] | None = None,
     output: str = "agent-ui.html",
@@ -398,6 +451,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Public key reference: env://VARIABLE or file://path (repeatable)",
     )
     verify_parser.add_argument("--min-version", type=int, default=None)
+    # plugin command
+    plugin_parser = subparsers.add_parser(
+        "plugin", help="Create signing keys, sign plugin packages and verify signatures"
+    )
+    plugin_commands = plugin_parser.add_subparsers(dest="plugin_command", required=True)
+    keygen_parser = plugin_commands.add_parser(
+        "keygen", help="Create an Ed25519 signing key and print its public key"
+    )
+    keygen_parser.add_argument("output", help="File for the private key (PKCS#8 PEM, mode 600)")
+    sign_parser = plugin_commands.add_parser(
+        "sign", help="Write algen-plugin-signature.json into a plugin package directory"
+    )
+    sign_parser.add_argument("package_dir", help="The package directory (it has __init__.py)")
+    sign_parser.add_argument("--publisher", required=True, help="Publisher name")
+    sign_parser.add_argument(
+        "--key", required=True, help="Private key file, or env://VAR holding the PEM"
+    )
+    sign_parser.add_argument(
+        "--package", default=None, help="Dotted package name (default: the directory name)"
+    )
+    sign_parser.add_argument("--name", default=None, help="Plugin manifest name to bind")
+    sign_parser.add_argument("--version", default=None, help="Plugin manifest version to bind")
+    verify_parser = plugin_commands.add_parser(
+        "verify",
+        help="Verify a plugin's signature against plugins.trusted_publishers, without importing it",
+    )
+    verify_parser.add_argument("module", help="module:attribute or entry point name")
+    verify_parser.add_argument("--config", "-c", nargs="*", default=None)
+    verify_parser.add_argument(
+        "--path", action="append", default=None, help="Directory to find plugin modules in"
+    )
     # ui / export-ui command
     for cmd_name, cmd_help in [
         ("ui", "Generate standalone static HTML for the Agent YAML UI"),
@@ -460,6 +544,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_describe(config=args.config, paths=args.path, as_json=args.json))
     elif args.command == "policy":
         sys.exit(_run_policy(args))
+    elif args.command == "plugin":
+        sys.exit(_run_plugin(args))
     elif args.command in {"ui", "export-ui"}:
         _run_generate_ui(
             config=args.config,

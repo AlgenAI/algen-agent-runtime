@@ -167,6 +167,7 @@ def create_app(
         audits=dependencies.runtime.audits,
         revocations=dependencies.token_revocations,
         oidc_transport=dependencies.oidc_transport,
+        outbound=dependencies.outbound,
     )
     identity_dependency = Depends(authenticate)
     configure_logging()

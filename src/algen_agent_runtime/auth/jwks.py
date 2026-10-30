@@ -23,6 +23,7 @@ import httpx
 
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
 from algen_agent_runtime.security.network import (
+    OutboundNetwork,
     check_host_allowlist,
     create_safe_http_client,
     normalize_and_validate_url,
@@ -86,6 +87,7 @@ class JwksCache:
         max_bytes: int = 262_144,
         transport: httpx.AsyncBaseTransport | None = None,
         clock: Callable[[], float] = time.monotonic,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         self.issuer = issuer
         self._configured_jwks_url = jwks_url
@@ -103,6 +105,7 @@ class JwksCache:
         self._timeout = timeout_seconds
         self._max_bytes = max_bytes
         self._transport = transport
+        self._outbound = outbound
         self._clock = clock
         self._keys: dict[str, JsonWebKey] = {}
         self._fetched_at: float | None = None
@@ -193,6 +196,7 @@ class JwksCache:
             timeout=self._timeout,
             follow_redirects=False,
             transport=self._transport,
+            outbound=self._outbound,
         ) as client:
             jwks_url = self._jwks_url
             if jwks_url is None:

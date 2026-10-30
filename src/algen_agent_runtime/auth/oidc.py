@@ -25,6 +25,7 @@ from algen_agent_runtime.config.authentication import (
     OidcSettings,
 )
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.security.network import OutboundNetwork
 
 
 def claim_value(claims: dict[str, Any], name: str) -> Any:
@@ -101,6 +102,7 @@ class OidcVerifier:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         clock: Callable[[], float] = time.monotonic,
+        outbound: OutboundNetwork | None = None,
     ) -> None:
         try:
             import jwt
@@ -124,6 +126,7 @@ class OidcVerifier:
                     max_bytes=settings.max_jwks_bytes,
                     transport=transport,
                     clock=clock,
+                    outbound=outbound,
                 ),
             )
             for issuer in settings.issuers
