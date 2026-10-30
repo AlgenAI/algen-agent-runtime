@@ -45,7 +45,11 @@ from algen_agent_runtime.cache import (
 )
 from algen_agent_runtime.cache.contracts import CacheStore
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
-from algen_agent_runtime.config.settings import AppSettings, EnvironmentSecretProvider
+from algen_agent_runtime.config.settings import (
+    AppSettings,
+    EnvironmentSecretProvider,
+    StorageSettings,
+)
 from algen_agent_runtime.context.artifacts import ContextArtifactService
 from algen_agent_runtime.context.builder import (
     ContextBuilderRegistry,
@@ -134,6 +138,7 @@ from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutio
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
+from algen_agent_runtime.policies.bundles import BundlePolicy, load_policy_bundles
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.retrieval.ingestion import Chunker, MarkdownChunker, TextChunker
@@ -327,13 +332,20 @@ class Container:
                 if inspect.isawaitable(result):
                     await result
         for resource in reversed(self.resources):
-            close = getattr(resource, "close", None) or getattr(resource, "aclose", None)
+            # aclose first: redis-py's Redis.close is deprecated in favour of it.
+            close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
             if close is not None:
                 result = close()
                 if inspect.isawaitable(result):
                     await result
         self.close()
         self.lifecycle.phase = "stopped"
+
+
+def _redis_timeouts(storage: StorageSettings) -> dict[str, Any]:
+    """Bounds on an unresponsive Redis: without them a command waits on the network forever."""
+    timeout = storage.redis_socket_timeout_seconds
+    return {"socket_timeout": timeout, "socket_connect_timeout": timeout}
 
 
 def _token_revocation_store(
@@ -531,6 +543,8 @@ def build_container(
             min_pool_size=storage.postgres_min_pool_size,
             max_pool_size=storage.postgres_max_pool_size,
             schema=storage.postgres_schema,
+            connect_timeout_seconds=storage.postgres_connect_timeout_seconds,
+            command_timeout_seconds=storage.postgres_command_timeout_seconds,
         )
         if "postgres" in selected_backends
         else None
@@ -542,7 +556,8 @@ def build_container(
         except ImportError as exc:
             raise ImportError("install algen-agent-runtime[redis]") from exc
         redis_client = Redis.from_url(
-            _resolve_environment_reference(storage.redis_url, "redis_url", environment)
+            _resolve_environment_reference(storage.redis_url, "redis_url", environment),
+            **_redis_timeouts(storage),
         )
     cache_redis_client: object | None = None
     cache_store: CacheStore
@@ -559,7 +574,11 @@ def build_container(
             if redis_client is not None
             else None
         )
-        cache_redis_client = redis_client if storage_url == cache_url else Redis.from_url(cache_url)
+        cache_redis_client = (
+            redis_client
+            if storage_url == cache_url
+            else Redis.from_url(cache_url, **_redis_timeouts(storage))
+        )
     if settings.cache.backend == "redis":
         cache_store = RedisCacheStore(cache_redis_client, settings.cache.key_prefix)
     elif settings.cache.backend == "memory":
@@ -654,7 +673,13 @@ def build_container(
     audits: AuditLog = (
         PostgresAuditLog(database) if storage.audit_store == "postgres" else InMemoryAuditLog()
     )
-    policies = CompositePolicyEngine(guardrail_scope=observability.guardrail_scope)
+    policies = CompositePolicyEngine(
+        guardrail_scope=observability.guardrail_scope,
+        error_handling=settings.policies.error_handling(),
+        audits=audits,
+    )
+    for bundle in load_policy_bundles(settings.policies, environment):
+        policies.register(BundlePolicy(bundle), mandatory=True)
     planners = PlannerRegistry()
     contexts = ContextBuilderRegistry(DefaultContextBuilder(memory))
     verifiers = VerificationService()

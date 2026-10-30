@@ -3,6 +3,8 @@
 #
 #   scripts/integration-tests.sh                 # pytest tests
 #   scripts/integration-tests.sh tests/integration -k approvals
+#   scripts/integration-tests.sh tests/drills -m drill   # persistence drills only
+#   ALGEN_DRILL_SOAK_RUNS=200 scripts/integration-tests.sh tests/drills -m soak
 #
 # Uses docker if it is installed, otherwise podman. Each run gets fresh containers (so a fresh
 # database) on ports that do not clash with a local PostgreSQL or Redis; the containers are removed
@@ -49,6 +51,12 @@ trap cleanup EXIT INT TERM
 
 export POSTGRES_DSN="postgresql://algen:$pg_password@localhost:$pg_port/algen_test"
 export REDIS_URL="redis://localhost:$redis_port/0"
+# The persistence drills (tests/drills) pause, unpause and restart these containers to take a
+# store away and bring it back; they skip when these are not set. A restart keeps the data: a
+# `--rm` container is only removed once it stops for good (or by the cleanup above).
+export ALGEN_TEST_CONTAINER_ENGINE="$engine"
+export ALGEN_TEST_POSTGRES_CONTAINER="$pg_name"
+export ALGEN_TEST_REDIS_CONTAINER="$redis_name"
 
 # The postgres image restarts the server once after initdb, so wait for a real connection from
 # the host rather than pg_isready inside the container.

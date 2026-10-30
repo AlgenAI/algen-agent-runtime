@@ -261,6 +261,63 @@ def _run_generate_ui(
         webbrowser.open(dest.resolve().as_uri())
 
 
+def _run_policy(args: argparse.Namespace) -> int:
+    """Generate a signing key, or sign or verify a policy bundle. Keys come from references."""
+    import json
+
+    from algen_agent_runtime.exceptions.errors import ConfigurationError
+    from algen_agent_runtime.policies import bundles
+
+    try:
+        if args.policy_command == "keygen":
+            private_path, public_path = Path(args.private_key), Path(args.public_key)
+            for path in (private_path, public_path):
+                if path.exists():
+                    raise ConfigurationError(f"{path} already exists; not overwriting a key")
+            private_pem, public_pem = bundles.generate_signing_key()
+            # The private key is created readable by its owner only.
+            descriptor = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(private_pem)
+            public_path.write_text(public_pem, encoding="utf-8")
+            print(f"Wrote private key {private_path} (keep it secret) and public key {public_path}")
+            return 0
+        if args.policy_command == "sign":
+            data = Path(args.bundle).read_bytes()
+            key = bundles.resolve_key_reference(args.key, name="signing key")
+            signature = bundles.sign_policy_bundle(data, key)
+            output = Path(args.output or args.bundle + bundles.SIGNATURE_SUFFIX)
+            output.write_text(signature + "\n", encoding="ascii")
+            print(f"Wrote signature {output}")
+            return 0
+        loaded = bundles.load_policy_bundle(
+            args.bundle,
+            signature=args.signature,
+            trusted_keys=tuple(args.trusted_key or ()),
+            require_signed=True,
+            min_version=args.min_version,
+        )
+    except (ConfigurationError, OSError, ImportError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "name": loaded.bundle.name,
+                "version": loaded.bundle.version,
+                "issued_at": loaded.bundle.issued_at.isoformat(),
+                "expires_at": (
+                    loaded.bundle.expires_at.isoformat() if loaded.bundle.expires_at else None
+                ),
+                "sha256": loaded.sha256,
+                "key_id": loaded.key_id,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="algen-agent-runtime",
@@ -368,6 +425,32 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--strict", action="store_true", help="Exit with status 1 on warnings too"
     )
+    # policy command
+    policy_parser = subparsers.add_parser(
+        "policy", help="Create signing keys, and sign or verify policy bundles"
+    )
+    policy_commands = policy_parser.add_subparsers(dest="policy_command", required=True)
+    keygen_parser = policy_commands.add_parser("keygen", help="Generate an Ed25519 key pair")
+    keygen_parser.add_argument("--private-key", required=True, help="Private key PEM to create")
+    keygen_parser.add_argument("--public-key", required=True, help="Public key PEM to create")
+    sign_parser = policy_commands.add_parser("sign", help="Write a bundle's detached signature")
+    sign_parser.add_argument("bundle", help="Policy bundle YAML or JSON file")
+    sign_parser.add_argument(
+        "--key", required=True, help="Private key reference: env://VARIABLE or file://path"
+    )
+    sign_parser.add_argument("--output", default=None, help="Signature file (default <bundle>.sig)")
+    verify_parser = policy_commands.add_parser(
+        "verify", help="Verify a bundle as the Runtime does at start-up (signature required)"
+    )
+    verify_parser.add_argument("bundle", help="Policy bundle YAML or JSON file")
+    verify_parser.add_argument("--signature", default=None, help="Signature file")
+    verify_parser.add_argument(
+        "--trusted-key",
+        action="append",
+        required=True,
+        help="Public key reference: env://VARIABLE or file://path (repeatable)",
+    )
+    verify_parser.add_argument("--min-version", type=int, default=None)
     # plugin command
     plugin_parser = subparsers.add_parser(
         "plugin", help="Create signing keys, sign plugin packages and verify signatures"
@@ -459,6 +542,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     elif args.command == "describe":
         sys.exit(_run_describe(config=args.config, paths=args.path, as_json=args.json))
+    elif args.command == "policy":
+        sys.exit(_run_policy(args))
     elif args.command == "plugin":
         sys.exit(_run_plugin(args))
     elif args.command in {"ui", "export-ui"}:

@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from copy import deepcopy
 
-from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.exceptions.errors import ConflictError, RunConflictError
 from algen_agent_runtime.types.contracts import (
     Artifact,
     ArtifactDescriptor,
@@ -38,7 +38,7 @@ class InMemoryRunStore:
         async with self._lock:
             current = self._runs.get(state.id)
             if current is None or current.version != expected_version:
-                raise ConflictError(f"run {state.id!r} was concurrently modified")
+                raise RunConflictError(f"run {state.id!r} was concurrently modified")
             saved = state.model_copy(deep=True)
             saved.version = expected_version + 1
             state.version = saved.version
