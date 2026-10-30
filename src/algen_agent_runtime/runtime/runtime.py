@@ -70,6 +70,8 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
     ProviderError,
+    RunConflictError,
+    StoreUnavailableError,
     ToolExecutionError,
     VerificationError,
 )
@@ -155,6 +157,11 @@ from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, Memor
 from algen_agent_runtime.verification.verifiers import VerificationService
 
 # Tools whose completion updates run state (memory, skills, working state): never batched.
+# How long a run interrupted by a store outage waits before its drive is tried again: doubling
+# from the first value up to the second.
+_OUTAGE_RETRY_SECONDS = (0.5, 30.0)
+# How long resume waits for the drive that paused a run to finish its tail (events, trace).
+_PAUSED_DRIVE_WAIT_SECONDS = 10.0
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
 
 
@@ -304,6 +311,10 @@ class AgentRuntime:
         # transition checkpoints them into RunState.pending_steering.
         self._steering: dict[str, list[SteeringMessage]] = {}
         self._task_lock = asyncio.Lock()
+        # Runs whose drive in this process a store outage interrupted, by run id, with their
+        # tenant and the drive's credentials, until _resume_after_outage drives them again.
+        self._outage_runs: dict[str, tuple[str, Mapping[str, str] | None]] = {}
+        self._outage_task: asyncio.Task[None] | None = None
         self._accepting_runs = True
         self._shutdown_cancellation = False
         self._tracer = TraceLevelTracer(
@@ -402,12 +413,21 @@ class AgentRuntime:
         return await self.wait(state.id, request.tenant_id)
 
     async def wait(self, run_id: str, tenant_id: str) -> RunResult:
-        """Wait for an already-started run and compose its current result."""
+        """Wait for an already-started run and compose its current result.
+
+        A run a store outage interrupted is waited for until it is driven again and that drive
+        ends, or until the runtime shuts down.
+        """
         await self._require_state(run_id, tenant_id)
-        async with self._task_lock:
-            task = self._tasks.get(run_id)
-        if task is not None:
-            await task
+        while True:
+            async with self._task_lock:
+                task = self._tasks.get(run_id)
+            if task is not None and not task.done():
+                await task
+            elif run_id in self._outage_runs and self._accepting_runs:
+                await asyncio.sleep(0.05)
+            else:
+                break
         current = await self._require_state(run_id, tenant_id)
         agent = self.agents.get(current.request.agent, current.request.agent_version)
         composer = self.composers.get(agent.response_composer)
@@ -505,6 +525,7 @@ class AgentRuntime:
         The resumed run sees only the ``credentials`` passed here; none from before the pause.
         """
         credentials = read_only_credentials(credentials)
+        await self._await_paused_drive(run_id)
         state = await self._require_state(run_id, tenant_id)
         if state.status == RunStatus.AWAITING_CLARIFICATION:
             clarification = str(payload.get("clarification", "")).strip()
@@ -611,6 +632,22 @@ class AgentRuntime:
         await self._schedule(run_id, tenant_id, credentials)
         return state
 
+    async def _await_paused_drive(self, run_id: str) -> None:
+        """Let the drive that paused a run finish before the run is resumed.
+
+        The pause is checkpointed (and visible to an approver) before that drive has finished
+        its events and trace, so an immediate resume would find it still running: the decision
+        would be recorded but the run not driven again. Raises ``ConflictError``, before
+        anything is decided, when the run is still executing after the wait.
+        """
+        async with self._task_lock:
+            task = self._tasks.get(run_id)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        await asyncio.wait({task}, timeout=_PAUSED_DRIVE_WAIT_SECONDS)
+        if not task.done():
+            raise ConflictError("run is already executing")
+
     async def _schedule(
         self,
         run_id: str,
@@ -634,6 +671,9 @@ class AgentRuntime:
     async def _drive_with_credentials(self, run_id: str, tenant_id: str) -> None:
         try:
             await self._drive(run_id, tenant_id)
+        except StoreUnavailableError:
+            # The run keeps its last checkpoint; it is driven again once the store answers.
+            self._interrupted_by_outage(run_id, tenant_id)
         finally:
             # However the drive ends (paused, finished, failed, cancelled, shut down), the
             # caller's credentials go with it.
@@ -654,6 +694,52 @@ class AgentRuntime:
                 await self._emit(state, "steer.undelivered", self._steering_data(queued))
         except Exception:
             self._logger.exception("steering_checkpoint_failed", run_id=run_id)
+
+    def _interrupted_by_outage(self, run_id: str, tenant_id: str) -> None:
+        self._logger.warning(
+            "agent_run_interrupted_store_unavailable", run_id=run_id, tenant_id=tenant_id
+        )
+        if not self._accepting_runs:
+            return  # shutting down: the next start recovers it
+        self._outage_runs[run_id] = (tenant_id, self._credentials.get(run_id))
+        if self._outage_task is None or self._outage_task.done():
+            self._outage_task = asyncio.create_task(self._resume_after_outage())
+
+    async def _resume_after_outage(self) -> None:
+        """Drive the runs a store outage interrupted again, from their checkpoints.
+
+        Only runs this process was driving, so it is safe beside other processes on the same
+        stores. A run that ended, paused or changed elsewhere meanwhile is left alone.
+        """
+        delay, longest = _OUTAGE_RETRY_SECONDS
+        while self._outage_runs and self._accepting_runs:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, longest)
+            for run_id, (tenant_id, credentials) in tuple(self._outage_runs.items()):
+                try:
+                    state = await self.runs.get(run_id, tenant_id)
+                    if state is not None and self._recovery_status(state.status) != state.status:
+                        expected = state.version
+                        self._rewind_for_recovery(state)
+                        state.updated_at = utc_now()
+                        await self.runs.save(state, expected)
+                except StoreUnavailableError:
+                    break  # still down: try again later
+                except ConflictError:
+                    state = None  # taken over elsewhere
+                if self._outage_runs.pop(run_id, None) is None or not self._accepting_runs:
+                    continue
+                if (
+                    state is None
+                    or state.status in TERMINAL_STATUSES
+                    or state.status in PAUSED_STATUSES
+                ):
+                    continue
+                self._logger.info("agent_run_resumed_after_outage", run_id=run_id)
+                try:
+                    await self._schedule(run_id, tenant_id, credentials)
+                except ConflictError:
+                    pass  # already executing
 
     def _steering_data(self, messages: Sequence[SteeringMessage]) -> dict[str, Any]:
         """Event data for steering messages: ids and sizes, and text only with content on."""
@@ -755,10 +841,9 @@ class AgentRuntime:
                 await self.runs.save(state, expected)
                 await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
                 continue
-            target = self._recovery_status(state.status)
-            if target != state.status:
+            if self._recovery_status(state.status) != state.status:
                 expected = state.version
-                state.status = target
+                self._rewind_for_recovery(state)
                 state.updated_at = utc_now()
                 await self.runs.save(state, expected)
             await self._schedule(state.id, state.request.tenant_id)
@@ -809,6 +894,11 @@ class AgentRuntime:
     async def shutdown(self, grace_seconds: float = 10.0) -> None:
         """Stop accepting runs, drain active work, then cooperatively cancel leftovers."""
         self._accepting_runs = False
+        # Runs a store outage interrupted keep their checkpoints for the next start.
+        self._outage_runs.clear()
+        if self._outage_task is not None and not self._outage_task.done():
+            self._outage_task.cancel()
+            await asyncio.gather(self._outage_task, return_exceptions=True)
         tasks = tuple(task for task in self._tasks.values() if not task.done())
         if not tasks:
             return
@@ -892,12 +982,18 @@ class AgentRuntime:
             current = await self._require_state(run_id, tenant_id)
             if self._shutdown_cancellation and current.status not in TERMINAL_STATUSES:
                 expected = current.version
-                current.status = self._recovery_status(current.status)
+                self._rewind_for_recovery(current)
                 current.updated_at = utc_now()
                 await self.runs.save(current, expected)
             elif current.status not in TERMINAL_STATUSES:
                 await self._transition(current, RunStatus.CANCELLED)
                 await self._emit(current, "run.cancelled", {})
+        except StoreUnavailableError:
+            raise  # _drive_with_credentials keeps the run for a later drive
+        except RunConflictError:
+            # Another drive changed the run (a cancel, another process's recovery): it owns
+            # the run now, so this one stops without writing.
+            self._logger.warning("agent_run_superseded", run_id=run_id, tenant_id=tenant_id)
         except MeterRefusedError as exc:
             # The deployment's usage meter declined a model call: end the run with its reason,
             # without retrying or counting it against the provider.
@@ -3142,6 +3238,19 @@ class AgentRuntime:
             # remain hidden because they can disclose local module names and filesystem details.
             return str(exc)
         return f"Internal error ({type(exc).__name__})"
+
+    @classmethod
+    def _rewind_for_recovery(cls, state: RunState) -> None:
+        """Move an interrupted checkpoint back to where its next drive starts.
+
+        A model or tool step checkpoints its status (and its step count) before the call and
+        its result only after it, so the interrupted step is planned and counted again: its
+        first count is taken back, or a run interrupted repeatedly would use up its step budget
+        on replays. A parallel tool batch counts each call; one is taken back, never more.
+        """
+        if state.status in {RunStatus.INVOKING_MODEL, RunStatus.INVOKING_TOOL}:
+            state.step_count = max(0, state.step_count - 1)
+        state.status = cls._recovery_status(state.status)
 
     @staticmethod
     def _recovery_status(status: RunStatus) -> RunStatus:

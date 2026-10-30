@@ -92,6 +92,24 @@ class StorageSettings(StrictSettings):
     initialize_schema: bool = True
     postgres_min_pool_size: int = Field(default=1, ge=1)
     postgres_max_pool_size: int = Field(default=10, ge=1)
+    postgres_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="How long opening a PostgreSQL connection may take before the store call "
+        "fails with StoreUnavailableError.",
+    )
+    postgres_command_timeout_seconds: float | None = Field(
+        default=60.0,
+        gt=0,
+        description="How long one PostgreSQL store command may take before it fails with "
+        "StoreUnavailableError; None waits indefinitely. Migrations are not held to it.",
+    )
+    redis_socket_timeout_seconds: float | None = Field(
+        default=10.0,
+        gt=0,
+        description="How long connecting to Redis, or one Redis command, may take before it "
+        "fails with StoreUnavailableError; None waits indefinitely.",
+    )
     memory_retention_seconds: int = Field(default=86_400, ge=0)
     mcp_oauth_token_store: Literal["memory", "postgres"] = Field(
         default="memory",
@@ -145,6 +163,18 @@ class StorageSettings(StrictSettings):
             value = getattr(self, field_name)
             if value and not value.startswith("env://"):
                 raise ValueError(f"{field_name} must be an env:// secret reference")
+        # These PostgreSQL tables reference algen_agent_runtime_runs: with the runs elsewhere
+        # every write to them would fail its foreign key, at the first run.
+        run_bound = [
+            name
+            for name in ("event_store", "approval_store", "tool_execution_store")
+            if getattr(self, name) == "postgres"
+        ]
+        if run_bound and self.run_store != "postgres":
+            raise ValueError(
+                f"{', '.join(run_bound)} 'postgres' require run_store 'postgres': their rows "
+                "reference the run in PostgreSQL"
+            )
         if self.postgres_min_pool_size > self.postgres_max_pool_size:
             raise ValueError("postgres_min_pool_size cannot exceed postgres_max_pool_size")
         if self.postgres_schema is not None:
