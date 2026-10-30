@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-29 (Runtime `0.1.0a17` and unreleased changes)
+Last reviewed: 2026-10-30 (Runtime `0.1.0a18`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -78,10 +78,10 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
 
 ## P0 before a hardened single-node production claim
 
-Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2, 5 and 7 in the
-unreleased changes; each lists what is left for later. No P0 item remains open.
+Items 3, 4 and 6 are complete for the single-node scope as of `0.1.0a17`, and items 1, 2, 5 and 7 as
+of `0.1.0a18`; each lists what is left for later. No P0 item remains open.
 
-1. **Close persistence validation gaps.** *Done (single node, unreleased):* a drill suite
+1. **Close persistence validation gaps.** *Done (single node, `0.1.0a18`):* a drill suite
    (`tests/drills`, marker `drill`, run in CI by the `persistence-drills` job on throwaway
    PostgreSQL 17 and Redis 7 containers) builds real Runtime processes on live stores and covers
    first start on an empty database, restart on a migrated one and four concurrent first starts;
@@ -109,7 +109,7 @@ unreleased changes; each lists what is left for later. No P0 item remains open.
    run instead of retrying it; a published long-running soak (hours) with load and noisy-neighbor
    tenants; resuming outage-interrupted workflow and conversation drives in process (they are
    recovered by the next start).
-2. **Harden policy distribution and coverage.** *Done (unreleased):* policy bundles
+2. **Harden policy distribution and coverage.** *Done (`0.1.0a18`):* policy bundles
    (`policies.bundles`) carry declarative rules (denied tools, tools that need approval, deny and
    redact patterns per boundary) with their name, version, issue and expiry times inside a
    detached Ed25519 signature verified at start-up against `env://` or `file://` trusted keys;
@@ -192,7 +192,7 @@ unreleased changes; each lists what is left for later. No P0 item remains open.
    PostgreSQL. *Later:* exporter health probes (OTLP and Traccia report `unknown`); a
    `maintenance --workflows` CLI option; HTTP model services in readiness; a closed database that
    refuses reuse.
-7. **Bound every resource.** *Done:* request wire sizes, artifact sizes, API request rates, and
+7. **Bound every resource.** *Done (`0.1.0a18`):* request wire sizes, artifact sizes, API request rates, and
    in-flight run-creation requests are bounded for single-node deployments. Within a run,
    `max_calls_per_tool`, the repeat guard and the wrap-up notice bound tool use, and a host
    `UsageMeter` can enforce per-tenant model quotas. Each run is limited by `budget.max_model_calls`

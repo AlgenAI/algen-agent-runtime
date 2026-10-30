@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — pre-release (`0.1.0a17`)  
-Last reviewed: 2026-10-28
+Status: Active tracking — pre-release (`0.1.0a18`)  
+Last reviewed: 2026-10-30
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -19,7 +19,7 @@ production evidence rather than for the feature list.
 | --- | --- | --- |
 | `0.1.0a16` | Conversation streaming and approval pauses ([#50](https://github.com/AlgenAI/algen-agent-runtime/issues/50)); P0-6 readiness and lifecycle | Released; internal users start adopting |
 | `0.1.0a17` | P0-4 authentication options; P0-3 side-effect operations, each reviewed on its own | Released |
-| `0.1.0a18`+ | Remaining P0 items: network and plugin hardening, resource bounds, policy hardening, persistence drills | All P0 items complete |
+| `0.1.0a18` | Remaining P0 items: network and plugin hardening, resource bounds, policy hardening, persistence drills | Released; all P0 items complete for the single-node scope |
 | `0.2.0b1` … `0.2.0bN` | Beta: deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
@@ -49,14 +49,14 @@ A breaking change after `0.2.0b1` restarts the stability window.
 
 ## P0: hardened single-node production
 
-- [ ] All seven P0 items in [production readiness](production-readiness.md) are complete:
-  - [x] 1. Persistence drills against live stores (single node; unreleased).
-  - [x] 2. Policy distribution and adversarial coverage (unreleased).
+- [x] All seven P0 items in [production readiness](production-readiness.md) are complete:
+  - [x] 1. Persistence drills against live stores (single node; `0.1.0a18`).
+  - [x] 2. Policy distribution and adversarial coverage (`0.1.0a18`).
   - [x] 3. Side-effect reconciliation, operator resolution and compensation (`0.1.0a17`).
   - [x] 4. Authentication options (OIDC/JWKS, service identity, revocation, auth audit) (`0.1.0a17`).
   - [x] 5. Network, plugin and local-execution hardening (`0.1.0a18`).
   - [x] 6. Readiness and lifecycle (`0.1.0a16`).
-  - [x] 7. Resource bounds and retention (run limits, storage quotas, retention sweeps).
+  - [x] 7. Resource bounds and retention (`0.1.0a18`).
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated
       process failure. Schema upgrade and rollback (against `0.1.0a17`), restart-safe approvals and
