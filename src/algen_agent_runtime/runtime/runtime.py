@@ -2206,6 +2206,7 @@ class AgentRuntime:
             )
         state.request = state.request.model_copy(update={"attachments": checked})
         trace.get_current_span().set_attribute("agent.run.attachment_count", len(checked))
+        accepted = {item.artifact_id for item in checked}
         await self._audit(
             state,
             "run.attachments",
@@ -2218,7 +2219,7 @@ class AgentRuntime:
                         for key in ("artifact_id", "media_type", "size_bytes", "sha256")
                     }
                     for item in described
-                    if item["artifact_id"] in {kept_item.artifact_id for kept_item in checked}
+                    if item["artifact_id"] in accepted
                 ]
             },
         )
