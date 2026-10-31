@@ -37,7 +37,7 @@ class Idempotency(StrEnum):
 
 
 # The ToolContext values a tool's result can depend on, which it declares in ``cache_context``.
-CacheContextValue = Literal["tenant_id", "user_id", "run_id", "step_id"]
+CacheContextValue = Literal["tenant_id", "user_id", "session_id", "run_id", "step_id"]
 
 
 class ToolDefinition(BaseModel):
@@ -206,6 +206,8 @@ class ToolContext(BaseModel):
     user_id: str
     permissions: frozenset[str]
     idempotency_key: str
+    # The run's session (RunRequest.session_id), when it has one.
+    session_id: str | None = None
     secrets: Mapping[str, str] = Field(default_factory=dict)
     credentials: Mapping[str, str] = Field(
         default_factory=lambda: _NO_CREDENTIALS, repr=False, exclude=True

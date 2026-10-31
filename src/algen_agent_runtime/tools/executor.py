@@ -165,6 +165,7 @@ class ToolExecutor:
         cache_context = CacheContext(
             tenant_id=context.tenant_id,
             user_id=context.user_id,
+            session_id=context.session_id,
             run_id=context.run_id,
             authorization_fingerprint=",".join(sorted(context.permissions)),
         )

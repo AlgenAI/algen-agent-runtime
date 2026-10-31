@@ -7,15 +7,26 @@ import json
 from typing import Any
 
 import pytest
+from conftest import make_agent, make_runtime
 from pydantic import ValidationError
 
 from algen_agent_runtime.cache import CachePolicy, CacheScope, CacheService, InMemoryCacheStore
+from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.orchestration.describe import _tool as describe_tool
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.tools.authoring import build_tool, read
-from algen_agent_runtime.tools.contracts import Tool, ToolContext, ToolDefinition
+from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.types.contracts import (
+    FinishReason,
+    Message,
+    ModelResponse,
+    Role,
+    RunRequest,
+    RunStatus,
+    ToolCall,
+)
 
 BASE = ToolContext(
     run_id="run-1",
@@ -33,6 +44,7 @@ def _context(key: str, **changes: str) -> ToolContext:
 
 def _setup(
     cache_context: frozenset[Any] = frozenset(),
+    scope: CacheScope = CacheScope.TENANT,
 ) -> tuple[ToolExecutor, CacheService, list[Any]]:
     """A read tool that answers with who asked, behind a tenant-scoped tool-result cache."""
     calls: list[Any] = []
@@ -52,7 +64,7 @@ def _setup(
     registry = ToolRegistry()
     registry.register(Tool(definition, mine))
     cache = CacheService(
-        InMemoryCacheStore(), {"tool_results": CachePolicy(enabled=True, scope=CacheScope.TENANT)}
+        InMemoryCacheStore(), {"tool_results": CachePolicy(enabled=True, scope=scope)}
     )
     return ToolExecutor(registry, CompositePolicyEngine(), cache=cache), cache, calls
 
@@ -163,3 +175,79 @@ async def test_a_call_with_caller_credentials_still_bypasses_the_cache() -> None
 
     assert len(calls) == 2
     assert len(cache.store._items) == 0  # type: ignore[attr-defined]
+
+
+async def test_a_session_scope_caches_per_session() -> None:
+    executor, _, calls = _setup(scope=CacheScope.SESSION)
+
+    first = await executor.execute("sql.my_orders", ARGS, _context("k1", session_id="s1"))
+    again = await executor.execute("sql.my_orders", ARGS, _context("k2", session_id="s1"))
+    other = await executor.execute("sql.my_orders", ARGS, _context("k3", session_id="s2"))
+
+    assert not first.metadata.get("runtime_cache_hit")
+    assert again.metadata.get("runtime_cache_hit") is True
+    assert not other.metadata.get("runtime_cache_hit")
+    assert len(calls) == 2
+
+
+async def test_a_scope_the_call_cannot_fill_bypasses_the_cache_instead_of_failing() -> None:
+    """A run with no session, under a session scope, runs the tool every time (#79)."""
+    executor, _, calls = _setup(scope=CacheScope.SESSION)
+
+    first = await executor.execute("sql.my_orders", ARGS, _context("k1"))
+    again = await executor.execute("sql.my_orders", ARGS, _context("k2"))
+
+    assert first.value["user"] == "alice"
+    assert not again.metadata.get("runtime_cache_hit")
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("session_id", ["s1", None])
+async def test_a_run_with_a_session_scoped_tool_cache_completes(session_id: str | None) -> None:
+    """The run's session reaches the tool's context; with none the cache is skipped (#79)."""
+    seen: list[ToolContext] = []
+
+    def lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        seen.append(context)
+        return {"ok": True}
+
+    reply = ModelResponse(
+        message=Message.text(Role.ASSISTANT, ""),
+        tool_calls=(ToolCall(name="kb.lookup", arguments={}),),
+        finish_reason=FinishReason.TOOL_CALLS,
+        model="deterministic",
+        provider="mock",
+    )
+    runtime = make_runtime(
+        MockModelProvider([reply, "done"]), make_agent(enabled_tools=frozenset({"kb.lookup"}))
+    )
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="kb.lookup",
+                version="1",
+                description="Look something up",
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                side_effect=SideEffect.READ,
+            ),
+            lookup,
+        )
+    )
+    runtime.tool_executor = ToolExecutor(
+        runtime.tools,
+        runtime.policies,
+        cache=CacheService(
+            InMemoryCacheStore(),
+            {"tool_results": CachePolicy(enabled=True, scope=CacheScope.SESSION)},
+        ),
+    )
+
+    result = await runtime.run(
+        RunRequest(
+            agent="test-agent", input="go", tenant_id="t", user_id="u", session_id=session_id
+        )
+    )
+
+    assert result.status == RunStatus.COMPLETED
+    assert [context.session_id for context in seen] == [session_id]

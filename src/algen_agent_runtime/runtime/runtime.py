@@ -2426,6 +2426,7 @@ class AgentRuntime:
             user_id=state.request.user_id,
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
+            session_id=state.request.session_id,
             credentials=self._run_credentials(state.id),
         )
         context._note_sink = self._tool_note_sink(state, action, tool.definition.name)
