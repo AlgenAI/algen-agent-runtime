@@ -158,7 +158,14 @@ strings have their placeholders filled in as text.
 
 The tool's own permissions are granted, because the workflow author declared the call. Agent
 approvals do not apply to tool steps: put an `approval` node before a step whose tool changes
-things.
+things. A tool that requires approval (`requires_approval`, an MCP overlay's `approval: true`)
+runs only after an upstream `approval` node was approved or modified in the same run; a workflow
+with such a step and no approval node before it cannot start. Tool steps work the same in process
+and under `algen-agent-runtime serve`.
+
+An agent node's invalid JSON output (with `output_schema`) is repaired like a validation failure,
+up to `max_repairs`. Nodes with `pass_attachments: true` hand the run's files to their agent; see
+[attachments](attachments.md#8-workflows).
 
 ## Input Template Grammar
 

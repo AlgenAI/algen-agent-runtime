@@ -29,6 +29,12 @@ curl -X POST \
   'http://localhost:8000/v1/artifacts?name=candidate.pdf&media_type=application%2Fpdf'
 ```
 
+To give an agent a file to read (vision or PDF input), pass the artifact's id in
+`attachments` on the run, conversation message or workflow start: see
+[attachments](attachments.md). With `security.upload_scanner: basic` uploads are scanned as they
+arrive. `ArtifactLifecycleService.scan` records the `artifact.scan` audit event before it changes
+the status, so no artifact is available without scan evidence.
+
 Use an artifact ID in typed workflow inputs instead of base64 data. JSON Schema can identify these
 fields with `format: artifact` and constrain the accepted type with `contentMediaType`; Runtime
 treats those annotations as portable UI/host hints while the application hook resolves and validates
