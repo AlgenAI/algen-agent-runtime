@@ -138,6 +138,14 @@ class DocxDocumentExtractor:
                     message="The document contains images but no text; OCR review is required.",
                 )
             )
+        elif image_count:
+            findings.append(
+                DocumentSecurityFinding(
+                    kind="document.images_excluded",
+                    severity=FindingSeverity.LOW,
+                    message="Embedded images were excluded from downstream screening.",
+                )
+            )
         unique_findings, disposition = classify_findings(findings)
         return ExtractedDocument(
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -249,3 +257,8 @@ class DocxDocumentExtractor:
             text=text, page=1, font_size=size, color=color, suspicious=bool(findings)
         )
         return span, findings
+
+
+from algen_agent_runtime.security._moved import warn_moved  # noqa: E402
+
+warn_moved(__name__)

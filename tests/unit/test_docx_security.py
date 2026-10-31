@@ -142,6 +142,21 @@ def test_image_only_document_needs_ocr_review() -> None:
     assert [finding.kind for finding in extracted.findings] == ["document.ocr_required"]
 
 
+def test_text_with_images_reports_the_excluded_images() -> None:
+    """A cover note over a scanned invoice: the image was never read, and the result says so
+    (#81)."""
+    extracted = _extract(
+        _docx(
+            f"<w:p>{_run('Please see the attached invoice.')}</w:p>",
+            extra={"word/media/image1.png": b"\x89PNG"},
+        )
+    )
+
+    assert extracted.sanitized_text == "Please see the attached invoice."
+    assert [finding.kind for finding in extracted.findings] == ["document.images_excluded"]
+    assert extracted.disposition == DocumentDisposition.REVIEW
+
+
 @pytest.mark.parametrize(
     ("data", "message"),
     [

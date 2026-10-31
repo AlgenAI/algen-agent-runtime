@@ -286,3 +286,8 @@ class XlsxDocumentExtractor:
             if date_kind:
                 raw = _as_date(raw, date_kind, date1904)
         return normalize_document_text(raw)
+
+
+from algen_agent_runtime.security._moved import warn_moved  # noqa: E402
+
+warn_moved(__name__)

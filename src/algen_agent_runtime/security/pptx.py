@@ -115,6 +115,14 @@ class PptxDocumentExtractor:
                     message="The presentation contains images but no text; OCR review is required.",
                 )
             )
+        elif image_count:
+            findings.append(
+                DocumentSecurityFinding(
+                    kind="document.images_excluded",
+                    severity=FindingSeverity.LOW,
+                    message="Embedded images were excluded from downstream screening.",
+                )
+            )
         unique_findings, disposition = classify_findings(findings)
         return ExtractedDocument(
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -159,3 +167,8 @@ class PptxDocumentExtractor:
                 lines = _paragraphs(element)
                 (hidden if parent_hidden or _hidden(element) else visible).extend(lines)
         return visible, hidden
+
+
+from algen_agent_runtime.security._moved import warn_moved  # noqa: E402
+
+warn_moved(__name__)

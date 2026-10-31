@@ -349,4 +349,14 @@ def test_pptx_flagged_visible_text_with_images_does_not_need_ocr() -> None:
 
     kinds = {finding.kind for finding in extracted.findings}
     assert "document.ocr_required" not in kinds
+    assert "document.images_excluded" in kinds
     assert any(kind.startswith("prompt_injection") for kind in kinds)
+
+
+def test_pptx_text_over_an_image_reports_the_excluded_image() -> None:
+    deck = _pptx([_slide(_shape("Invoice 42"))], {"ppt/media/image1.png": b"\x89PNG"})
+
+    extracted = PptxDocumentExtractor().extract(deck, filename="d.pptx")
+
+    assert [finding.kind for finding in extracted.findings] == ["document.images_excluded"]
+    assert extracted.disposition == DocumentDisposition.REVIEW

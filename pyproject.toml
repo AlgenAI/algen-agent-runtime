@@ -130,6 +130,7 @@ pythonpath = ["."]
 filterwarnings = [
   "ignore:algen_agent_runtime.communications is deprecated:DeprecationWarning",
   "ignore:database_tool is deprecated:DeprecationWarning",
+  "ignore:algen_agent_runtime.security.[a-z_]+ is deprecated:DeprecationWarning",
 ]
 markers = [
   "adversarial: scripted agent runs where the model or a tool behaves maliciously",
