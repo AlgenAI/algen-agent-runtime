@@ -18,7 +18,7 @@ import jsonschema
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
-from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ToolNotAttemptedError
 from algen_agent_runtime.tools.contracts import (
     CacheContextValue,
     CompensationHandler,
@@ -407,6 +407,10 @@ class Toolkit:
     A plugin registers it with ``toolkit.register(context)``: the tools join the container, the
     toolkit becomes a container resource (its client opens at start or on first use and closes
     with the container) and its ``env`` names reach ``describe``.
+
+    A client that fails to open at start (a missing credential, an upstream outage) leaves the
+    service up and degraded, unless the toolkit is ``required``; until it opens, the toolkit's
+    calls are refused as not attempted.
     """
 
     def __init__(
@@ -416,8 +420,10 @@ class Toolkit:
         permission_prefix: str | None = None,
         env: Iterable[str] = (),
         client: ClientFactory | None = None,
+        required: bool = False,
     ) -> None:
         self.name = name
+        self.required = required
         self.permission_prefix = permission_prefix or name
         self.env = tuple(env)
         self._client_factory = client
@@ -450,8 +456,14 @@ class Toolkit:
             raise ConfigurationError(f"toolkit {self.name!r} has no client factory")
         async with self._client_lock:
             if self._client is None:
-                created = self._client_factory(self._secrets)
-                self._client = await created if inspect.isawaitable(created) else created
+                try:
+                    created = self._client_factory(self._secrets)
+                    self._client = await created if inspect.isawaitable(created) else created
+                except Exception as exc:
+                    # Nothing was sent: a call that needs the client did not happen.
+                    raise ToolNotAttemptedError(
+                        f"toolkit {self.name!r} is not available: {type(exc).__name__}"
+                    ) from exc
         return self._client
 
     def register(self, context: Any) -> None:

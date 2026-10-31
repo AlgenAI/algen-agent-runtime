@@ -174,6 +174,7 @@ from algen_agent_runtime.security.network import (
 )
 from algen_agent_runtime.security.outbound import build_outbound_network
 from algen_agent_runtime.semantics import SemanticLayerRegistry
+from algen_agent_runtime.tools.authoring import Toolkit
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
@@ -268,9 +269,19 @@ class Container:
         for resource in self.resources:
             start = getattr(resource, "start", None)
             if start is not None:
-                result = start()
-                if inspect.isawaitable(result):
-                    await result
+                try:
+                    result = start()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    # A toolkit that cannot open its client degrades like an MCP server: the
+                    # service serves the rest and the toolkit's calls are refused until it opens.
+                    if not isinstance(resource, Toolkit) or resource.required:
+                        raise
+                    logger.warning(
+                        "toolkit %r failed to start: %s", resource.name, type(exc).__name__
+                    )
+                    self.degraded_dependencies[f"toolkit.{resource.name}"] = str(exc)
         if self.mcp is not None:
             for server_name in self.mcp.server_names:
                 config = self.mcp.get_server(server_name)
