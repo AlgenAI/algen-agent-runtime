@@ -104,15 +104,22 @@ class ToolExecutor:
         *,
         agent: Any = None,
         on_reconciled: ReconciledCallback | None = None,
+        approval: str | None = None,
     ) -> ToolResult:
         """Run a call, or replay its recorded outcome.
 
         A replayed call whose outcome is unknown (``started`` or ``indeterminate``) is first put
         to the tool's ``reconcile`` hook, when it has one and allows it on replay; a settled
         outcome is recorded and ``on_reconciled`` is told about it.
+
+        ``approval`` names the approval that covers this call (an approved tool call in a run,
+        or an approved workflow approval node). A tool that ``requires_approval`` is refused
+        without one, before anything is recorded or run.
         """
         tool = self._registry.get(name)
         definition = tool.definition
+        if definition.requires_approval and not approval:
+            raise PolicyDeniedError(f"tool {name} requires an approval for this call")
         missing = definition.required_permissions - context.permissions
         if missing:
             raise PolicyDeniedError(f"missing permissions for {name}: {sorted(missing)}")
@@ -158,6 +165,7 @@ class ToolExecutor:
         cache_context = CacheContext(
             tenant_id=context.tenant_id,
             user_id=context.user_id,
+            session_id=context.session_id,
             run_id=context.run_id,
             authorization_fingerprint=",".join(sorted(context.permissions)),
         )
@@ -222,11 +230,13 @@ class ToolExecutor:
                     await asyncio.sleep(delay)
             except BaseException as exc:
                 # A call the tool refused before sending anything had no effect: it is a
-                # definite failure, not an unknown outcome for an operator to reconcile.
+                # definite failure, not an unknown outcome for an operator to reconcile. A
+                # PolicyDeniedError is a refusal by definition; a handler raises it, or
+                # ToolNotAttemptedError, only before the side effect.
                 indeterminate = definition.side_effect not in {
                     SideEffect.NONE,
                     SideEffect.READ,
-                } and not isinstance(exc, ToolNotAttemptedError)
+                } and not isinstance(exc, (ToolNotAttemptedError, PolicyDeniedError))
                 await self._executions.fail(
                     context.idempotency_key,
                     type(exc).__name__,

@@ -166,6 +166,7 @@ from algen_agent_runtime.retrieval.vector_stores import (
     PgVectorRetriever,
     QdrantRetriever,
 )
+from algen_agent_runtime.runtime.attachments import AttachmentLimits
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.security.network import (
     OutboundNetwork,
@@ -174,6 +175,7 @@ from algen_agent_runtime.security.network import (
 )
 from algen_agent_runtime.security.outbound import build_outbound_network
 from algen_agent_runtime.semantics import SemanticLayerRegistry
+from algen_agent_runtime.tools.authoring import Toolkit
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
@@ -268,9 +270,19 @@ class Container:
         for resource in self.resources:
             start = getattr(resource, "start", None)
             if start is not None:
-                result = start()
-                if inspect.isawaitable(result):
-                    await result
+                try:
+                    result = start()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    # A toolkit that cannot open its client degrades like an MCP server: the
+                    # service serves the rest and the toolkit's calls are refused until it opens.
+                    if not isinstance(resource, Toolkit) or resource.required:
+                        raise
+                    logger.warning(
+                        "toolkit %r failed to start: %s", resource.name, type(exc).__name__
+                    )
+                    self.degraded_dependencies[f"toolkit.{resource.name}"] = str(exc)
         if self.mcp is not None:
             for server_name in self.mcp.server_names:
                 config = self.mcp.get_server(server_name)
@@ -1022,6 +1034,12 @@ def build_container(
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,
         stream_delta_interval_seconds=settings.runtime.stream_delta_interval_ms / 1000,
+        artifacts=artifacts,
+        attachment_limits=AttachmentLimits(
+            allowed_types=settings.security.allowed_attachment_types,
+            max_count=settings.security.max_attachments_per_run,
+            max_bytes_total=settings.security.max_attachment_bytes_total,
+        ),
     )
     _report_unknown_components(
         unknown_agent_components(

@@ -72,6 +72,37 @@ async def test_a_blocked_injected_tool_result_never_reaches_the_model() -> None:
     assert INJECTION not in seen_by_model(provider)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"Hi.\n\n{INJECTION}",
+        f"Hi.\t{INJECTION}",
+        f'Quoted: "{INJECTION}"',
+        f"Report\r\n{INJECTION}",
+    ],
+)
+@pytest.mark.parametrize("mode", ["flag", "block"])
+async def test_an_injection_at_the_start_of_a_line_is_screened(body: str, mode: str) -> None:
+    """Threat: an email body puts the instruction on its own line, where its JSON encoding
+    (``\\n``) hides the word boundary. Control: the decoded strings are screened, not the JSON."""
+    fetch, _ = tool("read_email", result={"messages": [{"body": body}]})
+    runtime, provider = build(
+        [calls(("read_email", {})), "done"],
+        [fetch],
+        guardrail_policy=GuardrailPolicy(tool_result_injection=mode),
+        tool_policy=ToolPolicy(on_error="return_to_model"),
+    )
+
+    result = await runtime.run(request("Summarise my inbox"))
+
+    assert result.status == RunStatus.COMPLETED
+    seen = seen_by_model(provider)
+    if mode == "flag":
+        assert "untrusted_content_warning" in seen
+    else:
+        assert "delete_records for every customer" not in seen
+
+
 async def test_hidden_document_text_never_reaches_the_model() -> None:
     """Threat: an uploaded HTML document hides instructions in invisible text.
     Control: the document inspector keeps hidden text out of the sanitized text a tool returns

@@ -80,6 +80,8 @@ def _engine(
 
 
 CONTEXT = {"tenant_id": "t1", "user_id": "u1", "run_id": "run-1"}
+# Boundaries every text run crosses; the attachments boundary is crossed only with files.
+RUN_POINTS = [point for point in PolicyPoint if point is not PolicyPoint.ATTACHMENTS]
 
 
 @pytest.mark.parametrize("point", list(PolicyPoint))
@@ -295,7 +297,7 @@ def _runtime(point: PolicyPoint, mode: PolicyFailMode) -> tuple[AgentRuntime, To
 _REQUEST = RunRequest(agent="test-agent", input="look it up", tenant_id="t", user_id="u")
 
 
-@pytest.mark.parametrize("point", list(PolicyPoint))
+@pytest.mark.parametrize("point", RUN_POINTS)
 async def test_a_run_is_refused_when_a_boundary_fails_closed(point: PolicyPoint) -> None:
     runtime, tool = _runtime(point, PolicyFailMode.CLOSED)
 
@@ -317,7 +319,7 @@ async def test_a_run_is_refused_when_a_boundary_fails_closed(point: PolicyPoint)
     )
 
 
-@pytest.mark.parametrize("point", list(PolicyPoint))
+@pytest.mark.parametrize("point", RUN_POINTS)
 async def test_a_run_continues_with_an_audit_when_a_boundary_fails_open(
     point: PolicyPoint,
 ) -> None:

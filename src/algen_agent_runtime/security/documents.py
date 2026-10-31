@@ -376,3 +376,8 @@ def extractor_for(filename: str) -> DocumentExtractor:
     raise ValueError(
         "only PDF, DOCX, XLSX, PPTX, HTML, CSV, TSV, TXT, and Markdown documents are supported"
     )
+
+
+from algen_agent_runtime.security._moved import warn_moved  # noqa: E402
+
+warn_moved(__name__)

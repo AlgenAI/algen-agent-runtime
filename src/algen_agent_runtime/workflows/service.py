@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.exceptions.errors import (
+    CapabilityError,
     ConfigurationError,
     ConflictError,
     NotFoundError,
@@ -37,10 +38,13 @@ from algen_agent_runtime.exceptions.errors import (
 from algen_agent_runtime.plugins.signing import verify_module
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.security.network import create_safe_http_client
+from algen_agent_runtime.types.contracts import RunAttachment
 from algen_agent_runtime.workflows.contracts import (
+    TOOL_HANDLER_PREFIX,
     WorkflowExecutionState,
     WorkflowManifest,
     WorkflowStatus,
+    upstream_approval_nodes,
 )
 from algen_agent_runtime.workflows.engine import (
     MultiAgentWorkflowExecutor,
@@ -89,6 +93,8 @@ class WorkflowService:
                 "version": manifest.version,
                 "description": manifest.description,
                 "input_schema": manifest.input_schema,
+                # Whether a host should offer an attach control, and for which types.
+                "attachments": manifest.attachments.model_dump(mode="json"),
                 "available": self._trusted(manifest) is None,
             }
             for name, manifest in sorted(self._settings.workflows.items())
@@ -103,11 +109,16 @@ class WorkflowService:
         input_text: str | None = None,
         inputs: Mapping[str, Any] | None = None,
         workflow_id: str | None = None,
+        attachments: tuple[RunAttachment, ...] = (),
     ) -> WorkflowExecutionState:
         """Start a run of the workflow; it carries on in the background."""
         manifest = self._manifest(name)
         if problem := self._trusted(manifest):
             raise ConfigurationError(problem)
+        if problem := self._unapproved_tool_step(manifest):
+            raise ConfigurationError(problem)
+        if attachments and not manifest.attachments.enabled:
+            raise CapabilityError(f"workflow {name!r} does not accept attachments")
         self._require_open()
         executor = await self._executor(name)
         run_id = workflow_id or str(uuid4())
@@ -122,6 +133,7 @@ class WorkflowService:
                 user_id=user_id,
                 workflow_id=run_id,
                 owner=OWNER,
+                attachments=attachments,
             ),
             name,
             (tenant_id, run_id),
@@ -352,6 +364,26 @@ class WorkflowService:
             except ConfigurationError as error:
                 self._signatures[module] = str(error)
         return self._signatures[module]
+
+    def _unapproved_tool_step(self, manifest: WorkflowManifest) -> str | None:
+        """Why the manifest cannot start: a ``tool:`` step on an approval-required tool with no
+        approval node upstream. Checked before the first node runs, not when that step is due."""
+        nodes = {node.id: node for node in manifest.nodes}
+        tools = self._container.runtime.tools
+        for node in manifest.nodes:
+            if not (node.handler or "").startswith(TOOL_HANDLER_PREFIX):
+                continue
+            try:
+                tool = tools.get((node.handler or "").removeprefix(TOOL_HANDLER_PREFIX))
+            except NotFoundError:
+                continue
+            if tool.definition.requires_approval and not upstream_approval_nodes(nodes, node.id):
+                return (
+                    f"workflow {manifest.name!r} step {node.id!r} calls "
+                    f"{tool.definition.name!r}, which requires approval, but no approval node "
+                    "comes before it"
+                )
+        return None
 
     async def _executor(self, name: str) -> MultiAgentWorkflowExecutor:
         async with self._ready:

@@ -36,6 +36,10 @@ class Secrets(ToneGuard):
     name = "secrets"
 
 
+class DeploymentGuard(ToneGuard):
+    name = "deployment_guard"
+
+
 async def warehouse_query(node: Any, inputs: dict[str, Any], context: Any) -> Any:
     raise AssertionError("not called in these tests")
 
@@ -65,6 +69,9 @@ def _bad(register: Any) -> type:
 def acme(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     module = types.ModuleType("acme.pack")
     module.PackPlugin = PackPlugin  # type: ignore[attr-defined]
+    module.MandatoryGuard = _bad(  # type: ignore[attr-defined]
+        lambda c: c.policies.register(DeploymentGuard(), mandatory=True)
+    )
     module.ReplacesSecrets = _bad(lambda c: c.policies.register(Secrets()))  # type: ignore[attr-defined]
     module.ReplacesRank = _bad(lambda c: c.analytical_nodes.register("rank", warehouse_query))  # type: ignore[attr-defined]
     module.UnknownKind = _bad(lambda c: c.analytical_nodes.register("forecast", warehouse_query))  # type: ignore[attr-defined]
@@ -105,6 +112,19 @@ async def test_a_plugin_policy_guards_the_agents_that_name_it() -> None:
 
     assert decision.action == PolicyAction.DENY
     assert container.component_sources["policies"] == {"tone_guard": "acme.pack:PackPlugin"}
+
+
+async def test_a_plugin_mandatory_policy_guards_agents_that_do_not_name_it() -> None:
+    settings = _settings("MandatoryGuard")
+    container = build_container(settings)
+    agent = settings.agents[0]
+
+    decision = await container.runtime.policies.evaluate("input", "please shout", {"agent": agent})
+
+    assert decision.action == PolicyAction.DENY
+    assert container.component_sources["policies"] == {
+        "deployment_guard": "acme.pack:MandatoryGuard"
+    }
 
 
 @pytest.mark.parametrize(

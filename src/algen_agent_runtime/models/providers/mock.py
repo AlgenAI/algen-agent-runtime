@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator, Callable, Sequence
 
+from algen_agent_runtime.runtime.attachments import rendered_text
 from algen_agent_runtime.types.contracts import (
     FinishReason,
     Message,
@@ -52,7 +53,7 @@ class MockModelProvider:
             await asyncio.sleep(self._delay)
         if self._handler:
             return self._handler(request)
-        item = self._responses.pop(0) if self._responses else request.messages[-1].text_content
+        item = self._responses.pop(0) if self._responses else rendered_text(request.messages[-1])
         if isinstance(item, ModelResponse):
             return item
         return ModelResponse(

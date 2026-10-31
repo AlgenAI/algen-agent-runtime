@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass
@@ -64,6 +64,7 @@ from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     BudgetExceededError,
+    CapabilityError,
     ConfigurationError,
     ConflictError,
     MCPNotConnectedError,
@@ -96,6 +97,7 @@ from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
+from algen_agent_runtime.runtime import attachments as run_attachments
 from algen_agent_runtime.runtime.guards import (
     REPEATED,
     call_key,
@@ -133,9 +135,12 @@ from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
+    Artifact,
+    ArtifactStatus,
     Budget,
     ContextCompaction,
     ErrorKind,
+    FileBlock,
     FinishReason,
     LoadedSkills,
     Message,
@@ -157,7 +162,13 @@ from algen_agent_runtime.types.contracts import (
     WorkingStateUpdate,
     utc_now,
 )
-from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
+from algen_agent_runtime.types.interfaces import (
+    ArtifactStore,
+    AuditLog,
+    EventPublisher,
+    MemoryStore,
+    RunStore,
+)
 from algen_agent_runtime.verification.verifiers import VerificationService
 
 # Events recorded even past ``Budget.max_events``: they end or pause the run, or say why.
@@ -268,6 +279,32 @@ class _UnknownToolError(Exception):
     """A model called a tool that does not exist; it is told so instead of the run failing."""
 
 
+def _decoded_strings(value: Any) -> Iterator[str]:
+    """Every string in a decoded JSON value, keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _decoded_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _decoded_strings(item)
+
+
+def _contains_instruction_override(text: str) -> bool:
+    """Screen the strings a JSON tool result holds, not their encoding.
+
+    ``json.dumps`` turns a newline into the two characters backslash and ``n``, so an instruction
+    at the start of a line would follow a word character and slip past a ``\\b`` pattern.
+    """
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return looks_like_instruction_override(text)
+    return any(looks_like_instruction_override(item) for item in _decoded_strings(value))
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -294,6 +331,8 @@ class AgentRuntime:
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
         stream_delta_interval_seconds: float = 0.0,
+        artifacts: ArtifactStore | None = None,
+        attachment_limits: run_attachments.AttachmentLimits | None = None,
     ) -> None:
         self.agents = agents
         self.router = router
@@ -312,6 +351,9 @@ class AgentRuntime:
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
         self.context_artifacts = context_artifacts
+        # Where a run's attachments are read from (the uploads behind POST /v1/artifacts).
+        self.artifacts = artifacts
+        self.attachment_limits = attachment_limits or run_attachments.AttachmentLimits()
         self.learned_memory = (
             LearnedMemoryService(learned_memory_store, self._memory_context)
             if learned_memory_store is not None
@@ -1089,6 +1131,8 @@ class AgentRuntime:
             )
             if isinstance(checked_input, str) and checked_input != state.request.input:
                 state.request = state.request.model_copy(update={"input": checked_input})
+            if state.request.attachments:
+                await self._validate_attachments(state, agent)
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
         while state.status not in TERMINAL_STATUSES and state.status not in {
             RunStatus.AWAITING_APPROVAL,
@@ -1118,7 +1162,11 @@ class AgentRuntime:
                             "after_retrieval",
                             state.context_history,
                             state,
-                            {"agent": agent, "operation": "context_history"},
+                            {
+                                "agent": agent,
+                                "operation": "context_history",
+                                "tool_output_schema": self._tool_output_schema,
+                            },
                         )
                         if not isinstance(checked_history, list) or not all(
                             isinstance(message, Message) for message in checked_history
@@ -1151,7 +1199,10 @@ class AgentRuntime:
                             tuple(round(item.score, 4) for item in state.citations[:20]),
                         )
                 checked_messages = await self._policy_value(
-                    "after_retrieval", state.messages, state, {"agent": agent}
+                    "after_retrieval",
+                    state.messages,
+                    state,
+                    {"agent": agent, "tool_output_schema": self._tool_output_schema},
                 )
                 if isinstance(checked_messages, list):
                     state.messages = checked_messages
@@ -1504,7 +1555,12 @@ class AgentRuntime:
             )
         await self._transition(state, RunStatus.INVOKING_MODEL)
         request = self._model_request(state, agent, state.messages)
-        checked_request = await self._policy_value("before_model", request, state, {"agent": agent})
+        checked_request = await self._policy_value(
+            "before_model",
+            request,
+            state,
+            {"agent": agent, "tool_output_schema": self._tool_output_schema},
+        )
         if isinstance(checked_request, ModelRequest):
             request = checked_request
         await self._emit(state, "model.started", {}, action.id)
@@ -1678,10 +1734,22 @@ class AgentRuntime:
         step_id: str,
     ) -> Any:
         last_error: Exception | None = None
+        profiles = run_attachments.with_capabilities(
+            profiles,
+            run_attachments.required_capabilities(
+                block.media_type or ""
+                for message in request.messages
+                for block in message.content
+                if isinstance(block, FileBlock)
+            ),
+        )
         for attempt in range(agent.retry_policy.max_attempts):
             meter_call = self._meter_call(
                 state, agent, step_id=step_id, purpose="step", attempt=attempt
             )
+            # Files travel by reference until here: the bytes are loaded onto this copy only,
+            # for this attempt (a retry may have changed the request).
+            wire = await run_attachments.resolve(request, state.request.tenant_id, self.artifacts)
             try:
                 if request.stream:
                     text_parts: list[str] = []
@@ -1695,7 +1763,7 @@ class AgentRuntime:
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
                         self.router.stream(
-                            request, profiles, agent.model_allowlist, meter_call=meter_call
+                            wire, profiles, agent.model_allowlist, meter_call=meter_call
                         )
                     ) as events:
                         async for event in events:
@@ -1741,7 +1809,7 @@ class AgentRuntime:
                         self._record_model_usage(state, completed)
                         raise
                 response = await self.router.generate(
-                    request, profiles, agent.model_allowlist, meter_call=meter_call
+                    wire, profiles, agent.model_allowlist, meter_call=meter_call
                 )
                 await self._check_response_size(state, agent, response)
                 try:
@@ -1873,6 +1941,12 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _cost_exhausted(cost: float, limit: float) -> bool:
+        """A limit of 0 allows zero-cost models and stops at any spend; otherwise the run stops
+        once its estimated cost reaches the limit."""
+        return cost > 0 if limit <= 0 else cost >= limit
+
+    @staticmethod
     def _step_limit(state: RunState, agent: AgentDefinition) -> int:
         return agent.max_steps + state.continuation_count * agent.continuation_policy.step_increment
 
@@ -1892,7 +1966,7 @@ class AgentRuntime:
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             return "model_tokens"
-        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+        if cls._cost_exhausted(usage.estimated_cost_usd, cls._cost_limit(state, agent)):
             return "estimated_cost"
         return None
 
@@ -1902,7 +1976,7 @@ class AgentRuntime:
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             raise BudgetExceededError("model_tokens budget exhausted", limit="model_tokens")
-        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+        if cls._cost_exhausted(usage.estimated_cost_usd, cls._cost_limit(state, agent)):
             raise BudgetExceededError("estimated_cost budget exhausted", limit="estimated_cost")
 
     async def _continue_or_pause(
@@ -2093,6 +2167,69 @@ class AgentRuntime:
         await self._record_tool_call(state, agent, action, tool, outcome)
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
+
+    async def _validate_attachments(self, state: RunState, agent: AgentDefinition) -> None:
+        """Refuse a run whose files the agent, the deployment or its models cannot take, before
+        any model call; record their real media types on the request."""
+        checked = await run_attachments.validate(
+            state.request, agent, self.artifacts, self.attachment_limits
+        )
+        described = []
+        for item in checked:
+            descriptor = (
+                await self.artifacts.describe(item.artifact_id, state.request.tenant_id)
+                if self.artifacts is not None
+                else None
+            )
+            described.append(
+                {
+                    "artifact_id": item.artifact_id,
+                    "media_type": item.media_type,
+                    "name": descriptor.name if descriptor else None,
+                    "size_bytes": descriptor.size_bytes if descriptor else None,
+                    "sha256": descriptor.sha256 if descriptor else None,
+                }
+            )
+        kept = await self._policy_value("attachments", described, state, {"agent": agent})
+        if isinstance(kept, list):
+            # A policy may drop files, never add one.
+            ids = {item.get("artifact_id") for item in kept if isinstance(item, dict)}
+            checked = tuple(item for item in checked if item.artifact_id in ids)
+        needed = run_attachments.required_capabilities(item.media_type or "" for item in checked)
+        profiles = run_attachments.with_capabilities(
+            (agent.default_model, *agent.fallback_models), needed
+        )
+        if checked and not await self.router.candidates(profiles, agent.model_allowlist):
+            raise CapabilityError(
+                f"no model configured for agent {agent.name!r} can read the attachments "
+                f"(needs {', '.join(sorted(needed))})"
+            )
+        state.request = state.request.model_copy(update={"attachments": checked})
+        trace.get_current_span().set_attribute("agent.run.attachment_count", len(checked))
+        accepted = {item.artifact_id for item in checked}
+        await self._audit(
+            state,
+            "run.attachments",
+            "accepted",
+            state.id,
+            {
+                "attachments": [
+                    {
+                        key: item[key]
+                        for key in ("artifact_id", "media_type", "size_bytes", "sha256")
+                    }
+                    for item in described
+                    if item["artifact_id"] in accepted
+                ]
+            },
+        )
+
+    def _tool_output_schema(self, name: str) -> dict[str, Any] | None:
+        """A registered tool's output schema, for policies reading its results in history."""
+        try:
+            return self.tools.get(name).definition.output_schema
+        except NotFoundError:
+            return None
 
     def _registered(self, name: str) -> bool:
         """Whether any tool, or a tool the Runtime runs itself, has this name."""
@@ -2400,9 +2537,21 @@ class AgentRuntime:
             user_id=state.request.user_id,
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
+            session_id=state.request.session_id,
+            attachments=state.request.attachments,
             credentials=self._run_credentials(state.id),
         )
         context._note_sink = self._tool_note_sink(state, action, tool.definition.name)
+        if state.request.attachments and self.artifacts is not None:
+            artifacts, tenant_id = self.artifacts, state.request.tenant_id
+
+            async def load(artifact_id: str) -> Artifact | None:
+                artifact = await artifacts.get(artifact_id, tenant_id)
+                if artifact is None or artifact.status is not ArtifactStatus.AVAILABLE:
+                    return None
+                return artifact
+
+            context._attachment_loader = load
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
         memory_receipt: MemoryReceipt | None = None
@@ -2429,6 +2578,11 @@ class AgentRuntime:
                     context,
                     agent=agent,
                     on_reconciled=lambda record: self._announce_replay_reconciled(state, record),
+                    # Planning asked for this call's approval (side_effects is mandatory), so an
+                    # approval-required tool reaches here only once its call was approved.
+                    approval=(
+                        f"tool_call:{call_id}" if call_id in state.approved_tool_call_ids else None
+                    ),
                 )
                 tool_text = json.dumps(result.value, default=str)
                 if tool.definition.name in MEMORY_PERMISSIONS:
@@ -2942,7 +3096,7 @@ class AgentRuntime:
     ) -> str:
         """Treat instruction-like tool output as untrusted data, or refuse it."""
         mode = agent.guardrail_policy.tool_result_injection
-        if mode == "off" or not looks_like_instruction_override(text):
+        if mode == "off" or not _contains_instruction_override(text):
             return text
         await self._emit(
             state,
@@ -3058,11 +3212,17 @@ class AgentRuntime:
                     state.request.input,
                     state.output_text or "",
                     agent.memory_policy.tool_payload_max_chars,
+                    user_message=run_attachments.user_message(state.request),
                 )
             else:
-                persisted = [Message.text(Role.USER, state.request.input)]
+                persisted = [run_attachments.user_message(state.request)]
                 if state.output_text:
                     persisted.append(Message.text(Role.ASSISTANT, state.output_text))
+            if state.request.attachments and agent.attachments.retention == "turn":
+                # Later turns see a note, not the file: it is not re-sent and billed again.
+                persisted = await run_attachments.retire(
+                    persisted, state.request.tenant_id, self.artifacts
+                )
             checked_memory = await self._policy_value(
                 "before_memory_write", persisted, state, {"agent": agent}
             )

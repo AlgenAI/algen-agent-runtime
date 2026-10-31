@@ -56,14 +56,10 @@ class ArtifactLifecycleService:
                 f"artifact {artifact_id!r} is {artifact.status.value}, expected pending_scan"
             )
         result = await scanner.scan(artifact)
-        updated = await self._store.set_status(
-            artifact_id,
-            tenant_id,
-            result.status,
-            expected_status=ArtifactStatus.PENDING_SCAN,
-        )
-        if updated is None:
-            raise ConflictError(f"artifact {artifact_id!r} changed while scan completed")
+        scanned = artifact.descriptor()
+        # Evidence first, then publish: an artifact is never available (or quarantined) without
+        # a durable record of the scan. If publishing fails the artifact stays pending_scan and
+        # the scan can be retried; the extra evidence row is harmless.
         await self._audit.append(
             AuditEvent(
                 action="artifact.scan",
@@ -75,9 +71,28 @@ class ArtifactLifecycleService:
                     "scanner": result.scanner,
                     "scanner_version": result.scanner_version,
                     "reason_code": result.reason_code,
-                    "sha256": updated.sha256,
-                    "size_bytes": updated.size_bytes,
+                    "sha256": scanned.sha256,
+                    "size_bytes": scanned.size_bytes,
                 },
             )
         )
+        updated = await self._store.set_status(
+            artifact_id,
+            tenant_id,
+            result.status,
+            expected_status=ArtifactStatus.PENDING_SCAN,
+        )
+        if updated is None:
+            # The evidence above describes a scan that did not decide the artifact's state.
+            await self._audit.append(
+                AuditEvent(
+                    action="artifact.scan.discarded",
+                    outcome="conflict",
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    resource_id=artifact_id,
+                    metadata={"scanner": result.scanner},
+                )
+            )
+            raise ConflictError(f"artifact {artifact_id!r} changed while scan completed")
         return updated

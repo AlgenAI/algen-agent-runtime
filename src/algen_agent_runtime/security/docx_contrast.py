@@ -116,3 +116,8 @@ def is_invisible(text_color: int | None, background: int) -> bool:
         return False
     lighter, darker = sorted((_luminance(text_color), _luminance(background)), reverse=True)
     return (lighter + 0.05) / (darker + 0.05) < _INVISIBLE_RATIO
+
+
+from algen_agent_runtime.security._moved import warn_moved  # noqa: E402
+
+warn_moved(__name__)

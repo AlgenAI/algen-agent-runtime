@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from algen_agent_runtime.config.settings import AppSettings
-from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ToolNotAttemptedError
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.orchestration.describe import describe_components
 from algen_agent_runtime.plugins.sdk import PluginManifest, plugin
@@ -347,6 +347,36 @@ async def test_a_toolkit_registers_through_a_plugin_and_shares_one_client(
 
     [client] = FakeClient.instances
     assert client.closed is True
+
+
+async def test_a_toolkit_that_cannot_open_its_client_degrades_the_service(
+    crm_settings: AppSettings,
+) -> None:
+    """A missing credential at start: the service comes up degraded, and the toolkit's calls
+    are refused as not attempted rather than crashing the boot (#83 item 10)."""
+    container = build_container(crm_settings, environment={})
+    await container.astart()
+    try:
+        assert "toolkit.crm" in container.degraded_dependencies
+        _ready, body = await container.readiness_report()
+        assert "toolkit.crm" in str(body)
+        executor = ToolExecutor(container.tools, CompositePolicyEngine())
+        with pytest.raises(ToolNotAttemptedError, match="toolkit 'crm' is not available"):
+            await executor.execute(
+                "crm.find_account", {"domain": "acme.com"}, fake_tool_context(find_account)
+            )
+    finally:
+        await container.aclose()
+
+
+async def test_a_required_toolkit_that_cannot_start_stops_the_service(
+    crm_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(crm, "required", True)
+    container = build_container(crm_settings, environment={})
+    with pytest.raises(ToolNotAttemptedError):
+        await container.astart()
+    await container.aclose()
 
 
 def test_authored_tools_meet_the_tool_contract() -> None:

@@ -1,5 +1,10 @@
 # Untrusted document inspection
 
+> **Deprecated in 0.1.0a19.** The extractors are moving to `algen-agent-tools`
+> (`algen_agent_tools.documents`, AlgenAI/algen-agent-tools#36). Importing these modules from the
+> Runtime raises a `DeprecationWarning`. They keep working for at least one more release; switch
+> imports once `algen-agent-tools` ships them.
+
 `algen_agent_runtime.security.documents.extractor_for(filename)` returns an extractor that turns an
 uploaded document into text a model can safely read. Every extractor returns an `ExtractedDocument`:
 the full `text`, a `sanitized_text` holding only what a reader would see, per-span evidence, security
@@ -47,6 +52,9 @@ visible body: scripts, styles, templates, the head and comments are never extrac
   Comments, tracked deletions and field codes are never extracted.
 - **Images without text** raise `document.ocr_required`; the Runtime does not run OCR. A deck
   counts as having text when any visible text was extracted, even text flagged as an instruction.
+- **Images beside text** raise `document.images_excluded` (`low`) in PDF, DOCX and PPTX: the
+  images were not read, so a cover note over a scanned invoice is not mistaken for the whole
+  document. Such a document is `review`, not `pass`.
 
 `classify_findings` derives the disposition: any `high` or `critical` finding quarantines the
 document, any other finding asks for review. `redact_pii` removes contact details, configured

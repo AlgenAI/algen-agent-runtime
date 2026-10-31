@@ -263,7 +263,7 @@ class RuntimePluginContext:
             "policies",
             self.sources,
             names=policies.list,
-            key=lambda policy: policy.name,
+            key=lambda policy, **_: policy.name,
             add=policies.register,
         )
         self.analytical_nodes = AnalyticalNodeRegistrar(analytical_nodes, self.sources)

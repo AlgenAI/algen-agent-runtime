@@ -51,7 +51,9 @@ class CacheService:
         policy = self.policy(policy_name)
         if not policy.enabled:
             return None
-        key = self._key(policy_name, namespace, material, context, policy)
+        key = self._key_or_bypass(policy_name, namespace, material, context, policy)
+        if key is None:
+            return None
         attributes = self._attributes(policy_name, namespace, policy)
         started = monotonic()
         with self._tracer.start_as_current_span("cache.get", attributes=attributes) as span:
@@ -93,7 +95,9 @@ class CacheService:
         if len(encoded) > policy.maximum_value_bytes:
             self._operations.add(1, {**attributes, "cache.outcome": "oversize"})
             return False
-        key = self._key(policy_name, namespace, material, context, policy)
+        key = self._key_or_bypass(policy_name, namespace, material, context, policy)
+        if key is None:
+            return False
         safe_tags = tuple(self._digest(tag) for tag in tags)
         started = monotonic()
         with self._tracer.start_as_current_span("cache.set", attributes=attributes) as span:
@@ -132,7 +136,9 @@ class CacheService:
         policy = self.policy(policy_name)
         if not policy.enabled:
             return await loader(), False
-        key = self._key(policy_name, namespace, material, context, policy)
+        key = self._key_or_bypass(policy_name, namespace, material, context, policy)
+        if key is None:
+            return await loader(), False
         owner = False
         async with self._inflight_lock:
             future = self._inflight.get(key)
@@ -170,6 +176,31 @@ class CacheService:
                 span.record_exception(exc)
                 self._logger.warning("cache_invalidation_failed", error_type=type(exc).__name__)
                 return 0
+
+    def _key_or_bypass(
+        self,
+        policy_name: str,
+        namespace: str,
+        material: Any,
+        context: CacheContext,
+        policy: CachePolicy,
+    ) -> str | None:
+        """The key, or None when the context cannot fill the policy's scope (a ``session``
+        scope for a call with no session, say): the call bypasses the cache, it never fails."""
+        try:
+            return self._key(policy_name, namespace, material, context, policy)
+        except ValueError as exc:
+            self._operations.add(
+                1,
+                {**self._attributes(policy_name, namespace, policy), "cache.outcome": "bypass"},
+            )
+            self._logger.debug(
+                "cache_scope_unavailable",
+                namespace=self._namespace(namespace),
+                scope=policy.scope.value,
+                reason=str(exc),
+            )
+            return None
 
     def _key(
         self,

@@ -29,6 +29,10 @@ class PolicyPoint(StrEnum):
     FINAL_RESPONSE = "final_response"
     BEFORE_MEMORY_WRITE = "before_memory_write"
     AFTER_MEMORY_WRITE = "after_memory_write"
+    # The run's attachments, as a list of {artifact_id, media_type, name, size_bytes, sha256}
+    # (never their content), before any model call: deny to refuse the run, transform to keep
+    # a subset. Only policies that name this point see it.
+    ATTACHMENTS = "attachments"
 
 
 class PolicyDecision(BaseModel):

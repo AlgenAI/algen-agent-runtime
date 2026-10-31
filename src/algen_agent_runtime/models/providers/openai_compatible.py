@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -12,9 +13,11 @@ import httpx
 
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import ProviderError
+from algen_agent_runtime.runtime.attachments import describe_for_text
 from algen_agent_runtime.security.redaction import redact
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
+    FileBlock,
     FinishReason,
     Message,
     ModelCapabilities,
@@ -237,6 +240,22 @@ class OpenAICompatibleProvider:
         }
         return matches.pop() if len(matches) == 1 else name
 
+    def _file_part(self, block: FileBlock) -> dict[str, Any]:
+        """An attached file as a content part: images as data URLs, PDFs as ``file`` parts
+        where the API takes them (``files`` capability), anything else as a short note."""
+        if block.content is None:
+            return {"type": "text", "text": describe_for_text(block)}
+        data = base64.b64encode(block.content).decode("ascii")
+        url = f"data:{block.media_type};base64,{data}"
+        if (block.media_type or "").startswith("image/"):
+            return {"type": "image_url", "image_url": {"url": url}}
+        if block.media_type == "application/pdf" and self._capabilities.files:
+            return {
+                "type": "file",
+                "file": {"filename": block.name or f"{block.artifact_id}.pdf", "file_data": url},
+            }
+        return {"type": "text", "text": describe_for_text(block)}
+
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         messages = []
         for message in request.messages:
@@ -248,6 +267,8 @@ class OpenAICompatibleProvider:
                 elif block.type == "image":
                     url = block.url or f"data:{block.media_type};base64,{block.data}"
                     blocks.append({"type": "image_url", "image_url": {"url": url}})
+                elif block.type == "file":
+                    blocks.append(self._file_part(block))
             if len(blocks) > 1 or any(block["type"] != "text" for block in blocks):
                 content = blocks
             item: dict[str, Any] = {"role": message.role.value, "content": content}

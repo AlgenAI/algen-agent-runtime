@@ -12,9 +12,21 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
-from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError, NotFoundError
+from algen_agent_runtime.exceptions.errors import (
+    CapabilityError,
+    ConfigurationError,
+    ConflictError,
+    NotFoundError,
+    VerificationError,
+)
 from algen_agent_runtime.tools.contracts import ToolContext
-from algen_agent_runtime.types.contracts import RequestOverrides, RunRequest, RunStatus, utc_now
+from algen_agent_runtime.types.contracts import (
+    RequestOverrides,
+    RunAttachment,
+    RunRequest,
+    RunStatus,
+    utc_now,
+)
 from algen_agent_runtime.workflows.contracts import (
     TOOL_HANDLER_PREFIX,
     NodeHandler,
@@ -32,6 +44,7 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowNodeStatus,
     WorkflowPredicate,
     WorkflowStatus,
+    upstream_approval_nodes,
 )
 from algen_agent_runtime.workflows.store import (
     InMemoryWorkflowCheckpointStore,
@@ -167,7 +180,19 @@ class MultiAgentWorkflowExecutor:
         workflow_ancestry: tuple[str, ...] = (),
         emit: WorkflowEventSink | None = None,
         owner: str | None = None,
+        attachments: tuple[RunAttachment, ...] = (),
     ) -> WorkflowExecutionState:
+        """Start a run. ``attachments`` (files, by artifact reference) go to the agents of
+        nodes that set ``pass_attachments``; the workflow must accept them."""
+        if attachments:
+            policy = manifest.attachments
+            if not policy.enabled:
+                raise CapabilityError(f"workflow {manifest.name!r} does not accept attachments")
+            if len(attachments) > policy.max_count:
+                raise CapabilityError(
+                    f"{len(attachments)} attachments; workflow {manifest.name!r} takes at most "
+                    f"{policy.max_count}"
+                )
         if workflow_depth > self._maximum_workflow_depth:
             raise ConfigurationError(
                 f"workflow nesting exceeds maximum depth {self._maximum_workflow_depth}"
@@ -192,6 +217,7 @@ class MultiAgentWorkflowExecutor:
             deadline_at=utc_now() + timedelta(seconds=manifest.timeout_seconds),
             values=dict(values),
             nodes={node.id: WorkflowNodeExecution(node_id=node.id) for node in manifest.nodes},
+            attachments=attachments,
         )
         await self._store.create(state)
         state.status = WorkflowStatus.RUNNING
@@ -1031,7 +1057,7 @@ class MultiAgentWorkflowExecutor:
             elif node.kind == WorkflowNodeKind.HANDLER:
                 async with semaphore:
                     if (node.handler or "").startswith(TOOL_HANDLER_PREFIX):
-                        result = await self._call_tool_step(state, node)
+                        result = await self._call_tool_step(state, node, nodes)
                     else:
                         result = await self._call(
                             self._hooks.handler(node.handler or ""), self._context(state, node)
@@ -1401,6 +1427,7 @@ class MultiAgentWorkflowExecutor:
     ) -> Any:
         invalid: Any = None
         validation_error: str | None = None
+        decode_failed = False
         parent_run_id = self._parent_run_id(state, node)
         for attempt in range(node.max_repairs + 1):
             hook_context = self._context(
@@ -1438,6 +1465,7 @@ class MultiAgentWorkflowExecutor:
                 ),
                 tenant_id=state.tenant_id,
                 user_id=state.user_id,
+                attachments=state.attachments if node.pass_attachments else (),
                 conversation_id=state.conversation_id,
                 turn_id=state.turn_id,
                 correlation_id=state.correlation_id or state.id,
@@ -1470,21 +1498,25 @@ class MultiAgentWorkflowExecutor:
             state.nodes[node.id].attempts += 1
             if result.status != RunStatus.COMPLETED:
                 raise RuntimeError(result.error or f"agent {node.agent!r} failed")
+            structured = node.output_schema is not None or node.output_schema_hook is not None
             try:
-                structured = node.output_schema is not None or node.output_schema_hook is not None
                 value = json.loads(result.output or "null") if structured else result.output
             except json.JSONDecodeError as exc:
-                raise ConfigurationError(
-                    f"agent {node.agent!r} returned invalid structured output"
-                ) from exc
-            if not node.validator:
-                return value
-            validation_error = await self._call(
-                self._hooks.validator(node.validator), value, hook_context
-            )
-            if validation_error is None:
-                return value
-            invalid = value
+                # Output that does not parse is a model-output error: it is repaired like one
+                # that fails validation.
+                decode_failed = True
+                invalid = result.output
+                validation_error = f"the output is not valid JSON ({exc.msg} at char {exc.pos})"
+            else:
+                decode_failed = False
+                if not node.validator:
+                    return value
+                validation_error = await self._call(
+                    self._hooks.validator(node.validator), value, hook_context
+                )
+                if validation_error is None:
+                    return value
+                invalid = value
             if attempt < node.max_repairs:
                 await self._emit(
                     emit,
@@ -1497,6 +1529,11 @@ class MultiAgentWorkflowExecutor:
                         "reason": validation_error,
                     },
                 )
+        if decode_failed:
+            raise VerificationError(
+                f"agent {node.agent!r} returned invalid structured output after "
+                f"{node.max_repairs} repair attempt(s): {validation_error}"
+            )
         raise ConfigurationError(
             f"node {node.id!r} failed validation after {node.max_repairs} repair attempt(s): "
             f"{validation_error}"
@@ -1510,13 +1547,19 @@ class MultiAgentWorkflowExecutor:
     ) -> WorkflowHookContext:
         return WorkflowHookContext(state=state, node=node, **updates)
 
-    async def _call_tool_step(self, state: WorkflowExecutionState, node: WorkflowNode) -> Any:
+    async def _call_tool_step(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+    ) -> Any:
         """Run the tool a ``tool:<name>`` step names, through the runtime's tool executor.
 
         The tool's own permissions are granted: the workflow author declared the call. A step
         whose tool changes things should follow an approval node; agent approvals do not apply.
-        The workflow API takes no caller credentials, so ``ToolContext.credentials`` is empty
-        here; agent steps' runs have none either.
+        A tool that ``requires_approval`` runs only when an upstream approval node was approved
+        (or modified) in this execution. The workflow API takes no caller credentials, so
+        ``ToolContext.credentials`` is empty here; agent steps' runs have none either.
         """
         name = (node.handler or "").removeprefix(TOOL_HANDLER_PREFIX)
         executor = getattr(self._runtime, "tool_executor", None)
@@ -1533,7 +1576,13 @@ class MultiAgentWorkflowExecutor:
             permissions=tool.definition.required_permissions,
             idempotency_key=f"{state.id}:{node.id}:{state.nodes[node.id].attempts}",
         )
-        result = await executor.execute(name, arguments, context)
+        approval = None
+        for approval_id in upstream_approval_nodes(nodes, node.id):
+            decided = state.values.get(nodes[approval_id].output_key)
+            if isinstance(decided, dict) and decided.get("decision") in {"approved", "modified"}:
+                approval = f"workflow:{state.id}:{approval_id}"
+                break
+        result = await executor.execute(name, arguments, context, approval=approval)
         return result.value
 
     @classmethod

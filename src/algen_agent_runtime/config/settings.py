@@ -33,7 +33,11 @@ from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.security.outbound import NetworkSettings
 from algen_agent_runtime.security.sandbox import SandboxSettings
 from algen_agent_runtime.tools.http_api import HttpToolConfig
-from algen_agent_runtime.types.contracts import AgentDefinition, ModelCapabilities
+from algen_agent_runtime.types.contracts import (
+    DEFAULT_ATTACHMENT_TYPES,
+    AgentDefinition,
+    ModelCapabilities,
+)
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowResourceKind
 
 
@@ -352,6 +356,18 @@ class SecuritySettings(StrictSettings):
     allow_private_networks: bool = False
     allow_subprocess_tools: bool = False
     trusted_plugin_prefixes: tuple[str, ...] = ()
+    # Files given to runs (RunRequest.attachments). An agent narrows these further with its
+    # own AttachmentPolicy; a run is refused before any model call when it goes past either.
+    allowed_attachment_types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    max_attachments_per_run: int = Field(default=10, ge=1, le=32)
+    max_attachment_bytes_total: int = Field(default=20_971_520, ge=1024)
+    upload_scanner: Literal["none", "basic"] = Field(
+        default="none",
+        description="Scan uploads (POST /v1/artifacts) as they arrive. 'basic' checks the "
+        "real type from the bytes, the size and that images are well formed, and makes the "
+        "artifact available or quarantined; 'none' leaves it pending_scan for the host's "
+        "scanner.",
+    )
     sandbox: SandboxSettings = Field(
         default_factory=SandboxSettings,
         description="Environment, working directory, resource limits and wrapper for MCP stdio "
@@ -853,6 +869,13 @@ class AppSettings(StrictSettings):
                 raise ValueError(
                     f"workflow {workflow_name!r} references unknown agents {sorted(missing_agents)}"
                 )
+            accepting = {agent.name for agent in self.agents if agent.attachments.enabled}
+            for node in workflow.nodes:
+                if node.pass_attachments and node.agent not in accepting:
+                    raise ValueError(
+                        f"workflow {workflow_name!r} node {node.id!r} passes attachments to "
+                        f"agent {node.agent!r}, which does not accept them (attachments.enabled)"
+                    )
             for node in workflow.nodes:
                 for resource in node.resources:
                     if (

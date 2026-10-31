@@ -77,7 +77,10 @@ The permission prefix is the toolkit's `permission_prefix` (its name by default)
 - `approval=False` leaves approval to the agent's `approval_policy`, which by default asks for
   every write, external and destructive call.
 - `approval=True` sets `requires_approval` on the definition: the Runtime asks for approval before
-  every call, whatever the agent's policy. It can add approval, never waive it.
+  every call, whatever the agent's policy. It can add approval, never waive it. The tool executor
+  enforces it too: `ToolExecutor.execute(..., approval=...)` refuses such a call without a
+  reference to the approval that covers it, so a workflow `tool:` step or code calling the
+  executor directly cannot skip it.
 - `approval=<handler>` runs the deployment's own flow. The handler implements `ApprovalHandler`:
 
 ```python
@@ -163,7 +166,12 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
 - Raise `ToolNotAttemptedError` (from `algen_agent_runtime.exceptions`, a `ToolExecutionError`)
   when a tool refuses a call before contacting anything, as above. The ledger then records the
   call `failed`, not `indeterminate`, even for a write, so it needs no reconciliation and runs
-  again normally with the same idempotency key once the user signs in.
+  again normally with the same idempotency key once the user signs in. A `PolicyDeniedError`
+  (a recipient outside an allow-list, say) is treated the same way: raise one of the two only
+  before the side effect.
+- A `Toolkit` whose client cannot open at start (a missing credential, an upstream outage) leaves
+  the service up and degraded (`toolkit.<name>` in readiness), and its calls are refused as not
+  attempted until the client opens. `Toolkit(..., required=True)` fails the start instead.
 
 ## Prechecks
 

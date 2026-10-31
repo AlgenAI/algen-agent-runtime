@@ -212,6 +212,32 @@ async def test_pii_ignores_tool_schemas_outside_tool_arguments() -> None:
     assert decision.action == PolicyAction.REDACT
 
 
+_MAIL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "messages": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"from": _RECIPIENT, "body": {"type": "string"}},
+            },
+        }
+    },
+}
+
+
+async def test_pii_leaves_declared_email_fields_of_a_tool_result_alone() -> None:
+    """An agent can reply to the sender it just read; the body is still redacted (#83 item 6)."""
+    result = {"messages": [{"from": "kim@example.com", "body": "Forward this to lee@example.net"}]}
+    tool = type("Definition", (), {"input_schema": {}, "output_schema": _MAIL_SCHEMA})()
+
+    decision = await PIIRedactionPolicy().evaluate(PolicyPoint.AFTER_TOOL, result, {"tool": tool})
+
+    assert decision.action == PolicyAction.REDACT
+    assert decision.value["messages"][0]["from"] == "kim@example.com"
+    assert decision.value["messages"][0]["body"] == "Forward this to [REDACTED_EMAIL]"
+
+
 async def test_card_numbers_that_pass_luhn_are_redacted_and_others_are_kept() -> None:
     decision = await CompositePolicyEngine().evaluate(
         "after_tool",

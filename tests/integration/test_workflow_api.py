@@ -14,6 +14,7 @@ from httpx import ASGITransport
 
 from algen_agent_runtime.api.app import create_app
 from algen_agent_runtime.config.settings import AppSettings
+from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.workflows import service as workflow_service
 
 HEADERS = {"x-tenant-id": "acme", "x-user-id": "hr-system", "x-scopes": "runs:read runs:write"}
@@ -166,3 +167,95 @@ async def test_a_waiting_run_is_notified_signed(monkeypatch: pytest.MonkeyPatch)
     )
     expected = hmac.new(b"shared-secret", request.content, hashlib.sha256).hexdigest()
     assert request.headers["X-Algen-Signature"] == f"sha256={expected}"
+
+
+def _tool_settings() -> AppSettings:
+    return _settings(
+        workflows={
+            "evidence": {
+                "name": "evidence",
+                "version": "1.0.0",
+                "output_key": "collected",
+                "nodes": [
+                    {
+                        "id": "collect",
+                        "kind": "handler",
+                        "handler": "tool:evidence.collect",
+                        "arguments": {"tag": "{{inputs.tag}}"},
+                        "output_key": "collected",
+                    }
+                ],
+            },
+            "publish": {
+                "name": "publish",
+                "version": "1.0.0",
+                "output_key": "published",
+                "nodes": [
+                    {
+                        "id": "publish",
+                        "kind": "handler",
+                        "handler": "tool:release.publish",
+                        "output_key": "published",
+                    }
+                ],
+            },
+        }
+    )
+
+
+def _register_tools(app: Any, published: list[Any]) -> None:
+    tools = app.state.container.runtime.tools
+    schema = {"type": "object"}
+    tools.register(
+        Tool(
+            ToolDefinition(
+                name="evidence.collect",
+                version="1",
+                description="Collect release evidence",
+                input_schema=schema,
+                output_schema=schema,
+            ),
+            lambda args, ctx: {"tag": args["tag"]},
+        )
+    )
+    tools.register(
+        Tool(
+            ToolDefinition(
+                name="release.publish",
+                version="1",
+                description="Publish the release",
+                input_schema=schema,
+                output_schema=schema,
+                side_effect=SideEffect.EXTERNAL,
+                requires_approval=True,
+            ),
+            lambda args, ctx: published.append(args) or {"published": True},
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_a_served_workflow_runs_a_tool_step() -> None:
+    app = create_app(_tool_settings())
+    _register_tools(app, [])
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        started = await client.post(
+            "/v1/workflows/evidence/runs",
+            json={"inputs": {"tag": "v1.2"}, "workflow_id": "evidence-1"},
+            headers=HEADERS,
+        )
+        assert started.status_code == 202
+        done = await _until(client, "evidence-1", "completed")
+        assert done["steps"] == {"collect": "completed"}
+
+
+@pytest.mark.anyio
+async def test_a_tool_step_needing_approval_with_no_approval_node_cannot_start() -> None:
+    published: list[Any] = []
+    app = create_app(_tool_settings())
+    _register_tools(app, published)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        refused = await client.post("/v1/workflows/publish/runs", json={}, headers=HEADERS)
+        assert refused.status_code >= 400
+        assert "requires approval" in refused.text
+    assert published == []

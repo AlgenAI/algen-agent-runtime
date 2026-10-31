@@ -168,8 +168,8 @@ storage:
 dependency the service has and answers:
 
 - **200, `status: ready`** when every dependency is up;
-- **200, `status: degraded`** when an optional dependency is down (an optional MCP server that
-  failed at startup, a cache, a retriever) but every required one is up;
+- **200, `status: degraded`** when an optional dependency is down (an optional MCP server or a
+  toolkit that failed at startup, a cache, a retriever) but every required one is up;
 - **503, `status: degraded`** when a required dependency is down or the model-provider rule is not
   met (`failing` names them);
 - **503, `status: draining`** from the moment the service starts to shut down; dependencies are
@@ -1273,8 +1273,11 @@ configured-provider cost.
 
 Invalidate related entries with `await container.cache.invalidate_tags("dataset:v2")` after a governed
 data or configuration release. Prefer a version token in cache material when a deterministic dataset
-version is available. Cache errors do not fail agent runs. Alert on cache error rate, hit rate by policy,
-oversize rejections, and Redis latency.
+version is available. Cache errors do not fail agent runs. A call whose context cannot fill the
+policy's scope (a `session`-scoped tool-result cache for a run started without `session_id`) skips
+the cache (outcome `bypass`) and runs the tool. Tools receive the run's `session_id` in
+`ToolContext.session_id`. Alert on cache error rate, hit rate by policy, oversize rejections, and
+Redis latency.
 
 Every cache get, set, and invalidation creates OpenTelemetry spans and metrics with backend, policy,
 namespace, scope, outcome, duration, and value size only. When Traccia is enabled these signals follow

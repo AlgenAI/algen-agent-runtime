@@ -53,7 +53,9 @@ from algen_agent_runtime.tools.contracts import read_only_credentials
 from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
+    FileBlock,
     Role,
+    RunAttachment,
     RunRequest,
     RunResult,
     RunState,
@@ -150,6 +152,11 @@ class RuntimeConversationHandler:
             RunRequest(
                 agent=conversation.agent,
                 input=user_message.text_content,
+                attachments=tuple(
+                    RunAttachment(artifact_id=block.artifact_id, media_type=block.media_type)
+                    for block in user_message.content
+                    if isinstance(block, FileBlock)
+                ),
                 session_id=conversation.id,
                 conversation_id=conversation.id,
                 turn_id=user_message.id,
@@ -669,8 +676,12 @@ class ConversationService:
         metadata: dict[str, Any] | None = None,
         *,
         credentials: Mapping[str, str] | None = None,
+        attachments: tuple[RunAttachment, ...] = (),
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Accept a user message and answer it in the background.
+
+        ``attachments`` (uploaded files, by artifact reference) are kept on the message as file
+        blocks and handed to the turn's run; the agent must accept them.
 
         ``credentials`` are the caller's, for the turn's tools (see ``Runtime.start``). They are
         kept in memory only, for this turn, and never stored, emitted or logged. A turn that pauses
@@ -694,11 +705,17 @@ class ConversationService:
             awaiting = await self._awaiting_message(conversation)
             if awaiting is not None:
                 await self._reject_while_pending(conversation, awaiting)
-            user_message = ConversationMessage.text(
+            user_message = ConversationMessage(
                 conversation_id=conversation.id,
                 tenant_id=tenant_id,
                 role=Role.USER,
-                text=text.strip(),
+                content=(
+                    TextBlock(text=text.strip()),
+                    *(
+                        FileBlock(artifact_id=item.artifact_id, media_type=item.media_type)
+                        for item in attachments
+                    ),
+                ),
                 metadata=redact(metadata or {}),
             )
             await self.store.append_message(user_message)

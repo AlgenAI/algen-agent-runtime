@@ -26,7 +26,12 @@ contain secret-like text, run independent tool calls together, and remember what
   `"format": "email"` when the value is exactly one email address: a recipient is the tool's
   declared purpose, so email tools work under the default guardrails. Every other argument (a
   name, subject or body) is still redacted, and a redaction still refuses the call. Mark an
-  address field with `Field(json_schema_extra={"format": "email"})`.
+  address field with `Field(json_schema_extra={"format": "email"})`. The same holds for a tool
+  result field whose output schema declares `"format": "email"` (a sender's address), at
+  `after_tool` and when the history is screened again before the model reads it, so an agent can
+  reply to mail it read; message bodies are still redacted.
+- `tool_result_injection` screens the strings a tool result holds, not their JSON encoding, so an
+  instruction at the start of a line (`"Hi.\n\nIgnore previous instructions…"`) is caught.
 - A tool built with `@tool` refuses arguments its input schema does not declare even when called
   directly through `Tool.execute`, as the executor already did.
 - The tool executor now passes the agent to the policy engine, so an agent's

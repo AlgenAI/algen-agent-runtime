@@ -6,6 +6,90 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Breaking (governance fix):** `ToolExecutor.execute` now enforces `requires_approval` (an MCP
+  overlay's `approval: true`, `@tool(..., approval=True)`). A workflow `tool:` step on such a tool
+  runs only after an upstream `approval` node was approved or modified in the same run, and a
+  workflow with such a step and no approval node before it cannot start. Code that calls the
+  executor directly must pass `approval=` (a reference to the approval that covers the call).
+  Before, these calls ran without approval. Agent runs are unaffected. (#83)
+- DOCX and PPTX documents with both text and images now report `document.images_excluded`
+  (`low`), as PDF does, so their disposition is `review`, not `pass`. Pipelines that accept only
+  `pass` route these documents to review. (#81)
+- `tool_result_injection` now catches instructions at the start of a line, so `flag` and `block`
+  act on tool results they let through before. (#83)
+- `budget.max_cost_usd: 0` now lets zero-cost models run (any spend still stops the run); it no
+  longer stops every run. (#83)
+- A toolkit whose client fails to open at start degrades the service instead of stopping it; pass
+  `Toolkit(..., required=True)` to keep failing fast. (#83)
+- A workflow agent node's invalid JSON output is repaired up to `max_repairs` (more model calls)
+  and, once repairs run out, fails with `VerificationError` instead of `ConfigurationError`. (#83)
+- The `pii` guardrail leaves single addresses in tool result fields declared `format: email`
+  unredacted. (#83)
+- New fields are left out of stored state while empty or unset (run requests, workflow
+  checkpoints, manifests), so 0.1.0a18 replicas can still read what this release stores and
+  workflow manifest fingerprints do not change. Send attachments only once every process runs
+  this release.
+
+### Added
+
+- File attachments for runs, conversations and workflows (vision and PDF input). Callers pass
+  uploaded artifacts by reference (`attachments: [{artifact_id, media_type?}]`) on `RunRequest`,
+  `POST /v1/runs`, `POST /v1/conversations/{id}/messages` and `POST /v1/workflows/{name}/runs`,
+  and `algen-agent-runtime run AGENT INPUT --attach FILE`. Agents opt in with
+  `AgentDefinition.attachments` (`enabled`, `types`, `max_count`, `retention`), workflows with
+  `WorkflowManifest.attachments` and `WorkflowNode.pass_attachments`; the deployment bounds them
+  with `security.allowed_attachment_types`, `max_attachments_per_run` and
+  `max_attachment_bytes_total`. Before any model call a run is refused if the agent did not opt
+  in, a file is missing, another tenant's or not available, its real type (read from the bytes)
+  is not allowed, a limit is exceeded, or no configured model can read it; an `attachments`
+  policy point lets hosts veto or filter files. History, memory, checkpoints, events and spans
+  hold only references; the bytes are loaded onto a copy of the request just before each provider
+  call. `retention: turn` (default) replaces the file with a note in memory after the turn.
+  Models without the capability are skipped, fallbacks included. Anthropic sends image and
+  document blocks (and URL images) and reports `files`; OpenAI-compatible providers send data-URL
+  images and, where supported, PDF file parts. `ToolContext.attachments` and
+  `ToolContext.read_attachment()` let tools read the run's files. `BasicArtifactScanner` and
+  `security.upload_scanner: basic` scan uploads as they arrive. `GoldenQuestion.attachments` for
+  evaluation. See docs/attachments.md. (#82)
+- `ToolContext.session_id` (the run's `session_id`), also declarable in
+  `ToolDefinition.cache_context`. (#79)
+- `Toolkit(..., required=True)`. (#83)
+
+### Fixed
+
+- A tool-result cache with `scope: session` no longer fails every cacheable tool call: the
+  session reaches the cache key, and a scope the call cannot fill skips the cache instead of
+  failing the run. (#79)
+- `ArtifactLifecycleService.scan` records the `artifact.scan` evidence before it changes the
+  artifact's status, so no artifact becomes available without scan evidence; a failed audit
+  write leaves it `pending_scan` for a retry. A scan that loses a concurrent transition is
+  followed by `artifact.scan.discarded`. (#80)
+- `tool_result_injection` screens the decoded strings of a tool result, not its JSON encoding,
+  which hid line-start instructions behind `\n`. (#83)
+- `requires_approval` is enforced by the tool executor, not only when planning. (#83)
+- A plugin can register a mandatory policy: `context.policies.register(policy, mandatory=True)`
+  raised `TypeError`. (#83)
+- Workflow `tool:` steps work under `algen-agent-runtime serve`: `AlgenAgentRuntimeClient`
+  exposes `tools` and `tool_executor`. (#83)
+- A `PolicyDeniedError` raised by a tool is recorded as not attempted (`failed`), not
+  `indeterminate`, so a refused email is not reported as possibly sent and can be retried. (#83)
+- The `pii` guardrail no longer redacts sender and recipient addresses from mail tools' declared
+  address fields, so an agent can reply to what it read. (#83)
+- Ollama: private reasoning that some models put in `content` (ending in `</think>`) is stripped
+  from replies, streamed or not. (#83)
+- A workflow agent node's unparseable JSON goes through the repair loop. (#83)
+- `budget.max_cost_usd: 0` no longer stops runs on free models. (#83)
+- A toolkit that cannot start no longer stops the service from booting. (#83)
+
+### Deprecated
+
+- The document extractors in `algen_agent_runtime.security` (`documents`, `docx`,
+  `docx_contrast`, `pptx`, `xlsx`, `html`, `ooxml`) raise `DeprecationWarning` on import. They
+  move to `algen-agent-tools` (`algen_agent_tools.documents`, AlgenAI/algen-agent-tools#36) and
+  keep working here for at least one more release. (#81)
+
 ## [0.1.0a18] - 2026-10-30
 
 ### Added

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import httpx
@@ -13,8 +13,12 @@ from algen_agent_runtime.models.providers.openai_compatible import (
     openai_strict_json_schema,
 )
 from algen_agent_runtime.types.contracts import (
+    Message,
     ModelCapabilities,
     ModelRequest,
+    ModelResponse,
+    ModelStreamEvent,
+    Role,
 )
 
 
@@ -160,7 +164,66 @@ class MistralProvider(OpenAICompatibleProvider):
         return await super().embed(texts, model or "mistral-embed")
 
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def strip_leaked_reasoning(text: str) -> str:
+    """Text without a leading ``<think>…</think>`` block, or without everything up to a bare
+    ``</think>``: private reasoning some Ollama models put in ``content``."""
+    head = text.lstrip()
+    if head.startswith(_THINK_OPEN):
+        _, closed, rest = head.partition(_THINK_CLOSE)
+        return rest.lstrip() if closed else ""
+    if _THINK_OPEN not in text and _THINK_CLOSE in text:
+        return text.partition(_THINK_CLOSE)[2].lstrip()
+    return text
+
+
+class _ReasoningFilter:
+    """Streams content with leaked reasoning held back.
+
+    Content is held while it may still be reasoning: while it opens with ``<think>``, and, for a
+    request with tools (where a bare ``</think>`` has been seen), until the stream ends.
+    """
+
+    def __init__(self, *, hold_all: bool) -> None:
+        self._hold_all = hold_all
+        self._held = ""
+        self._passing = False
+        # After a reasoning block, the whitespace that separates it from the reply is dropped.
+        self._trim = False
+
+    def feed(self, text: str) -> str:
+        if not self._passing:
+            self._held += text
+            head = self._held.lstrip()
+            if head.startswith(_THINK_OPEN):
+                if _THINK_CLOSE not in head:
+                    return ""
+                self._trim = True
+            elif self._hold_all or (head and _THINK_OPEN.startswith(head)):
+                return ""
+            self._passing = True
+            text = strip_leaked_reasoning(self._held)
+        if self._trim:
+            text = text.lstrip()
+            self._trim = not text
+        return text
+
+    def finish(self) -> str:
+        if self._passing:
+            return ""
+        return strip_leaked_reasoning(self._held)
+
+
 class OllamaProvider(OpenAICompatibleProvider):
+    """Ollama's OpenAI-compatible API.
+
+    With tools (and ``reasoning_effort: none``) some models put their reasoning in ``content``,
+    ending in ``</think>``; it is stripped from the reply, streamed or not, never shown.
+    """
+
     def __init__(
         self, default_model: str, base_url: str = "http://127.0.0.1:11434/v1", **kwargs: Any
     ) -> None:
@@ -179,6 +242,36 @@ class OllamaProvider(OpenAICompatibleProvider):
             ),
             **kwargs,
         )
+
+    def _response(self, data: dict[str, Any], started: float, raw: bool) -> ModelResponse:
+        response = super()._response(data, started, raw)
+        text = response.message.text_content
+        cleaned = strip_leaked_reasoning(text)
+        if cleaned == text:
+            return response
+        return response.model_copy(update={"message": Message.text(Role.ASSISTANT, cleaned)})
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
+        reasoning = _ReasoningFilter(hold_all=bool(request.tools))
+        emitted: list[str] = []
+        async for event in super().stream(request):
+            if event.type == "delta" and event.delta:
+                if text := reasoning.feed(event.delta):
+                    emitted.append(text)
+                    yield ModelStreamEvent(type="delta", delta=text)
+                continue
+            if event.type == "completed" and event.response is not None:
+                if text := reasoning.finish():
+                    emitted.append(text)
+                    yield ModelStreamEvent(type="delta", delta=text)
+                event = event.model_copy(
+                    update={
+                        "response": event.response.model_copy(
+                            update={"message": Message.text(Role.ASSISTANT, "".join(emitted))}
+                        )
+                    }
+                )
+            yield event
 
 
 class HuggingFaceInferenceProvider(OpenAICompatibleProvider):
