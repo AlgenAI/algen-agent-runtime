@@ -202,4 +202,39 @@ async def test_artifact_scanner_cannot_overwrite_a_concurrent_transition() -> No
     current = await store.describe(artifact.id, "tenant")
     assert current is not None
     assert current.status is ArtifactStatus.QUARANTINED
-    assert await audit.list("tenant", artifact.id) == ()
+    # The losing scan's evidence was written first, then marked discarded.
+    actions = [event.action for event in await audit.list("tenant", artifact.id)]
+    assert sorted(actions) == ["artifact.scan", "artifact.scan.discarded"]
+
+
+class FailingAuditLog(InMemoryAuditLog):
+    async def append(self, event: Any) -> None:
+        raise RuntimeError("audit store unavailable")
+
+
+async def test_an_artifact_without_scan_evidence_is_never_published() -> None:
+    """If the evidence cannot be written, the artifact stays pending_scan and can be rescanned
+    (#80)."""
+    store = InMemoryArtifactStore()
+    artifact = Artifact(
+        tenant_id="tenant",
+        name="file.txt",
+        media_type="text/plain",
+        data=b"safe",
+        status=ArtifactStatus.PENDING_SCAN,
+    )
+    await store.put(artifact)
+
+    with pytest.raises(RuntimeError, match="audit store unavailable"):
+        await ArtifactLifecycleService(store, FailingAuditLog()).scan(
+            artifact.id, "tenant", "scanner-worker", CleanScanner()
+        )
+
+    current = await store.describe(artifact.id, "tenant")
+    assert current is not None and current.status is ArtifactStatus.PENDING_SCAN
+    audit = InMemoryAuditLog()
+    retried = await ArtifactLifecycleService(store, audit).scan(
+        artifact.id, "tenant", "scanner-worker", CleanScanner()
+    )
+    assert retried.status is ArtifactStatus.AVAILABLE
+    assert [event.action for event in await audit.list("tenant", artifact.id)] == ["artifact.scan"]
