@@ -6,6 +6,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a20] - 2026-10-31
+
+A patch release for one 0.1.0a19 regression. No database migrations; 0.1.0a19 and 0.1.0a20 can
+run side by side.
+
 ### Fixed
 
 - A toolkit whose client cannot open because of its configuration (a missing setting or

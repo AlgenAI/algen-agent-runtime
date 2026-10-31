@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-31 (Runtime `0.1.0a19`)
+Last reviewed: 2026-10-31 (Runtime `0.1.0a20`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
