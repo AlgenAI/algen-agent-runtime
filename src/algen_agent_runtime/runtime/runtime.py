@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass
@@ -267,6 +267,32 @@ class _HeldCall:
 class _UnknownToolError(Exception):
     """A model called a tool that does not exist; it is told so instead of the run failing."""
 
+
+
+def _decoded_strings(value: Any) -> Iterator[str]:
+    """Every string in a decoded JSON value, keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _decoded_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _decoded_strings(item)
+
+
+def _contains_instruction_override(text: str) -> bool:
+    """Screen the strings a JSON tool result holds, not their encoding.
+
+    ``json.dumps`` turns a newline into the two characters backslash and ``n``, so an instruction
+    at the start of a line would follow a word character and slip past a ``\\b`` pattern.
+    """
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return looks_like_instruction_override(text)
+    return any(looks_like_instruction_override(item) for item in _decoded_strings(value))
 
 class AgentRuntime:
     def __init__(
@@ -2942,7 +2968,7 @@ class AgentRuntime:
     ) -> str:
         """Treat instruction-like tool output as untrusted data, or refuse it."""
         mode = agent.guardrail_policy.tool_result_injection
-        if mode == "off" or not looks_like_instruction_override(text):
+        if mode == "off" or not _contains_instruction_override(text):
             return text
         await self._emit(
             state,
