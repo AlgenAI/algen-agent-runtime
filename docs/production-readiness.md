@@ -4,7 +4,7 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-10-30 (Runtime `0.1.0a18`)
+Last reviewed: 2026-10-31 (Runtime `0.1.0a19`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -75,6 +75,17 @@ Added since the 2026-10-11 review (`0.1.0a11` to `0.1.0a15`):
   documents.
 - Traccia receives only traces the Runtime started; foreign HTTP and instrumentor spans are dropped by
   default.
+
+Added in `0.1.0a19`:
+
+- `requires_approval` enforced by the tool executor (workflow `tool:` steps and direct callers),
+  tool-result injection screening of decoded strings, mandatory plugin policies, and tool refusals
+  recorded as not attempted.
+- Scan evidence recorded before an artifact becomes available, and an optional built-in upload
+  scanner (`security.upload_scanner: basic`).
+- File attachments (vision and PDF input) held by reference, checked before any model call and
+  loaded only at dispatch.
+- A toolkit that cannot start degrades readiness instead of stopping the service.
 
 ## P0 before a hardened single-node production claim
 

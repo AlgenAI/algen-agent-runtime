@@ -1270,7 +1270,8 @@
             <div class="version-select">
                 <label class="sr-only" for="versionSelect">Documentation version</label>
                 <select id="versionSelect" title="Documentation version">
-                    <option value="0.1.0a18">v0.1.0a18 · latest</option>
+                    <option value="0.1.0a19">v0.1.0a19 · latest</option>
+                    <option value="0.1.0a18">v0.1.0a18</option>
                     <option value="0.1.0a17">v0.1.0a17</option>
                     <option value="0.1.0a16">v0.1.0a16</option>
                     <option value="0.1.0a15">v0.1.0a15</option>
@@ -1394,7 +1395,7 @@
         <main id="main">
             <section id="overview" data-title="Overview"
                 data-keywords="runtime introduction provider neutral governed agents">
-                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a18</span></div>
+                <div class="page-kicker">Official documentation · <span data-version-field="tag">v0.1.0a19</span></div>
                 <h1>Build governed agents. Own the runtime.</h1>
                 <p class="lead">Algen Agent Runtime is a typed, provider-neutral Python runtime for deterministic agent
                     execution, policy enforcement, durable state, human approvals, and observable multi-agent workflows.
@@ -1414,7 +1415,7 @@
                 <div class="signal-row" aria-label="Runtime status">
                     <div class="signal"><span>Runtime</span><strong>Python 3.12 & 3.13</strong><small>Library and
                             FastAPI service</small></div>
-                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a18 ·
+                    <div class="signal"><span>Package</span><strong data-version-field="package">0.1.0a19 ·
                             pre-alpha</strong><small data-version-field="packageNote">Latest release · public APIs
                             experimental</small></div>
                     <div class="signal"><span>License</span><strong>Apache 2.0</strong><small>Provider-neutral, open
@@ -1471,7 +1472,7 @@
             </section>
 
             <section id="releases" data-title="What's new"
-                data-keywords="release notes changelog versions 0.1.0a18 0.1.0a17 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
+                data-keywords="release notes changelog versions 0.1.0a19 0.1.0a18 0.1.0a17 0.1.0a16 0.1.0a15 0.1.0a14 0.1.0a13 0.1.0a12 0.1.0a11 0.1.0a10 0.1.0a9 0.1.0a8 0.1.0a7 0.1.0a6 0.1.0a5 0.1.0a4 0.1.0a3 0.1.0a2 upgrade">
                 <h2>What's new</h2>
                 <p>Use the version selector in the header to read the documentation for a specific pre-release. Every
                     entry below is taken from <a href="../CHANGELOG.md">CHANGELOG.md</a> for the selected version.</p>
@@ -2084,7 +2085,10 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                             command.</span></a>
                     <a class="doc-link" href="document-security.md" data-version-min="0.1.0a9"><strong>Untrusted
                             documents →</strong><span>PDF and DOCX inspection, hidden text, and
-                            dispositions.</span></a>
+                            dispositions (deprecated in 0.1.0a19; moving to algen-agent-tools).</span></a>
+                    <a class="doc-link" href="attachments.md" data-version-min="0.1.0a19"><strong>File
+                            attachments →</strong><span>Images and PDFs for runs, conversations and
+                            workflows, by reference.</span></a>
                     <a class="doc-link" href="email.md" data-version-min="0.1.0a9"><strong>Email (deprecated)
                             →</strong><span>The SMTP contracts until 0.2; connectors now live in
                             algen-agent-tools.</span></a>
@@ -2101,7 +2105,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
             </section>
 
             <footer class="page-footer">Algen Agent Runtime · Apache-2.0 · Documentation reflects package version <span
-                    data-version-field="version">0.1.0a18</span>.</footer>
+                    data-version-field="version">0.1.0a19</span>.</footer>
         </main>
     </div>
 
@@ -2227,9 +2231,46 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
         dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 
         /* ----- Versioned documentation ----- */
-        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18'];
-        const LATEST_VERSION = '0.1.0a18';
+        const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19'];
+        const LATEST_VERSION = '0.1.0a19';
         const RELEASES = {
+            '0.1.0a19': {
+                date: '2026-10-31',
+                kind: 'Governance fixes and attachments',
+                title: 'Approval enforced in the tool executor, scan evidence first, file attachments',
+                summary: 'Fixes found building governed agents on a18: approval-required tools are enforced outside the agent loop, tool-result injection screening sees line-start instructions, refusals are not recorded as possible side effects, and workflow tool steps run under serve. Artifacts never become available without scan evidence. Agents and workflows that opt in read images and PDFs natively, passed by reference. No migrations; a18 and a19 can share a store during an upgrade.',
+                fields: {
+                    tag: 'v0.1.0a19',
+                    package: '0.1.0a19 · pre-alpha',
+                    packageNote: 'Latest release · public APIs experimental',
+                    version: '0.1.0a19',
+                    pip: 'python -m pip install --pre algen-agent-runtime'
+                },
+                groups: [
+                    {
+                        kind: 'Added', items: [
+                            '<strong>File attachments.</strong> <code>attachments: [{artifact_id}]</code> on runs, conversation messages and workflow starts, and <code>algen-agent-runtime run AGENT INPUT --attach FILE</code>. Agents opt in with <code>attachments.enabled</code>, workflow nodes with <code>pass_attachments</code>. Files are checked (real type, tenant, availability, limits, model capability) before any model call, stored as references and loaded only at dispatch. See <a href="attachments.md">attachments</a>.',
+                            '<code>ToolContext.read_attachment()</code>, <code>BasicArtifactScanner</code> and <code>security.upload_scanner: basic</code>, <code>ToolContext.session_id</code>, and <code>Toolkit(required=True)</code>.'
+                        ]
+                    },
+                    {
+                        kind: 'Changed', items: [
+                            '<strong>Breaking:</strong> <code>ToolExecutor.execute</code> enforces <code>requires_approval</code>. A workflow <code>tool:</code> step on such a tool needs an approved upstream approval node; direct callers pass <code>approval=</code>.',
+                            'DOCX and PPTX documents with text and images report <code>document.images_excluded</code> and are <code>review</code>, not <code>pass</code>.',
+                            'A toolkit that cannot start degrades the service instead of stopping it; <code>max_cost_usd: 0</code> lets free models run.',
+                            'The document extractors in <code>algen_agent_runtime.security</code> are deprecated; they move to algen-agent-tools.'
+                        ]
+                    },
+                    {
+                        kind: 'Fixed', items: [
+                            'Tool-result injection screening checks decoded strings, so line-start instructions are caught.',
+                            'Plugins can register mandatory policies; workflow <code>tool:</code> steps work under <code>serve</code>; a tool\'s <code>PolicyDeniedError</code> is recorded as not attempted.',
+                            'A session-scoped tool cache no longer fails runs; scan evidence is written before an artifact is published.',
+                            'Mail tools\' declared address fields are not redacted; Ollama reasoning no longer leaks into replies; invalid JSON from workflow agent nodes is repaired.'
+                        ]
+                    }
+                ]
+            },
             '0.1.0a18': {
                 date: '2026-10-30',
                 kind: 'Production hardening',
@@ -2238,7 +2279,7 @@ algen-agent-runtime export-ui -c config/agent.yaml -o -</code></pre>
                 fields: {
                     tag: 'v0.1.0a18',
                     package: '0.1.0a18 · pre-alpha',
-                    packageNote: 'Latest release · public APIs experimental',
+                    packageNote: 'Superseded by 0.1.0a19',
                     version: '0.1.0a18',
                     pip: 'python -m pip install --pre algen-agent-runtime'
                 },
