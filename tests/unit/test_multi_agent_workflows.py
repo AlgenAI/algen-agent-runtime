@@ -1408,3 +1408,73 @@ def test_default_input_template_still_renders() -> None:
         node="worker",
     )
     assert rendered_default == "standard query"
+
+
+class ScriptedRuntime:
+    """Answers each agent run with the next scripted output."""
+
+    def __init__(self, *outputs: str) -> None:
+        self._outputs = list(outputs)
+        self.requests: list[Any] = []
+
+    async def run(self, request: Any) -> Any:
+        self.requests.append(request)
+        return SimpleNamespace(
+            run_id=f"run-{len(self.requests)}",
+            status=RunStatus.COMPLETED,
+            output=self._outputs.pop(0),
+            error=None,
+        )
+
+
+def _structured(max_repairs: int) -> WorkflowManifest:
+    return WorkflowManifest(
+        name="extract",
+        version="1.0.0",
+        output_key="fields",
+        nodes=(
+            WorkflowNode(
+                id="extract",
+                kind=WorkflowNodeKind.AGENT,
+                agent="extractor",
+                input_template="{{input}}",
+                output_key="fields",
+                output_schema={"type": "object"},
+                max_repairs=max_repairs,
+            ),
+        ),
+    )
+
+
+async def test_invalid_json_from_an_agent_node_is_repaired() -> None:
+    runtime = ScriptedRuntime('{"name": "Jane",', '{"name": "Jane"}')
+    hooks = WorkflowHookRegistry()
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    state = await MultiAgentWorkflowExecutor(runtime, hooks).run(
+        _structured(max_repairs=1),
+        {"input": "Jane"},
+        tenant_id="t",
+        user_id="u",
+        emit=lambda kind, data: events.append((kind, data)),
+    )
+
+    assert state.status == WorkflowStatus.COMPLETED
+    assert state.values["fields"] == {"name": "Jane"}
+    assert state.nodes["extract"].attempts == 2
+    repairing = [data for kind, data in events if kind == "workflow.node.repairing"]
+    assert len(repairing) == 1 and "not valid JSON" in repairing[0]["reason"]
+
+
+async def test_invalid_json_after_every_repair_fails_the_node() -> None:
+    runtime = ScriptedRuntime("not json", "still not json")
+
+    state = await MultiAgentWorkflowExecutor(runtime, WorkflowHookRegistry()).run(
+        _structured(max_repairs=1), {"input": "Jane"}, tenant_id="t", user_id="u"
+    )
+
+    assert state.status == WorkflowStatus.FAILED
+    assert len(runtime.requests) == 2
+    assert "invalid structured output after 1 repair" in (
+        state.nodes["extract"].error or state.error or ""
+    )

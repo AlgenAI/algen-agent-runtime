@@ -12,7 +12,12 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
-from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError, NotFoundError
+from algen_agent_runtime.exceptions.errors import (
+    ConfigurationError,
+    ConflictError,
+    NotFoundError,
+    VerificationError,
+)
 from algen_agent_runtime.tools.contracts import ToolContext
 from algen_agent_runtime.types.contracts import RequestOverrides, RunRequest, RunStatus, utc_now
 from algen_agent_runtime.workflows.contracts import (
@@ -1402,6 +1407,7 @@ class MultiAgentWorkflowExecutor:
     ) -> Any:
         invalid: Any = None
         validation_error: str | None = None
+        decode_failed = False
         parent_run_id = self._parent_run_id(state, node)
         for attempt in range(node.max_repairs + 1):
             hook_context = self._context(
@@ -1471,21 +1477,25 @@ class MultiAgentWorkflowExecutor:
             state.nodes[node.id].attempts += 1
             if result.status != RunStatus.COMPLETED:
                 raise RuntimeError(result.error or f"agent {node.agent!r} failed")
+            structured = node.output_schema is not None or node.output_schema_hook is not None
             try:
-                structured = node.output_schema is not None or node.output_schema_hook is not None
                 value = json.loads(result.output or "null") if structured else result.output
             except json.JSONDecodeError as exc:
-                raise ConfigurationError(
-                    f"agent {node.agent!r} returned invalid structured output"
-                ) from exc
-            if not node.validator:
-                return value
-            validation_error = await self._call(
-                self._hooks.validator(node.validator), value, hook_context
-            )
-            if validation_error is None:
-                return value
-            invalid = value
+                # Output that does not parse is a model-output error: it is repaired like one
+                # that fails validation.
+                decode_failed = True
+                invalid = result.output
+                validation_error = f"the output is not valid JSON ({exc.msg} at char {exc.pos})"
+            else:
+                decode_failed = False
+                if not node.validator:
+                    return value
+                validation_error = await self._call(
+                    self._hooks.validator(node.validator), value, hook_context
+                )
+                if validation_error is None:
+                    return value
+                invalid = value
             if attempt < node.max_repairs:
                 await self._emit(
                     emit,
@@ -1498,6 +1508,11 @@ class MultiAgentWorkflowExecutor:
                         "reason": validation_error,
                     },
                 )
+        if decode_failed:
+            raise VerificationError(
+                f"agent {node.agent!r} returned invalid structured output after "
+                f"{node.max_repairs} repair attempt(s): {validation_error}"
+            )
         raise ConfigurationError(
             f"node {node.id!r} failed validation after {node.max_repairs} repair attempt(s): "
             f"{validation_error}"
