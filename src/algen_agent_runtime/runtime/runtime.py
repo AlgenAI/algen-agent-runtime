@@ -1899,6 +1899,12 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _cost_exhausted(cost: float, limit: float) -> bool:
+        """A limit of 0 allows zero-cost models and stops at any spend; otherwise the run stops
+        once its estimated cost reaches the limit."""
+        return cost > 0 if limit <= 0 else cost >= limit
+
+    @staticmethod
     def _step_limit(state: RunState, agent: AgentDefinition) -> int:
         return agent.max_steps + state.continuation_count * agent.continuation_policy.step_increment
 
@@ -1918,7 +1924,7 @@ class AgentRuntime:
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             return "model_tokens"
-        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+        if cls._cost_exhausted(usage.estimated_cost_usd, cls._cost_limit(state, agent)):
             return "estimated_cost"
         return None
 
@@ -1928,7 +1934,7 @@ class AgentRuntime:
         usage = state.summary.usage
         if usage.total_tokens >= cls._token_limit(state, agent):
             raise BudgetExceededError("model_tokens budget exhausted", limit="model_tokens")
-        if usage.estimated_cost_usd >= cls._cost_limit(state, agent):
+        if cls._cost_exhausted(usage.estimated_cost_usd, cls._cost_limit(state, agent)):
             raise BudgetExceededError("estimated_cost budget exhausted", limit="estimated_cost")
 
     async def _continue_or_pause(
