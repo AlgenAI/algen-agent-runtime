@@ -135,6 +135,8 @@ from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
     TERMINAL_STATUSES,
     AgentDefinition,
+    Artifact,
+    ArtifactStatus,
     Budget,
     ContextCompaction,
     ErrorKind,
@@ -2535,9 +2537,20 @@ class AgentRuntime:
             permissions=agent.tool_permissions,
             idempotency_key=f"{state.id}:{call_id}",
             session_id=state.request.session_id,
+            attachments=state.request.attachments,
             credentials=self._run_credentials(state.id),
         )
         context._note_sink = self._tool_note_sink(state, action, tool.definition.name)
+        if state.request.attachments and self.artifacts is not None:
+            artifacts, tenant_id = self.artifacts, state.request.tenant_id
+
+            async def load(artifact_id: str) -> Artifact | None:
+                artifact = await artifacts.get(artifact_id, tenant_id)
+                if artifact is None or artifact.status is not ArtifactStatus.AVAILABLE:
+                    return None
+                return artifact
+
+            context._attachment_loader = load
         working_update: WorkingState | None = None
         skill_update: LoadedSkills | None = None
         memory_receipt: MemoryReceipt | None = None

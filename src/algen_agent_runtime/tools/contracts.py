@@ -19,7 +19,12 @@ from pydantic import (
     model_serializer,
 )
 
-from algen_agent_runtime.types.contracts import RetryPolicy, utc_now
+from algen_agent_runtime.exceptions.errors import (
+    ConfigurationError,
+    NotFoundError,
+    PolicyDeniedError,
+)
+from algen_agent_runtime.types.contracts import Artifact, RetryPolicy, RunAttachment, utc_now
 
 
 class SideEffect(StrEnum):
@@ -208,12 +213,33 @@ class ToolContext(BaseModel):
     idempotency_key: str
     # The run's session (RunRequest.session_id), when it has one.
     session_id: str | None = None
+    # The files the run was given (RunRequest.attachments), by reference; read them with
+    # read_attachment.
+    attachments: tuple[RunAttachment, ...] = ()
     secrets: Mapping[str, str] = Field(default_factory=dict)
     credentials: Mapping[str, str] = Field(
         default_factory=lambda: _NO_CREDENTIALS, repr=False, exclude=True
     )
     # Where emit_note sends notes: set by the Runtime for a call inside a run.
     _note_sink: NoteSink | None = PrivateAttr(default=None)
+    # Loads one of the run's attachments from the Runtime's artifact store, for the tenant.
+    _attachment_loader: Callable[[str], Awaitable[Artifact | None]] | None = PrivateAttr(
+        default=None
+    )
+
+    async def read_attachment(self, artifact_id: str) -> Artifact:
+        """One of the run's attached files, with its bytes (to extract text or store it).
+
+        Only the run's own attachments can be read, and only from the run's tenant.
+        """
+        if artifact_id not in {item.artifact_id for item in self.attachments}:
+            raise PolicyDeniedError(f"artifact {artifact_id!r} is not attached to this run")
+        if self._attachment_loader is None:
+            raise ConfigurationError("this tool call has no artifact store to read from")
+        artifact = await self._attachment_loader(artifact_id)
+        if artifact is None:
+            raise NotFoundError(f"attachment {artifact_id!r} is no longer available")
+        return artifact
 
     async def emit_note(
         self,

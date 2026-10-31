@@ -13,13 +13,20 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from algen_agent_runtime.exceptions.errors import (
+    CapabilityError,
     ConfigurationError,
     ConflictError,
     NotFoundError,
     VerificationError,
 )
 from algen_agent_runtime.tools.contracts import ToolContext
-from algen_agent_runtime.types.contracts import RequestOverrides, RunRequest, RunStatus, utc_now
+from algen_agent_runtime.types.contracts import (
+    RequestOverrides,
+    RunAttachment,
+    RunRequest,
+    RunStatus,
+    utc_now,
+)
 from algen_agent_runtime.workflows.contracts import (
     TOOL_HANDLER_PREFIX,
     NodeHandler,
@@ -173,7 +180,19 @@ class MultiAgentWorkflowExecutor:
         workflow_ancestry: tuple[str, ...] = (),
         emit: WorkflowEventSink | None = None,
         owner: str | None = None,
+        attachments: tuple[RunAttachment, ...] = (),
     ) -> WorkflowExecutionState:
+        """Start a run. ``attachments`` (files, by artifact reference) go to the agents of
+        nodes that set ``pass_attachments``; the workflow must accept them."""
+        if attachments:
+            policy = manifest.attachments
+            if not policy.enabled:
+                raise CapabilityError(f"workflow {manifest.name!r} does not accept attachments")
+            if len(attachments) > policy.max_count:
+                raise CapabilityError(
+                    f"{len(attachments)} attachments; workflow {manifest.name!r} takes at most "
+                    f"{policy.max_count}"
+                )
         if workflow_depth > self._maximum_workflow_depth:
             raise ConfigurationError(
                 f"workflow nesting exceeds maximum depth {self._maximum_workflow_depth}"
@@ -198,6 +217,7 @@ class MultiAgentWorkflowExecutor:
             deadline_at=utc_now() + timedelta(seconds=manifest.timeout_seconds),
             values=dict(values),
             nodes={node.id: WorkflowNodeExecution(node_id=node.id) for node in manifest.nodes},
+            attachments=attachments,
         )
         await self._store.create(state)
         state.status = WorkflowStatus.RUNNING
@@ -1445,6 +1465,7 @@ class MultiAgentWorkflowExecutor:
                 ),
                 tenant_id=state.tenant_id,
                 user_id=state.user_id,
+                attachments=state.attachments if node.pass_attachments else (),
                 conversation_id=state.conversation_id,
                 turn_id=state.turn_id,
                 correlation_id=state.correlation_id or state.id,

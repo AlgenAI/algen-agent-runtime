@@ -15,6 +15,7 @@ from fastapi import FastAPI, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.api.dependencies import Principal, require_scope
+from algen_agent_runtime.types.contracts import RunAttachment
 from algen_agent_runtime.workflows.contracts import WorkflowExecutionState, WorkflowStatus
 from algen_agent_runtime.workflows.service import WorkflowService, public_pause
 
@@ -25,6 +26,8 @@ class StartWorkflowBody(BaseModel):
     inputs: dict[str, Any] | None = None
     # A caller-chosen id makes a retried start find the run it already started.
     workflow_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._:-]{8,128}$")
+    # Uploaded files (POST /v1/artifacts), for the nodes that set pass_attachments.
+    attachments: tuple[RunAttachment, ...] = Field(default=(), max_length=32)
 
 
 class WorkflowApprovalBody(BaseModel):
@@ -82,6 +85,7 @@ def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -
             input_text=body.input,
             inputs=body.inputs,
             workflow_id=body.workflow_id,
+            attachments=body.attachments,
         )
         return run_view(state, output_key(name))
 

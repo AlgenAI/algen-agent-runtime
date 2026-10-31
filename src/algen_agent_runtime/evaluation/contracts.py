@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from algen_agent_runtime.types.contracts import RunAttachment
+
 
 class NumericExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -24,6 +26,9 @@ class GoldenQuestion(BaseModel):
     allowed_claims: tuple[str, ...] = ()
     forbidden_claims: tuple[str, ...] = ()
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Files the case's run is given (uploaded artifacts), so agents that read files can be
+    # measured on a sample set; the case executor passes them as RunRequest.attachments.
+    attachments: tuple[RunAttachment, ...] = ()
 
 
 class EvaluationArtifact(BaseModel):

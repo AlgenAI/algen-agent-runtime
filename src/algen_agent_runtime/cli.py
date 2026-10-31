@@ -142,6 +142,78 @@ def _run_describe(
     return 0
 
 
+def _run_agent(
+    agent: str,
+    text: str,
+    attach: list[str] | None = None,
+    config: list[str] | None = None,
+) -> int:
+    """Run an agent once, in process, with files attached, and print its answer."""
+    import asyncio
+    import mimetypes
+
+    from algen_agent_runtime.artifacts import ArtifactLifecycleService, BasicArtifactScanner
+    from algen_agent_runtime.config.settings import AppSettings, load_settings
+    from algen_agent_runtime.exceptions.errors import AlgenAgentRuntimeError
+    from algen_agent_runtime.orchestration.container import build_container
+    from algen_agent_runtime.types.contracts import (
+        Artifact,
+        ArtifactStatus,
+        RunAttachment,
+        RunRequest,
+        RunStatus,
+    )
+
+    tenant, user = "local", "cli"
+
+    async def run(files: list[tuple[str, bytes]]) -> int:
+        config_paths = _discover_config_paths(config)
+        settings = load_settings(config_paths) if config_paths else AppSettings()
+        container = build_container(settings)
+        await container.astart()
+        try:
+            attachments: list[RunAttachment] = []
+            for name, data in files:
+                artifact = Artifact(
+                    tenant_id=tenant,
+                    name=name,
+                    media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+                    data=data,
+                    status=ArtifactStatus.PENDING_SCAN,
+                )
+                await container.artifacts.put(artifact)
+                scanned = await ArtifactLifecycleService(
+                    container.artifacts, container.runtime.audits
+                ).scan(artifact.id, tenant, user, BasicArtifactScanner())
+                if scanned.status is not ArtifactStatus.AVAILABLE:
+                    print(f"Error: {name} was quarantined by the upload scan", file=sys.stderr)
+                    return 1
+                attachments.append(RunAttachment(artifact_id=artifact.id))
+            result = await container.runtime.run(
+                RunRequest(
+                    agent=agent,
+                    input=text,
+                    attachments=tuple(attachments),
+                    tenant_id=tenant,
+                    user_id=user,
+                )
+            )
+        finally:
+            await container.aclose()
+        if result.status is not RunStatus.COMPLETED:
+            print(f"Error: run {result.status.value}: {result.error}", file=sys.stderr)
+            return 1
+        print(result.output or "")
+        return 0
+
+    try:
+        files = [(Path(item).name, Path(item).read_bytes()) for item in attach or ()]
+        return asyncio.run(run(files))
+    except (AlgenAgentRuntimeError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _run_check(
     config: list[str] | None = None,
     paths: list[str] | None = None,
@@ -399,6 +471,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the inventory as JSON",
     )
+    # run command
+    run_parser = subparsers.add_parser(
+        "run", help="Run an agent once, in process, and print its answer"
+    )
+    run_parser.add_argument("agent", help="Agent name")
+    run_parser.add_argument("input", help="The question or task")
+    run_parser.add_argument(
+        "--attach",
+        action="append",
+        default=None,
+        metavar="FILE",
+        help="A file for the agent to read, such as an image or PDF (repeatable); the agent "
+        "must accept attachments",
+    )
+    run_parser.add_argument(
+        "--config", action="append", default=None, help="Configuration YAML file(s)"
+    )
     # check command
     check_parser = subparsers.add_parser(
         "check",
@@ -542,6 +631,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     elif args.command == "describe":
         sys.exit(_run_describe(config=args.config, paths=args.path, as_json=args.json))
+    elif args.command == "run":
+        sys.exit(_run_agent(args.agent, args.input, attach=args.attach, config=args.config))
     elif args.command == "policy":
         sys.exit(_run_policy(args))
     elif args.command == "plugin":

@@ -44,6 +44,7 @@ from algen_agent_runtime.approvals.service import (
     ApprovalRequest,
     ApprovalStatus,
 )
+from algen_agent_runtime.artifacts import ArtifactLifecycleService, BasicArtifactScanner
 from algen_agent_runtime.config.settings import AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
@@ -73,6 +74,7 @@ from algen_agent_runtime.types.contracts import (
     Artifact,
     ArtifactStatus,
     RequestOverrides,
+    RunAttachment,
     RunRequest,
     utc_now,
 )
@@ -84,6 +86,8 @@ class CreateRunBody(BaseModel):
     agent: str
     agent_version: str | None = None
     input: str = Field(min_length=1)
+    # Uploaded files (POST /v1/artifacts) the agent reads with the input; it must accept them.
+    attachments: tuple[RunAttachment, ...] = Field(default=(), max_length=32)
     session_id: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
     stream: bool = False
@@ -124,6 +128,7 @@ class CreateConversationMessageBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=100_000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    attachments: tuple[RunAttachment, ...] = Field(default=(), max_length=32)
 
 
 class UpdateConversationBody(BaseModel):
@@ -555,6 +560,13 @@ def create_app(
             ),
         )
         await dependencies.artifacts.put(artifact)
+        if resolved.security.upload_scanner == "basic":
+            scanned = await ArtifactLifecycleService(
+                dependencies.artifacts, dependencies.runtime.audits
+            ).scan(
+                artifact.id, identity.tenant_id, "runtime.upload_scanner", BasicArtifactScanner()
+            )
+            return scanned.model_dump(mode="json")
         return artifact.descriptor().model_dump(mode="json")
 
     @app.get("/v1/artifacts")
@@ -744,6 +756,7 @@ def create_app(
             identity.user_id,
             body.text,
             body.metadata,
+            attachments=body.attachments,
         )
         return {
             "message_id": user_message.id,
