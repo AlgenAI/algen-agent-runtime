@@ -6,6 +6,11 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a19] - 2026-10-31
+
+No database migrations. 0.1.0a18 and 0.1.0a19 can run side by side during a rolling upgrade (see
+the last upgrade note).
+
 ### Upgrade notes
 
 - **Breaking (governance fix):** `ToolExecutor.execute` now enforces `requires_approval` (an MCP

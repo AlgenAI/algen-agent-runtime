@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — pre-release (`0.1.0a18`)  
-Last reviewed: 2026-10-30
+Status: Active tracking — pre-release (`0.1.0a19`)  
+Last reviewed: 2026-10-31
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -20,6 +20,7 @@ production evidence rather than for the feature list.
 | `0.1.0a16` | Conversation streaming and approval pauses ([#50](https://github.com/AlgenAI/algen-agent-runtime/issues/50)); P0-6 readiness and lifecycle | Released; internal users start adopting |
 | `0.1.0a17` | P0-4 authentication options; P0-3 side-effect operations, each reviewed on its own | Released |
 | `0.1.0a18` | Remaining P0 items: network and plugin hardening, resource bounds, policy hardening, persistence drills | Released; all P0 items complete for the single-node scope |
+| `0.1.0a19` | Governance fixes found building governed agents ([#83](https://github.com/AlgenAI/algen-agent-runtime/issues/83)), scan evidence ([#80](https://github.com/AlgenAI/algen-agent-runtime/issues/80)), session-scoped tool cache ([#79](https://github.com/AlgenAI/algen-agent-runtime/issues/79)), file attachments ([#82](https://github.com/AlgenAI/algen-agent-runtime/issues/82)); document extractors deprecated ([#81](https://github.com/AlgenAI/algen-agent-runtime/issues/81)) | Released; the extractor deprecation restarts the "no new deprecations" count below |
 | `0.2.0b1` … `0.2.0bN` | Beta: deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
