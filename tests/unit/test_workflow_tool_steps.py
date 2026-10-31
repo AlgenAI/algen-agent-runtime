@@ -8,9 +8,10 @@ import pytest
 from conftest import make_runtime
 from pydantic import ValidationError
 
-from algen_agent_runtime.tools.contracts import Tool, ToolDefinition
+from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor, WorkflowHookRegistry
 from algen_agent_runtime.workflows.contracts import (
+    WorkflowApprovalRule,
     WorkflowManifest,
     WorkflowNode,
     WorkflowNodeKind,
@@ -113,3 +114,88 @@ async def test_a_tool_step_needs_a_runtime_with_tools() -> None:
     )
     assert state.status == WorkflowStatus.FAILED
     assert "needs a runtime with tools" in (state.nodes["evidence"].error or state.error or "")
+
+
+def _approval_runtime(seen: list[dict[str, Any]]) -> Any:
+    runtime = make_runtime()
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="release.publish",
+                version="1",
+                description="Publish the release",
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                side_effect=SideEffect.EXTERNAL,
+                requires_approval=True,
+            ),
+            lambda args, ctx: seen.append(args) or {"published": True},
+        )
+    )
+    return runtime
+
+
+def _publish_workflow(*, approval: bool, rejection_policy: str = "skip_dependents") -> Any:
+    publish = WorkflowNode(
+        id="publish",
+        kind=WorkflowNodeKind.HANDLER,
+        handler="tool:release.publish",
+        depends_on=("review",) if approval else (),
+        output_key="published",
+    )
+    nodes: tuple[WorkflowNode, ...] = (publish,)
+    if approval:
+        review = WorkflowNode(
+            id="review",
+            kind=WorkflowNodeKind.APPROVAL,
+            output_key="review",
+            approval=WorkflowApprovalRule(prompt="Publish?", rejection_policy=rejection_policy),
+        )
+        nodes = (review, publish)
+    return WorkflowManifest(name="publish", version="1.0.0", output_key="published", nodes=nodes)
+
+
+@pytest.mark.asyncio
+async def test_an_approval_required_tool_step_runs_after_its_upstream_approval() -> None:
+    seen: list[dict[str, Any]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+    manifest = _publish_workflow(approval=True)
+    paused = await executor.run(manifest, {}, tenant_id="tenant", user_id="user")
+    assert paused.status == WorkflowStatus.AWAITING_APPROVAL and seen == []
+
+    done = await executor.decide_approval(
+        manifest, paused.id, tenant_id="tenant", user_id="approver", decision="approved"
+    )
+
+    assert done.status == WorkflowStatus.COMPLETED
+    assert seen == [{}]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_approval_does_not_cover_an_approval_required_tool_step() -> None:
+    """A rejection that lets dependents continue still does not approve the call."""
+    seen: list[dict[str, Any]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+    manifest = _publish_workflow(approval=True, rejection_policy="continue")
+    paused = await executor.run(manifest, {}, tenant_id="tenant", user_id="user")
+
+    done = await executor.decide_approval(
+        manifest, paused.id, tenant_id="tenant", user_id="approver", decision="rejected"
+    )
+
+    assert done.status == WorkflowStatus.FAILED
+    assert seen == []
+    assert "requires an approval" in (done.nodes["publish"].error or done.error or "")
+
+
+@pytest.mark.asyncio
+async def test_an_approval_required_tool_step_without_an_approval_node_is_refused() -> None:
+    seen: list[dict[str, Any]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+
+    state = await executor.run(
+        _publish_workflow(approval=False), {}, tenant_id="tenant", user_id="user"
+    )
+
+    assert state.status == WorkflowStatus.FAILED
+    assert seen == []

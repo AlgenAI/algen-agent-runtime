@@ -32,6 +32,7 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowNodeStatus,
     WorkflowPredicate,
     WorkflowStatus,
+    upstream_approval_nodes,
 )
 from algen_agent_runtime.workflows.store import (
     InMemoryWorkflowCheckpointStore,
@@ -1031,7 +1032,7 @@ class MultiAgentWorkflowExecutor:
             elif node.kind == WorkflowNodeKind.HANDLER:
                 async with semaphore:
                     if (node.handler or "").startswith(TOOL_HANDLER_PREFIX):
-                        result = await self._call_tool_step(state, node)
+                        result = await self._call_tool_step(state, node, nodes)
                     else:
                         result = await self._call(
                             self._hooks.handler(node.handler or ""), self._context(state, node)
@@ -1510,13 +1511,19 @@ class MultiAgentWorkflowExecutor:
     ) -> WorkflowHookContext:
         return WorkflowHookContext(state=state, node=node, **updates)
 
-    async def _call_tool_step(self, state: WorkflowExecutionState, node: WorkflowNode) -> Any:
+    async def _call_tool_step(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+    ) -> Any:
         """Run the tool a ``tool:<name>`` step names, through the runtime's tool executor.
 
         The tool's own permissions are granted: the workflow author declared the call. A step
         whose tool changes things should follow an approval node; agent approvals do not apply.
-        The workflow API takes no caller credentials, so ``ToolContext.credentials`` is empty
-        here; agent steps' runs have none either.
+        A tool that ``requires_approval`` runs only when an upstream approval node was approved
+        (or modified) in this execution. The workflow API takes no caller credentials, so
+        ``ToolContext.credentials`` is empty here; agent steps' runs have none either.
         """
         name = (node.handler or "").removeprefix(TOOL_HANDLER_PREFIX)
         executor = getattr(self._runtime, "tool_executor", None)
@@ -1533,7 +1540,13 @@ class MultiAgentWorkflowExecutor:
             permissions=tool.definition.required_permissions,
             idempotency_key=f"{state.id}:{node.id}:{state.nodes[node.id].attempts}",
         )
-        result = await executor.execute(name, arguments, context)
+        approval = None
+        for approval_id in upstream_approval_nodes(nodes, node.id):
+            decided = state.values.get(nodes[approval_id].output_key)
+            if isinstance(decided, dict) and decided.get("decision") in {"approved", "modified"}:
+                approval = f"workflow:{state.id}:{approval_id}"
+                break
+        result = await executor.execute(name, arguments, context, approval=approval)
         return result.value
 
     @classmethod

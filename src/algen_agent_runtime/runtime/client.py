@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 from algen_agent_runtime.events.contracts import RunEvent
 from algen_agent_runtime.runtime.runtime import AgentRuntime
+from algen_agent_runtime.tools.executor import ToolExecutor
+from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.types.contracts import RunRequest, RunResult
 
 
@@ -13,6 +15,16 @@ class AlgenAgentRuntimeClient:
 
     def __init__(self, runtime: AgentRuntime) -> None:
         self._runtime = runtime
+
+    @property
+    def tools(self) -> ToolRegistry:
+        """The runtime's tool registry, for workflow ``tool:`` steps."""
+        return self._runtime.tools
+
+    @property
+    def tool_executor(self) -> ToolExecutor:
+        """The runtime's tool executor, for workflow ``tool:`` steps."""
+        return self._runtime.tool_executor
 
     async def run(self, request: RunRequest) -> RunResult:
         return await self._runtime.run(request)

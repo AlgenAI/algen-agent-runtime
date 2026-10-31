@@ -268,7 +268,6 @@ class _UnknownToolError(Exception):
     """A model called a tool that does not exist; it is told so instead of the run failing."""
 
 
-
 def _decoded_strings(value: Any) -> Iterator[str]:
     """Every string in a decoded JSON value, keys included."""
     if isinstance(value, str):
@@ -293,6 +292,7 @@ def _contains_instruction_override(text: str) -> bool:
     except ValueError:
         return looks_like_instruction_override(text)
     return any(looks_like_instruction_override(item) for item in _decoded_strings(value))
+
 
 class AgentRuntime:
     def __init__(
@@ -2455,6 +2455,11 @@ class AgentRuntime:
                     context,
                     agent=agent,
                     on_reconciled=lambda record: self._announce_replay_reconciled(state, record),
+                    # Planning asked for this call's approval (side_effects is mandatory), so an
+                    # approval-required tool reaches here only once its call was approved.
+                    approval=(
+                        f"tool_call:{call_id}" if call_id in state.approved_tool_call_ids else None
+                    ),
                 )
                 tool_text = json.dumps(result.value, default=str)
                 if tool.definition.name in MEMORY_PERMISSIONS:

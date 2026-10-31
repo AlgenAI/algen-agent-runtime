@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
@@ -210,6 +210,22 @@ class WorkflowNode(BaseModel):
                 "workflow_name and workflow_version are supported only by workflow nodes"
             )
         return self
+
+
+def upstream_approval_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> tuple[str, ...]:
+    """The approval nodes a node depends on, directly or through other nodes, nearest first."""
+    found: list[str] = []
+    seen: set[str] = set()
+    pending = list(nodes[node_id].depends_on)
+    while pending:
+        current = pending.pop(0)
+        if current in seen or current not in nodes:
+            continue
+        seen.add(current)
+        if nodes[current].kind is WorkflowNodeKind.APPROVAL:
+            found.append(current)
+        pending.extend(nodes[current].depends_on)
+    return tuple(found)
 
 
 class WorkflowManifest(BaseModel):
