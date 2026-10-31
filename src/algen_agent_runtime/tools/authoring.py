@@ -18,7 +18,11 @@ import jsonschema
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
-from algen_agent_runtime.exceptions.errors import ConfigurationError, ToolNotAttemptedError
+from algen_agent_runtime.exceptions.errors import (
+    ConfigurationError,
+    ToolkitConfigurationError,
+    ToolNotAttemptedError,
+)
 from algen_agent_runtime.tools.contracts import (
     CacheContextValue,
     CompensationHandler,
@@ -459,8 +463,14 @@ class Toolkit:
                 try:
                     created = self._client_factory(self._secrets)
                     self._client = await created if inspect.isawaitable(created) else created
+                except ConfigurationError as exc:
+                    # Nothing was sent: a call that needs the client did not happen. The
+                    # toolkit's message says what to set or install; it never holds a value.
+                    raise ToolkitConfigurationError(
+                        f"toolkit {self.name!r} is not available: {exc}"
+                    ) from exc
                 except Exception as exc:
-                    # Nothing was sent: a call that needs the client did not happen.
+                    # Any other error may quote what it was given: only its type is kept.
                     raise ToolNotAttemptedError(
                         f"toolkit {self.name!r} is not available: {type(exc).__name__}"
                     ) from exc

@@ -379,6 +379,30 @@ async def test_a_required_toolkit_that_cannot_start_stops_the_service(
     await container.aclose()
 
 
+async def test_a_toolkit_configuration_error_keeps_its_type_and_message() -> None:
+    """The toolkit's own message says what to set or install, and callers catching
+    ConfigurationError still catch it; the call is still recorded as not attempted."""
+
+    def needs_extra(secrets: Any) -> Any:
+        raise ConfigurationError("the crm connector needs 'crmlib'; pip install 'acme[crm]'")
+
+    toolkit = Toolkit("crm2", client=needs_extra)
+    with pytest.raises(ConfigurationError, match=r"pip install 'acme\[crm\]'") as caught:
+        await toolkit.client()
+    assert isinstance(caught.value, ToolNotAttemptedError)
+
+
+async def test_any_other_client_error_keeps_only_its_type() -> None:
+    def leaks(secrets: Any) -> Any:
+        raise RuntimeError("connect failed for token=s3cr3t")
+
+    toolkit = Toolkit("crm3", client=leaks)
+    with pytest.raises(ToolNotAttemptedError) as caught:
+        await toolkit.client()
+    assert not isinstance(caught.value, ConfigurationError)
+    assert "s3cr3t" not in str(caught.value) and "RuntimeError" in str(caught.value)
+
+
 def test_authored_tools_meet_the_tool_contract() -> None:
     for item in (search, lookup, update_owner, find_account, set_owner):
         assert_tool_contract(item)
