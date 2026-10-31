@@ -166,6 +166,7 @@ from algen_agent_runtime.retrieval.vector_stores import (
     PgVectorRetriever,
     QdrantRetriever,
 )
+from algen_agent_runtime.runtime.attachments import AttachmentLimits
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.security.network import (
     OutboundNetwork,
@@ -1033,6 +1034,12 @@ def build_container(
         telemetry_max_content_chars=settings.telemetry.max_content_chars,
         telemetry_trace_level=settings.telemetry.trace_level,
         stream_delta_interval_seconds=settings.runtime.stream_delta_interval_ms / 1000,
+        artifacts=artifacts,
+        attachment_limits=AttachmentLimits(
+            allowed_types=settings.security.allowed_attachment_types,
+            max_count=settings.security.max_attachments_per_run,
+            max_bytes_total=settings.security.max_attachment_bytes_total,
+        ),
     )
     _report_unknown_components(
         unknown_agent_components(

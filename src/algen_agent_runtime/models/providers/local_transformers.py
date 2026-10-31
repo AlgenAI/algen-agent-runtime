@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from algen_agent_runtime.exceptions.errors import CapabilityError
+from algen_agent_runtime.runtime.attachments import rendered_text
 from algen_agent_runtime.types.contracts import (
     Message,
     ModelCapabilities,
@@ -38,7 +39,7 @@ class LocalTransformersProvider:
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
         generator = await self._load()
-        prompt = "\n".join(f"{m.role}: {m.text_content}" for m in request.messages)
+        prompt = "\n".join(f"{m.role}: {rendered_text(m)}" for m in request.messages)
         result: list[dict[str, Any]] = await asyncio.to_thread(
             generator, prompt, max_new_tokens=request.max_output_tokens or 256
         )

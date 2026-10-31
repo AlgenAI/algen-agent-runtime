@@ -64,6 +64,7 @@ from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     BudgetExceededError,
+    CapabilityError,
     ConfigurationError,
     ConflictError,
     MCPNotConnectedError,
@@ -96,6 +97,7 @@ from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
+from algen_agent_runtime.runtime import attachments as run_attachments
 from algen_agent_runtime.runtime.guards import (
     REPEATED,
     call_key,
@@ -136,6 +138,7 @@ from algen_agent_runtime.types.contracts import (
     Budget,
     ContextCompaction,
     ErrorKind,
+    FileBlock,
     FinishReason,
     LoadedSkills,
     Message,
@@ -157,7 +160,13 @@ from algen_agent_runtime.types.contracts import (
     WorkingStateUpdate,
     utc_now,
 )
-from algen_agent_runtime.types.interfaces import AuditLog, EventPublisher, MemoryStore, RunStore
+from algen_agent_runtime.types.interfaces import (
+    ArtifactStore,
+    AuditLog,
+    EventPublisher,
+    MemoryStore,
+    RunStore,
+)
 from algen_agent_runtime.verification.verifiers import VerificationService
 
 # Events recorded even past ``Budget.max_events``: they end or pause the run, or say why.
@@ -320,6 +329,8 @@ class AgentRuntime:
         telemetry_max_content_chars: int = 16_384,
         telemetry_trace_level: TraceLevel = "detailed",
         stream_delta_interval_seconds: float = 0.0,
+        artifacts: ArtifactStore | None = None,
+        attachment_limits: run_attachments.AttachmentLimits | None = None,
     ) -> None:
         self.agents = agents
         self.router = router
@@ -338,6 +349,9 @@ class AgentRuntime:
         self.observability = observability or NoopObservabilityAdapter()
         self.cache = cache
         self.context_artifacts = context_artifacts
+        # Where a run's attachments are read from (the uploads behind POST /v1/artifacts).
+        self.artifacts = artifacts
+        self.attachment_limits = attachment_limits or run_attachments.AttachmentLimits()
         self.learned_memory = (
             LearnedMemoryService(learned_memory_store, self._memory_context)
             if learned_memory_store is not None
@@ -1115,6 +1129,8 @@ class AgentRuntime:
             )
             if isinstance(checked_input, str) and checked_input != state.request.input:
                 state.request = state.request.model_copy(update={"input": checked_input})
+            if state.request.attachments:
+                await self._validate_attachments(state, agent)
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
         while state.status not in TERMINAL_STATUSES and state.status not in {
             RunStatus.AWAITING_APPROVAL,
@@ -1716,10 +1732,22 @@ class AgentRuntime:
         step_id: str,
     ) -> Any:
         last_error: Exception | None = None
+        profiles = run_attachments.with_capabilities(
+            profiles,
+            run_attachments.required_capabilities(
+                block.media_type or ""
+                for message in request.messages
+                for block in message.content
+                if isinstance(block, FileBlock)
+            ),
+        )
         for attempt in range(agent.retry_policy.max_attempts):
             meter_call = self._meter_call(
                 state, agent, step_id=step_id, purpose="step", attempt=attempt
             )
+            # Files travel by reference until here: the bytes are loaded onto this copy only,
+            # for this attempt (a retry may have changed the request).
+            wire = await run_attachments.resolve(request, state.request.tenant_id, self.artifacts)
             try:
                 if request.stream:
                     text_parts: list[str] = []
@@ -1733,7 +1761,7 @@ class AgentRuntime:
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
                         self.router.stream(
-                            request, profiles, agent.model_allowlist, meter_call=meter_call
+                            wire, profiles, agent.model_allowlist, meter_call=meter_call
                         )
                     ) as events:
                         async for event in events:
@@ -1779,7 +1807,7 @@ class AgentRuntime:
                         self._record_model_usage(state, completed)
                         raise
                 response = await self.router.generate(
-                    request, profiles, agent.model_allowlist, meter_call=meter_call
+                    wire, profiles, agent.model_allowlist, meter_call=meter_call
                 )
                 await self._check_response_size(state, agent, response)
                 try:
@@ -2137,6 +2165,61 @@ class AgentRuntime:
         await self._record_tool_call(state, agent, action, tool, outcome)
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
+
+    async def _validate_attachments(self, state: RunState, agent: AgentDefinition) -> None:
+        """Refuse a run whose files the agent, the deployment or its models cannot take, before
+        any model call; record their real media types on the request."""
+        checked = await run_attachments.validate(
+            state.request, agent, self.artifacts, self.attachment_limits
+        )
+        described = []
+        for item in checked:
+            descriptor = (
+                await self.artifacts.describe(item.artifact_id, state.request.tenant_id)
+                if self.artifacts is not None
+                else None
+            )
+            described.append(
+                {
+                    "artifact_id": item.artifact_id,
+                    "media_type": item.media_type,
+                    "name": descriptor.name if descriptor else None,
+                    "size_bytes": descriptor.size_bytes if descriptor else None,
+                    "sha256": descriptor.sha256 if descriptor else None,
+                }
+            )
+        kept = await self._policy_value("attachments", described, state, {"agent": agent})
+        if isinstance(kept, list):
+            # A policy may drop files, never add one.
+            ids = {item.get("artifact_id") for item in kept if isinstance(item, dict)}
+            checked = tuple(item for item in checked if item.artifact_id in ids)
+        needed = run_attachments.required_capabilities(item.media_type or "" for item in checked)
+        profiles = run_attachments.with_capabilities(
+            (agent.default_model, *agent.fallback_models), needed
+        )
+        if checked and not await self.router.candidates(profiles, agent.model_allowlist):
+            raise CapabilityError(
+                f"no model configured for agent {agent.name!r} can read the attachments "
+                f"(needs {', '.join(sorted(needed))})"
+            )
+        state.request = state.request.model_copy(update={"attachments": checked})
+        trace.get_current_span().set_attribute("agent.run.attachment_count", len(checked))
+        await self._audit(
+            state,
+            "run.attachments",
+            "accepted",
+            state.id,
+            {
+                "attachments": [
+                    {
+                        key: item[key]
+                        for key in ("artifact_id", "media_type", "size_bytes", "sha256")
+                    }
+                    for item in described
+                    if item["artifact_id"] in {kept_item.artifact_id for kept_item in checked}
+                ]
+            },
+        )
 
     def _tool_output_schema(self, name: str) -> dict[str, Any] | None:
         """A registered tool's output schema, for policies reading its results in history."""
@@ -3115,11 +3198,17 @@ class AgentRuntime:
                     state.request.input,
                     state.output_text or "",
                     agent.memory_policy.tool_payload_max_chars,
+                    user_message=run_attachments.user_message(state.request),
                 )
             else:
-                persisted = [Message.text(Role.USER, state.request.input)]
+                persisted = [run_attachments.user_message(state.request)]
                 if state.output_text:
                     persisted.append(Message.text(Role.ASSISTANT, state.output_text))
+            if state.request.attachments and agent.attachments.retention == "turn":
+                # Later turns see a note, not the file: it is not re-sent and billed again.
+                persisted = await run_attachments.retire(
+                    persisted, state.request.tenant_id, self.artifacts
+                )
             checked_memory = await self._policy_value(
                 "before_memory_write", persisted, state, {"agent": agent}
             )

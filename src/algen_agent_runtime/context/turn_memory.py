@@ -18,9 +18,18 @@ TRUNCATION_MARKER = "… [truncated for memory]"
 
 
 def turn_messages(
-    history: Sequence[Message], user_input: str, output_text: str, max_chars: int
+    history: Sequence[Message],
+    user_input: str,
+    output_text: str,
+    max_chars: int,
+    *,
+    user_message: Message | None = None,
 ) -> list[Message]:
-    """The turn's question, its tool calls and results, and its final answer."""
+    """The turn's question, its tool calls and results, and its final answer.
+
+    ``user_message`` is the question as the run asked it (with any file references); by
+    default the question's text alone.
+    """
     start = next(
         (
             index
@@ -29,7 +38,7 @@ def turn_messages(
         ),
         None,
     )
-    kept: list[Message] = [Message.text(Role.USER, user_input)]
+    kept: list[Message] = [user_message or Message.text(Role.USER, user_input)]
     if start is not None:
         for message in history[start + 1 :]:
             if message.role == Role.ASSISTANT and message.tool_calls:

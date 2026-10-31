@@ -45,7 +45,11 @@ SIGNATURE_SUFFIX = ".sig"
 #: Clock skew allowed between the signer and this host for ``issued_at``.
 ISSUED_AT_SKEW = timedelta(minutes=5)
 _INSTALL_HINT = "install algen-agent-runtime[encryption] to sign or verify policy bundles"
-_CONTENT_POINTS = tuple(point for point in PolicyPoint if point != PolicyPoint.AFTER_MEMORY_WRITE)
+_CONTENT_POINTS = tuple(
+    point
+    for point in PolicyPoint
+    if point not in {PolicyPoint.AFTER_MEMORY_WRITE, PolicyPoint.ATTACHMENTS}
+)
 _TOOL_RULE_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL})
 
 

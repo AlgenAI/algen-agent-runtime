@@ -18,6 +18,7 @@ rejects the ``cache_control`` fields.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -28,8 +29,10 @@ import httpx
 
 from algen_agent_runtime.exceptions.errors import ProviderError
 from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
+from algen_agent_runtime.runtime.attachments import describe_for_text
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
+    FileBlock,
     FinishReason,
     Message,
     ModelCapabilities,
@@ -113,6 +116,18 @@ def _merge_extensions(payload: dict[str, Any], extensions: Mapping[str, Any]) ->
             payload[key] = value
 
 
+def _file_block(block: FileBlock) -> dict[str, Any]:
+    """An attached file: an image or PDF with its bytes, or a note when it was not loaded."""
+    if block.content is None:
+        return {"type": "text", "text": describe_for_text(block)}
+    data = base64.b64encode(block.content).decode("ascii")
+    kind = "document" if block.media_type == "application/pdf" else "image"
+    return {
+        "type": kind,
+        "source": {"type": "base64", "media_type": block.media_type, "data": data},
+    }
+
+
 class AnthropicProvider(OpenAICompatibleProvider):
     """Native Anthropic Messages API adapter with normalized contracts."""
 
@@ -132,7 +147,12 @@ class AnthropicProvider(OpenAICompatibleProvider):
             api_key_reference,
             default_model,
             ModelCapabilities(
-                streaming=True, tools=True, structured_output=True, json_schema=True, images=True
+                streaming=True,
+                tools=True,
+                structured_output=True,
+                json_schema=True,
+                images=True,
+                files=True,
             ),
             endpoint="/messages",
             **kwargs,
@@ -187,6 +207,12 @@ class AnthropicProvider(OpenAICompatibleProvider):
                                     },
                                 }
                             )
+                        elif block.url:
+                            content.append(
+                                {"type": "image", "source": {"type": "url", "url": block.url}}
+                            )
+                    elif block.type == "file":
+                        content.append(_file_block(block))
                 content.extend(
                     {
                         "type": "tool_use",

@@ -7,9 +7,16 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator, SchemaError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
-from algen_agent_runtime.types.contracts import utc_now
+from algen_agent_runtime.types.contracts import AttachmentPolicy, RunAttachment, utc_now
 
 
 class WorkflowNodeKind(StrEnum):
@@ -161,6 +168,17 @@ class WorkflowNode(BaseModel):
     recovery_policy: Literal["fail", "retry"] = "fail"
     resources: tuple[WorkflowResourceReference, ...] = ()
     metadata: dict[str, str] = Field(default_factory=dict)
+    # Hand the workflow run's attachments to this node's agent (agent and map_agent nodes).
+    pass_attachments: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_attachments(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # Manifests are fingerprinted from their dump: a node that does not pass attachments
+        # keeps the fingerprint it had before the field existed, so paused runs still resume.
+        data = handler(self)
+        if isinstance(data, dict) and not self.pass_attachments:
+            data.pop("pass_attachments", None)
+        return data
 
     @model_validator(mode="after")
     def validate_kind(self) -> WorkflowNode:
@@ -195,6 +213,11 @@ class WorkflowNode(BaseModel):
                 raise ValueError("workflow nodes require workflow_name and workflow_version")
             if not (self.input_builder or self.input_template):
                 raise ValueError("workflow nodes require input_builder or input_template")
+        if self.pass_attachments and self.kind not in {
+            WorkflowNodeKind.AGENT,
+            WorkflowNodeKind.MAP_AGENT,
+        }:
+            raise ValueError("pass_attachments is supported only by agent and map_agent nodes")
         if self.kind == WorkflowNodeKind.MAP_AGENT and not self.map_from:
             raise ValueError("map_agent workflow nodes require map_from")
         if self.kind != WorkflowNodeKind.MAP_AGENT and self.map_from is not None:
@@ -261,6 +284,16 @@ class WorkflowManifest(BaseModel):
     maximum_concurrency: int = Field(default=8, ge=1, le=128)
     timeout_seconds: float = Field(default=300, gt=0, le=86_400)
     metadata: dict[str, str] = Field(default_factory=dict)
+    # Whether callers may start the workflow with files, and which (see AttachmentPolicy).
+    attachments: AttachmentPolicy = Field(default_factory=AttachmentPolicy)
+
+    @model_serializer(mode="wrap")
+    def _omit_default_attachments(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # As WorkflowNode: a manifest without attachments keeps its earlier fingerprint.
+        data = handler(self)
+        if isinstance(data, dict) and self.attachments == AttachmentPolicy():
+            data.pop("attachments", None)
+        return data
 
     @model_validator(mode="after")
     def validate_dag(self) -> WorkflowManifest:
@@ -309,6 +342,13 @@ class WorkflowManifest(BaseModel):
         if self.output_key is not None and self.output_key not in declared_outputs:
             raise ValueError(
                 f"workflow output_key {self.output_key!r} is not produced by any workflow node"
+            )
+
+        passing = [node.id for node in self.nodes if node.pass_attachments]
+        if passing and not self.attachments.enabled:
+            raise ValueError(
+                f"nodes {passing} pass attachments, but the workflow does not accept them "
+                "(attachments.enabled)"
             )
 
         # Validate node template placeholders against upstream outputs and declared initial inputs
@@ -405,6 +445,16 @@ class WorkflowExecutionState(BaseModel):
     deadline_at: datetime = Field(default_factory=lambda: utc_now() + timedelta(seconds=300))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    # Files the run was started with; nodes with pass_attachments hand them to their agent.
+    attachments: tuple[RunAttachment, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attachments(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a18 loads checkpoints with extra="forbid": leave the field out while empty.
+        data = handler(self)
+        if isinstance(data, dict) and not self.attachments:
+            data.pop("attachments", None)
+        return data
 
 
 class WorkflowHookContext(BaseModel):

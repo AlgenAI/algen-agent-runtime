@@ -25,7 +25,10 @@ from algen_agent_runtime.policies.contracts import (
 from algen_agent_runtime.tools.contracts import SideEffect
 from algen_agent_runtime.types.contracts import Message, Role, TextBlock
 
-_CONTENT_BOUNDARIES = frozenset(PolicyPoint) - {PolicyPoint.AFTER_MEMORY_WRITE}
+_CONTENT_BOUNDARIES = frozenset(PolicyPoint) - {
+    PolicyPoint.AFTER_MEMORY_WRITE,
+    PolicyPoint.ATTACHMENTS,
+}
 
 
 class Policy(Protocol):

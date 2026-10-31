@@ -11,6 +11,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SerializerFunctionWrapHandler,
     model_serializer,
     model_validator,
@@ -51,9 +52,30 @@ class ImageBlock(StrictModel):
 
 
 class FileBlock(StrictModel):
+    """A file by reference. History, memory and checkpoints hold only the reference; the
+    Runtime loads the bytes onto a copy of the block just before a model call
+    (:meth:`with_content`), and that copy is never stored or serialized."""
+
     type: Literal["file"] = "file"
     artifact_id: str
     media_type: str | None = None
+    _content: bytes | None = PrivateAttr(default=None)
+    _name: str | None = PrivateAttr(default=None)
+
+    def with_content(self, content: bytes, *, name: str, media_type: str) -> FileBlock:
+        resolved = self.model_copy(update={"media_type": media_type})
+        resolved._content = content
+        resolved._name = name
+        return resolved
+
+    @property
+    def content(self) -> bytes | None:
+        """The file's bytes, on a block resolved for a model call; None otherwise."""
+        return self._content
+
+    @property
+    def name(self) -> str | None:
+        return self._name
 
 
 ContentBlock = Annotated[TextBlock | ImageBlock | FileBlock, Field(discriminator="type")]
@@ -429,6 +451,32 @@ class WrapUpPolicy(StrictModel):
         return self
 
 
+DEFAULT_ATTACHMENT_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
+)
+
+
+class RunAttachment(StrictModel):
+    """A file given to a run, by reference to an uploaded artifact; never inline bytes."""
+
+    artifact_id: str = Field(min_length=1, max_length=128)
+    media_type: str | None = Field(default=None, max_length=127)
+
+
+class AttachmentPolicy(StrictModel):
+    """Whether an agent (or workflow) accepts files, and which.
+
+    Off by default. ``retention`` says how long a file stays in what the model reads: ``turn``
+    replaces it with a short note once the turn ends, so it is not billed on every later turn;
+    ``session`` keeps it for the session's later turns.
+    """
+
+    enabled: bool = False
+    types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    max_count: int = Field(default=5, ge=1, le=32)
+    retention: Literal["turn", "session"] = "turn"
+
+
 class AgentDefinition(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
@@ -461,6 +509,7 @@ class AgentDefinition(StrictModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     tags: frozenset[str] = frozenset()
     model_allowlist: frozenset[str] = frozenset()
+    attachments: AttachmentPolicy = Field(default_factory=AttachmentPolicy)
 
     @model_validator(mode="after")
     def unique_skills(self) -> AgentDefinition:
@@ -516,6 +565,7 @@ class RunRequest(StrictModel):
     agent: str
     agent_version: str | None = None
     input: str
+    attachments: tuple[RunAttachment, ...] = Field(default=(), max_length=32)
     session_id: str | None = None
     tenant_id: str
     user_id: str
@@ -528,6 +578,15 @@ class RunRequest(StrictModel):
     stream: bool = False
     metadata: dict[str, str] = Field(default_factory=dict)
     overrides: RequestOverrides = Field(default_factory=lambda: RequestOverrides())
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attachments(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # 0.1.0a18 validates stored run state with extra="forbid" and has no attachments: leave
+        # them out while empty, so a18 replicas can still load what a19 stores.
+        data = handler(self)
+        if isinstance(data, dict) and not self.attachments:
+            data.pop("attachments", None)
+        return data
 
 
 class RequestOverrides(StrictModel):
