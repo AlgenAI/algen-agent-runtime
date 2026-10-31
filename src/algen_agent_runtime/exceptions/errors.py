@@ -83,6 +83,12 @@ class ToolNotAttemptedError(ToolExecutionError):
     """
 
 
+class ToolkitConfigurationError(ToolNotAttemptedError, ConfigurationError):
+    """A toolkit's client could not open because of its configuration (a missing setting or
+    credential, a missing extra). It is a ``ConfigurationError`` with the toolkit's own message,
+    and its calls are recorded as not attempted."""
+
+
 class BudgetExceededError(AlgenAgentRuntimeError):
     """A run reached one of its limits.
 

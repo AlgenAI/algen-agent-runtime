@@ -6,6 +6,15 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Fixed
+
+- A toolkit whose client cannot open because of its configuration (a missing setting or
+  credential, a missing extra) raises `ToolkitConfigurationError`, a `ConfigurationError` and a
+  `ToolNotAttemptedError`, with the toolkit's message (what to set or install). In 0.1.0a19 it
+  raised a bare `ToolNotAttemptedError` naming only the error type, so callers catching
+  `ConfigurationError` missed it and the actionable message was lost. Other client errors still
+  keep only their type, since their text may quote what they were given.
+
 ## [0.1.0a19] - 2026-10-31
 
 No database migrations. 0.1.0a18 and 0.1.0a19 can run side by side during a rolling upgrade (see
