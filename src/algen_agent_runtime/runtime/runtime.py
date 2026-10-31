@@ -1144,7 +1144,11 @@ class AgentRuntime:
                             "after_retrieval",
                             state.context_history,
                             state,
-                            {"agent": agent, "operation": "context_history"},
+                            {
+                                "agent": agent,
+                                "operation": "context_history",
+                                "tool_output_schema": self._tool_output_schema,
+                            },
                         )
                         if not isinstance(checked_history, list) or not all(
                             isinstance(message, Message) for message in checked_history
@@ -1177,7 +1181,10 @@ class AgentRuntime:
                             tuple(round(item.score, 4) for item in state.citations[:20]),
                         )
                 checked_messages = await self._policy_value(
-                    "after_retrieval", state.messages, state, {"agent": agent}
+                    "after_retrieval",
+                    state.messages,
+                    state,
+                    {"agent": agent, "tool_output_schema": self._tool_output_schema},
                 )
                 if isinstance(checked_messages, list):
                     state.messages = checked_messages
@@ -1530,7 +1537,12 @@ class AgentRuntime:
             )
         await self._transition(state, RunStatus.INVOKING_MODEL)
         request = self._model_request(state, agent, state.messages)
-        checked_request = await self._policy_value("before_model", request, state, {"agent": agent})
+        checked_request = await self._policy_value(
+            "before_model",
+            request,
+            state,
+            {"agent": agent, "tool_output_schema": self._tool_output_schema},
+        )
         if isinstance(checked_request, ModelRequest):
             request = checked_request
         await self._emit(state, "model.started", {}, action.id)
@@ -2125,6 +2137,13 @@ class AgentRuntime:
         await self._record_tool_call(state, agent, action, tool, outcome)
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
+
+    def _tool_output_schema(self, name: str) -> dict[str, Any] | None:
+        """A registered tool's output schema, for policies reading its results in history."""
+        try:
+            return self.tools.get(name).definition.output_schema
+        except NotFoundError:
+            return None
 
     def _registered(self, name: str) -> bool:
         """Whether any tool, or a tool the Runtime runs itself, has this name."""

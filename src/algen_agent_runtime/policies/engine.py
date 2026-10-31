@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -22,6 +23,7 @@ from algen_agent_runtime.policies.contracts import (
     PolicyPoint,
 )
 from algen_agent_runtime.tools.contracts import SideEffect
+from algen_agent_runtime.types.contracts import Message, Role, TextBlock
 
 _CONTENT_BOUNDARIES = frozenset(PolicyPoint) - {PolicyPoint.AFTER_MEMORY_WRITE}
 
@@ -151,6 +153,8 @@ def _luhn(number: str) -> bool:
 
 
 _TOOL_ARGUMENT_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL})
+# The output schema of a tool, by name (None when unknown).
+_ToolSchemas = Callable[[str], Any]
 
 
 class _SchemaNode:
@@ -217,7 +221,9 @@ class PIIRedactionPolicy:
 
     A tool argument whose input schema declares ``"format": "email"`` and whose value is
     exactly one email address is the tool's declared purpose (a recipient, say), so it is
-    left as is; every other argument, such as a subject or body, is still redacted.
+    left as is; every other argument, such as a subject or body, is still redacted. The same
+    holds for a tool result field whose output schema declares it (a sender's address), so an
+    agent can reply to the mail it just read; a message body is still redacted.
     """
 
     name = "pii"
@@ -242,9 +248,15 @@ class PIIRedactionPolicy:
         self, point: str, payload: Any, context: Mapping[str, Any]
     ) -> PolicyDecision:
         schema: Any = None
+        tool_schemas: _ToolSchemas | None = None
         if point in _TOOL_ARGUMENT_POINTS:
             schema = getattr(context.get("tool"), "input_schema", None)
-        transformed, labels = self._redact(payload, _SchemaNode.root(schema))
+        elif point == PolicyPoint.AFTER_TOOL:
+            schema = getattr(context.get("tool"), "output_schema", None)
+        elif point in {PolicyPoint.AFTER_RETRIEVAL, PolicyPoint.BEFORE_MODEL}:
+            # The tool results in the history keep the fields their tool declares as addresses.
+            tool_schemas = context.get("tool_output_schema")
+        transformed, labels = self._redact(payload, _SchemaNode.root(schema), tool_schemas)
         if labels:
             return PolicyDecision(
                 action=PolicyAction.REDACT,
@@ -261,7 +273,12 @@ class PIIRedactionPolicy:
         """``value`` with the identifiers this policy finds replaced, at any depth."""
         return self._redact(value)[0]
 
-    def _redact(self, value: Any, schema: _SchemaNode | None = None) -> tuple[Any, set[str]]:
+    def _redact(
+        self,
+        value: Any,
+        schema: _SchemaNode | None = None,
+        tool_schemas: _ToolSchemas | None = None,
+    ) -> tuple[Any, set[str]]:
         if isinstance(value, Enum):
             return value, set()
         if isinstance(value, str):
@@ -279,12 +296,21 @@ class PIIRedactionPolicy:
                 if count:
                     labels.add(label)
             return transformed, labels
+        if (
+            tool_schemas is not None
+            and isinstance(value, Message)
+            and value.role is Role.TOOL
+            and value.name
+        ):
+            output = _SchemaNode.root(tool_schemas(value.name))
+            if output is not None:
+                return self._redact_tool_message(value, output)
         if isinstance(value, BaseModel):
             updates: dict[str, Any] = {}
             model_labels: set[str] = set()
             for name in type(value).model_fields:
                 item, item_labels = self._redact(
-                    getattr(value, name), schema.property(name) if schema else None
+                    getattr(value, name), schema.property(name) if schema else None, tool_schemas
                 )
                 updates[name] = item
                 model_labels.update(item_labels)
@@ -294,7 +320,7 @@ class PIIRedactionPolicy:
             mapping_labels: set[str] = set()
             for key, item in value.items():
                 transformed_item, item_labels = self._redact(
-                    item, schema.property(key) if schema else None
+                    item, schema.property(key) if schema else None, tool_schemas
                 )
                 transformed_mapping[key] = transformed_item
                 mapping_labels.update(item_labels)
@@ -304,7 +330,7 @@ class PIIRedactionPolicy:
             sequence_labels: set[str] = set()
             for item in value:
                 transformed_item, item_labels = self._redact(
-                    item, schema.items() if schema else None
+                    item, schema.items() if schema else None, tool_schemas
                 )
                 transformed_items.append(transformed_item)
                 sequence_labels.update(item_labels)
@@ -315,6 +341,33 @@ class PIIRedactionPolicy:
             )
             return transformed_sequence, sequence_labels
         return value, set()
+
+    def _redact_tool_message(
+        self, message: Message, output: _SchemaNode
+    ) -> tuple[Message, set[str]]:
+        """A tool result the model is about to read, its JSON redacted against the tool's
+        output schema, so declared address fields stay as they were after ``after_tool``."""
+        blocks: list[Any] = []
+        labels: set[str] = set()
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                try:
+                    decoded = json.loads(block.text)
+                except ValueError:
+                    decoded = None
+                else:
+                    redacted, found = self._redact(decoded, output)
+                    if found:
+                        block = TextBlock(text=json.dumps(redacted, default=str))
+                    labels.update(found)
+                    blocks.append(block)
+                    continue
+            redacted_block, found = self._redact(block)
+            blocks.append(redacted_block)
+            labels.update(found)
+        if not labels:
+            return message, labels
+        return message.model_copy(update={"content": tuple(blocks)}), labels
 
 
 class AuthorizationPolicy:
