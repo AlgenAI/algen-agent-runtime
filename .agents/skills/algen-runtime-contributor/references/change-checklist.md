@@ -88,6 +88,10 @@ pytest -q -p no:cacheprovider
 scripts/integration-tests.sh     # real PostgreSQL and Redis, throwaway containers
 ```
 
+Before raising a pull request, also smoke-test the latest `algen-agent-tools` release against a
+wheel built from the branch, and run its test suite there (`AGENTS.md`, "Compatibility with
+algen-agent-tools"). Report the results in the PR's test plan.
+
 Use `make lint`, `make typecheck`, and `make test` when the Makefile is the better local entry point.
 Provide a structured, conventional Git commit message summarizing the verified changes upon completion.
 Every commit needs a DCO `Signed-off-by:` trailer (`git commit -s`).
