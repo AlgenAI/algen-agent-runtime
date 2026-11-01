@@ -41,13 +41,15 @@ Algen Agent Runtime supports three reproducible distribution channels:
 
 ### Documentation gate
 
-Before declaring a version ready, update `docs/docs.html` here: add the version to the selector,
-`DOC_ORDER`, `LATEST_VERSION` and `RELEASES` (marking the previous release superseded), and gate new
-sections with `data-version-min`. Then sync the Runtime documentation in the separate Algen Agent
-Studio repository. Update both the source `docs/runtime-docs.html` and served
-`src/algen_agent_studio/static/runtime-docs.html` with the final configuration, defaults,
-compatibility notes, limitations, and examples. Verify that the two copies agree and that their
-navigation works. Keep Studio changes in its own repository. This documentation gate does not itself
+Before declaring a version ready, update the Runtime documentation page. Its source is
+`docs/runtime-docs.html` in the separate Algen Agent Studio repository, which also serves a copy at
+`src/algen_agent_studio/static/runtime-docs.html`. Add the release there with its final
+configuration, defaults, compatibility notes, limitations, and examples, and verify that the two
+Studio copies agree and that their navigation works. Keep Studio changes in its own repository.
+
+Then copy that page to `docs/docs.html` here, keeping this repository's `canonical` and `og:url`
+(`https://algenai.github.io/algen-agent-runtime/`) rather than Studio's `/runtime/`. The `Docs`
+workflow publishes it to GitHub Pages when it reaches `main`. This documentation gate does not itself
 bump Studio's Runtime dependency floor or publish a release.
 
 The version and changelog release date should be finalized only after the feature and quality gates

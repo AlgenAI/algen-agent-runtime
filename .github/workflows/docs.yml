@@ -5,12 +5,10 @@ on:
     branches: [main]
     paths:
       - "docs/docs.html"
-      - "docs/assets/**"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "docs/docs.html"
-      - "docs/assets/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -26,20 +24,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # docs/docs.html is the site's single page. Its links to the Markdown guides are relative so
-      # they work in a checkout; on the site they point at the rendered files on GitHub.
+      # docs/docs.html is the site's single page, copied from Algen Agent Studio's
+      # docs/runtime-docs.html (see docs/releasing.md). It links to the guides by absolute URL.
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp -R docs/assets _site/assets
-          blob="https://github.com/${GITHUB_REPOSITORY}/blob/main"
-          sed -E \
-            -e "s#href=\"\.\./([A-Za-z0-9_.-]+\.md)#href=\"${blob}/\1#g" \
-            -e "s#href=\"([A-Za-z0-9_-]+\.md)#href=\"${blob}/docs/\1#g" \
-            docs/docs.html > _site/index.html
+          cp docs/docs.html _site/index.html
           touch _site/.nojekyll
-          if grep -nE 'href="[^":#]+\.md' _site/index.html; then
-            echo "::error::relative Markdown links remain in the site"
+          if grep -nE '(href|src)="[^":#/][^":]*"' _site/index.html; then
+            echo "::error::docs/docs.html has relative links, which do not resolve on the site"
             exit 1
           fi
       - uses: actions/upload-pages-artifact@v3

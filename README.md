@@ -31,10 +31,7 @@ The workflow proposes a change, then pauses at an approval node and asks `Approv
 Approve it and the change is applied once, under an idempotency key; reject it and nothing is
 written. The final state records the decision, who made it, and the key:
 
-```text
-"approval": {"decision": "approved", "decided_by": "example-user", ...},
-"result": {"idempotency_key": "approval:299123bf-...", "status": "applied", ...}
-```
+<img alt="Terminal recording: the approval quickstart pauses, the user types approve, and the run prints the approval decision and the applied result with its idempotency key" src="https://raw.githubusercontent.com/AlgenAI/algen-agent-runtime/refs/heads/main/docs/assets/demo/approval.gif" width="720">
 
 The approval is part of the Runtime's execution path, not an instruction in the prompt, so the model
 cannot skip it. Pass `--approve-all` or `--reject-all` to run it without a prompt.
