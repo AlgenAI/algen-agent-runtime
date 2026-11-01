@@ -50,8 +50,8 @@ Studio copies agree and that their navigation works. Keep Studio changes in its 
 Then copy that page to `docs/docs.html` here, keeping this repository's `canonical` and `og:url`
 (`https://algenai.github.io/algen-agent-runtime/`) rather than Studio's `/runtime/`. The `Docs`
 workflow publishes it to GitHub Pages when it reaches `main`. Run `gitleaks detect --no-git --source docs` on
-the copy before committing: the `secrets` check scans every commit on every branch and reads some
-prose (such as `access, row/scan/compute`) as a key, so reword any finding in both copies. This documentation gate does not itself
+the copy before committing: the `secrets` check scans every commit on every branch, and it reads
+some ordinary prose as a key. Reword any finding in both copies rather than quoting it. This documentation gate does not itself
 bump Studio's Runtime dependency floor or publish a release.
 
 The version and changelog release date should be finalized only after the feature and quality gates
