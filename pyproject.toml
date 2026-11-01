@@ -14,10 +14,16 @@ authors = [{name = "AlgenAI"}]
 maintainers = [{name = "AlgenAI"}]
 keywords = [
   "agents",
+  "ai-agents",
   "agent-runtime",
   "ai-governance",
+  "human-in-the-loop",
   "llm",
+  "mcp",
   "model-routing",
+  "multi-agent",
+  "multi-tenant",
+  "opentelemetry",
   "rag",
 ]
 classifiers = [
@@ -93,7 +99,7 @@ algen-agent-runtime = "algen_agent_runtime.cli:main"
 [project.urls]
 Homepage = "https://github.com/AlgenAI/algen-agent-runtime"
 Source = "https://github.com/AlgenAI/algen-agent-runtime"
-Documentation = "https://github.com/AlgenAI/algen-agent-runtime#readme"
+Documentation = "https://algenai.github.io/algen-agent-runtime/"
 Issues = "https://github.com/AlgenAI/algen-agent-runtime/issues"
 Changelog = "https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md"
 

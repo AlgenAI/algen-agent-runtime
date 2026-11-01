@@ -16,6 +16,29 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
 > [!IMPORTANT]
 > `0.1.0a21` is a pre-release, single-node foundation. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
+**[Documentation](https://algenai.github.io/algen-agent-runtime/)** · [Why use it](docs/why-algen-agent-runtime.md) · [Examples](#importable-examples) · [Changelog](CHANGELOG.md)
+
+## See it in one minute
+
+No API key and no network: the built-in mock provider stands in for the model.
+
+```bash
+python -m pip install --pre algen-agent-runtime
+python -m examples.quickstart_approval.app
+```
+
+The workflow proposes a change, then pauses at an approval node and asks `Approve or reject?`.
+Approve it and the change is applied once, under an idempotency key; reject it and nothing is
+written. The final state records the decision, who made it, and the key:
+
+```text
+"approval": {"decision": "approved", "decided_by": "example-user", ...},
+"result": {"idempotency_key": "approval:299123bf-...", "status": "applied", ...}
+```
+
+The approval is part of the Runtime's execution path, not an instruction in the prompt, so the model
+cannot skip it. Pass `--approve-all` or `--reject-all` to run it without a prompt.
+
 ## Why Algen Agent Runtime?
 
 - **Provider-neutral execution:** route across local and hosted model providers through typed contracts.

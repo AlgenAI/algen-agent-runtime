@@ -6,6 +6,17 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- The documentation page is published at <https://algenai.github.io/algen-agent-runtime/> by the
+  new `Docs` workflow, and the package's `Documentation` URL points there. The README opens with a
+  one-minute offline approval demo. More PyPI keywords.
+
+### Fixed
+
+- The documentation page's "Explore architecture" button linked to a page that does not exist; it
+  now opens the architecture guide.
+
 ## [0.1.0a21] - 2026-11-01
 
 Fixes two ways a run failed on a recoverable model mistake (#89, #90), adds a startup banner and a
