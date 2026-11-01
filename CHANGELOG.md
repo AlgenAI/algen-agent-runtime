@@ -6,6 +6,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a21] - 2026-11-01
+
+Fixes two ways a run failed on a recoverable model mistake (#89, #90), adds a startup banner and a
+`check` profile for projects that run their own host, and documents what building outside Studio
+needs. No database migrations and no new deprecations; 0.1.0a20 and 0.1.0a21 can run side by side.
+
 ### Added
 
 - A startup banner. `algen-agent-runtime serve` prints the Algen logo and what the service runs:
