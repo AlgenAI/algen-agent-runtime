@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import jsonschema
@@ -18,6 +18,9 @@ class VerificationResult(BaseModel):
     reason_code: str
     message: str
     repair_hint: str | None = None
+    # What failed, as paths and constraints only, never the output's values: safe to show the
+    # model in a repair request and to record.
+    findings: tuple[str, ...] = ()
 
 
 class NonEmptyVerifier:
@@ -55,14 +58,75 @@ class JsonSchemaVerifier:
                 reason_code="schema.valid",
                 message="Output matches schema.",
             )
-        except (json.JSONDecodeError, jsonschema.ValidationError) as exc:
-            return VerificationResult(
-                passed=False,
-                confidence=0,
-                reason_code="schema.invalid",
-                message=str(exc),
-                repair_hint="Return only JSON matching the supplied schema.",
+        except json.JSONDecodeError as exc:
+            findings: tuple[str, ...] = (
+                f"not valid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}",
             )
+        except jsonschema.ValidationError:
+            findings = schema_findings(candidate, schema)
+        return VerificationResult(
+            passed=False,
+            confidence=0,
+            reason_code="schema.invalid",
+            message="Output does not match the schema: " + "; ".join(findings),
+            repair_hint="Return only JSON matching the supplied schema.",
+            findings=findings,
+        )
+
+
+def schema_findings(value: Any, schema: Mapping[str, Any], limit: int = 10) -> tuple[str, ...]:
+    """Where ``value`` breaks ``schema``: each path with the constraint it breaks.
+
+    Counts and the schema's own limits appear (``criteria[0].evidence: 4 items, at most 3``);
+    the value's content never does, since it can hold user data.
+    """
+    validator = jsonschema.validators.validator_for(schema)(schema)
+    errors = sorted(validator.iter_errors(value), key=lambda error: _path(error.absolute_path))
+    return tuple(_finding(error) for error in errors[:limit])
+
+
+def _path(parts: Iterable[Any]) -> str:
+    path = ""
+    for part in parts:
+        path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else str(part))
+    return path or "(root)"
+
+
+def _finding(error: jsonschema.ValidationError) -> str:
+    where = _path(error.absolute_path)
+    kind, expected, instance = error.validator, error.validator_value, error.instance
+    size = len(instance) if isinstance(instance, (list, str, dict)) else None
+    described = {
+        "maxItems": f"{size} items, at most {expected}",
+        "minItems": f"{size} items, at least {expected}",
+        "maxLength": f"{size} characters, at most {expected}",
+        "minLength": f"{size} characters, at least {expected}",
+        "maxProperties": f"{size} properties, at most {expected}",
+        "minProperties": f"{size} properties, at least {expected}",
+        "maximum": f"must be at most {expected}",
+        "minimum": f"must be at least {expected}",
+        "exclusiveMaximum": f"must be less than {expected}",
+        "exclusiveMinimum": f"must be greater than {expected}",
+        "multipleOf": f"must be a multiple of {expected}",
+        "pattern": f"must match the pattern {expected}",
+        "format": f"must be a valid {expected}",
+        "uniqueItems": "items must be unique",
+        "enum": "must be one of the values the schema allows",
+        "const": "must be the value the schema requires",
+    }
+    if kind in described:
+        return f"{where}: {described[kind]}"
+    if kind == "type":
+        types = expected if isinstance(expected, str) else " or ".join(expected)
+        return f"{where}: must be of type {types}"
+    if kind == "required" and isinstance(instance, dict):
+        missing = ", ".join(name for name in expected if name not in instance)
+        return f"{where}: missing required {missing}"
+    if kind == "additionalProperties" and isinstance(instance, dict):
+        allowed = error.schema.get("properties", {}) if isinstance(error.schema, dict) else {}
+        extra = ", ".join(sorted(str(name) for name in instance if name not in allowed))
+        return f"{where}: properties the schema does not allow: {extra}"
+    return f"{where}: does not satisfy {kind}"
 
 
 class CitationVerifier:

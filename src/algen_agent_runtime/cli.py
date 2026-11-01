@@ -7,7 +7,7 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from algen_agent_runtime.scaffold import AVAILABLE_TEMPLATES, scaffold_project
 
@@ -57,6 +57,7 @@ def _run_serve(
     port: int | None = None,
     config: list[str] | None = None,
     agent_ui: bool | None = None,
+    banner: bool | None = None,
 ) -> None:
     import uvicorn
 
@@ -72,7 +73,12 @@ def _run_serve(
     bind_host = host or settings.api.host
     bind_port = port if port is not None else settings.api.port
 
-    if settings.api.agent_ui_enabled:
+    # By default only a terminal gets the banner; container and service logs stay plain.
+    if banner if banner is not None else sys.stdout.isatty():
+        from algen_agent_runtime.banner import print_startup_banner
+
+        print_startup_banner(settings, url=f"http://{bind_host}:{bind_port}")
+    elif settings.api.agent_ui_enabled:
         print(f"Agent UI enabled at: http://{bind_host}:{bind_port}{settings.api.agent_ui_path}")
 
     uvicorn.run(
@@ -220,6 +226,7 @@ def _run_check(
     project_root: str = ".",
     as_json: bool = False,
     strict: bool = False,
+    profile: Literal["studio", "standalone"] = "studio",
 ) -> int:
     from algen_agent_runtime.orchestration.check import check_project
 
@@ -229,7 +236,7 @@ def _run_check(
     if not config_paths:
         print("Error: no configuration found; pass agent.yaml", file=sys.stderr)
         return 1
-    report = check_project(config_paths, project_root=Path(project_root))
+    report = check_project(config_paths, project_root=Path(project_root), profile=profile)
     if as_json:
         print(report.model_dump_json(indent=2))
     else:
@@ -415,6 +422,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Enable the built-in Agent YAML UI endpoint at /agent-ui",
     )
+    serve_parser.add_argument(
+        "--banner",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Print the startup banner (default: only when output is a terminal)",
+    )
 
     # maintenance command
     maintenance_parser = subparsers.add_parser(
@@ -491,7 +504,7 @@ def build_parser() -> argparse.ArgumentParser:
     # check command
     check_parser = subparsers.add_parser(
         "check",
-        help="Validate a project as Studio will, and warn about code Studio cannot run",
+        help="Validate a project (as Studio will, or for a self-hosted app with --profile standalone)",
     )
     check_parser.add_argument(
         "config",
@@ -513,6 +526,13 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--json", action="store_true", help="Print the report as JSON")
     check_parser.add_argument(
         "--strict", action="store_true", help="Exit with status 1 on warnings too"
+    )
+    check_parser.add_argument(
+        "--profile",
+        choices=("studio", "standalone"),
+        default="studio",
+        help="studio (default): warn about code Studio cannot run; standalone: a project that "
+        "runs its own host, without those warnings",
     )
     # policy command
     policy_parser = subparsers.add_parser(
@@ -616,7 +636,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(args_list)
 
     if args.command == "serve":
-        _run_serve(host=args.host, port=args.port, config=args.config, agent_ui=args.agent_ui)
+        _run_serve(
+            host=args.host,
+            port=args.port,
+            config=args.config,
+            agent_ui=args.agent_ui,
+            banner=args.banner,
+        )
     elif args.command == "maintenance":
         sys.exit(_run_maintenance(config=args.config))
     elif args.command == "check":
@@ -627,6 +653,7 @@ def main(argv: list[str] | None = None) -> None:
                 project_root=args.project_root,
                 as_json=args.json,
                 strict=args.strict,
+                profile=args.profile,
             )
         )
     elif args.command == "describe":

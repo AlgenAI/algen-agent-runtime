@@ -1,4 +1,9 @@
-"""Check a project the way Studio will: its settings, components and code Studio cannot run."""
+"""Check a project: its settings, components and, for Studio, code Studio cannot run.
+
+The ``studio`` profile (the default) checks a project the way Studio will deploy it. The
+``standalone`` profile is for a project that runs its own host (an app built in an IDE): it leaves out
+the warnings about code Studio cannot run, which such a host runs as written.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +25,21 @@ from algen_agent_runtime.orchestration.validation import (
 )
 
 Severity = Literal["error", "warning"]
+Profile = Literal["studio", "standalone"]
+
+# Warnings about project code that only matter when Studio deploys the project.
+STUDIO_ONLY_CODES = frozenset(
+    {
+        "OWN_CONTAINER",
+        "DIRECT_ENV_READ",
+        "CONSTRUCTOR_COMPONENTS",
+        "CODE_DEFINED_AGENT",
+        "POST_BUILD_REGISTRATION",
+    }
+)
+# Of those, the ones that mean the project registers components in code, where ``check``
+# cannot see them.
+CODE_REGISTRATION_CODES = frozenset({"CONSTRUCTOR_COMPONENTS", "POST_BUILD_REGISTRATION"})
 
 CONSTRUCTOR_COMPONENTS = ("additional_tools", "mcp_servers", "framework_adapters")
 SKIPPED_DIRECTORIES = frozenset(
@@ -45,6 +65,7 @@ class CheckReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     ok: bool
     config: tuple[str, ...]
+    profile: Profile = "studio"
     issues: tuple[CheckIssue, ...] = ()
     inventory: ComponentInventory | None = None
 
@@ -57,30 +78,58 @@ class CheckReport(BaseModel):
         return tuple(issue for issue in self.issues if issue.severity == "warning")
 
 
-def check_project(config_paths: Sequence[Path], *, project_root: Path | None = None) -> CheckReport:
+def check_project(
+    config_paths: Sequence[Path],
+    *,
+    project_root: Path | None = None,
+    profile: Profile = "studio",
+) -> CheckReport:
     """Validate settings, describe components, check every name agents use, and scan the
     project's own Python for behaviour Studio will not run.
+
+    With ``profile="standalone"`` the Studio-only code warnings are left out. A name no declared
+    source registers stays an error, unless the project's code registers components itself
+    (``build_container(additional_tools=...)``, registration on a built container): ``check``
+    cannot see those, so the name is reported as an ``UNVERIFIED_COMPONENT`` warning and
+    ``build_container``'s startup check verifies it when the host starts.
 
     Nothing is executed beyond importing declared plugins and running their ``register``.
     """
     config = tuple(str(path) for path in config_paths)
-    issues = list(scan_project_code(project_root)) if project_root is not None else []
+    scanned = list(scan_project_code(project_root)) if project_root is not None else []
+    registers_in_code = any(issue.code in CODE_REGISTRATION_CODES for issue in scanned)
+    issues = (
+        [issue for issue in scanned if issue.code not in STUDIO_ONLY_CODES]
+        if profile == "standalone"
+        else scanned
+    )
+
+    def report(found: list[CheckIssue], inventory: ComponentInventory | None = None) -> CheckReport:
+        return _report(config, found, inventory, profile)
+
     try:
         settings = load_settings(tuple(config_paths), ignore_extensions=True)
     except ConfigurationError as exc:
-        return _report(config, [_error("CONFIGURATION_ERROR", str(exc)), *issues])
+        return report([_error("CONFIGURATION_ERROR", str(exc)), *issues])
     try:
         inventory = describe_components(settings)
     except ConflictError as exc:
-        return _report(config, [_error("COMPONENT_CONFLICT", str(exc)), *issues])
+        return report([_error("COMPONENT_CONFLICT", str(exc)), *issues])
     except ConfigurationError as exc:
-        return _report(config, [_error("PLUGIN_ERROR", str(exc)), *issues])
+        return report([_error("PLUGIN_ERROR", str(exc)), *issues])
 
+    unverified = profile == "standalone" and registers_in_code
     found: list[CheckIssue] = [
         CheckIssue(
-            severity="error",
-            code="UNKNOWN_COMPONENT",
-            message=problem.message,
+            severity="warning" if unverified else "error",
+            code="UNVERIFIED_COMPONENT" if unverified else "UNKNOWN_COMPONENT",
+            message=problem.message
+            + (
+                "; the project registers components in code, so this is checked when "
+                "build_container starts"
+                if unverified
+                else ""
+            ),
             agent=problem.agent,
             field=problem.field,
             name=problem.name,
@@ -104,7 +153,7 @@ def check_project(config_paths: Sequence[Path], *, project_root: Path | None = N
                     suggestion=suggestion,
                 )
             )
-    return _report(config, [*found, *issues], inventory)
+    return report([*found, *issues], inventory)
 
 
 def _error(code: str, message: str) -> CheckIssue:
@@ -115,8 +164,10 @@ def _report(
     config: tuple[str, ...],
     issues: list[CheckIssue],
     inventory: ComponentInventory | None = None,
+    profile: Profile = "studio",
 ) -> CheckReport:
     return CheckReport(
+        profile=profile,
         ok=not any(issue.severity == "error" for issue in issues),
         config=config,
         issues=tuple(issues),

@@ -34,8 +34,8 @@ unasked. `stream_options` from profile extensions are kept.
   profile extension; without it, a small `max_output_tokens` can be spent on hidden reasoning.
 - The endpoint keeps only the last system message, so the adapter merges the leading run of system
   messages (agent instructions, retrieved evidence, pinned compaction summaries), in order, into
-  one. A system message later in the conversation, such as the verification-repair instruction, is
-  sent in place as a user message prefixed `[system] ` so it keeps its position.
+  one. A system message later in the conversation is sent in place as a user message prefixed
+  `[system] ` so it keeps its position.
 - Embedding models (`gemini-embedding-*`) report `chat: false, embeddings: true`.
 
 ## Groq notes
@@ -56,8 +56,12 @@ unasked. `stream_options` from profile extensions are kept.
 
 - `response_schema` is sent as `output_config.format` (`json_schema`). Keywords the endpoint does not
   accept (numeric and length bounds, `pattern`, `default`, unknown string formats) are removed and
-  every object is closed with `additionalProperties: false`; the Runtime's `json_schema` verifier
-  still checks the answer against the full original schema.
+  every object is closed with `additionalProperties: false`. Each removed constraint is described
+  in that property's `description` instead (`At most 3 items.`, `Between 0 and 4.`), so the model
+  still sees it; the Runtime's `json_schema` verifier still checks the answer against the full
+  original schema. OpenAI's strict schemas get the same descriptions.
+- A request never ends with an assistant turn: Claude 5.x models reject that as a prefill (HTTP
+  400), so the adapter adds a `Continue.` user turn if one would.
 - Profile `extensions` are merged into the request body; an `output_config` extension such as
   `{effort: low}` is merged with the response format rather than replacing it.
 - Results of parallel tool calls are sent together in one user turn.
@@ -75,6 +79,28 @@ unasked. `stream_options` from profile extensions are kept.
   `cache_creation_input_tokens` and `cache_read_input_tokens`) and the cache reads as
   `cached_tokens`, the same meaning as the OpenAI adapters, so budgets and metering count every
   input token.
+
+## Output repair
+
+When an answer fails verification and `verification_policy.max_repairs` allows another try, the
+Runtime asks again with a **user** message named `runtime_repair`. It lists what failed as paths
+and constraints only, never the answer's values (`- criteria[0].evidence: 4 items, at most 3`),
+followed by each failed verifier's `repair_hint`. It is a user turn because providers that refuse
+assistant prefill reject a conversation that ends with the model's answer. Session memory does
+not keep it; hosts that show `state.messages` or context history can filter it out by its name.
+A custom verifier puts value-free details in `VerificationResult.findings` to have them listed.
+
+## Malformed tool calls
+
+A model sometimes streams tool-call arguments that are not valid JSON, or not a JSON object, or
+reaches its output-token limit in the middle of a call. Every adapter turns that into an
+`InvalidToolCallError`, a retryable `ProviderError` of kind `invalid_response`. The error names the
+tool and the parse error, never the arguments. The run retries the model call within the agent's
+`retry_policy`. A call that was cut off by the output-token limit is retried with a higher limit,
+like any other response that hit the limit. Each one is recorded as a `model.tool_call_invalid`
+audit event (outcome `malformed` or `cut_off`) and counted by the
+`algen_agent_runtime.model.tool_calls_invalid` metric (attributes `provider`, `model`,
+`cut_off`). A malformed call does not count against the provider's circuit breaker.
 
 ## Capability narrowing semantics
 

@@ -17,6 +17,8 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Does every new or changed tool pass `assert_tool_contract`, and does a change to a preset in
   `tools/authoring.py` keep the rule that writes are keyed and single-attempt?
 - If compatibility changes, is there an upgrade note, migration path, and changelog entry?
+- Can the previous alpha still read what this version stores during a rolling upgrade? New fields
+  stay out of stored run state, checkpoints and manifest fingerprints while empty or unset.
 - For durable workflows, are tenant isolation, optimistic version conflicts, manifest fingerprints,
   pause/resume, deadline suspension, recovery opt-in, and interrupted side effects tested?
 - For workflow approvals, are authenticated reviewer identity, approve/modify/reject outcomes,
@@ -72,7 +74,7 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Contract tests: provider, tool, store, retrieval, or framework compatibility.
 - Integration tests: several Runtime components working together, marked with `integration`, `postgres`, or `redis`.
 - Distributed worker tests: worker fencing, lease renewal, stale lease revocation (`ConflictError`), retry bounds, and cancellation.
-- Container integration: CI service containers (`postgres:16`, `redis:7`) running against live networked services with automated schema migrations.
+- Container integration: `scripts/integration-tests.sh` starts throwaway `postgres:17-alpine` and `redis:7-alpine` containers (docker or podman), runs pytest against them and removes them. Run it before every commit, never against a long-lived database (see `AGENTS.md`).
 - End-to-end tests: public API or representative application path.
 - Paid or external networked checks use the `live` marker and are never required for ordinary pull requests.
 
@@ -83,7 +85,9 @@ ruff format --check src tests examples
 ruff check src tests examples
 mypy src/algen_agent_runtime
 pytest -q -p no:cacheprovider
+scripts/integration-tests.sh     # real PostgreSQL and Redis, throwaway containers
 ```
 
 Use `make lint`, `make typecheck`, and `make test` when the Makefile is the better local entry point.
 Provide a structured, conventional Git commit message summarizing the verified changes upon completion.
+Every commit needs a DCO `Signed-off-by:` trailer (`git commit -s`).

@@ -2,7 +2,7 @@ providers:
   primary:
     type: anthropic
     api_key: env://ANTHROPIC_API_KEY
-    default_model: claude-sonnet-4-5
+    default_model: claude-sonnet-5-5
   fallback:
     type: openai
     api_key: env://OPENAI_API_KEY
@@ -17,7 +17,7 @@ agents:
     description: Multi-provider assistant with cloud and local fallbacks
     system_instructions: Produce a concise, verified response.
     # Operational example limits; adjust to your deployed models' supported windows.
-    default_model: {name: quality, provider: primary, model: claude-sonnet-4-5, quality_tier: 3, context_window_tokens: 32000, context_safety_margin_tokens: 512}
+    default_model: {name: quality, provider: primary, model: claude-sonnet-5-5, quality_tier: 3, context_window_tokens: 32000, context_safety_margin_tokens: 512}
     fallback_models:
       - {name: cloud-fallback, provider: fallback, model: gpt-5, quality_tier: 2, context_window_tokens: 16000, context_safety_margin_tokens: 512}
       - {name: local-fallback, provider: local, model: "qwen3:8b", quality_tier: 1, context_window_tokens: 12000, context_safety_margin_tokens: 512}

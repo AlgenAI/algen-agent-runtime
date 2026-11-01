@@ -26,7 +26,7 @@ providers:
   anthropic:
     type: anthropic
     api_key: env://ANTHROPIC_API_KEY
-    default_model: claude-sonnet-4-5
+    default_model: claude-sonnet-5-5
   deepseek:
     type: deepseek
     api_key: env://DEEPSEEK_API_KEY

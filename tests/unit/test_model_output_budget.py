@@ -131,4 +131,5 @@ async def test_runtime_repairs_malformed_schema_constrained_output() -> None:
 
     assert result.output == "{}"
     assert len(provider.requests) == 2
-    assert "Repair the previous response" in provider.requests[1].messages[-1].text_content
+    repair = provider.requests[1].messages[-1]
+    assert repair.role == Role.USER and "- not valid JSON:" in repair.text_content

@@ -185,3 +185,64 @@ def test_cli_check_exit_codes(
         main(["check", "agent.yaml"])
     assert failing.value.code == 1
     assert "did you mean 'core.http'?" in capsys.readouterr().out
+
+
+SELF_HOSTED_APP = """
+    import os
+
+    from algen_agent_runtime.orchestration.container import build_container
+
+    container = build_container(settings, additional_tools=[my_tool])
+    token = os.environ["APP_TOKEN"]
+"""
+
+
+def test_the_standalone_profile_leaves_out_studio_only_warnings(tmp_path: Path) -> None:
+    config = _write(tmp_path, AGENT_YAML.replace("core.htp", "core.http"))
+    _write(tmp_path, SELF_HOSTED_APP, "app.py")
+
+    studio = check_project((config,), project_root=tmp_path)
+    standalone = check_project((config,), project_root=tmp_path, profile="standalone")
+
+    assert {issue.code for issue in studio.warnings} >= {
+        "OWN_CONTAINER",
+        "CONSTRUCTOR_COMPONENTS",
+        "DIRECT_ENV_READ",
+    }
+    assert standalone.ok and standalone.warnings == () and standalone.profile == "standalone"
+
+
+def test_the_standalone_profile_cannot_verify_names_registered_in_code(tmp_path: Path) -> None:
+    config = _write(tmp_path, AGENT_YAML.replace("core.htp", "app.lookup"))
+
+    # Without code registration, an unknown name is still an error in either profile.
+    assert not check_project((config,), project_root=tmp_path, profile="standalone").ok
+
+    _write(tmp_path, SELF_HOSTED_APP, "app.py")
+    standalone = check_project((config,), project_root=tmp_path, profile="standalone")
+    assert standalone.ok
+    assert [(issue.code, issue.name) for issue in standalone.warnings] == [
+        ("UNVERIFIED_COMPONENT", "app.lookup")
+    ]
+    assert not check_project((config,), project_root=tmp_path).ok  # studio: still an error
+
+
+def test_check_profile_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = _write(tmp_path, AGENT_YAML.replace("core.htp", "core.http"))
+    _write(tmp_path, SELF_HOSTED_APP, "app.py")
+
+    with pytest.raises(SystemExit) as exited:
+        main(
+            [
+                "check",
+                str(config),
+                "--project-root",
+                str(tmp_path),
+                "--profile",
+                "standalone",
+                "--strict",
+                "--json",
+            ]
+        )
+    assert exited.value.code == 0
+    assert json.loads(capsys.readouterr().out)["profile"] == "standalone"

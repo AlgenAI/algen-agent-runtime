@@ -198,8 +198,25 @@ directories, and running none of it) and warns about what Studio will not run or
 
 Calls inside a function named `register`, a plugin's own method, are not flagged. `--json` prints
 the report with the full inventory; `--strict` also exits with status 1 on warnings.
-`check_project(config_paths, project_root=...)` (`algen_agent_runtime.orchestration.check`) returns
-the same `CheckReport`. Every project under `examples/` passes `check` in the test suite.
+`check_project(config_paths, project_root=..., profile=...)`
+(`algen_agent_runtime.orchestration.check`) returns the same `CheckReport`.
+
+### Projects that run their own host
+
+A project built in an IDE that runs its own server or workers, and is not deployed through Studio,
+checks with `--profile standalone`:
+
+```bash
+algen-agent-runtime check agent.yaml --path src --profile standalone
+```
+
+The Studio-only warnings above (`OWN_CONTAINER`, `CONSTRUCTOR_COMPONENTS`,
+`POST_BUILD_REGISTRATION`, `DIRECT_ENV_READ`, `CODE_DEFINED_AGENT`) are left out, since such a host
+runs that code as written. Every error stays. A name that nothing declared registers stays
+`UNKNOWN_COMPONENT`, unless the project's code registers components itself: `check` cannot see
+those, so the name becomes an `UNVERIFIED_COMPONENT` warning, and `build_container`'s startup
+check verifies it when the host starts. The report's `profile` field says which profile ran. The
+default profile, `studio`, is unchanged. Every project under `examples/` passes `check` in the test suite.
 
 `AvailableComponents.from_inventory(inventory)` and `unknown_agent_components(agents, available)`
 (`algen_agent_runtime.orchestration.validation`) run the startup check against an inventory, so a

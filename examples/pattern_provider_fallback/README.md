@@ -43,7 +43,7 @@ python -m examples.pattern_provider_fallback.app "What year did the first moon l
 run's last `model.completed` event:
 
 ```
-[Route: anthropic/claude-sonnet-4-5]
+[Route: anthropic/claude-sonnet-5-5]
 The first moon landing occurred in 1969, when Apollo 11 landed on the lunar surface on July 20th.
 ```
 

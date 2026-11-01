@@ -6,6 +6,76 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Added
+
+- A startup banner. `algen-agent-runtime serve` prints the Algen logo and what the service runs:
+  the agent and version, its model, enabled tools, active guards, and the API and UI URLs. It is
+  printed only when output is a terminal; `--banner` / `--no-banner` override that. Applications
+  that run their own server call `algen_agent_runtime.banner.print_startup_banner(settings,
+  title=..., tagline=..., details={...})`. It honours `NO_COLOR` and `FORCE_COLOR`, and draws an
+  ASCII frame where the terminal cannot show the logo.
+- `algen-agent-runtime check --profile standalone` (and `check_project(..., profile=...)`) for a
+  project that runs its own host rather than deploying through Studio. It leaves out the warnings
+  about code Studio cannot run (`OWN_CONTAINER`, `DIRECT_ENV_READ`, constructor and post-build
+  registration, code-defined agents) but keeps every error. A name that only the project's own
+  code registers is an `UNVERIFIED_COMPONENT` warning, since `build_container` verifies it at
+  startup. `CheckReport.profile` names the profile. The default, `studio`, is unchanged.
+- `VerificationResult.findings`: what failed, as paths and constraints without values.
+  `JsonSchemaVerifier` fills it, and its `message` no longer quotes the output. (#90)
+- `model.tool_call_invalid` audit events and the `algen_agent_runtime.model.tool_calls_invalid`
+  metric for malformed or cut-off tool calls. (#89)
+
+### Fixed
+
+- Output repair works on models that refuse assistant prefill (Claude 5.x answered HTTP 400 on
+  the first failed verification). The repair request is now a user message named
+  `runtime_repair`, not a system message. It lists what failed as paths and constraints, never
+  values (`criteria[0].evidence: 4 items, at most 3`), instead of a fixed sentence. The Anthropic
+  adapter also never ends a request with an assistant turn. (#90)
+- Schema constraints a provider's structured-output subset drops (`maxItems`, `minimum`,
+  `maximum`, `pattern`, lengths and others) are described in the property's `description` for
+  Anthropic and OpenAI. The model sees the limits on its first answer, and the verifier still
+  enforces them. A property *named* like a keyword (`pattern`, `minimum`) is no longer removed
+  from the schema. (#90)
+- A model's malformed tool-call JSON no longer fails the whole run. The Anthropic and
+  OpenAI-compatible adapters (streamed and not) raise `InvalidToolCallError`, a retryable
+  `ProviderError` (`invalid_response`) that names the tool and the parse error but never the
+  arguments. The run retries the model call within its retry policy. Arguments that decode to
+  something other than an object are handled the same way. A call cut off by the output-token
+  limit says so ("cut off by the output-token limit (max_output_tokens)") and is retried with a
+  higher limit. The router keeps the error's type and does not count it against the provider's
+  health. (#89)
+
+### Upgrade notes
+
+- The repair turn after a failed verification is a user-role message named `runtime_repair` in
+  `state.messages` and context history; it was a system message before. Hosts that display
+  conversation history may want to filter it out by that name. Tests that assert the old repair
+  text ("Repair the previous response…") need updating. The first request after upgrading misses
+  the provider's prompt cache for schema-constrained calls, because the schema descriptions
+  changed. (#90)
+
+### Documentation
+
+- References for building outside Studio, from developer feedback:
+  - hook factories (the `container`, `manifest` and `environment` arguments `serve` passes);
+  - every `WorkflowHookContext` field and which hooks receive it, and each hook kind's signature;
+  - how `serve` loads hooks, runs and recovers workflows;
+  - the MCP tool-result shape (`text`, `data`, `isError`, size limit);
+  - a route-by-route scope table with the development-header rules in `docs/operations.md`.
+
+  The hook factory's `__api_version__` is now documented as optional, which is how it behaves.
+- The agent skills in `.agents/skills` cover 0.1.0a16 to 0.1.0a20:
+  - file attachments;
+  - executor-enforced `requires_approval`, including before workflow `tool:` steps;
+  - `ToolNotAttemptedError` and `ToolkitConfigurationError`;
+  - `Toolkit(required=True)` and degraded readiness;
+  - the deprecated document extractors, which moved to `algen-agent-tools`;
+  - caller-authenticated HTTP tools and `network` egress settings;
+  - the new providers;
+  - deployment limits;
+  - the throwaway-container integration script and DCO signoff for contributors.
+
 ## [0.1.0a20] - 2026-10-31
 
 A patch release for one 0.1.0a19 regression. No database migrations; 0.1.0a19 and 0.1.0a20 can

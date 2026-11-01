@@ -8,6 +8,13 @@ provider-neutral model requirement plus allowlist/fallback policy. Keep provider
 from a declared plugin (`context.providers.register(provider, registration_id=...)`), not with
 `router.register_provider` on a built container.
 
+Built-in types include `openai`, `anthropic`, `ollama`, `gemini`, `xai`, `groq` and any
+OpenAI-compatible endpoint. `routing_preference: ordered` tries a profile's candidates in the
+order declared. A model reads attached files only when its capabilities say so (`images`, and
+`files` for PDF); a custom `ModelProvider` reports neither by default. A provider adapter returns
+a malformed or cut-off tool call as `InvalidToolCallError` (a retryable `ProviderError`), which the
+Runtime retries and audits as `model.tool_call_invalid`.
+
 ## Local Python tools
 
 Write each tool as a typed function with a docstring and `@tool` or `Toolkit.tool`
@@ -17,7 +24,18 @@ what the tool does: `read()`, `write(approval=...)`, `external(approval=...)`, `
 override a preset field with `.replace(...)` only for a stated reason. Use `approval=True` for
 writes a person must confirm, or an `ApprovalHandler` when the deployment has its own approval
 flow. Group tools that share a client and `env://` secrets in a `Toolkit` whose client factory
-resolves the secrets and connects; nothing connects at import or in `register`.
+resolves the secrets and connects; nothing connects at import or in `register`. The executor
+enforces `requires_approval` on every call, not only when planning: a call without an approval
+reference is refused, so a workflow `tool:` step or host code that calls an approval-gated tool
+needs an approval node in front of it.
+
+Tell the ledger what happened when a call fails. Raise `ToolNotAttemptedError` (or a
+`PolicyDeniedError`) when the tool refused before sending anything, or when the provider
+definitely rejected the call (a 4xx other than 408): it is recorded `failed` and can be retried.
+Anything else after a write was sent (a timeout, a 5xx) is `indeterminate` and must be reconciled.
+A client factory that fails on configuration raises `ConfigurationError`; the toolkit reports it as
+`ToolkitConfigurationError` with its message. A toolkit that cannot start degrades the service
+(`/health/ready` answers `degraded` and names it) unless it is built with `Toolkit(..., required=True)`.
 
 Register the toolkit from a declared plugin (`toolkit.register(context)`, the plugin named in
 `domain_plugins`; see `docs/plugins.md`) so Studio and `algen-agent-runtime describe` can see it.
@@ -72,11 +90,15 @@ Runtime provides first-class client connectivity through `algen_agent_runtime.mc
 
 ## HTTP APIs
 
-Use `remote_tool` or an equivalent typed adapter backed by `SafeHttpClient` from
-`algen_agent_runtime.security.network`. Configure a fixed endpoint or an allowlisted host
-(`allowed_hosts`), deny private/internal networks by default (loopback, RFC 1918, link-local,
-carrier-grade NAT, multicast), protect against DNS rebinding via IP-pinned sockets, avoid unvalidated
-redirects across trust boundaries, propagate the idempotency key, and bound response size and time.
+Prefer declared `http_tools` in `agent.yaml` (docs/http-tools.md). `auth.type: caller` sends the
+signed-in user's credential from `ToolContext.credentials`. For code, use `remote_tool` or an
+equivalent typed adapter backed by `SafeHttpClient` from `algen_agent_runtime.security.network`.
+Configure a fixed endpoint or an allowlisted host (`allowed_hosts`), deny private/internal networks
+by default (loopback, RFC 1918, link-local, carrier-grade NAT, multicast), protect against DNS
+rebinding via IP-pinned sockets, avoid unvalidated redirects across trust boundaries, propagate the
+idempotency key, and bound response size and time. `core.http` refuses private addresses unless the
+`network` settings allow them; corporate egress goes through `network.egress_proxy`, and per-host
+CA bundles and mTLS through `network.remotes`.
 
 ## Email
 
@@ -85,7 +107,7 @@ in `domain_plugins` (trusted prefix `algen_agent_tools`), or build `smtp_toolkit
 `gmail_toolkit(...)` in the project's plugin. Their `send_email` tools are external, keyed and
 single-attempt, take the sender from deployment configuration rather than the model, refuse custom
 headers, accept attachments only as tenant-authorized Runtime artifact references, and can bound
-recipients with `allowed_domains`. `algen_agent_runtime.communications` (`email_tool`,
+recipients with `allowed_domains`. Microsoft 365 mail uses `algen_agent_tools.outlook`. `algen_agent_runtime.communications` (`email_tool`,
 `SmtpEmailSender`) is deprecated and removed in 0.2, and its Gmail adapter is already gone; do not
 use it in new projects.
 
@@ -127,12 +149,24 @@ server-side encryption, and optional KMS key—never static access keys. Impleme
 `ArtifactScanner` and invoke `ArtifactLifecycleService` so the pending transition is compare-and-set
 and audited; do not update status directly in application domain code.
 
+## File attachments
+
+A caller can attach images and PDFs to a run, a conversation message or a workflow run, by
+reference to an uploaded artifact (`attachments: [{artifact_id, media_type}]`). The agent opts in
+with `attachments: {enabled: true}`; the deployment's `security.allowed_attachment_types`,
+`max_attachments_per_run` and `max_attachment_bytes_total` are the outer limits. The model sees
+the file natively; tools read it with `await context.read_attachment(artifact_id)`. Turn on
+`security.upload_scanner: basic` or supply an `ArtifactScanner`, since uploads stay `pending_scan`
+until scanned. See docs/attachments.md.
+
 ## Untrusted documents
 
-Read uploaded or fetched documents through `algen_agent_runtime.security.documents.extractor_for`
-(or the `documents.extract_text` tool in `algen-agent-tools`), never with a parser of your own. It
-covers PDF (`documents` extra), DOCX, XLSX, PPTX, HTML, CSV, TSV, text and Markdown, keeps hidden
-sheets, rows, slides, shapes and styled-hidden HTML out of `sanitized_text`, and reports them and
+Read uploaded or fetched documents through `algen-agent-tools`: the `documents.extract_text` tool
+(`documents_toolkit(artifact_loader=runtime_attachment_loader)` for the run's attachments) or
+`algen_agent_tools.documents.extractor_for`. Never use a parser of your own. The extractors in
+`algen_agent_runtime.security` are deprecated since 0.1.0a19 and will be removed. They cover PDF
+(the tools `documents` extra), DOCX, XLSX, PPTX, HTML, CSV, TSV, text and Markdown, keep hidden
+sheets, rows, slides, shapes and styled-hidden HTML out of `sanitized_text`, and report them and
 model-directed text as findings with a `pass`/`review`/`quarantine` disposition. Give the model
 only `sanitized_text`, and route `quarantine` to a person. See docs/document-security.md and its
 known limitations.
