@@ -10,12 +10,14 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 - The documentation page is published at <https://algenai.github.io/algen-agent-runtime/> by the
   new `Docs` workflow, and the package's `Documentation` URL points there. The README opens with a
-  one-minute offline approval demo. More PyPI keywords.
+  one-minute offline approval demo and its terminal recording
+  (`docs/assets/demo/approval.tape` re-records it with vhs). More PyPI keywords.
 
-### Fixed
+### Changed
 
-- The documentation page's "Explore architecture" button linked to a page that does not exist; it
-  now opens the architecture guide.
+- `docs/docs.html` is now a copy of the Runtime documentation that Algen Agent Studio serves, so
+  there is one page to maintain; [releasing](docs/releasing.md) describes the sync. The old page's
+  "Explore architecture" button, which linked to a page that does not exist, is gone with it.
 
 ## [0.1.0a21] - 2026-11-01
 

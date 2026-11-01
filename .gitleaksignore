@@ -1,0 +1,6 @@
+# False positives: a sentence about query-governance quotas in the docs page, read as a generic
+# API key, and two notes that quoted it. These commits stay in history; later commits reword them.
+fe9ddd04903cd815ff57b42f2501f3cb51f7d889:docs/docs.html:generic-api-key:3861
+eeb4e26b0be69d3beb5853d275f12e2ad73cca33:docs/docs.html:generic-api-key:3861
+2f956e6b365964be13dc9cf8b57dfc3fa7b1aa7f:.gitleaksignore:generic-api-key:1
+2f956e6b365964be13dc9cf8b57dfc3fa7b1aa7f:docs/releasing.md:generic-api-key:54
