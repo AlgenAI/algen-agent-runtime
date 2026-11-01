@@ -27,6 +27,14 @@ When writing code, tests, documentation, or Git commits in `algen-agent-runtime`
   4. Afterwards, check that no containers are left: `podman ps -a --filter name=algen-rt-test` (or `docker ps -a ...`) must be empty.
   5. Report the result in the PR's test plan. PostgreSQL logs `ERROR: duplicate key` and `violates check constraint` lines during a passing run: those come from tests that check conflicts are rejected, and they are expected.
 
-## 4. Secret Scanning & Security Checks
+## 4. Compatibility with algen-agent-tools (mandatory before every PR)
+`algen-agent-tools` builds on this package, so a Runtime change can break it before anyone notices on PyPI. Before raising any pull request in this repository, and before raising an `algen-agent-tools` pull request that needs an unreleased Runtime, smoke-test the latest tools release against a wheel built from your branch:
+1. Build the wheel into a scratch directory: `python -m pip wheel --isolated --no-deps -w <scratch>/wheel .`
+2. Create a fresh virtual environment and install the wheel with the latest published tools release and all its extras, pinned: `python3.12 -m venv <scratch>/tools-smoke`, then `<scratch>/tools-smoke/bin/pip install --isolated <scratch>/wheel/algen_agent_runtime-*.whl --pre "algen-agent-tools[all,dev]==<latest>"`. Quote the extras (zsh reads `$VAR[all,dev]` as an array subscript). Confirm that `algen_agent_runtime` imports from that environment's `site-packages` and contains your change: the tools install must not have replaced it with the PyPI build.
+3. From an `algen-agent-tools` checkout at that release's tag, run its smoke test: `<scratch>/tools-smoke/bin/python -I scripts/smoke_describe.py`. It must describe every plugin's tools.
+4. Run the tools test suite in the same environment: `<scratch>/tools-smoke/bin/python -m pytest -q -p no:cacheprovider --import-mode=importlib`. Run its PostgreSQL tests too, with `ALGEN_TOOLS_TEST_POSTGRES_DSN` pointing at a throwaway `postgres:17-alpine` container on a free port (not 55432, which `scripts/integration-tests.sh` uses). Remove the container afterwards.
+5. Report the tools version, the smoke result and the pass/skip counts in the PR's test plan. A failure blocks the PR. Fix the Runtime, or, when the break is intended, record it under the CHANGELOG's upgrade notes and open the matching `algen-agent-tools` issue or PR first.
+
+## 5. Secret Scanning & Security Checks
 - Secret detection runs automated scans with open-source Gitleaks (`gitleaks detect --verbose --redact`).
 - Never commit literal API keys, bearer tokens, or secrets. Always use `env://` secret references.
