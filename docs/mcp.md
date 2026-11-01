@@ -12,6 +12,24 @@ Algen Agent Runtime provides a managed client connector for the [Model Context P
   ```
   Core Runtime components and configuration loading remain functional without `mcp` installed.
 
+## Tool results
+
+An MCP tool call returns a JSON object to the agent:
+
+```json
+{"text": "the text content items joined by newlines", "data": {"structured": "content"}}
+```
+
+- `text` joins the `text` of every content item the server returned. Images and other non-text
+  items are not passed on.
+- `data` is the server's `structuredContent`, present only when the server sent one.
+- A result with `isError: true` raises `ToolExecutionError` with the first 300 characters of its
+  text. The agent's `tool_policy.on_error` decides whether the model sees it.
+- A result larger than the tool's `max_result_bytes` (from the server's `max_result_bytes`
+  setting) is refused. The error gives the size, never the content.
+- A transport failure or timeout is a `ToolExecutionError` too. The call is recorded in the
+  tool-execution ledger like any other tool's.
+
 ## Declarative YAML Configuration
 
 MCP servers are configured declaratively in Runtime YAML under the top-level `mcp_servers` section:

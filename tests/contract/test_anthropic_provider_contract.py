@@ -87,14 +87,46 @@ def test_schema_translation_drops_unsupported_constraints_and_closes_objects() -
     translated = anthropic_json_schema(_SCHEMA)
 
     assert translated["additionalProperties"] is False
-    assert translated["properties"]["score"] == {"type": "integer"}
-    assert translated["properties"]["summary"] == {"type": "string"}
-    assert translated["properties"]["decided_at"]["format"] == "date-time"
+    # Dropped constraints stay visible to the model in the description (#90).
+    assert translated["properties"]["score"] == {
+        "type": "integer",
+        "description": "Between 0 and 4.",
+    }
+    assert translated["properties"]["summary"] == {
+        "type": "string",
+        "description": "At most 400 characters. Format: markdown.",
+    }
+    assert translated["properties"]["decided_at"] == {"type": "string", "format": "date-time"}
     evidence = translated["properties"]["evidence"]
-    assert "maxItems" not in evidence
+    assert "maxItems" not in evidence and evidence["description"] == "At most 5 items."
     assert evidence["items"]["additionalProperties"] is False
     assert translated["required"] == ["score"]
     assert _SCHEMA["properties"]["score"]["minimum"] == 0  # the caller's schema is untouched
+
+
+def test_dropped_constraints_are_described_and_property_names_are_kept() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string", "pattern": "^[A-Z]{3}$", "description": "ISO code."},
+            "ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "tags": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": True},
+            "pattern": {"type": "string"},
+            "minimum": {"type": "integer"},
+        },
+    }
+
+    properties = anthropic_json_schema(schema)["properties"]
+
+    assert properties["code"] == {
+        "type": "string",
+        "description": "ISO code. Must match the pattern ^[A-Z]{3}$.",
+    }
+    assert properties["ratio"]["description"] == "At most 1. Greater than 0."
+    assert properties["tags"]["description"] == "Between 1 and 3 items. Items must be unique."
+    # Properties named like keywords are properties, not constraints.
+    assert properties["pattern"] == {"type": "string"}
+    assert properties["minimum"] == {"type": "integer"}
 
 
 async def test_response_schema_is_sent_as_output_config_format() -> None:

@@ -130,9 +130,39 @@ agents:
   Never put credentials in `RunRequest.metadata`, tool arguments or the agent's instructions:
   metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
   tools an empty mapping, so return an "authentication required" tool error then.
+- `requires_approval` is enforced when the tool runs, not only when the model plans the call. A
+  workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it.
+- A tool that refuses before sending anything raises `ToolNotAttemptedError` (or
+  `PolicyDeniedError`), so the ledger records `failed` rather than `indeterminate`.
 - Usage metering is a deployment setting, not an agent field: the host passes a `UsageMeter` to
   `build_container(usage_meter=...)`, and its `reserve` receives a `MeterCall` naming the tenant,
   user, run and model (docs/agent-tooling.md, "Metering model calls").
+
+## File attachments
+
+An agent that reads images or PDFs the caller attaches (an ID document, a scanned invoice) opts in:
+
+```yaml
+agents:
+  - name: kyc-reader
+    attachments: {enabled: true, max_count: 2, retention: turn}
+security:
+  upload_scanner: basic          # uploads stay pending_scan until something scans them
+```
+
+Callers upload with `POST /v1/artifacts` and pass `attachments: [{artifact_id, media_type}]` on the
+run, conversation message or workflow run (`algen-agent-runtime run AGENT "q" --attach file.pdf`
+locally). Give the agent a default or fallback model whose capabilities include `images` (and
+`files` for PDF). Use `retention: turn` unless later turns must see the file again, since each
+turn that keeps it pays for it. See docs/attachments.md.
+
+## Deployment limits and operations
+
+Before calling a project production-ready, check the deployment settings, not only the agent:
+`api.auth_mode: oidc` for the HTTP API, PostgreSQL stores, per-run `budget` limits (including
+`max_model_calls`), `storage.quotas` and retention, `network` egress rules, and `policies.on_error`.
+`/health/ready` reports `degraded` for an optional dependency that is down. See
+docs/operations.md and docs/production-readiness.md.
 
 ## Importability
 

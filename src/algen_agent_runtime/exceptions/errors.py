@@ -71,6 +71,30 @@ class ProviderError(AlgenAgentRuntimeError):
         self.status_code = status_code
 
 
+class InvalidToolCallError(ProviderError):
+    """A model's tool call did not carry a JSON object of arguments.
+
+    Either the model wrote malformed JSON, or the output-token limit cut the call off
+    (``cut_off``). It is a retryable ``invalid_response``: the runtime asks the model again
+    within the agent's retry policy, and a cut-off call is retried with a higher output limit.
+    The message names the tool and the parse error, never the arguments, which can hold user
+    data.
+    """
+
+    def __init__(self, provider: str, tool: str, problem: str, *, cut_off: bool = False):
+        if cut_off:
+            message = (
+                f"{provider} tool call {tool!r} was cut off by the output-token limit "
+                "(max_output_tokens)"
+            )
+        else:
+            message = f"{provider} returned invalid arguments for tool {tool!r}: {problem}"
+        super().__init__(message, ErrorKind.INVALID_RESPONSE, True)
+        self.provider = provider
+        self.tool = tool
+        self.cut_off = cut_off
+
+
 class ToolExecutionError(AlgenAgentRuntimeError):
     pass
 

@@ -34,6 +34,9 @@ what the settings declare, never constructor arguments, so:
   the Runtime contract, not that code.
 - `build_container` fails on any name no source registered and suggests the closest one; fix the
   name or its registration, never switch `runtime.component_check` to `warn` to hide it.
+- A project that runs its own host (not Studio) checks with
+  `algen-agent-runtime check agent.yaml --path src --profile standalone`, which leaves out the
+  Studio-only warnings but keeps every error.
 - Before calling a project Studio-importable, run `algen-agent-runtime check agent.yaml --path src`.
   It must report no errors; read every warning to the user, since each names code Studio will not
   run or cannot see. `algen-agent-runtime describe --path src` shows the full inventory, and

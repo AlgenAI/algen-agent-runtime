@@ -22,6 +22,11 @@ with `format: artifact` and, when known, `contentMediaType`. The host stages the
 Runtime artifact lifecycle; hooks must resolve it in the current tenant and reject expired,
 quarantined, mismatched-media-type, or oversized content.
 
+For images and PDFs a model should read itself, use workflow attachments instead: declare
+`attachments: {enabled: true}` on the workflow and `pass_attachments: true` on each agent node that
+needs the files (its agent must accept attachments too). Callers pass them on
+`POST /v1/workflows/{name}/runs`. See docs/attachments.md, "Workflows".
+
 Do not mark uploads available from a workflow hook. A deployment-owned `ArtifactScanner` must run
 through `ArtifactLifecycleService` first; workflows consume only `available` descriptors and should
 record artifact IDs—not object keys or presigned URLs—in their typed state.
@@ -37,7 +42,9 @@ semantics. Choose `recovery_policy` explicitly: keep the fail-closed default for
 `retry` only when replay is idempotent or externally reconcilable. Cap workflow concurrency, timeout,
 and map fan-out.
 
-Use a first-class `approval` node—not a clarification predicate—before consequential work. Declare a
+Use a first-class `approval` node—not a clarification predicate—before consequential work. A
+`tool:` step that calls a tool with `requires_approval` must depend on an approval node, or the
+executor refuses the call otherwise. Declare a
 clear prompt, only deliberately reviewable `review_from` paths, optional secret-free parameters and
 their JSON Schema, a bounded expiry, and whether modification is permitted. Keep the defaults
 `allow_modification: false` and `rejection_policy: skip_dependents`; use `continue` only for a branch

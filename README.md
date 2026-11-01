@@ -254,6 +254,8 @@ algen-agent-runtime describe --config agent.yaml --path src --json
 
 # Validate the project as Studio will and warn about code Studio cannot run
 algen-agent-runtime check agent.yaml --path src
+# ...or for a project that runs its own server, without the Studio-only warnings
+algen-agent-runtime check agent.yaml --path src --profile standalone
 ```
 
 ## Run the HTTP service
@@ -266,6 +268,16 @@ ALGEN_AGENT_RUNTIME_CONFIG=examples/quickstart_local_chat/agent.yaml \
 ```
 
 Alternatively, invoking `algen-agent-runtime` without subcommands defaults to `serve` for backward compatibility.
+
+In a terminal, `serve` first prints a banner naming the agent, its model, tools, guards and URLs
+(`--no-banner` turns it off, `--banner` prints it to a log too). An application that runs its own
+server prints the same banner with its own name and rows:
+
+```python
+from algen_agent_runtime.banner import print_startup_banner
+
+print_startup_banner(settings, title="ms-email-test", details={"mailbox": "fake (in-process Graph)"})
+```
 
 The default bind is `127.0.0.1:8000`. Development-header authentication is intentionally limited to loopback unless the insecure-development override is explicitly enabled.
 

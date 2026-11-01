@@ -4,7 +4,7 @@ import base64
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
 from typing import Any, cast
@@ -12,7 +12,7 @@ from typing import Any, cast
 import httpx
 
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
-from algen_agent_runtime.exceptions.errors import ProviderError
+from algen_agent_runtime.exceptions.errors import InvalidToolCallError, ProviderError
 from algen_agent_runtime.runtime.attachments import describe_for_text
 from algen_agent_runtime.security.redaction import redact
 from algen_agent_runtime.types.contracts import (
@@ -85,13 +85,83 @@ def _message_text(content: Any) -> str:
     raise TypeError("assistant message content must be text or content blocks")
 
 
-def _tool_arguments(value: Any) -> dict[str, Any]:
+def tool_arguments(
+    value: Any, provider: str, tool: str, *, cut_off: bool = False
+) -> dict[str, Any]:
+    """A tool call's arguments as a dict; ``InvalidToolCallError`` when they are not an object.
+
+    ``cut_off`` says the response stopped at the output-token limit, so a call that does not
+    decode was cut short rather than written wrong.
+    """
     if value is None or value == "":
         return {}
-    decoded = json.loads(value) if isinstance(value, str) else value
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+    except json.JSONDecodeError as exc:
+        # The decoder's message gives the position only, never the text.
+        raise InvalidToolCallError(provider, tool, str(exc), cut_off=cut_off) from None
     if not isinstance(decoded, Mapping):
-        raise TypeError("tool arguments must decode to a JSON object")
+        raise InvalidToolCallError(
+            provider, tool, "arguments are not a JSON object", cut_off=cut_off
+        )
     return dict(decoded)
+
+
+def _bounds(low: Any, high: Any, unit: str = "") -> str | None:
+    suffix = f" {unit}" if unit else ""
+    if low is not None and high is not None:
+        return f"Between {low} and {high}{suffix}."
+    if low is not None:
+        return f"At least {low}{suffix}."
+    if high is not None:
+        return f"At most {high}{suffix}."
+    return None
+
+
+def constraint_note(node: Mapping[str, Any], dropped: Collection[str]) -> str | None:
+    """The constraints in ``node`` that a provider's schema subset drops, in words.
+
+    A provider that rejects ``maxItems`` or ``pattern`` never shows them to the model. Put into
+    the node's ``description``, they still guide the first answer, and the Runtime's verifier
+    still enforces the full schema. Only scalar keyword values count, so a property that happens
+    to be named ``pattern`` is not mistaken for one.
+    """
+
+    def value(key: str) -> Any:
+        item = node.get(key) if key in dropped else None
+        return item if isinstance(item, (int, float, str)) and not isinstance(item, bool) else None
+
+    notes = [
+        _bounds(value("minItems"), value("maxItems"), "items"),
+        _bounds(value("minLength"), value("maxLength"), "characters"),
+        _bounds(value("minProperties"), value("maxProperties"), "properties"),
+        _bounds(value("minimum"), value("maximum")),
+    ]
+    if (above := value("exclusiveMinimum")) is not None:
+        notes.append(f"Greater than {above}.")
+    if (below := value("exclusiveMaximum")) is not None:
+        notes.append(f"Less than {below}.")
+    if (step := value("multipleOf")) is not None:
+        notes.append(f"A multiple of {step}.")
+    if (pattern := value("pattern")) is not None:
+        notes.append(f"Must match the pattern {pattern}.")
+    if "uniqueItems" in dropped and node.get("uniqueItems") is True:
+        notes.append("Items must be unique.")
+    if (form := value("format")) is not None:
+        notes.append(f"Format: {form}.")
+    return " ".join(note for note in notes if note) or None
+
+
+def with_constraint_note(
+    result: dict[str, Any], node: Mapping[str, Any], dropped: Collection[str]
+) -> dict[str, Any]:
+    """``result`` with ``node``'s dropped constraints added to its description."""
+    note = constraint_note(node, dropped)
+    if note:
+        description = node.get("description")
+        prefix = f"{description} " if isinstance(description, str) and description else ""
+        result["description"] = prefix + note
+    return result
 
 
 def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -126,13 +196,18 @@ def openai_strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(value, dict):
             return value
         result = {
-            key: visit(item) for key, item in value.items() if key not in unsupported_constraints
+            # A map of names to schemas: its keys are names, never keywords to drop.
+            key: {name: visit(item[name]) for name in item}
+            if key in ("properties", "$defs", "definitions") and isinstance(item, dict)
+            else visit(item)
+            for key, item in value.items()
+            if key not in unsupported_constraints
         }
+        with_constraint_note(result, value, unsupported_constraints)
         if "const" in result:
             result["enum"] = [result.pop("const")]
         properties = result.get("properties")
         if isinstance(properties, dict):
-            result["properties"] = {key: visit(item) for key, item in properties.items()}
             result["required"] = list(properties)
             result["additionalProperties"] = False
         return result
@@ -330,11 +405,14 @@ class OpenAICompatibleProvider:
         try:
             choice = data["choices"][0]
             message = choice.get("message") or {}
+            cut_off = choice.get("finish_reason") == "length"
             calls = tuple(
                 ToolCall(
                     id=item.get("id") or f"call-{index}",
-                    name=self._runtime_tool_name(item["function"]["name"]),
-                    arguments=_tool_arguments(item["function"].get("arguments")),
+                    name=(name := self._runtime_tool_name(item["function"]["name"])),
+                    arguments=tool_arguments(
+                        item["function"].get("arguments"), self.provider_id, name, cut_off=cut_off
+                    ),
                 )
                 for index, item in enumerate(message.get("tool_calls") or ())
             )
@@ -483,8 +561,13 @@ class OpenAICompatibleProvider:
         calls = tuple(
             ToolCall(
                 id=item["id"] or f"call-{index}",
-                name=self._runtime_tool_name(item["name"]),
-                arguments=_tool_arguments(item["arguments"]),
+                name=(name := self._runtime_tool_name(item["name"])),
+                arguments=tool_arguments(
+                    item["arguments"],
+                    self.provider_id,
+                    name,
+                    cut_off=finish_reason == FinishReason.LENGTH,
+                ),
             )
             for index, item in sorted(tool_parts.items())
         )

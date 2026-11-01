@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import structlog
 from opentelemetry import context as otel_context
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from opentelemetry.context import Context
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
@@ -45,7 +45,7 @@ from algen_agent_runtime.context.history import (
     initialize_history,
     project_history,
 )
-from algen_agent_runtime.context.packing import estimate_message
+from algen_agent_runtime.context.packing import REPAIR_MESSAGE_NAME, estimate_message
 from algen_agent_runtime.context.skills import (
     SKILL_LOAD_PERMISSION,
     SKILL_LOAD_TOOL,
@@ -67,6 +67,7 @@ from algen_agent_runtime.exceptions.errors import (
     CapabilityError,
     ConfigurationError,
     ConflictError,
+    InvalidToolCallError,
     MCPNotConnectedError,
     MeterRefusedError,
     NotFoundError,
@@ -1819,6 +1820,8 @@ class AgentRuntime:
                     raise
             except ProviderError as exc:
                 last_error = exc
+                if isinstance(exc, InvalidToolCallError):
+                    await self._invalid_tool_call(state, exc, profiles[0], step_id, attempt)
                 if not exc.retryable or attempt + 1 >= agent.retry_policy.max_attempts:
                     break
                 # Rejected completions are already charged; respect deterministic run ceilings.
@@ -1872,6 +1875,54 @@ class AgentRuntime:
                 await self._transition(state, RunStatus.INVOKING_MODEL)
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _repair_request(results: Sequence[Any]) -> Message:
+        """Ask for a corrected answer, saying what failed without repeating any of it."""
+        lines = [
+            "Your previous response did not pass validation. Reply again with the whole "
+            "corrected response, not a description of the changes."
+        ]
+        for item in results:
+            if item.passed:
+                continue
+            lines += [f"- {finding}" for finding in item.findings]
+            if item.repair_hint:
+                lines.append(f"- {item.repair_hint}")
+        return Message(
+            role=Role.USER,
+            name=REPAIR_MESSAGE_NAME,
+            content=(TextBlock(text="\n".join(lines)),),
+        )
+
+    @cached_property
+    def _invalid_tool_calls(self) -> Any:
+        return metrics.get_meter("algen_agent_runtime.models").create_counter(
+            "algen_agent_runtime.model.tool_calls_invalid",
+            unit="1",
+            description="Model tool calls whose arguments were not a JSON object, by model",
+        )
+
+    async def _invalid_tool_call(
+        self,
+        state: RunState,
+        error: InvalidToolCallError,
+        profile: Any,
+        step_id: str,
+        attempt: int,
+    ) -> None:
+        """Record a malformed or cut-off tool call, so hosts can see how often a model does it."""
+        model = f"{profile.provider}/{profile.model}"
+        self._invalid_tool_calls.add(
+            1, {"provider": error.provider, "model": model, "cut_off": error.cut_off}
+        )
+        await self._audit(
+            state,
+            "model.tool_call_invalid",
+            "cut_off" if error.cut_off else "malformed",
+            model,
+            {"step_id": step_id, "tool": error.tool, "attempt": attempt + 1, "error": str(error)},
+        )
 
     @staticmethod
     def _validate_model_completion(response: Any, request: ModelRequest) -> Any:
@@ -3189,9 +3240,9 @@ class AgentRuntime:
             if state.attempt_count < agent.verification_policy.max_repairs:
                 state.attempt_count += 1
                 state.output_text = None
-                state.append_message(
-                    Message.text(Role.SYSTEM, "Repair the previous response to satisfy validation.")
-                )
+                # A user turn, not a system one: providers that refuse assistant prefill reject
+                # a conversation that ends with the model's own answer.
+                state.append_message(self._repair_request(results))
                 state.summary = state.summary.model_copy(
                     update={"retries": state.summary.retries + 1}
                 )

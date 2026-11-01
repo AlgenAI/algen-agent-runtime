@@ -15,6 +15,7 @@ from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     CapabilityError,
+    InvalidToolCallError,
     MeterRefusedError,
     ProviderError,
 )
@@ -367,6 +368,9 @@ class ModelRouter:
                     raise
                 errors.append(f"{rid}: {exc}")
                 failures.append(exc)
+                if isinstance(exc, InvalidToolCallError):
+                    # The provider answered; its model wrote a bad tool call. Health is untouched.
+                    continue
                 health = self._health[rid]
                 health.consecutive_failures += 1
                 if health.consecutive_failures >= self._threshold:
@@ -376,6 +380,9 @@ class ModelRouter:
         kinds = {failure.error_kind for failure in failures}
         kind = failures[-1].error_kind if len(kinds) == 1 else ErrorKind.UNKNOWN
         retryable = bool(failures) and all(failure.retryable for failure in failures)
+        if all(isinstance(failure, InvalidToolCallError) for failure in failures):
+            # Kept as is, so the runtime can record the invalid call and retry the model.
+            raise failures[-1]
         raise ProviderError("all model candidates failed: " + "; ".join(errors), kind, retryable)
 
     def providers(self) -> tuple[ModelProvider, ...]:

@@ -460,6 +460,35 @@ round trip or a conversation turn per item):
 Every item ended completed with its effect once, the pool waited at its maximum without errors and
 was released, and no task was left. The item latency is mostly the drill's own polling.
 
+## Scopes by route
+
+Every `/v1` route checks the caller's scopes. With `development_headers`, they come from the
+`X-Scopes` header (space-separated), along with the tenant from `X-Tenant-ID` and the user from
+`X-User-ID`. With `jwt` or `oidc`, they come from the token (see below). No scope is implied. `*`
+grants every scope; reserve it for development.
+
+| Scope | Routes |
+|---|---|
+| `runs:read` | `GET /v1/runs/{id}`, `/narrative`, `/events`; `GET /v1/workflows`, `GET /v1/workflows/runs/{id}`; `GET /v1/artifacts...` (or `artifacts:read`) |
+| `runs:write` | `POST /v1/runs`, `DELETE /v1/runs/{id}`, `POST /v1/runs/{id}/approval`, `/clarification`, `/steer`; `POST /v1/workflows/{name}/runs`, `POST /v1/workflows/runs/{id}/approval`, `/input`; artifact upload and delete (or `artifacts:write`) |
+| `artifacts:read`, `artifacts:write` | `GET /v1/artifacts...`; `POST /v1/artifacts`, `DELETE /v1/artifacts/{id}` (each accepts the matching `runs:` scope instead) |
+| `artifacts:scan` | `PATCH /v1/artifacts/{id}/status` (a scanner's verdict) |
+| `conversations:read` | `GET /v1/conversations...` (list, one, messages, events, suggestions) |
+| `conversations:write` | `POST /v1/conversations`, `PATCH`/`DELETE /v1/conversations/{id}`, `POST .../messages`, `DELETE .../active-response`, `POST .../turns/{turn}/approval`, `/input` |
+| `feedback:read`, `feedback:write` | `GET`, `PUT /v1/conversations/{id}/messages/{message}/feedback` |
+| `approvals:read` | `GET /v1/approvals`, `GET /v1/approvals/{id}` (the approval inbox) |
+| `agents:read` | `GET /v1/agents`, `GET /v1/semantic-layers...` |
+| `agents:write` | `POST /v1/agents` |
+| `tools:reconcile` | every `/v1/tool-executions` route (list, read, reconcile, resolve, resume, compensate) |
+| `mcp:read` or `mcp:connect` | `GET /v1/mcp/oauth/servers`, `GET /v1/mcp/servers/{server}/oauth/status` |
+| `mcp:connect` (plus `mcp:admin` for a tenant-wide server) | `POST /v1/mcp/servers/{server}/oauth/start`, `DELETE /v1/mcp/servers/{server}/oauth` |
+| `usage:read` | `GET /v1/storage/usage` |
+| `auth:revoke` | `POST /v1/auth/revocations/tokens`, `/subjects` |
+
+`/health/live`, `/health/ready` and the agent UI need no scope. A missing scope answers 403 and
+names it. Development headers are accepted only when the API binds to a loopback address, unless
+`allow_insecure_development_auth: true`.
+
 ## API authentication
 
 `api.auth_mode` selects how callers are identified:

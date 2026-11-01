@@ -7,6 +7,9 @@ from algen_agent_runtime.runtime.attachments import IMAGE_TOKENS, PDF_TOKENS
 from algen_agent_runtime.types.contracts import FileBlock, Message, Role, TextBlock
 
 CONTEXT_SUMMARY_NAME = "runtime_context_summary"
+# The user-role turn that asks the model to repair an answer that failed verification. It is the
+# Runtime's, not the user's: hosts that show history can filter it out by this name.
+REPAIR_MESSAGE_NAME = "runtime_repair"
 WORKING_STATE_NAME = "runtime_working_state"
 SKILL_CATALOG_NAME = "runtime_skill_catalog"
 LOADED_SKILLS_NAME = "runtime_loaded_skills"

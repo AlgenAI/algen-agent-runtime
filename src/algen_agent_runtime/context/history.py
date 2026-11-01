@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from algen_agent_runtime.context.packing import CONTEXT_SUMMARY_NAME
+from algen_agent_runtime.context.packing import CONTEXT_SUMMARY_NAME, REPAIR_MESSAGE_NAME
 from algen_agent_runtime.context.turn_memory import whole_tool_exchanges
 from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.runtime.attachments import user_message
@@ -47,7 +47,12 @@ def project_history(state: RunState) -> list[Message]:
     tail = history[through:]
     if not any(message.role == Role.USER for message in tail):
         latest_user = next(
-            (message for message in reversed(earlier) if message.role == Role.USER), None
+            (
+                message
+                for message in reversed(earlier)
+                if message.role == Role.USER and message.name != REPAIR_MESSAGE_NAME
+            ),
+            None,
         )
         if latest_user is not None:
             pinned.append(latest_user)

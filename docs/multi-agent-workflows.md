@@ -281,13 +281,75 @@ reference and provides `WorkflowHookLoader` to safely load and audit it:
 - Prefix confusion defense: Allowlist matching enforces exact module or dot-separated subpackage names,
   preventing prefix bypass attacks.
 - Import boundary: Allowlist checks execute strictly before `importlib.import_module()` is invoked.
-- Contract enforcement: The factory must be callable, declare a supported `__api_version__` (e.g. `"1.0"`,
-  `"v1"`), and return a `WorkflowHookRegistry` or container with a `.hooks` attribute.
+- Contract enforcement: The factory must be callable and return a `WorkflowHookRegistry` or container
+  with a `.hooks` attribute. An `__api_version__` on the factory or its module is optional; when set,
+  it must be `"1"`, `"1.0"` or `"v1"`.
 - Audit evidence: `WorkflowHookLoader.load()` returns `LoadedHookProvider` containing verified hooks,
   package version information, and sanitized metadata without serializing code or secrets.
 
 The host controls trust, module allowlisting, dependency injection, and cleanup. This keeps the
 workflow language in Runtime while domain code remains securely governed in application packages.
+
+### Hook provider reference
+
+**The factory.** `WorkflowHookLoader.load(reference, **kwargs)` (or `aload`) passes the keyword
+arguments it is given to the factory, but only those the factory's signature accepts by name or
+through `**kwargs`. A factory that takes none is called with none. Under
+`algen-agent-runtime serve`, the HTTP service loads each workflow's hooks once, on the first
+workflow request, and passes:
+
+| Argument | What it is |
+|---|---|
+| `container` | The service's `Container` (from `build_container`): `container.runtime`, `container.tools`, `container.artifacts`, `container.workflow_checkpoints` and the other stores. |
+| `manifest` | The `WorkflowManifest` being loaded. |
+| `environment` | A copy of `os.environ`. Prefer `env://` references in settings; read credentials from this mapping only when a hook needs one directly. |
+
+```python
+from algen_agent_runtime.workflows import WorkflowHookContext, WorkflowHookRegistry
+
+__api_version__ = "1.0"
+
+
+def create_hooks(*, container=None, manifest=None, environment=None) -> WorkflowHookRegistry:
+    hooks = WorkflowHookRegistry()
+    hooks.register_builder("orders.route_input", build_route_input)
+    hooks.register_validator("orders.route_validator", validate_route)
+    hooks.register_handler("orders.reserve_inventory", reserve_inventory)
+    return hooks
+```
+
+The factory may be `async`. A host that embeds the executor itself passes whatever keyword
+arguments its hooks need.
+
+**Hook signatures.** Each hook may be a plain or `async` function:
+
+| Kind | Registered with | Named by | Called as | Returns |
+|---|---|---|---|---|
+| builder | `register_builder` | `input_builder`, `metadata_builder` | `builder(context)` | The agent's input (a string, or JSON-compatible data sent as JSON); a mapping for `metadata_builder`. |
+| validator | `register_validator` | `validator` | `validator(output, context)` | `None` when the output is acceptable, otherwise an error message; the node repairs up to `max_repairs`. |
+| handler | `register_handler` | `handler` | `handler(context)` | The node's output (JSON-compatible). |
+| schema | `register_schema` | `output_schema_hook` | (not called) | A JSON Schema dict, registered as a value. |
+
+**`WorkflowHookContext`** fields:
+
+| Field | Set for | Content |
+|---|---|---|
+| `state` | every hook | The `WorkflowExecutionState`: `values` (the workflow's inputs under `"inputs"`, and each node's output under its `output_key`), `nodes` (per-node status and attempts), `id`, `tenant_id`, `user_id`, `correlation_id`, `attachments`. Treat it as read-only. |
+| `node` | every hook | The `WorkflowNode` being run (`id`, `kind`, `agent`, `metadata`, …). |
+| `item`, `item_index` | `map_agent` nodes | The list item this branch handles and its position; `None` elsewhere. |
+| `invalid_output`, `validation_error` | builders of an agent node on a repair attempt | The previous attempt's output and the validator's message; `None` on the first attempt. |
+| `request_payload` | `metadata_builder` | The payload the input builder produced for this attempt. |
+
+### How the HTTP service runs workflows
+
+`algen-agent-runtime serve` builds one container from the settings and runs every workflow in
+`settings.workflows` with a `MultiAgentWorkflowExecutor`. Agent nodes call `container.runtime` in
+process (through `AlgenAgentRuntimeClient`), so agent runs use the same policies, tools, budgets
+and stores as `POST /v1/runs`. Checkpoints go to `storage.workflow_store`. A started workflow runs
+as a background task in the API process. On startup the service recovers workflows that were
+interrupted. An interrupted node runs again only when its `recovery_policy` is `retry`. Hook modules must be under
+`security.trusted_plugin_prefixes`; a workflow whose `hook_provider` is elsewhere is listed as not
+runnable. See "Running workflows over HTTP" below for the routes.
 
 ## Events and state
 

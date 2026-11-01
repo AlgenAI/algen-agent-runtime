@@ -28,7 +28,11 @@ from typing import Any
 import httpx
 
 from algen_agent_runtime.exceptions.errors import ProviderError
-from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
+from algen_agent_runtime.models.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    tool_arguments,
+    with_constraint_note,
+)
 from algen_agent_runtime.runtime.attachments import describe_for_text
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
@@ -64,6 +68,7 @@ _UNSUPPORTED_SCHEMA_KEYWORDS = frozenset(
         "uniqueItems",
     }
 )
+_SCHEMA_MAPS = frozenset({"properties", "$defs", "definitions"})
 _SUPPORTED_STRING_FORMATS = frozenset(
     {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
 )
@@ -78,7 +83,11 @@ _FINISH_REASONS = {
 
 
 def anthropic_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """Translate ordinary JSON Schema into the subset Anthropic structured outputs accept."""
+    """Translate ordinary JSON Schema into the subset Anthropic structured outputs accept.
+
+    Each dropped constraint is described in its node's ``description`` instead, so the model
+    still sees it; the Runtime's verifier checks the full schema.
+    """
 
     def visit(value: Any) -> Any:
         if isinstance(value, list):
@@ -86,11 +95,18 @@ def anthropic_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(value, dict):
             return value
         result = {
-            key: visit(item)
+            # A map of names to schemas: its keys are names, never keywords to drop.
+            key: {name: visit(item[name]) for name in item}
+            if key in _SCHEMA_MAPS and isinstance(item, dict)
+            else visit(item)
             for key, item in value.items()
             if key not in _UNSUPPORTED_SCHEMA_KEYWORDS
             and not (key == "format" and item not in _SUPPORTED_STRING_FORMATS)
         }
+        dropped = set(_UNSUPPORTED_SCHEMA_KEYWORDS)
+        if value.get("format") not in _SUPPORTED_STRING_FORMATS:
+            dropped.add("format")
+        with_constraint_note(result, value, dropped)
         if result.get("type") == "object" or "properties" in result:
             result["additionalProperties"] = False
         return result
@@ -223,6 +239,10 @@ class AnthropicProvider(OpenAICompatibleProvider):
                     for call in message.tool_calls
                 )
             messages.append({"role": role, "content": content})
+        if messages and messages[-1]["role"] == "assistant":
+            # The Runtime never means a prefill, and newer models reject one (HTTP 400), so a
+            # conversation must end with the user.
+            messages.append({"role": "user", "content": [{"type": "text", "text": "Continue."}]})
         payload: dict[str, Any] = {
             "model": request.model or self._default_model,
             "messages": messages,
@@ -263,8 +283,8 @@ class AnthropicProvider(OpenAICompatibleProvider):
         calls = tuple(
             ToolCall(
                 id=item["id"],
-                name=self._runtime_tool_name(item["name"]),
-                arguments=item.get("input", {}),
+                name=(name := self._runtime_tool_name(item["name"])),
+                arguments=tool_arguments(item.get("input"), self.provider_id, name),
             )
             for item in data.get("content", ())
             if item.get("type") == "tool_use"
@@ -360,7 +380,12 @@ class AnthropicProvider(OpenAICompatibleProvider):
             ToolCall(
                 id=item["id"],
                 name=item["name"],
-                arguments=json.loads(item["json"] or "{}"),
+                arguments=tool_arguments(
+                    item["json"],
+                    self.provider_id,
+                    item["name"],
+                    cut_off=stop_reason == FinishReason.LENGTH,
+                ),
             )
             for _, item in sorted(call_parts.items())
         )

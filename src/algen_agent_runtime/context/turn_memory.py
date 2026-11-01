@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from algen_agent_runtime.context.packing import REPAIR_MESSAGE_NAME
 from algen_agent_runtime.types.contracts import Message, Role, TextBlock
 
 TRUNCATION_MARKER = "… [truncated for memory]"
@@ -45,7 +46,7 @@ def turn_messages(
                 kept.append(message)
             elif message.role == Role.TOOL:
                 kept.append(_capped(message, max_chars))
-            elif message.role == Role.USER:
+            elif message.role == Role.USER and message.name != REPAIR_MESSAGE_NAME:
                 kept.append(message)  # a clarification given during the turn
     if output_text:
         kept.append(Message.text(Role.ASSISTANT, output_text))

@@ -24,7 +24,10 @@ See `docs/plugins.md`.
 
 Inspect `src/algen_agent_runtime/models/providers/`, the provider registry, and provider contract
 tests. Normalize messages, tool calls, structured output, streaming, usage, retryable failures, and
-capabilities. Provider credentials remain secret references. Document supported capabilities and
+capabilities. Decode tool-call arguments with `tool_arguments` from
+`models/providers/openai_compatible.py`, so a malformed or cut-off call becomes a retryable
+`InvalidToolCallError` instead of a crashed run. Report `images` and `files` capabilities only
+for input the adapter really sends as image or file parts. Provider credentials remain secret references. Document supported capabilities and
 known limitations in `docs/provider-compatibility.md`.
 
 Provider-specific strict JSON Schema subsets belong at the provider boundary. Preserve the original
@@ -46,7 +49,11 @@ must validate destinations and propagate the idempotency key.
 `tools/authoring.py` builds those fields from typed functions (`@tool`, the presets, `Toolkit`);
 a change to a preset's rules changes every tool built with it, so update `docs/tool-authoring.md`
 and `tests/unit/test_tool_authoring.py` together. `ToolDefinition.requires_approval` may only add
-approval; `ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+approval, and `ToolExecutor.execute` refuses such a tool unless it is given an `approval`
+reference; `ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+A tool that refuses before sending anything raises `ToolNotAttemptedError`, so the ledger records
+`failed`, not `indeterminate`; a toolkit's client factory raises `ConfigurationError` for a
+missing setting.
 `tools/testing.py` (`assert_tool_contract`, `fake_tool_context`) is the contract every tool is
 tested against.
 
