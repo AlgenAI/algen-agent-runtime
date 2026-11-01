@@ -22,15 +22,15 @@ Algen Agent Runtime is a typed, provider-neutral Python runtime for building gov
 - **Governance in the execution path:** enforce policies, approvals, budgets, verification, and tenant boundaries around every run.
 - **Durable and observable:** persist agent and multi-agent workflow checkpoints, events, conversations, approvals, artifacts, and tool-execution records with optional PostgreSQL and Redis adapters.
 - **Governed artifact inputs:** stage tenant-scoped files with checksums, scan/quarantine state,
-  expiry, metadata-only listing, and bounded retention before attaching them to a run.
+  expiry, metadata-only listing, and bounded retention before attaching them to a run. Agents that
+  opt in read attached images and PDFs natively, passed by reference and never stored inline.
 - **Application-friendly:** use the same runtime as an embedded Python library or through its FastAPI REST/SSE service.
 - **Runtime-owned multi-agent DAGs:** declare JSON-Schema inputs/outputs, agent, dynamic map-agent, deterministic-handler,
   predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
   lifecycle events; compose exact-version child workflows without duplicating their topology.
-- **Governed communications:** send validated, idempotency-aware email through a provider-neutral
-  contract and TLS-first SMTP adapter, keeping attachments behind Runtime artifact references.
-  Gmail, SMTP and database connectors live in
-  [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools).
+- **Ready-made connectors:** email (SMTP, Gmail, Outlook), messaging, databases, documents, GitHub
+  and more ship as governed toolkits in
+  [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools), which builds on this runtime.
 - **Typed System One decisions:** use the optional TypeSafe Jev client for fast Choice, Score, and
   Noul routing gates while keeping generative work in model providers and deterministic work in code.
 - **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
@@ -98,7 +98,7 @@ python -m pip install --pre 'algen-agent-runtime[mcp]'
 python -m pip install --pre 'algen-agent-runtime[langgraph]'
 ```
 
-After a9 is published, install directly from its pinned GitHub release tag:
+To install a release from its GitHub tag instead of PyPI:
 
 ```bash
 python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.1.0a21
@@ -374,16 +374,17 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Capability | Included |
 | --- | --- |
 | Execution | Checkpointed state machine, retries, cancellation, timeouts, resumability |
-| Models | Capability-aware routing, fallback, local and OpenAI-compatible adapters |
-| Tools | Typed schemas, permissions, idempotency, approvals, execution ledger |
-| MCP | Managed client connector for external tools across stdio and streamable HTTP with DNS-pinned egress, secret references, and governance mapping |
+| Models | Capability-aware routing and ordered or balanced fallback across OpenAI, Azure OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek, Hugging Face Inference, Ollama, any OpenAI-compatible endpoint and local transformers; prompt caching; recoverable malformed tool calls |
+| File attachments | Images and PDFs passed by reference to scanned artifacts, read natively by models that support them, on runs, conversations and workflows ([guide](docs/attachments.md)) |
+| Tools | Typed schemas, permissions, idempotency, approvals enforced at execution, call guards, caller credentials, execution ledger with reconciliation of unknown outcomes |
+| MCP | Managed client for stdio, streamable HTTP and SSE servers with per-tenant or per-user OAuth, DNS-pinned egress, secret references, and governance mapping |
 | Context management | [Working state](docs/context-management.md), [progressive skills](docs/skills.md), [learned memory](docs/learned-memory.md), [compaction/offloading](docs/artifacts.md), and [evaluations/diagnostics](docs/context-evaluation.md) |
 | Retrieval | Keyword, vector, and hybrid retrieval with citation verification |
-| Governance | Policies, budgets, redaction, network controls, human-in-the-loop decisions |
+| Governance | Policies at every boundary with explicit fail modes, signed policy bundles, budgets, PII and secret redaction, prompt-injection screening, human-in-the-loop decisions and an approval inbox |
+| Security and operations | OIDC or JWT authentication with scopes and token revocation, egress proxy and mTLS, sandboxed subprocesses, signed plugins, per-run limits, per-tenant storage quotas and retention, readiness and graceful drain |
 | Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |
 | Analytics | Typed analytical DAGs, application-registered nodes, secret-safe query sources, semantic layers, governance and evaluation gates |
 | Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, exact-version child composition, durable clarification and approval pause/resume, explicit crash recovery, typed resources, correlation, and lifecycle events |
-| Communications | Validated email contracts, artifact references, idempotency-aware tool execution, and a TLS-first SMTP adapter |
 | Observability | Structured logs, OpenTelemetry, optional Traccia integration |
 | Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters |
 
@@ -402,11 +403,14 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Code components | [Plugins and the component inventory](docs/plugins.md), [writing agent tools](docs/tool-authoring.md) and [Studio compatibility](docs/studio-compatibility.md) |
 | Agent tool behaviour | [Errors, declines, guardrails, parallel calls, memory](docs/agent-tooling.md) |
 | Framework adapters | [Framework adapters](docs/framework-adapters.md) |
+| File attachments | [Attachments](docs/attachments.md) and the [artifact lifecycle](docs/artifacts.md) |
+| Untrusted documents | [Document security](docs/document-security.md) |
+| Starter tools | [Safe starter tools](docs/starter-tools.md) |
 | Retrieval | [RAG](docs/rag.md) |
 | Analytical agents | [Analytical runtime](docs/analytical-runtime.md) and [semantic layer](docs/semantic-layer.md) |
 | Multi-agent workflows | [Workflow manifests and executor](docs/multi-agent-workflows.md) |
 | Security | [Threat model](docs/threat-model.md) and [security policy](SECURITY.md) |
-| Production limitations | [Production readiness](docs/production-readiness.md) |
+| Production limitations | [Production readiness](docs/production-readiness.md) and the [road to 0.2](docs/ga-criteria.md) |
 | Compatibility promises | [API stability](docs/api-stability.md) |
 | Releases | [Release process](docs/releasing.md) and [changelog](CHANGELOG.md) |
 | Repository operators | [Public repository settings](docs/repository-settings.md) |
@@ -438,6 +442,12 @@ python -m examples.pattern_multi_agent_fanout.app "Assess a migration to managed
 # Deterministic handler and resource tool pattern
 python -m examples.quickstart_tool.app
 
+# The reference tool project: a Toolkit with a read tool and an approval-gated write tool, from a plugin
+python -m examples.quickstart_agent_tool.app
+
+# An approval node: approve, modify or reject a proposal before it is applied
+python -m examples.quickstart_approval.app --approve-all
+
 # Human approval checkpoint (interactive prompt, or automated with --approve-all)
 python -m examples.pattern_approval_workflow.app --approve-all
 
@@ -449,6 +459,12 @@ python -m examples.quickstart_conversation.app
 
 # Typed tools behind a precheck, tool-call guards, a user-keyed cache and a usage meter
 python -m examples.pattern_guarded_tools.app
+
+# A release gate: evaluation cases decide whether a new agent version is promoted
+python -m examples.pattern_evaluation_gate.app
+
+# MCP servers declared in YAML, with operator overrides deciding which tools need approval
+python -m examples.pattern_mcp_governance.app
 
 # Hosted-provider examples: the real provider by default, the mock provider with --offline
 python -m examples.quickstart_rag.app --offline
@@ -496,6 +512,11 @@ make lint
 make typecheck
 make test
 ```
+
+Before opening a pull request, run the whole suite against throwaway PostgreSQL and Redis
+containers (`scripts/integration-tests.sh`, docker or podman), and smoke-test the latest
+`algen-agent-tools` release against a wheel built from your branch. Both steps are described in
+[CONTRIBUTING.md](CONTRIBUTING.md#running-integration--container-tests).
 
 ### AI coding skills
 

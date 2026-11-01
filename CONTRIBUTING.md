@@ -63,19 +63,30 @@ Add the narrowest test that proves the behavior at the appropriate level:
 - `tests/end_to_end`: public API and representative application paths.
 
 ### Running Integration & Container Tests
-Integration tests for PostgreSQL and Redis run against local doubles or live containers:
+Before every pull request, run the whole suite against real PostgreSQL and Redis:
 ```bash
-# Install development dependencies along with postgres and redis drivers
-python -m pip install -e '.[dev,postgres,redis]'
+# Install development dependencies along with postgres and redis drivers (once)
+python -m pip install --isolated -e '.[dev,postgres,redis]'
 
-# Run tests targeting storage integration markers against in-memory doubles
-pytest -q -p no:cacheprovider -m "integration or postgres or redis"
-
-# Run tests against live local container instances
-POSTGRES_DSN="postgresql://postgres:secret@localhost:5432/algen_test" \
-REDIS_URL="redis://localhost:6379/0" \
-pytest -q -p no:cacheprovider -m "integration or postgres or redis"
+# Start fresh postgres:17-alpine (port 55432) and redis:7-alpine (port 56379) containers,
+# run pytest against them, and remove them afterwards, pass or fail
+scripts/integration-tests.sh
+# Pass pytest arguments to narrow it, e.g.
+scripts/integration-tests.sh tests/integration -k approvals
 ```
+
+The script uses docker, or podman when docker is missing. Never point the tests at a long-lived
+database such as a server on port 5432: many tests insert fixed ids, so a reused database fails
+with `ConflictError`. PostgreSQL logs `duplicate key` and `violates check constraint` errors
+during a passing run; those come from tests that check conflicts are rejected.
+
+### Compatibility with algen-agent-tools
+`algen-agent-tools` builds on this package. Before every pull request, build a wheel from your
+branch, install it with the latest tools release (`algen-agent-tools[all,dev]==<latest>`) in a
+fresh virtual environment, and run the tools smoke test (`scripts/smoke_describe.py`) and test
+suite from a tools checkout at that release's tag. The exact steps are in
+[AGENTS.md](AGENTS.md), "Compatibility with algen-agent-tools". Report the results in the pull
+request's test plan; a failure blocks the change.
 
 When implementing or testing persistence stores:
 - **Relational Integrity**: Respect primary key constraints (`id text PRIMARY KEY` for runs is globally unique across tenants) and foreign keys (`algen_agent_runtime_tool_executions` references `algen_agent_runtime_runs(id)`). Mocks must not violate schema constraints.
@@ -109,7 +120,8 @@ Keep pull requests focused and explain:
 - the problem and intended outcome;
 - security, privacy, and tenant-isolation impact;
 - public API, manifest, dependency, and persisted-data compatibility;
-- tests and manual verification performed;
+- tests and manual verification performed, including the integration script and the tools smoke
+  test;
 - rollout or rollback considerations where applicable.
 
 All required checks and maintainer reviews must pass before merge. Do not rewrite unrelated files or include generated caches, local databases, build products, or secrets.
