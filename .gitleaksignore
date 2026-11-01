@@ -1,0 +1,4 @@
+# False positives: prose in the docs page ("metric/column access, row/scan/compute quotas") read as
+# a generic API key. These commits stay in history; the page was reworded in the commit after them.
+fe9ddd04903cd815ff57b42f2501f3cb51f7d889:docs/docs.html:generic-api-key:3861
+eeb4e26b0be69d3beb5853d275f12e2ad73cca33:docs/docs.html:generic-api-key:3861
