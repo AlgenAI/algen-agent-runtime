@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -37,6 +39,10 @@ class DecisionProvider(Protocol):
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         """Return clarification answer text."""
         ...
+
+
+class NoDecisionError(RuntimeError):
+    """An interactive operator ended input (EOF or interrupt) without making a decision."""
 
 
 class ApproveAllDecisionProvider:
@@ -173,11 +179,12 @@ class InteractiveDecisionProvider:
             )
             return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
         except EOFError as exc:
-            raise RuntimeError(
-                f"End of input reached on stdin while awaiting approval ({prompt!r}). "
-                "Workflow paused for approval in a non-interactive environment without "
-                "an automated decision policy. "
-                "Pass --approve-all, --reject-all, or --answers-file PATH in non-interactive environments."
+            raise NoDecisionError(
+                f"end of input while awaiting approval ({prompt!r}); nothing was applied"
+            ) from exc
+        except KeyboardInterrupt as exc:
+            raise NoDecisionError(
+                f"interrupted while awaiting approval ({prompt!r}); nothing was applied"
             ) from exc
 
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
@@ -189,12 +196,29 @@ class InteractiveDecisionProvider:
         try:
             return await asyncio.to_thread(input, f"{prompt}\n> ")
         except EOFError as exc:
-            raise RuntimeError(
-                f"End of input reached on stdin while awaiting clarification ({prompt!r}). "
-                "Workflow paused for clarification in a non-interactive environment without "
-                "an automated decision policy. "
-                "Pass --answers-file PATH in non-interactive environments."
+            raise NoDecisionError(
+                f"end of input while awaiting clarification ({prompt!r}); no answer was provided"
             ) from exc
+        except KeyboardInterrupt as exc:
+            raise NoDecisionError(
+                f"interrupted while awaiting clarification ({prompt!r}); no answer was provided"
+            ) from exc
+
+
+async def _prompt_or_exit(awaitable: Awaitable[str]) -> str:
+    """Await a decision-provider prompt, turning a missing decision into a clean non-zero exit."""
+    try:
+        return await awaitable
+    except NoDecisionError as exc:
+        print(f"No decision: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except KeyboardInterrupt:
+        # The prompt thread may still be blocked in input(): skip executor shutdown so it
+        # cannot hang the interpreter on its way out.
+        print("No decision: interrupted at the prompt; exiting.", file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(130)
 
 
 def add_decision_arguments(parser: argparse.ArgumentParser) -> None:
@@ -302,7 +326,7 @@ async def run_example(
             pause = state.pause or {}
             if state.status is WorkflowStatus.AWAITING_APPROVAL:
                 prompt = str(pause.get("prompt") or "Approval required")
-                decision = await decision_provider.decide_approval(prompt, pause)
+                decision = await _prompt_or_exit(decision_provider.decide_approval(prompt, pause))
                 state = await executor.decide_approval(
                     manifest,
                     state.id,
@@ -312,7 +336,7 @@ async def run_example(
                 )
                 continue
             prompt = str(pause.get("question") or "Clarification required")
-            answer = await decision_provider.provide_clarification(prompt, pause)
+            answer = await _prompt_or_exit(decision_provider.provide_clarification(prompt, pause))
             values["clarifications"].append((prompt, answer))
             state = await executor.resume(
                 manifest,
