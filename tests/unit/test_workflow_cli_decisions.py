@@ -10,11 +10,13 @@ import pytest
 from examples.workflow_cli import (
     AnswersFileDecisionProvider,
     ApproveAllDecisionProvider,
+    EndOfInputError,
     InteractiveDecisionProvider,
     RejectAllDecisionProvider,
     add_decision_arguments,
     decision_provider_from_args,
     run_example,
+    run_example_cli,
 )
 
 ROOT = Path(__file__).parents[2]
@@ -207,3 +209,84 @@ async def test_run_example_non_tty_without_decision_policy_fails() -> None:
             "Enable credit for test account",
             decision_provider=provider,
         )
+
+
+@pytest.mark.asyncio
+async def test_interactive_decision_provider_eof_is_end_of_input_error() -> None:
+    provider = InteractiveDecisionProvider(is_tty=True)
+    with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
+        with pytest.raises(
+            EndOfInputError, match="End of input reached on stdin while awaiting approval"
+        ):
+            await provider.decide_approval("Approve?", {})
+
+    with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
+        with pytest.raises(
+            EndOfInputError, match="End of input reached on stdin while awaiting clarification"
+        ):
+            await provider.provide_clarification("Clarify?", {})
+
+
+@pytest.mark.asyncio
+async def test_interactive_decision_provider_ctrl_c_propagates() -> None:
+    # KeyboardInterrupt is delivered to the process, not to the input call, so the
+    # provider must not swallow it: the CLI entry point turns it into a clean exit.
+    provider = InteractiveDecisionProvider(is_tty=True)
+    with patch("builtins.input", side_effect=KeyboardInterrupt()):
+        with pytest.raises(KeyboardInterrupt):
+            await provider.decide_approval("Approve?", {})
+
+    with patch("builtins.input", side_effect=KeyboardInterrupt()):
+        with pytest.raises(KeyboardInterrupt):
+            await provider.provide_clarification("Clarify?", {})
+
+
+def test_run_example_cli_happy_path() -> None:
+    values = run_example_cli(
+        APPROVAL_CONFIG,
+        "approval-quickstart",
+        "Enable credit for test account",
+        approve_all=True,
+    )
+    assert values["approval"]["decision"] == "approved"
+
+
+def test_run_example_cli_eof_exits_cleanly_without_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = InteractiveDecisionProvider(is_tty=True)
+    with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
+        with pytest.raises(SystemExit) as exc:
+            run_example_cli(
+                APPROVAL_CONFIG,
+                "approval-quickstart",
+                "Enable credit for test account",
+                decision_provider=provider,
+            )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert (
+        "No decision received (end of input); treating as rejection - nothing was written."
+        in captured.err
+    )
+    assert "Traceback" not in captured.err
+
+
+def test_run_example_cli_ctrl_c_exits_cleanly_without_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = InteractiveDecisionProvider(is_tty=True)
+    with patch("builtins.input", side_effect=KeyboardInterrupt()):
+        with pytest.raises(SystemExit) as exc:
+            run_example_cli(
+                APPROVAL_CONFIG,
+                "approval-quickstart",
+                "Enable credit for test account",
+                decision_provider=provider,
+            )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert (
+        "Interrupted by user (Ctrl-C); treating as rejection - nothing was written." in captured.err
+    )
+    assert "Traceback" not in captured.err

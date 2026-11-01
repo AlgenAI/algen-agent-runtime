@@ -76,4 +76,6 @@ def test_approval_without_policy_in_non_interactive_env_fails_fast() -> None:
         stdin=subprocess.DEVNULL,
     )
     assert result.returncode != 0
-    assert "non-interactive environment without an automated decision policy" in result.stderr
+    # Ctrl-D / closed stdin must exit cleanly with one line on stderr - no traceback.
+    assert "No decision received (end of input); treating as rejection - nothing was written." in result.stderr
+    assert "Traceback" not in result.stderr

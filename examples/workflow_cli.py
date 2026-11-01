@@ -39,6 +39,14 @@ class DecisionProvider(Protocol):
         ...
 
 
+class EndOfInputError(RuntimeError):
+    """Raised when an interactive approval/clarification prompt hits end of input or Ctrl-C.
+
+    Subclasses :class:`RuntimeError` so callers that already handle the older
+    "end of input" runtime error keep working unchanged.
+    """
+
+
 class ApproveAllDecisionProvider:
     """Deterministic policy that approves every approval checkpoint."""
 
@@ -173,7 +181,7 @@ class InteractiveDecisionProvider:
             )
             return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
         except EOFError as exc:
-            raise RuntimeError(
+            raise EndOfInputError(
                 f"End of input reached on stdin while awaiting approval ({prompt!r}). "
                 "Workflow paused for approval in a non-interactive environment without "
                 "an automated decision policy. "
@@ -189,7 +197,7 @@ class InteractiveDecisionProvider:
         try:
             return await asyncio.to_thread(input, f"{prompt}\n> ")
         except EOFError as exc:
-            raise RuntimeError(
+            raise EndOfInputError(
                 f"End of input reached on stdin while awaiting clarification ({prompt!r}). "
                 "Workflow paused for clarification in a non-interactive environment without "
                 "an automated decision policy. "
@@ -325,6 +333,49 @@ async def run_example(
         return state.values
     finally:
         container.close()
+
+
+def run_example_cli(
+    config_path: Path,
+    workflow_name: str,
+    question: str,
+    *,
+    decision_provider: DecisionProvider | None = None,
+    approve_all: bool = False,
+    reject_all: bool = False,
+    answers_file: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run one portable workflow example from a CLI entry point.
+
+    End of input (Ctrl-D) and KeyboardInterrupt (Ctrl-C) at an interactive prompt mean
+    "no decision": nothing is written, one line explains it, and the process exits
+    non-zero without a traceback. This is the intended entry point for every example
+    ``main()`` that hosts :func:`run_example`.
+    """
+    try:
+        return asyncio.run(
+            run_example(
+                config_path,
+                workflow_name,
+                question,
+                decision_provider=decision_provider,
+                approve_all=approve_all,
+                reject_all=reject_all,
+                answers_file=answers_file,
+            )
+        )
+    except EndOfInputError as exc:
+        print(
+            "No decision received (end of input); treating as rejection - nothing was written.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    except KeyboardInterrupt as exc:
+        print(
+            "Interrupted by user (Ctrl-C); treating as rejection - nothing was written.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
 
 
 def print_result(values: dict[str, Any]) -> None:

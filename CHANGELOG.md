@@ -19,6 +19,13 @@ contracts are explicitly marked experimental during the `0.x` series.
   there is one page to maintain; [releasing](docs/releasing.md) describes the sync. The old page's
   "Explore architecture" button, which linked to a page that does not exist, is gone with it.
 
+### Fixed
+
+- Pressing Ctrl-D (end of input) or Ctrl-C at an interactive approval or clarification prompt now
+  means "no decision": every portable workflow example hosted by `examples/workflow_cli.py` prints
+  one line and exits with a non-zero status instead of a raw asyncio traceback. Nothing is
+  written in that case. (#96)
+
 ## [0.1.0a21] - 2026-11-01
 
 Fixes two ways a run failed on a recoverable model mistake (#89, #90), adds a startup banner and a
