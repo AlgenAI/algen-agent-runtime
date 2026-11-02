@@ -25,6 +25,14 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ### Fixed
 
+- A streamed model call falls back to the next candidate when the provider fails before it
+  delivers its first event: rate limited (HTTP 429), overloaded (503), timed out or unreachable.
+  Until now `ModelRouter.stream` only ever tried the first candidate, so a streaming agent never
+  reached its `fallback_models` and the run failed after its retries, while the same request
+  through `generate` fell back. Each failed candidate now counts against its provider's health, as
+  in `generate`, so the circuit opens and later calls skip it. A stream is still never replayed:
+  once an event has reached the caller, a failure is raised as before. Requests every provider
+  would reject (`invalid_request`) and malformed tool calls keep their existing handling.
 - The interactive workflow examples end cleanly at a prompt (#96, #103, contributed by bfs2021).
   Ctrl-D prints one `No decision: ...` line and exits with status 2; Ctrl-C prints `Interrupted.`
   and exits with status 130. Neither prints a traceback, and neither waits for the blocked prompt.
