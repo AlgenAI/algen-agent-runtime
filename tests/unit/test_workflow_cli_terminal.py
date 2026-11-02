@@ -35,6 +35,12 @@ def _read_until(fd: int, needle: bytes, timeout: float) -> bytes:
     return output
 
 
+def _default_sigint() -> None:
+    # CI runners can start jobs with SIGINT ignored, and a child inherits that. An interactive
+    # shell starts commands with the default disposition, so restore it.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def _run_to_prompt() -> tuple[subprocess.Popen[bytes], int, bytes]:
     master, slave = pty.openpty()
     process = subprocess.Popen(
@@ -43,6 +49,7 @@ def _run_to_prompt() -> tuple[subprocess.Popen[bytes], int, bytes]:
         stdin=slave,
         stdout=slave,
         stderr=slave,
+        preexec_fn=_default_sigint,
     )
     os.close(slave)
     output = _read_until(master, PROMPT, timeout=60)
