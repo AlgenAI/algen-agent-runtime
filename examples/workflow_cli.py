@@ -10,9 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
-from collections.abc import Awaitable
+import threading
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -42,7 +42,7 @@ class DecisionProvider(Protocol):
 
 
 class NoDecisionError(RuntimeError):
-    """An interactive operator ended input (EOF or interrupt) without making a decision."""
+    """The operator ended input (Ctrl-D) at an interactive prompt without making a decision."""
 
 
 class ApproveAllDecisionProvider:
@@ -174,18 +174,13 @@ class InteractiveDecisionProvider:
                 "an automated decision policy. Pass --approve-all, --reject-all, or --answers-file PATH."
             )
         try:
-            answer = (
-                (await asyncio.to_thread(input, f"{prompt}\nApprove or reject? ")).strip().lower()
-            )
-            return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
+            line = await _read_line(f"{prompt}\nApprove or reject? ")
         except EOFError as exc:
             raise NoDecisionError(
                 f"end of input while awaiting approval ({prompt!r}); nothing was applied"
             ) from exc
-        except KeyboardInterrupt as exc:
-            raise NoDecisionError(
-                f"interrupted while awaiting approval ({prompt!r}); nothing was applied"
-            ) from exc
+        answer = line.strip().lower()
+        return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
 
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         if not self._is_tty:
@@ -194,31 +189,43 @@ class InteractiveDecisionProvider:
                 "an automated decision policy. Pass --answers-file PATH."
             )
         try:
-            return await asyncio.to_thread(input, f"{prompt}\n> ")
+            return await _read_line(f"{prompt}\n> ")
         except EOFError as exc:
             raise NoDecisionError(
                 f"end of input while awaiting clarification ({prompt!r}); no answer was provided"
             ) from exc
-        except KeyboardInterrupt as exc:
-            raise NoDecisionError(
-                f"interrupted while awaiting clarification ({prompt!r}); no answer was provided"
-            ) from exc
 
 
-async def _prompt_or_exit(awaitable: Awaitable[str]) -> str:
-    """Await a decision-provider prompt, turning a missing decision into a clean non-zero exit."""
-    try:
-        return await awaitable
-    except NoDecisionError as exc:
-        print(f"No decision: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
-    except KeyboardInterrupt:
-        # The prompt thread may still be blocked in input(): skip executor shutdown so it
-        # cannot hang the interpreter on its way out.
-        print("No decision: interrupted at the prompt; exiting.", file=sys.stderr)
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(130)
+async def _read_line(prompt: str) -> str:
+    """Read one line from stdin without blocking the event loop.
+
+    ``input()`` runs in a daemon thread rather than ``asyncio.to_thread``: after Ctrl-C the thread
+    is still blocked in ``input()``, and ``asyncio.run`` would wait for its executor to finish
+    before the process could exit.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def deliver(line: str, error: Exception | None) -> None:
+        if future.done():  # cancelled by Ctrl-C while input() was blocked
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(line)
+
+    def read() -> None:
+        try:
+            line, error = input(prompt), None
+        except Exception as exc:  # EOFError on Ctrl-D, OSError if stdin is closed
+            line, error = "", exc
+        try:
+            loop.call_soon_threadsafe(deliver, line, error)
+        except RuntimeError:  # the event loop closed while input() was blocked
+            pass
+
+    threading.Thread(target=read, name="workflow-cli-prompt", daemon=True).start()
+    return await future
 
 
 def add_decision_arguments(parser: argparse.ArgumentParser) -> None:
@@ -326,7 +333,7 @@ async def run_example(
             pause = state.pause or {}
             if state.status is WorkflowStatus.AWAITING_APPROVAL:
                 prompt = str(pause.get("prompt") or "Approval required")
-                decision = await _prompt_or_exit(decision_provider.decide_approval(prompt, pause))
+                decision = await decision_provider.decide_approval(prompt, pause)
                 state = await executor.decide_approval(
                     manifest,
                     state.id,
@@ -336,7 +343,7 @@ async def run_example(
                 )
                 continue
             prompt = str(pause.get("question") or "Clarification required")
-            answer = await _prompt_or_exit(decision_provider.provide_clarification(prompt, pause))
+            answer = await decision_provider.provide_clarification(prompt, pause)
             values["clarifications"].append((prompt, answer))
             state = await executor.resume(
                 manifest,
@@ -349,6 +356,22 @@ async def run_example(
         return state.values
     finally:
         container.close()
+
+
+def run_cli(example: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
+    """Run an example from its ``main()`` and turn an unfinished prompt into a one-line exit.
+
+    Ctrl-D at a prompt exits with status 2 and Ctrl-C with status 130, without a traceback. The
+    pending checkpoint is not decided, so nothing behind it is applied.
+    """
+    try:
+        return asyncio.run(example)
+    except NoDecisionError as exc:
+        print(f"No decision: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        raise SystemExit(130) from None
 
 
 def print_result(values: dict[str, Any]) -> None:
