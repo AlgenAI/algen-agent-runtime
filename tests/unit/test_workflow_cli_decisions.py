@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -11,9 +14,11 @@ from examples.workflow_cli import (
     AnswersFileDecisionProvider,
     ApproveAllDecisionProvider,
     InteractiveDecisionProvider,
+    NoDecisionError,
     RejectAllDecisionProvider,
     add_decision_arguments,
     decision_provider_from_args,
+    run_cli,
     run_example,
 )
 
@@ -119,16 +124,73 @@ async def test_interactive_decision_provider_non_tty_fails_fast() -> None:
 async def test_interactive_decision_provider_eof_error() -> None:
     provider = InteractiveDecisionProvider(is_tty=True)
     with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
-        with pytest.raises(
-            RuntimeError, match="End of input reached on stdin while awaiting approval"
-        ):
+        with pytest.raises(NoDecisionError, match="end of input while awaiting approval"):
             await provider.decide_approval("Approve?", {})
 
     with patch("builtins.input", side_effect=EOFError("unexpected EOF")):
-        with pytest.raises(
-            RuntimeError, match="End of input reached on stdin while awaiting clarification"
-        ):
+        with pytest.raises(NoDecisionError, match="end of input while awaiting clarification"):
             await provider.provide_clarification("Clarify?", {})
+
+
+@pytest.mark.asyncio
+async def test_interactive_decision_provider_empty_stdin_is_no_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = InteractiveDecisionProvider(is_tty=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    with pytest.raises(NoDecisionError, match="end of input while awaiting approval"):
+        await provider.decide_approval("Approve?", {})
+
+
+class _NoDecisionProvider:
+    """Stub provider that always ends input without deciding, like Ctrl-D at the prompt."""
+
+    async def decide_approval(self, prompt: str, details: dict) -> str:
+        raise NoDecisionError(f"end of input while awaiting approval ({prompt!r})")
+
+    async def provide_clarification(self, prompt: str, details: dict) -> str:
+        raise NoDecisionError(f"end of input while awaiting clarification ({prompt!r})")
+
+
+@pytest.mark.asyncio
+async def test_run_example_raises_no_decision_without_exiting() -> None:
+    with pytest.raises(NoDecisionError, match="end of input while awaiting approval"):
+        await run_example(
+            APPROVAL_CONFIG,
+            "approval-quickstart",
+            "Enable credit for test account",
+            decision_provider=_NoDecisionProvider(),
+        )
+
+
+def test_run_cli_no_decision_prints_one_line_and_exits_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        run_cli(
+            run_example(
+                APPROVAL_CONFIG,
+                "approval-quickstart",
+                "Enable credit for test account",
+                decision_provider=_NoDecisionProvider(),
+            )
+        )
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("No decision: end of input while awaiting approval")
+    assert err.count("\n") == 1
+
+
+def test_run_cli_interrupt_prints_one_line_and_exits_130(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def interrupted() -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_cli(interrupted())
+    assert excinfo.value.code == 130
+    assert capsys.readouterr().err == "Interrupted.\n"
 
 
 def test_decision_arguments_and_from_args(tmp_path: Path) -> None:

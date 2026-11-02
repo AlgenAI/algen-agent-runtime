@@ -19,6 +19,16 @@ contracts are explicitly marked experimental during the `0.x` series.
   there is one page to maintain; [releasing](docs/releasing.md) describes the sync. The old page's
   "Explore architecture" button, which linked to a page that does not exist, is gone with it.
 
+### Fixed
+
+- The interactive workflow examples end cleanly at a prompt (#96, #103, contributed by bfs2021).
+  Ctrl-D prints one `No decision: ...` line and exits with status 2; Ctrl-C prints `Interrupted.`
+  and exits with status 130. Neither prints a traceback, and neither waits for the blocked prompt.
+  The pending approval or clarification is left undecided, so nothing behind it is applied.
+  `examples.workflow_cli` adds `NoDecisionError` and `run_cli`, which the examples' `main()` now
+  use. `run_example` raises `NoDecisionError` instead of the generic end-of-input `RuntimeError`
+  (it is a subclass, so existing `except RuntimeError` handlers still catch it).
+
 ## [0.1.0a21] - 2026-11-01
 
 Fixes two ways a run failed on a recoverable model mistake (#89, #90), adds a startup banner and a

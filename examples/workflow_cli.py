@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+import threading
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -37,6 +40,10 @@ class DecisionProvider(Protocol):
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         """Return clarification answer text."""
         ...
+
+
+class NoDecisionError(RuntimeError):
+    """The operator ended input (Ctrl-D) at an interactive prompt without making a decision."""
 
 
 class ApproveAllDecisionProvider:
@@ -168,17 +175,13 @@ class InteractiveDecisionProvider:
                 "an automated decision policy. Pass --approve-all, --reject-all, or --answers-file PATH."
             )
         try:
-            answer = (
-                (await asyncio.to_thread(input, f"{prompt}\nApprove or reject? ")).strip().lower()
-            )
-            return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
+            line = await _read_line(f"{prompt}\nApprove or reject? ")
         except EOFError as exc:
-            raise RuntimeError(
-                f"End of input reached on stdin while awaiting approval ({prompt!r}). "
-                "Workflow paused for approval in a non-interactive environment without "
-                "an automated decision policy. "
-                "Pass --approve-all, --reject-all, or --answers-file PATH in non-interactive environments."
+            raise NoDecisionError(
+                f"end of input while awaiting approval ({prompt!r}); nothing was applied"
             ) from exc
+        answer = line.strip().lower()
+        return "approved" if answer in {"approve", "approved", "yes"} else "rejected"
 
     async def provide_clarification(self, prompt: str, details: dict[str, Any]) -> str:
         if not self._is_tty:
@@ -187,14 +190,46 @@ class InteractiveDecisionProvider:
                 "an automated decision policy. Pass --answers-file PATH."
             )
         try:
-            return await asyncio.to_thread(input, f"{prompt}\n> ")
+            return await _read_line(f"{prompt}\n> ")
         except EOFError as exc:
-            raise RuntimeError(
-                f"End of input reached on stdin while awaiting clarification ({prompt!r}). "
-                "Workflow paused for clarification in a non-interactive environment without "
-                "an automated decision policy. "
-                "Pass --answers-file PATH in non-interactive environments."
+            raise NoDecisionError(
+                f"end of input while awaiting clarification ({prompt!r}); no answer was provided"
             ) from exc
+
+
+_PROMPT_THREAD = "workflow-cli-prompt"
+
+
+async def _read_line(prompt: str) -> str:
+    """Read one line from stdin without blocking the event loop.
+
+    ``input()`` runs in a daemon thread rather than ``asyncio.to_thread``: after Ctrl-C the thread
+    is still blocked in ``input()``, and ``asyncio.run`` would wait for its executor to finish
+    before the process could exit.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def deliver(line: str, error: Exception | None) -> None:
+        if future.done():  # cancelled by Ctrl-C while input() was blocked
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(line)
+
+    def read() -> None:
+        try:
+            line, error = input(prompt), None
+        except Exception as exc:  # EOFError on Ctrl-D, OSError if stdin is closed
+            line, error = "", exc
+        try:
+            loop.call_soon_threadsafe(deliver, line, error)
+        except RuntimeError:  # the event loop closed while input() was blocked
+            pass
+
+    threading.Thread(target=read, name=_PROMPT_THREAD, daemon=True).start()
+    return await future
 
 
 def add_decision_arguments(parser: argparse.ArgumentParser) -> None:
@@ -325,6 +360,28 @@ async def run_example(
         return state.values
     finally:
         container.close()
+
+
+def run_cli(example: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
+    """Run an example from its ``main()`` and turn an unfinished prompt into a one-line exit.
+
+    Ctrl-D at a prompt exits with status 2 and Ctrl-C with status 130, without a traceback. The
+    pending checkpoint is not decided, so nothing behind it is applied.
+    """
+    try:
+        return asyncio.run(example)
+    except NoDecisionError as exc:
+        print(f"No decision: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        if any(t.name == _PROMPT_THREAD and t.is_alive() for t in threading.enumerate()):
+            # Ctrl-C at a prompt leaves its thread blocked reading stdin, and on Linux interpreter
+            # shutdown then waits on it forever. run_example has already closed the container.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(130)
+        raise SystemExit(130) from None
 
 
 def print_result(values: dict[str, Any]) -> None:
