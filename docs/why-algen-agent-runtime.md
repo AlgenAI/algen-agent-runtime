@@ -2,7 +2,7 @@
 
 Owner: AlgenAI Maintainers  
 Status: Informational  
-Last reviewed: 2026-10-28 (Runtime `0.1.0a15`)  
+Last reviewed: 2026-11-01 (Runtime `0.1.0a21`)  
 
 ## Short answer
 
@@ -85,7 +85,8 @@ Algen Agent Runtime is probably unnecessary when:
 
 ## How it compares
 
-Snapshot: 2026-10-28, against Algen Agent Runtime `0.1.0a15`. Competitor rows summarize each
+Competitor snapshot: 2026-10-28. Algen's column was updated on 2026-11-01 for `0.1.0a21`; the
+competitor columns were not re-checked then. Competitor rows summarize each
 vendor's own documentation and release notes (see [Sources](#sources)); they are not independent
 benchmarks, and absence from a vendor's docs is not proof that a feature is missing. These projects
 change monthly: refresh this section at least quarterly and before using it in external material.
@@ -109,21 +110,21 @@ change monthly: refresh this section at least quarterly and before using it in e
 ### Capability matrix
 
 **Y** documented and built in · **P** partial, opt-in, experimental or left to the application ·
-**N** not documented. Algen's column is a repository fact for `0.1.0a15`; the qualification
+**N** not documented. Algen's column is a repository fact for `0.1.0a21`; the qualification
 column says where it is still incomplete.
 
-| Capability | Algen `0.1.0a15` | LangGraph | OpenAI Agents SDK | Pydantic AI | MS Agent Framework | Google ADK | CrewAI | Algen qualification |
+| Capability | Algen `0.1.0a21` | LangGraph | OpenAI Agents SDK | Pydantic AI | MS Agent Framework | Google ADK | CrewAI | Algen qualification |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Provider neutrality and cross-provider fallback | Y | Y | P | Y | P | Y | P | Breadth of adapters trails LangChain and Pydantic AI |
 | Typed tools and structured output | Y | Y | Y | Y | Y | Y | Y | — |
-| Side-effect classes, idempotency keys, durable tool ledger | Y | P | P | P (alpha) | P | P | N | Operator reconciliation of indeterminate calls is not yet exposed |
-| Durable approvals with approve, modify, reject | Y | Y | P | P | P | P | P | Restart and failover drills against live stores are still pending |
-| Policy before and after tool calls; prechecks | Y | P | Y | Y (alpha) | Y (exp.) | Y | Y | Pattern-based; signed policy bundles are not yet available |
-| Tenant and user in core contracts and stores | Y | P | N | P (alpha) | P | P | P | Per-tenant storage quotas are not yet available |
-| Per-run caller credentials, never persisted | Y | P | P | P | Y | Y | P | Workflow tool steps and the HTTP API pass none in `0.1.0a15` |
+| Side-effect classes, idempotency keys, durable tool ledger | Y | P | P | P (alpha) | P | P | N | Audited, tenant-scoped reconciliation of indeterminate calls (`0.1.0a17`); single node |
+| Durable approvals with approve, modify, reject | Y | Y | P | P | P | P | P | Restart drills against PostgreSQL and Redis pass (`0.1.0a18`); multi-worker failover is not yet proven |
+| Policy before and after tool calls; prechecks | Y | P | Y | Y (alpha) | Y (exp.) | Y | Y | Pattern-based rules; signed policy bundles that no agent can opt out of (`0.1.0a18`) |
+| Tenant and user in core contracts and stores | Y | P | N | P (alpha) | P | P | P | Per-tenant storage quotas (`0.1.0a18`); isolation testing is the operator's |
+| Per-run caller credentials, never persisted | Y | P | P | P | Y | Y | P | Workflow tool steps and the HTTP API pass none yet; a run resumed on another worker needs them again |
 | Budgets and usage metering per tenant and model | Y | P | P | Y (alpha) | P | P | P | Metering is a host-provided `UsageMeter`; the Runtime ships no ledger |
-| Durable execution and crash recovery | P | Y | P | P | Y | P | P | Single-node checkpoint and `recover()`; multi-worker hardening pending |
-| MCP: stdio, Streamable HTTP, SSE, OAuth | Y | Y (beta) | P | Y | P | Y | P | No dynamic client registration; stdio servers are unsandboxed |
+| Durable execution and crash recovery | P | Y | P | P | Y | P | P | Single-node checkpoint and `recover()`, drilled on PostgreSQL and Redis; multi-worker hardening pending |
+| MCP: stdio, Streamable HTTP, SSE, OAuth | Y | Y (beta) | P | Y | P | Y | P | No dynamic client registration; stdio servers are sandboxed only through an operator-supplied wrapper (`0.1.0a18`) |
 | Multi-agent and workflow orchestration | Y | Y | P | Y | Y | Y | Y | Typed DAG manifests; graph-authoring ergonomics trail LangGraph |
 | Context management (compaction, offloading, trimming) | Y | Y | P | Y | Y | Y | P | Token estimates are provider-neutral, not tokenizer-exact |
 | Observability (OpenTelemetry and native) | Y | Y | P | Y | Y | Y | Y | — |
@@ -147,7 +148,9 @@ Use these claims only with their qualification:
 2. **An idempotent side-effect ledger coupled to approvals.** Writes are keyed and single-attempt,
    and an approved call executes once. Most compared frameworks document at-least-once re-execution
    on resume or leave idempotency to the developer; only Pydantic AI's alpha Harness documents a
-   ledger. Qualification: reconciliation APIs for indeterminate calls are still pending.
+   ledger. A call interrupted mid-flight becomes `indeterminate` and is settled through an audited
+   reconciliation API, the tool's own `reconcile` hook or its compensation. Qualification: hardened
+   for a single node.
 3. **Governance and accounting in one state machine.** The schema check, prechecks, policy
    decisions, approvals, repeat guards, budgets, metering and audit records are wired into the same
    run lifecycle and checkpointed with it, so they survive an approval pause and a restart. Competitors
@@ -180,7 +183,9 @@ Use these claims only with their qualification:
 - "Production-ready" or "enterprise-ready" without the [production gate](production-readiness.md).
 - "Uniform governance across LangGraph, CrewAI, AutoGen and OpenAI Agents": adapters govern the outer
   run; internal model and tool calls stay framework-owned.
-- "Sandboxed MCP": stdio MCP servers run as trusted, unsandboxed host processes.
+- "Sandboxed MCP": stdio MCP servers and subprocess tools are host processes. `security.sandbox`
+  limits their environment and resources and can wrap them in an operator-supplied sandbox
+  (`bwrap`, `nsjail`, `firejail`, `sandbox-exec`); the Runtime does not isolate them by itself.
 
 ## Why not call it another agent framework?
 
@@ -218,10 +223,11 @@ production-ready. Production users must select durable stores, configure authent
 validate tenant isolation, load-test concurrency, rehearse recovery, and run optional integration tests
 against their actual providers, frameworks, databases, and telemetry destination.
 
-The main open gaps, tracked in [production readiness](production-readiness.md), are multi-worker
-execution (distributed claims, fencing, leader election), operator reconciliation of indeterminate
-tool calls, OIDC/JWKS and mTLS authentication options, sandboxing for stdio MCP servers and
-subprocess tools, per-tenant storage quotas, and load, soak and failover evidence. Among adapters,
+Every P0 item in [production readiness](production-readiness.md) is done for a single node as of
+`0.1.0a18`: reconciliation of indeterminate tool calls, OIDC authentication, signed policy bundles,
+sandbox options for stdio MCP servers and subprocess tools, per-tenant quotas and resource bounds,
+and persistence drills against PostgreSQL and Redis. The main open gaps are multi-worker execution
+(distributed claims, fencing, leader election) and load, soak and failover evidence at scale. Among adapters,
 LangGraph and the OpenAI Agents SDK are supported; AutoGen and CrewAI remain experimental, and
 AutoGen itself is now in maintenance mode upstream.
 
