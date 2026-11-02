@@ -1,0 +1,34 @@
+name: Protected paths
+
+# pull_request_target runs this file from the base branch, so a fork cannot edit the check.
+# It never checks out or runs pull-request code: it only reads the list of changed files.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  protected-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject fork changes to maintainer-owned paths
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          pattern='^(AGENTS\.md|CLAUDE\.md|\.agents/|\.claude/|\.github/|GOVERNANCE\.md|MAINTAINERS\.md|SECURITY\.md|CONTRIBUTING\.md|CODE_OF_CONDUCT\.md|LICENSE|NOTICE|scripts/|Makefile|Dockerfile|docker-compose\.yml|src/algen_agent_runtime/persistence/migrations/)'
+          touched=$(gh api --paginate "repos/$REPO/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' | grep -E "$pattern" | sort -u || true)
+          if [ -n "$touched" ]; then
+            while read -r path; do
+              echo "::error::External pull requests cannot change maintainer-owned path: $path"
+            done <<< "$touched"
+            echo "A maintainer must make changes to these paths. See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "No maintainer-owned paths changed."

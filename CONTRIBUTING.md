@@ -124,6 +124,8 @@ Keep pull requests focused and explain:
   test;
 - rollout or rollback considerations where applicable.
 
+Pull requests from forks must not change maintainer-owned paths: agent instructions and skills (`AGENTS.md`, `.agents/`), `.github/`, governance documents, `scripts/` and database migrations. The `Protected paths` check fails such pull requests. Open an issue and a maintainer will make the change.
+
 All required checks and maintainer reviews must pass before merge. Do not rewrite unrelated files or include generated caches, local databases, build products, or secrets.
 
 ## Developer Certificate of Origin
