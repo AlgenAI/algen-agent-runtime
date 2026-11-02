@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import threading
 from collections.abc import Coroutine
@@ -196,6 +197,9 @@ class InteractiveDecisionProvider:
             ) from exc
 
 
+_PROMPT_THREAD = "workflow-cli-prompt"
+
+
 async def _read_line(prompt: str) -> str:
     """Read one line from stdin without blocking the event loop.
 
@@ -224,7 +228,7 @@ async def _read_line(prompt: str) -> str:
         except RuntimeError:  # the event loop closed while input() was blocked
             pass
 
-    threading.Thread(target=read, name="workflow-cli-prompt", daemon=True).start()
+    threading.Thread(target=read, name=_PROMPT_THREAD, daemon=True).start()
     return await future
 
 
@@ -371,6 +375,12 @@ def run_cli(example: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
         raise SystemExit(2) from None
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
+        if any(t.name == _PROMPT_THREAD and t.is_alive() for t in threading.enumerate()):
+            # Ctrl-C at a prompt leaves its thread blocked reading stdin, and on Linux interpreter
+            # shutdown then waits on it forever. run_example has already closed the container.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(130)
         raise SystemExit(130) from None
 
 
