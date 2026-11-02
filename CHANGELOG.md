@@ -12,6 +12,10 @@ contracts are explicitly marked experimental during the `0.x` series.
   new `Docs` workflow, and the package's `Documentation` URL points there. The README opens with a
   one-minute offline approval demo and its terminal recording
   (`docs/assets/demo/approval.tape` re-records it with vhs). More PyPI keywords.
+- Maintainers have an `algen-external-pr-review` skill for evaluating pull requests from forks: scope,
+  safety, compatibility and impact on applications. A new `Protected paths` check fails fork pull
+  requests that change agent instructions, skills, `.github/`, governance documents, `scripts/` or
+  migrations, and CODEOWNERS now lists those paths.
 
 ### Changed
 

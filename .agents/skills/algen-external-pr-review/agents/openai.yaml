@@ -1,0 +1,5 @@
+interface:
+  display_name: "Algen External PR Review"
+  short_description: "Evaluate an external contribution before merge"
+  brand_color: "#4F46E5"
+  default_prompt: "Use $algen-external-pr-review to evaluate this external pull request and recommend whether to accept it."
