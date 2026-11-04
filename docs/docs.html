@@ -685,6 +685,7 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
   <div class="version-select">
     <label class="sr-only" for="versionSelect">Documentation version</label>
     <select id="versionSelect" title="Documentation version">
+      <option value="0.1.0a23">v0.1.0a23</option>
       <option value="0.1.0a22">v0.1.0a22</option>
       <option value="0.1.0a21">v0.1.0a21</option>
       <option value="0.1.0a20">v0.1.0a20</option>
@@ -1337,6 +1338,7 @@ http_tools:
         <h3 id="workflow-tool-steps">Workflow tool steps<a class="anchor" href="#workflow-tool-steps" aria-label="Link to this section">#</a></h3>
         <p>A workflow <code>handler</code> node can call any registered tool, including an HTTP API tool, with <code>handler: tool:&lt;name&gt;</code> and an <code>arguments</code> map. The call goes through the same permissions, approval, and idempotency checks as an agent's tool call, and its result is stored under the node's <code>output_key</code>.</p>
         <p data-version-min="0.1.0a22">From 0.1.0a22 an approval-required tool step is approved only by the approval node&#39;s recorded status, so no other step or input can approve it. An approval covers the step, not its arguments: read them from what the approver saw, and from <code>{{approval.parameters.*}}</code> when the approval can be modified. <code>check</code> warns when a step reads anything else, and each covered call emits <code>workflow.tool.authorized</code> with digests of its arguments and of the approved parameters. Node output keys must be unique.</p>
+        <p data-version-min="0.1.0a23">From 0.1.0a23 the step needs every approval that gates it, the nearest approval on each path to the step, to have approved; an earlier approval behind a rejected one never stands in for it, even with <code>rejection_policy: continue</code>.</p>
       </section>
 
       <section class="doc" id="tool-guards" data-version-min="0.1.0a14">
@@ -3801,7 +3803,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   /* ----- Architecture explorer (data mirrors docs/algen-runtime-architecture-atlas.html) ----- */
   const arch = (() => {
-    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22'];
+    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
     const versions = {
       '0.1.0a1': { status: 'first public alpha · native execution foundation', summary: 'A restart-aware, single-node governed agent kernel with typed workflows, durable checkpoints, policy boundaries, tools, storage, retrieval, artifacts, approvals, telemetry, and analytical execution.', changes: {}, overrides: {} },
       '0.1.0a2': { status: 'published pre-alpha · usability and boundary hardening', summary: 'Adds provider-instance identity, uniform capability policy, early references, scaffolding, starter tools, MCP client foundations, application-registered framework adapters, safe outbound networking, API admission controls, and service-backed storage tests.', changes: { added: ['scaffold', 'starter-tools', 'mcp', 'framework-registry', 'network', 'api-admission', 'hook-loader', 'provider-instance'], changed: ['model-router', 'container', 'examples', 'release'], removed: [] }, overrides: { 'mcp': { state: 'partial', note: 'Python-wired stdio/SSE tool client; secure defaults, but no YAML or Streamable HTTP.' }, 'framework-registry': { state: 'partial', note: 'Trusted application registration; real LangGraph execution evidence.' }, 'network': { state: 'available' }, 'api-admission': { state: 'available' } } },
@@ -3825,6 +3827,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       '0.1.0a20': { status: 'pre-alpha · toolkit configuration errors', summary: 'A toolkit whose client cannot open because of its configuration raises ToolkitConfigurationError with its own message again.', changes: { added: [], changed: ['tools'], removed: [] }, overrides: {} },
       '0.1.0a21': { status: 'pre-alpha · recoverable model errors', summary: 'A malformed or cut-off tool call is retried instead of failing the run, and output repair works on models that refuse assistant prefill. A startup banner, a check profile for self-hosted projects, and references for hooks, MCP results and scopes.', changes: { added: [], changed: ['model-router', 'native-runtime', 'project-check'], removed: [] }, overrides: { 'model-router': { note: 'Malformed tool calls are retryable InvalidToolCallError; dropped schema limits described for Anthropic and OpenAI.' } } },
       '0.1.0a22': { status: 'pre-alpha · approval and timeout fixes', summary: 'Workflow approvals are decided by the approval node\'s recorded status and their tool steps are audited by digest; synchronous tools run in a worker thread and meet their timeout; the README says what framework adapters govern.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'Approval coverage comes from the approval node\'s status; output keys are unique; input cannot change a decision.' } } },
+      '0.1.0a23': { status: 'pre-alpha · approval gating and tool capacity', summary: 'A workflow tool step needs every approval that gates it, so a rejection never falls back to an earlier approval; a timed-out synchronous tool keeps its concurrency slot until its thread ends.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'A tool step is approved only when every approval that gates it approved.' } } },
     };
     const nodes = {
       host: { name: 'Host & API boundary', domain: 'operations', kind: 'Outer boundary', summary: 'Validates identity, request shape, admission, lifecycle, and service health before work enters native execution.', state: 'available', source: 'src/algen_agent_runtime/api/', facts: { protocol: 'HTTP + SSE', identity: 'Principal', default: 'Loopback' }, details: ['FastAPI routes require authenticated principal and scopes.', 'Container lifespan starts stores, recovery, and telemetry.', 'SSE exposes reconnectable run and conversation events.'], relations: ['api', 'identity', 'container', 'observability'] },
@@ -4063,11 +4066,30 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   })();
 
   /* ----- Versioned documentation ----- */
-  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22'];
-  const LATEST_VERSION = '0.1.0a22';
+  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
+  const LATEST_VERSION = '0.1.0a23';
   const RELEASES = {
-    '0.1.0a22': {
+    '0.1.0a23': {
       date: '2026-11-04', pending: true, kind: 'Security and correctness',
+      title: 'Tool steps need every gating approval; timed-out tools keep their capacity',
+      summary: 'Fixes from a second external review of 0.1.0a22. A workflow tool step that needs approval runs only when every approval that gates it approved, so a rejected approval no longer falls back to an earlier one. A timed-out synchronous tool keeps its concurrency slot until its thread ends and is not retried over it. No migrations, no new deprecations.',
+      fields: { tag: 'v0.1.0a23', package: '0.1.0a23 · pre-alpha', version: '0.1.0a23', pip: 'python -m pip install "algen-agent-runtime==0.1.0a23"' },
+      groups: [
+        { kind: 'Fixed', items: [
+          '<strong>Security:</strong> an approval-required workflow tool step runs only when every approval that gates it (the nearest approval on each path to the step) approved it. A rejected approval with <code>rejection_policy: continue</code> could fall back to an earlier approved one. <code>check</code> uses the same rule, and <code>workflow.tool.authorized</code> adds <code>approval_node_ids</code>.',
+          'A synchronous tool that timed out keeps its <code>max_concurrency</code> slot until its worker thread finishes and is not retried while that thread runs, so timed-out work no longer exceeds the limit. (#114)',
+          '<code>APPROVAL_MODIFICATION_IGNORED</code> is reported unless the step reads the approval&#39;s <code>parameters</code>. (#109)'
+        ]},
+        { kind: 'Upgrade notes', items: [
+          'A step that relied on an earlier approval after a later one was rejected now fails with <code>requires an approval</code>. Calls to a synchronous tool wait for a slot while an earlier, timed-out call&#39;s thread still runs.'
+        ]},
+        { kind: 'Compatibility', items: [
+          'No database migrations; 0.1.0a22 and 0.1.0a23 can run side by side. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
+        ]}
+      ]
+    },
+    '0.1.0a22': {
+      date: '2026-11-04', pending: false, kind: 'Security and correctness',
       title: 'Workflow approvals decided by status; synchronous tools meet their timeout',
       summary: 'Fixes from an external review. A workflow tool step that needs approval is approved only by the approval node&#39;s recorded status, and check warns when its arguments are not what the approver saw. Synchronous tools run in a worker thread, so they no longer block other runs and are timed out on schedule. No migrations, no new deprecations.',
       fields: { tag: 'v0.1.0a22', package: '0.1.0a22 · pre-alpha', version: '0.1.0a22', pip: 'python -m pip install "algen-agent-runtime==0.1.0a22"' },
@@ -4086,7 +4108,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
           'Workflow nodes must have unique <code>output_key</code>s. Input sent to a paused workflow cannot set an approval&#39;s <code>output_key</code> or replace a value an approval already showed (400). Synchronous tools must be thread-safe; one that needs the running loop or a thread-bound resource should become <code>async def</code>.'
         ]},
         { kind: 'Compatibility', items: [
-          'No database migrations; 0.1.0a21 and 0.1.0a22 can run side by side, and workflows paused under 0.1.0a21 resume. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
+          'No database migrations; 0.1.0a21 and 0.1.0a22 can run side by side, and workflows paused under 0.1.0a21 resume. Published to PyPI on 2026-11-04; the security fix is <a href="https://github.com/AlgenAI/algen-agent-runtime/security/advisories/GHSA-xc6c-mcwg-gjhp">GHSA-xc6c-mcwg-gjhp</a>. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
         ]}
       ]
     },

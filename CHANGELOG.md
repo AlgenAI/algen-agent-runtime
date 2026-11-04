@@ -6,6 +6,13 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a23] - 2026-11-04
+
+Fixes from a second external review of 0.1.0a22: a workflow tool step that needs approval runs only
+when every approval that gates it approved (a security fix), and a timed-out synchronous tool keeps
+its concurrency slot until its thread ends. No database migrations and no new deprecations;
+0.1.0a22 and 0.1.0a23 can run side by side.
+
 ### Fixed
 
 - **Security:** an approval-required workflow tool step runs only when every approval that gates it

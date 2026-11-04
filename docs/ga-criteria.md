@@ -1,7 +1,7 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — pre-release (`0.1.0a22`)  
+Status: Active tracking — pre-release (`0.1.0a23`)  
 Last reviewed: 2026-10-31
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
@@ -24,6 +24,7 @@ production evidence rather than for the feature list.
 | `0.1.0a20` | Patch: a toolkit's configuration error keeps its type and message (0.1.0a19 regression) | Released |
 | `0.1.0a21` | Recoverable malformed tool calls ([#89](https://github.com/AlgenAI/algen-agent-runtime/issues/89)) and output repair on models that refuse prefill ([#90](https://github.com/AlgenAI/algen-agent-runtime/issues/90)); startup banner; `check --profile standalone` | Released; no new deprecations |
 | `0.1.0a22` | Workflow approvals decided by the approval node's status (security fix); synchronous tools off the event loop ([#108](https://github.com/AlgenAI/algen-agent-runtime/issues/108)); approval-argument warnings and digests ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)); adapter scope in the README ([#110](https://github.com/AlgenAI/algen-agent-runtime/issues/110)) | Released; no new deprecations |
+| `0.1.0a23` | A workflow tool step needs every approval that gates it (security fix); timed-out synchronous tools keep their concurrency slot ([#114](https://github.com/AlgenAI/algen-agent-runtime/issues/114)); `check` reads a modifiable decision only through its parameters ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)) | Released; no new deprecations |
 | `0.2.0b1` … `0.2.0bN` | Beta: deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
