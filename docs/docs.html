@@ -1750,7 +1750,7 @@ security:                   # the deployment's outer limits; an agent can only n
             <tr><td>Anthropic</td><td><code>image</code> blocks (base64, or URL)</td><td><code>document</code> blocks</td></tr>
             <tr><td>OpenAI</td><td><code>image_url</code> data URLs</td><td><code>file</code> parts</td></tr>
             <tr><td>Other OpenAI-compatible</td><td>data URLs where <code>images: true</code></td><td>refused</td></tr>
-            <tr><td>Mock, local transformers</td><td colspan="2">rendered as <code>[attachment: name, type]</code></td></tr>
+            <tr><td>Mock, local transformers</td><td colspan="2">rendered as <code>[attachment: name, type, id=artifact_id]</code>; a text-only model passes the id to a tool that calls <code>context.read_attachment</code></td></tr>
           </tbody>
         </table></div>
         <h3 id="attachments-tools">Tools and workflows<a class="anchor" href="#attachments-tools" aria-label="Link to this section">#</a></h3>
