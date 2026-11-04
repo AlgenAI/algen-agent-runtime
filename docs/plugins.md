@@ -190,7 +190,12 @@ It warns about workflow tool steps whose tool `requires_approval` (see
 | Code | Meaning |
 | --- | --- |
 | `APPROVAL_ARGUMENTS_NOT_REVIEWED` | The step's arguments read values its covering approval did not show the approver (`review_from`, `parameters_from`) or decide. |
-| `APPROVAL_MODIFICATION_IGNORED` | The approval allows modification, but the step does not read the approval's output, so a modified decision would not change the call. |
+| `APPROVAL_MODIFICATION_IGNORED` | The approval allows modification, but the step does not read its `parameters`, so a modified decision would not change the call. |
+
+A step is checked against the approvals that gate it, the nearest on each path, as the engine does.
+Literal arguments are part of the workflow's definition and are not checked, and a clean result does
+not prove the call matches what was approved; strict binding is planned
+([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)).
 
 It also reads the Python under `--project-root` (skipping tests, virtual environments and hidden
 directories, and running none of it) and warns about what Studio will not run or cannot see:

@@ -149,3 +149,74 @@ async def test_fast_synchronous_and_asynchronous_handlers_still_return_their_res
 
     assert (await executor.execute("double", {"value": 2}, _context("a"))).value == 4
     assert (await executor.execute("triple", {"value": 2}, _context("b"))).value == 6
+
+
+def _counting() -> tuple[Any, dict[str, int], threading.Semaphore]:
+    """A blocking job that counts its calls and its peak concurrency, and signals each finish."""
+    lock = threading.Lock()
+    done = threading.Semaphore(0)
+    state = {"running": 0, "peak": 0, "calls": 0}
+
+    def work() -> None:
+        with lock:
+            state["running"] += 1
+            state["calls"] += 1
+            state["peak"] = max(state["peak"], state["running"])
+        time.sleep(SLEEP)
+        with lock:
+            state["running"] -= 1
+        done.release()
+
+    return work, state, done
+
+
+async def _finished(done: threading.Semaphore, count: int) -> None:
+    for _ in range(count):
+        assert await asyncio.to_thread(done.acquire, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_threads_keep_their_concurrency_slot_until_they_finish() -> None:
+    work, state, done = _counting()
+    registered = Tool(
+        ToolDefinition(
+            name="slow.call",
+            version="1",
+            description="Blocks",
+            input_schema={"type": "object"},
+            output_schema={"type": "object"},
+            side_effect=SideEffect.EXTERNAL,
+            idempotency=Idempotency.NON_IDEMPOTENT,
+            timeout_seconds=TIMEOUT,
+            max_concurrency=1,
+        ),
+        lambda arguments, context: work() or {},
+    )
+    executor, _ = _executor(registered)
+
+    results = await asyncio.gather(
+        *(executor.execute("slow.call", {}, _context(f"call-{i}")) for i in range(3)),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(r, ToolExecutionError) and "timed out" in str(r) for r in results)
+    await _finished(done, 3)
+    assert state["peak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_tool_function_is_not_retried_while_its_thread_still_runs() -> None:
+    work, state, done = _counting()
+
+    @tool(read(timeout=TIMEOUT))
+    def lookup(sku: str) -> str:
+        """Look up a SKU slowly."""
+        work()
+        return sku
+
+    executor, _ = _executor(lookup)
+    with pytest.raises(ToolExecutionError, match="timed out"):
+        await executor.execute("lookup", {"sku": "A1"}, _context())
+    await _finished(done, 1)
+    # A read is retried on failure, but not over its own still-running attempt.
+    assert state["calls"] == 1

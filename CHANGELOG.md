@@ -6,6 +6,28 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security:** an approval-required workflow tool step runs only when every approval that gates it
+  (the nearest approval on each path to the step) approved it. A rejected approval with
+  `rejection_policy: continue` could fall back to an earlier approved one, so the step ran.
+  `check` uses the same rule. The `workflow.tool.authorized` event adds `approval_node_ids`.
+  Agent runs were not affected.
+- A synchronous tool that timed out keeps its `max_concurrency` slot until its worker thread
+  finishes, and it is not retried while that thread still runs. The caller stopped waiting, but the
+  slot was released, so more work ran at once than `max_concurrency` allows. (#114)
+- `APPROVAL_MODIFICATION_IGNORED` is reported unless the step reads the approval's `parameters`;
+  reading another field of the approval's output, such as `decided_by`, no longer silences it.
+  (#109)
+
+### Upgrade notes
+
+- A workflow whose approval-required tool step relied on an earlier approval after a later one was
+  rejected now fails that step with `requires an approval`. Handle the rejection on a branch that
+  does not call the tool.
+- Calls to a synchronous tool wait for a `max_concurrency` slot while an earlier, timed-out call's
+  thread is still running.
+
 ## [0.1.0a22] - 2026-11-04
 
 Fixes from an external review: a workflow tool step that needs approval is approved only by the

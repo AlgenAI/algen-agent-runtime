@@ -44,7 +44,7 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowNodeStatus,
     WorkflowPredicate,
     WorkflowStatus,
-    upstream_approval_nodes,
+    covering_approval_nodes,
 )
 from algen_agent_runtime.workflows.store import (
     InMemoryWorkflowCheckpointStore,
@@ -1581,8 +1581,9 @@ class MultiAgentWorkflowExecutor:
 
         The tool's own permissions are granted: the workflow author declared the call. A step
         whose tool changes things should follow an approval node; agent approvals do not apply.
-        A tool that ``requires_approval`` runs only when an upstream approval node was approved
-        (or modified) in this execution. A covered call emits ``workflow.tool.authorized`` with
+        A tool that ``requires_approval`` runs only when every approval that gates the step (the
+        nearest approval on each path to it) was approved or modified in this execution. A covered
+        call emits ``workflow.tool.authorized`` with
         digests of its arguments and of the approved parameters. The workflow API takes no
         caller credentials, so ``ToolContext.credentials`` is empty here; agent steps' runs have
         none either.
@@ -1602,16 +1603,18 @@ class MultiAgentWorkflowExecutor:
             permissions=tool.definition.required_permissions,
             idempotency_key=f"{state.id}:{node.id}:{state.nodes[node.id].attempts}",
         )
-        # The approval node's own status is the decision: only an approved or modified decision
-        # completes it, and no workflow value (another node's output, a resume) can change it.
-        approval_id = next(
-            (
-                upstream
-                for upstream in upstream_approval_nodes(nodes, node.id)
-                if state.nodes[upstream].status is WorkflowNodeStatus.COMPLETED
-            ),
-            None,
+        # Every approval that gates the step must have approved it; an earlier approval behind a
+        # rejected one never stands in for it. The approval node's own status is the decision:
+        # only an approved or modified decision completes it, and no workflow value (another
+        # node's output, a resume) can change it.
+        covering = covering_approval_nodes(nodes, node.id)
+        approved_by = (
+            covering
+            if covering
+            and all(state.nodes[gate].status is WorkflowNodeStatus.COMPLETED for gate in covering)
+            else ()
         )
+        approval_id = approved_by[0] if approved_by else None
         if approval_id is not None:
             decided = state.values.get(nodes[approval_id].output_key)
             approved = decided.get("parameters") if isinstance(decided, dict) else None
@@ -1623,6 +1626,7 @@ class MultiAgentWorkflowExecutor:
                 {
                     "tool": name,
                     "approval_node_id": approval_id,
+                    "approval_node_ids": list(approved_by),
                     "arguments_sha256": _digest(arguments),
                     "parameters_sha256": None if approved is None else _digest(approved),
                 },

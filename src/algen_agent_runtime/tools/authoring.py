@@ -23,6 +23,7 @@ from algen_agent_runtime.exceptions.errors import (
     ToolkitConfigurationError,
     ToolNotAttemptedError,
 )
+from algen_agent_runtime.tools.blocking import run_blocking
 from algen_agent_runtime.tools.contracts import (
     CacheContextValue,
     CompensationHandler,
@@ -356,9 +357,9 @@ def build_tool(
         if signature.context_parameter is not None:
             keyword_arguments[signature.context_parameter] = context
         # A synchronous function runs in a worker thread, so it neither blocks the event loop
-        # nor outlives the executor's timeout (although its work may still finish).
+        # nor outlives the executor's timeout; the call keeps its capacity until the thread ends.
         if blocking:
-            result = await asyncio.to_thread(function, **keyword_arguments)
+            result = await run_blocking(function, **keyword_arguments)
         else:
             result = function(**keyword_arguments)
         if inspect.isawaitable(result):

@@ -21,6 +21,8 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowPauseRule,
     WorkflowPredicate,
     WorkflowStatus,
+    covering_approval_nodes,
+    upstream_approval_nodes,
 )
 
 
@@ -376,3 +378,64 @@ def test_the_manifest_fingerprint_is_unchanged_so_paused_runs_still_resume() -> 
         ).encode("utf-8")
     ).hexdigest()
     assert MultiAgentWorkflowExecutor._manifest_fingerprint(manifest) == legacy
+
+
+def _gate(node_id: str, *depends_on: str, rejection_policy: str = "continue") -> WorkflowNode:
+    return WorkflowNode(
+        id=node_id,
+        kind=WorkflowNodeKind.APPROVAL,
+        depends_on=depends_on,
+        output_key=node_id,
+        approval=WorkflowApprovalRule(prompt="Publish?", rejection_policy=rejection_policy),
+    )
+
+
+def _gated_publish(*gates: WorkflowNode, depends_on: tuple[str, ...]) -> WorkflowManifest:
+    publish = WorkflowNode(
+        id="publish",
+        kind=WorkflowNodeKind.HANDLER,
+        handler="tool:release.publish",
+        depends_on=depends_on,
+        output_key="published",
+    )
+    return WorkflowManifest(
+        name="publish", version="1.0.0", output_key="published", nodes=(*gates, publish)
+    )
+
+
+async def _decide_all(
+    executor: MultiAgentWorkflowExecutor, manifest: WorkflowManifest, *decisions: str
+) -> Any:
+    state = await executor.run(manifest, {}, tenant_id="tenant", user_id="user")
+    for decision in decisions:
+        assert state.status == WorkflowStatus.AWAITING_APPROVAL
+        state = await executor.decide_approval(
+            manifest, state.id, tenant_id="tenant", user_id="approver", decision=decision
+        )
+    return state
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_approval_does_not_fall_back_to_an_earlier_approved_one() -> None:
+    seen: list[dict[str, Any]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+    manifest = _gated_publish(_gate("first"), _gate("final", "first"), depends_on=("final",))
+
+    done = await _decide_all(executor, manifest, "approved", "rejected")
+
+    assert done.nodes["first"].status.value == "completed"
+    assert done.status == WorkflowStatus.FAILED and seen == []
+    assert "requires an approval" in (done.nodes["publish"].error or done.error or "")
+
+
+def test_the_approvals_that_gate_a_step_are_the_nearest_on_each_path() -> None:
+    manifest = _gated_publish(
+        _gate("first"),
+        _gate("legal", "first"),
+        _gate("finance"),
+        depends_on=("legal", "finance"),
+    )
+    nodes = {node.id: node for node in manifest.nodes}
+
+    assert covering_approval_nodes(nodes, "publish") == ("legal", "finance")
+    assert upstream_approval_nodes(nodes, "publish") == ("legal", "finance", "first")
