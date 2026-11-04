@@ -1001,6 +1001,12 @@ class MultiAgentWorkflowExecutor:
             ]
             if not ready:
                 raise RuntimeError("workflow has no dependency-ready nodes")
+            # A checkpoint holds one pause, so approvals are asked one at a time: the first ready
+            # approval waits for its decision, and the others stay pending until it is decided.
+            approvals = [node for node in ready if node.kind is WorkflowNodeKind.APPROVAL]
+            if len(approvals) > 1:
+                later = {node.id for node in approvals[1:]}
+                ready = [node for node in ready if node.id not in later]
 
             async def execute(node: WorkflowNode) -> None:
                 await self._execute_node(state, node, nodes, emit, semaphore)

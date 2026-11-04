@@ -9,8 +9,9 @@ contracts are explicitly marked experimental during the `0.x` series.
 ## [0.1.0a23] - 2026-11-04
 
 Fixes from a second external review of 0.1.0a22: a workflow tool step that needs approval runs only
-when every approval that gates it approved (a security fix), and a timed-out synchronous tool keeps
-its concurrency slot until its thread ends. No database migrations and no new deprecations;
+when every approval that gates it approved (a security fix), parallel approvals are asked one at a
+time instead of failing the workflow, and a timed-out synchronous tool keeps its concurrency slot
+until its thread ends. No database migrations and no new deprecations;
 0.1.0a22 and 0.1.0a23 can run side by side.
 
 ### Fixed
@@ -26,6 +27,17 @@ its concurrency slot until its thread ends. No database migrations and no new de
 - `APPROVAL_MODIFICATION_IGNORED` is reported unless the step reads the approval's `parameters`;
   reading another field of the approval's output, such as `decided_by`, no longer silences it.
   (#109)
+
+- Approval nodes that are ready at the same time are asked one at a time: the first waits for its
+  decision and the others stay pending until it is decided. Both became `awaiting_approval`, but a
+  workflow holds one pause, so deciding one left the other unanswerable and the workflow failed
+  with `workflow has no dependency-ready nodes`; the gated step never ran. (#121)
+
+### Documentation
+
+- [Who proves an approval is valid](docs/tool-authoring.md#who-proves-an-approval-is-valid): what
+  each caller of the tool executor (an agent run, a workflow step, your own code) must prove, and
+  what the approval is bound to. (#117)
 
 ### Upgrade notes
 

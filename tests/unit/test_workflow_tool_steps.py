@@ -24,6 +24,7 @@ from algen_agent_runtime.workflows.contracts import (
     covering_approval_nodes,
     upstream_approval_nodes,
 )
+from algen_agent_runtime.workflows.store import InMemoryWorkflowCheckpointStore
 
 
 def _runtime(seen: list[dict[str, Any]]) -> Any:
@@ -439,3 +440,82 @@ def test_the_approvals_that_gate_a_step_are_the_nearest_on_each_path() -> None:
 
     assert covering_approval_nodes(nodes, "publish") == ("legal", "finance")
     assert upstream_approval_nodes(nodes, "publish") == ("legal", "finance", "first")
+
+
+def _parallel_gates(rejection_policy: str = "skip_dependents", concurrency: int = 8) -> Any:
+    manifest = _gated_publish(
+        _gate("legal", rejection_policy=rejection_policy),
+        _gate("finance", rejection_policy=rejection_policy),
+        depends_on=("legal", "finance"),
+    )
+    return manifest.model_copy(update={"maximum_concurrency": concurrency})
+
+
+async def _decide(
+    executor: MultiAgentWorkflowExecutor, manifest: WorkflowManifest, state: Any, decision: str
+) -> Any:
+    assert state.status == WorkflowStatus.AWAITING_APPROVAL
+    return await executor.decide_approval(
+        manifest, state.id, tenant_id="tenant", user_id="approver", decision=decision
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 8])
+async def test_parallel_approvals_are_asked_one_at_a_time_and_both_gate_the_step(
+    concurrency: int,
+) -> None:
+    seen: list[dict[str, Any]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+    manifest = _parallel_gates(concurrency=concurrency)
+
+    first = await executor.run(manifest, {}, tenant_id="tenant", user_id="user")
+    assert first.pause is not None and first.pause["node_id"] == "legal"
+    assert first.nodes["finance"].status.value == "pending"
+    second = await _decide(executor, manifest, first, "approved")
+    assert second.pause is not None and second.pause["node_id"] == "finance"
+    assert seen == []
+    done = await _decide(executor, manifest, second, "approved")
+
+    assert done.status == WorkflowStatus.COMPLETED
+    assert seen == [{}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected", ["legal", "finance"])
+async def test_one_rejected_parallel_approval_stops_the_step(rejected: str) -> None:
+    for policy in ("skip_dependents", "continue"):
+        seen: list[dict[str, Any]] = []
+        executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+        manifest = _parallel_gates(rejection_policy=policy)
+        state = await executor.run(manifest, {}, tenant_id="tenant", user_id="user")
+        for gate in ("legal", "finance"):
+            state = await _decide(
+                executor, manifest, state, "rejected" if gate == rejected else "approved"
+            )
+
+        assert seen == [], policy
+        assert "no dependency-ready nodes" not in (state.error or "")
+        if policy == "skip_dependents":
+            assert state.nodes["publish"].status.value == "skipped"
+        else:
+            assert "requires an approval" in (state.nodes["publish"].error or state.error or "")
+
+
+@pytest.mark.asyncio
+async def test_parallel_approvals_survive_a_restart_between_decisions() -> None:
+    seen: list[dict[str, Any]] = []
+    store = InMemoryWorkflowCheckpointStore()
+    runtime = _approval_runtime(seen)
+    manifest = _parallel_gates()
+    before = MultiAgentWorkflowExecutor(runtime, WorkflowHookRegistry(), store=store)
+    state = await before.run(manifest, {}, tenant_id="tenant", user_id="user")
+    state = await _decide(before, manifest, state, "approved")
+
+    after = MultiAgentWorkflowExecutor(runtime, WorkflowHookRegistry(), store=store)
+    restored = await after.get(state.id, "tenant")
+    assert restored is not None and restored.pause is not None
+    assert restored.pause["node_id"] == "finance"
+    done = await _decide(after, manifest, restored, "approved")
+
+    assert done.status == WorkflowStatus.COMPLETED and seen == [{}]

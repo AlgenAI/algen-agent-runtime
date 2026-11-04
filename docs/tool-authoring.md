@@ -85,7 +85,8 @@ The permission prefix is the toolkit's `permission_prefix` (its name by default)
   every call, whatever the agent's policy. It can add approval, never waive it. The tool executor
   enforces it too: `ToolExecutor.execute(..., approval=...)` refuses such a call without a
   reference to the approval that covers it, so a workflow `tool:` step or code calling the
-  executor directly cannot skip it.
+  executor directly cannot skip it by leaving the reference out. See
+  [Who proves an approval is valid](#who-proves-an-approval-is-valid).
 - `approval=<handler>` runs the deployment's own flow. The handler implements `ApprovalHandler`:
 
 ```python
@@ -100,6 +101,22 @@ class ChangeRequests:
   `request` carries the definition, the arguments and the context; `execute()` runs the tool. The
   Runtime defines only this protocol; the flow (a change request, a ticket, an email) is the
   deployment's. Such a tool has `audit_metadata["approval"] == "deployment"`.
+
+### Who proves an approval is valid
+
+The executor checks that an approval reference is present; it does not look the approval up. The
+layer that calls it proves the approval is real and covers this call:
+
+| Caller | What proves the approval | Bound to |
+| --- | --- | --- |
+| An agent run | The run's approval record: the call's id is in the run's approved calls only after `resume()` recorded an approved or modified decision for it. A call id the model repeats from earlier in the run is replaced with a new one, so an approval never carries over to another call. | The call and its arguments: the call runs with the stored arguments, or with the approver's modified ones. |
+| A workflow `tool:` step | The engine: every approval that gates the step (the nearest approval on each path to it) must have the recorded status `completed`, which only an approved or modified decision sets. No workflow value or input can change it. | The step, not its arguments. Build the arguments from what the approver saw; `check` warns when they read anything else, and `workflow.tool.authorized` records digests of both. |
+| Your own code calling `ToolExecutor.execute` | You. Pass `approval=` only after your own approval flow decided this call. | Whatever your flow binds it to. |
+
+Treat code that calls the executor directly as part of your trust boundary. Binding a workflow
+approval to the exact arguments it covers, and passing the executor a validated approval instead of a
+reference, are planned ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109),
+[#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117)).
 
 ## Caching results
 
