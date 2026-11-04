@@ -685,6 +685,7 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
   <div class="version-select">
     <label class="sr-only" for="versionSelect">Documentation version</label>
     <select id="versionSelect" title="Documentation version">
+      <option value="0.1.0a22">v0.1.0a22</option>
       <option value="0.1.0a21">v0.1.0a21</option>
       <option value="0.1.0a20">v0.1.0a20</option>
       <option value="0.1.0a19">v0.1.0a19</option>
@@ -1335,6 +1336,7 @@ http_tools:
         </div>
         <h3 id="workflow-tool-steps">Workflow tool steps<a class="anchor" href="#workflow-tool-steps" aria-label="Link to this section">#</a></h3>
         <p>A workflow <code>handler</code> node can call any registered tool, including an HTTP API tool, with <code>handler: tool:&lt;name&gt;</code> and an <code>arguments</code> map. The call goes through the same permissions, approval, and idempotency checks as an agent's tool call, and its result is stored under the node's <code>output_key</code>.</p>
+        <p data-version-min="0.1.0a22">From 0.1.0a22 an approval-required tool step is approved only by the approval node&#39;s recorded status, so no other step or input can approve it. An approval covers the step, not its arguments: read them from what the approver saw, and from <code>{{approval.parameters.*}}</code> when the approval can be modified. <code>check</code> warns when a step reads anything else, and each covered call emits <code>workflow.tool.authorized</code> with digests of its arguments and of the approved parameters. Node output keys must be unique.</p>
       </section>
 
       <section class="doc" id="tool-guards" data-version-min="0.1.0a14">
@@ -1518,6 +1520,7 @@ algen-agent-runtime check agent.yaml --path src</code></pre></div>
             <tr><td><code>UNKNOWN_COMPONENT</code></td><td><span class="pill error">Error</span></td><td>An agent names something nothing registered; the report carries the closest name.</td></tr>
             <tr><td><code>PLUGIN_ERROR</code> · <code>COMPONENT_CONFLICT</code></td><td><span class="pill error">Error</span></td><td>A plugin is untrusted, missing or invalid, or two sources register one name.</td></tr>
             <tr><td><code>CONFIGURATION_ERROR</code> · <code>UNSUPPORTED_PROVIDER_TYPE</code></td><td><span class="pill error">Error</span></td><td>The settings do not load, or a provider type is not one the Runtime builds.</td></tr>
+            <tr data-version-min="0.1.0a22"><td><code>APPROVAL_ARGUMENTS_NOT_REVIEWED</code> · <code>APPROVAL_MODIFICATION_IGNORED</code></td><td><span class="pill warning">Warning</span></td><td>An approval-required workflow tool step reads values its approval did not show, or ignores a modifiable decision.</td></tr>
             <tr data-version-min="0.1.0a21"><td><code>UNVERIFIED_COMPONENT</code></td><td><span class="pill warning">Warning</span></td><td>With <code>--profile standalone</code>: a name only the project&#39;s own code registers, which <code>build_container</code> checks at startup.</td></tr>
             <tr><td><code>OWN_CONTAINER</code></td><td><span class="pill warning">Warning</span></td><td>The project runs its own entry point, server or workers; Studio does not.</td></tr>
             <tr><td><code>CONSTRUCTOR_COMPONENTS</code> · <code>POST_BUILD_REGISTRATION</code></td><td><span class="pill warning">Warning</span></td><td>Components passed to <code>build_container</code> or registered on the built container; move them to a plugin.</td></tr>
@@ -3798,7 +3801,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   /* ----- Architecture explorer (data mirrors docs/algen-runtime-architecture-atlas.html) ----- */
   const arch = (() => {
-    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21'];
+    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22'];
     const versions = {
       '0.1.0a1': { status: 'first public alpha · native execution foundation', summary: 'A restart-aware, single-node governed agent kernel with typed workflows, durable checkpoints, policy boundaries, tools, storage, retrieval, artifacts, approvals, telemetry, and analytical execution.', changes: {}, overrides: {} },
       '0.1.0a2': { status: 'published pre-alpha · usability and boundary hardening', summary: 'Adds provider-instance identity, uniform capability policy, early references, scaffolding, starter tools, MCP client foundations, application-registered framework adapters, safe outbound networking, API admission controls, and service-backed storage tests.', changes: { added: ['scaffold', 'starter-tools', 'mcp', 'framework-registry', 'network', 'api-admission', 'hook-loader', 'provider-instance'], changed: ['model-router', 'container', 'examples', 'release'], removed: [] }, overrides: { 'mcp': { state: 'partial', note: 'Python-wired stdio/SSE tool client; secure defaults, but no YAML or Streamable HTTP.' }, 'framework-registry': { state: 'partial', note: 'Trusted application registration; real LangGraph execution evidence.' }, 'network': { state: 'available' }, 'api-admission': { state: 'available' } } },
@@ -3821,6 +3824,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       '0.1.0a19': { status: 'pre-alpha · file attachments and governance fixes', summary: 'Runs, conversation messages and workflow runs take uploaded images and PDFs by reference; the model reads them natively, while history, memory and events keep only references. The tool executor enforces requires_approval, refused calls are recorded as not attempted, and a toolkit that cannot start degrades the service.', changes: { added: [], changed: ['artifacts', 'model-router', 'native-runtime', 'tools', 'approvals', 'policies', 'workflow-engine'], removed: [] }, overrides: { artifacts: { note: 'Run attachments by reference; BasicArtifactScanner; scan evidence recorded before the status changes.' }, tools: { note: 'requires_approval enforced by the executor; PolicyDeniedError is not attempted; ToolContext.read_attachment.' } } },
       '0.1.0a20': { status: 'pre-alpha · toolkit configuration errors', summary: 'A toolkit whose client cannot open because of its configuration raises ToolkitConfigurationError with its own message again.', changes: { added: [], changed: ['tools'], removed: [] }, overrides: {} },
       '0.1.0a21': { status: 'pre-alpha · recoverable model errors', summary: 'A malformed or cut-off tool call is retried instead of failing the run, and output repair works on models that refuse assistant prefill. A startup banner, a check profile for self-hosted projects, and references for hooks, MCP results and scopes.', changes: { added: [], changed: ['model-router', 'native-runtime', 'project-check'], removed: [] }, overrides: { 'model-router': { note: 'Malformed tool calls are retryable InvalidToolCallError; dropped schema limits described for Anthropic and OpenAI.' } } },
+      '0.1.0a22': { status: 'pre-alpha · approval and timeout fixes', summary: 'Workflow approvals are decided by the approval node\'s recorded status and their tool steps are audited by digest; synchronous tools run in a worker thread and meet their timeout; the README says what framework adapters govern.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'Approval coverage comes from the approval node\'s status; output keys are unique; input cannot change a decision.' } } },
     };
     const nodes = {
       host: { name: 'Host & API boundary', domain: 'operations', kind: 'Outer boundary', summary: 'Validates identity, request shape, admission, lifecycle, and service health before work enters native execution.', state: 'available', source: 'src/algen_agent_runtime/api/', facts: { protocol: 'HTTP + SSE', identity: 'Principal', default: 'Loopback' }, details: ['FastAPI routes require authenticated principal and scopes.', 'Container lifespan starts stores, recovery, and telemetry.', 'SSE exposes reconnectable run and conversation events.'], relations: ['api', 'identity', 'container', 'observability'] },
@@ -4059,9 +4063,33 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   })();
 
   /* ----- Versioned documentation ----- */
-  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21'];
-  const LATEST_VERSION = '0.1.0a21';
+  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22'];
+  const LATEST_VERSION = '0.1.0a22';
   const RELEASES = {
+    '0.1.0a22': {
+      date: '2026-11-04', pending: true, kind: 'Security and correctness',
+      title: 'Workflow approvals decided by status; synchronous tools meet their timeout',
+      summary: 'Fixes from an external review. A workflow tool step that needs approval is approved only by the approval node&#39;s recorded status, and check warns when its arguments are not what the approver saw. Synchronous tools run in a worker thread, so they no longer block other runs and are timed out on schedule. No migrations, no new deprecations.',
+      fields: { tag: 'v0.1.0a22', package: '0.1.0a22 · pre-alpha', version: '0.1.0a22', pip: 'python -m pip install "algen-agent-runtime==0.1.0a22"' },
+      groups: [
+        { kind: 'Fixed', items: [
+          '<strong>Security:</strong> an approval-required workflow tool step reads its approval from the approval node&#39;s recorded status. It read the decision from the workflow&#39;s values, which a later step or a workflow input could change, so a rejected approval could count as approved. Agent runs were not affected.',
+          'A synchronous tool (a <code>@tool</code> function or a raw handler) runs in a worker thread: it no longer blocks the event loop and is timed out on schedule. A timed-out call that changes things is still recorded <code>indeterminate</code>. (#108)'
+        ]},
+        { kind: 'Added', items: [
+          '<code>check</code> warnings <code>APPROVAL_ARGUMENTS_NOT_REVIEWED</code> and <code>APPROVAL_MODIFICATION_IGNORED</code>; the <code>workflow.tool.authorized</code> event and <code>parameters_sha256</code> on <code>workflow.approval.decided</code>, digests only. (#109)'
+        ]},
+        { kind: 'Changed', items: [
+          'The README says which calls the framework adapters govern and which stay framework-owned. (#110)'
+        ]},
+        { kind: 'Upgrade notes', items: [
+          'Workflow nodes must have unique <code>output_key</code>s. Input sent to a paused workflow cannot set an approval&#39;s <code>output_key</code> or replace a value an approval already showed (400). Synchronous tools must be thread-safe; one that needs the running loop or a thread-bound resource should become <code>async def</code>.'
+        ]},
+        { kind: 'Compatibility', items: [
+          'No database migrations; 0.1.0a21 and 0.1.0a22 can run side by side, and workflows paused under 0.1.0a21 resume. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
+        ]}
+      ]
+    },
     '0.1.0a21': {
       date: '2026-11-01', pending: false, kind: 'Recoverable model errors',
       title: 'Malformed tool calls and prefill-refused repairs recover; startup banner; standalone check',
