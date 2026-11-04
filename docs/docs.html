@@ -1524,7 +1524,7 @@ algen-agent-runtime check agent.yaml --path src</code></pre></div>
             <tr><td><code>DIRECT_ENV_READ</code> · <code>CODE_DEFINED_AGENT</code></td><td><span class="pill warning">Warning</span></td><td>Variables read outside <code>env://</code>, so a deploy never asks for them; agents defined in code, which Studio cannot see.</td></tr>
           </tbody>
         </table></div>
-        <div class="callout tip"><svg class="i"><use href="#i-bulb"/></svg><p><strong>Ready-made connectors.</strong> The <code>algen-agent-tools</code> package ships PostgreSQL, SMTP and Gmail toolkits and MCP governance overlays as declared plugins under the prefix <code>algen_agent_tools</code>. See the <a href="/tools/">Tools documentation</a>.</p></div>
+        <div class="callout tip"><svg class="i"><use href="#i-bulb"/></svg><p><strong>Ready-made connectors.</strong> The <code>algen-agent-tools</code> package ships PostgreSQL, SMTP and Gmail toolkits and MCP governance overlays as declared plugins under the prefix <code>algen_agent_tools</code>. See the <a href="https://studio.algen.ai/tools/">Tools documentation</a>.</p></div>
         <h3 id="plugins-studio">In Studio<a class="anchor" href="#plugins-studio" aria-label="Link to this section">#</a></h3>
         <p>Studio validates the same names without importing project code. It describes the Runtime's and the manifest's components itself; for declared plugins, each managed build runs <code>describe --json</code> in the build sandbox (no network, read-only, unprivileged) and keeps the result with the build, for every revision on the same code that declares the same plugins. The overview's <em>Code and Studio</em> panel lists the project-code warnings, and each agent's Tools section shows what every tool changes, whether it asks for approval first and what registers it. An exported project declares its tools in <code>agent_service/plugin.py</code> and validates clean.</p>
         <div class="table-wrap"><table>
@@ -4336,7 +4336,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       fields: { tag: 'v0.1.0a12', package: '0.1.0a12 · pre-alpha', version: '0.1.0a12', pip: 'python -m pip install "algen-agent-runtime==0.1.0a12"' },
       groups: [
         { kind: 'Removed', items: [
-          '<strong>Gmail adapter.</strong> <code>GmailMailboxClient</code>, <code>gmail_inbox_tool</code> and their models are gone; it reported Bcc recipients as accepted although they were never delivered. Use <code>gmail_toolkit</code> from <code>algen-agent-tools[gmail]</code>, which delivers Bcc. See the <a href="/tools/#gmail">Tools documentation</a>.',
+          '<strong>Gmail adapter.</strong> <code>GmailMailboxClient</code>, <code>gmail_inbox_tool</code> and their models are gone; it reported Bcc recipients as accepted although they were never delivered. Use <code>gmail_toolkit</code> from <code>algen-agent-tools[gmail]</code>, which delivers Bcc. See the <a href="https://studio.algen.ai/tools/#gmail">Tools documentation</a>.',
           '<strong>Domain case studies in the wheel.</strong> <code>case_study_responsible_hiring</code> and <code>pattern_text_to_sql</code> stay in the repository and sdist only; the examples Studio imports still ship.'
         ]},
         { kind: 'Fixed', items: [
@@ -4344,7 +4344,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
           '<strong>Undeclared arguments.</strong> A direct <code>Tool.execute</code> on a <code>@tool</code> tool refuses fields its schema does not declare, with Pydantic&#39;s <code>extra_forbidden</code> error, as the executor already did.'
         ]},
         { kind: 'Deprecated', items: [
-          '<code>communications</code> (message contracts, <code>SmtpEmailSender</code>, <code>email_tool</code>) and <code>tools.adapters.database_tool</code> warn on use and are removed in 0.2. Use <code>algen_agent_tools.mail</code>, <code>algen_agent_tools.smtp</code> and <code>PostgresToolkit</code>; see <a href="/tools/#migrating">Migrating from the Runtime&#39;s connectors</a>.'
+          '<code>communications</code> (message contracts, <code>SmtpEmailSender</code>, <code>email_tool</code>) and <code>tools.adapters.database_tool</code> warn on use and are removed in 0.2. Use <code>algen_agent_tools.mail</code>, <code>algen_agent_tools.smtp</code> and <code>PostgresToolkit</code>; see <a href="https://studio.algen.ai/tools/#migrating">Migrating from the Runtime&#39;s connectors</a>.'
         ]}
       ]
     },
