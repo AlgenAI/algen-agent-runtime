@@ -51,8 +51,10 @@ async def update_owner(account_id: str, owner: str, context: ToolContext) -> Rec
   idempotency key, the caller's credentials) and is not part of the schema.
 - Sync and async functions both work. A sync function runs in a worker thread, so it does not
   block the event loop and is timed out on schedule; it must be thread-safe. A thread cannot be
-  stopped, so a timed-out call may still finish its work: one that changes things is recorded
-  `indeterminate` for reconciliation. A hard deadline on blocking work needs a subprocess.
+  stopped, so the caller stops waiting on schedule but the work may still finish: a call that
+  changes things is recorded `indeterminate` for reconciliation. The call keeps its
+  `max_concurrency` slot until the thread ends, so later calls wait rather than pile up, and it is
+  not retried over its own running attempt. A hard deadline on blocking work needs a subprocess.
 
 `@tool` alone names the tool after the function; pass `name="crm.search"` to choose. A tool in a
 `Toolkit` is named `<toolkit>.<function>`.

@@ -85,3 +85,57 @@ def test_a_modifiable_approval_whose_decision_the_step_ignores_is_reported() -> 
 def test_tools_without_approval_and_unknown_tools_are_not_checked() -> None:
     assert _codes(_workflow(tool="payments.quote", memo="{{draft.memo}}")) == []
     assert _codes(_workflow(tool="mcp.unknown", memo="{{draft.memo}}")) == []
+
+
+def test_reading_other_fields_of_a_modifiable_approval_does_not_count_as_reading_its_decision() -> (
+    None
+):
+    incidental = _workflow(
+        modifiable=True, to="{{draft.payment.to}}", note="{{approval.decided_by}}"
+    )
+    assert _codes(incidental) == ["APPROVAL_MODIFICATION_IGNORED"]
+
+
+def test_the_checker_uses_the_approvals_that_gate_the_step() -> None:
+    """An earlier approval behind the gating one neither covers the step nor is checked."""
+    workflow = _workflow(to="{{draft.payment.to}}")["pay"]
+    first = WorkflowNode(
+        id="first",
+        kind=WorkflowNodeKind.APPROVAL,
+        output_key="first",
+        approval=WorkflowApprovalRule(prompt="Draft?", review_from=("inputs.memo",)),
+    )
+    nodes = (
+        first,
+        *(
+            n.model_copy(update={"depends_on": ("first",)}) if n.id == "draft" else n
+            for n in workflow.nodes
+        ),
+    )
+    gated = {"pay": workflow.model_copy(update={"nodes": nodes})}
+    issues = list(
+        workflow_approval_issues(
+            {"pay": WorkflowManifest.model_validate(gated["pay"].model_dump())}, TOOLS
+        )
+    )
+    assert issues == []
+    memo = _workflow(to="{{draft.payment.to}}", memo="{{inputs.memo}}")["pay"]
+    nodes = (
+        first,
+        *(
+            n.model_copy(update={"depends_on": ("first",)}) if n.id == "draft" else n
+            for n in memo.nodes
+        ),
+    )
+    reported = list(
+        workflow_approval_issues(
+            {
+                "pay": WorkflowManifest.model_validate(
+                    memo.model_copy(update={"nodes": nodes}).model_dump()
+                )
+            },
+            TOOLS,
+        )
+    )
+    assert [issue.code for issue in reported] == ["APPROVAL_ARGUMENTS_NOT_REVIEWED"]
+    assert "'inputs.memo'" in reported[0].message and "'approve'" in reported[0].message

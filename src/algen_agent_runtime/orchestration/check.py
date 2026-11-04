@@ -31,7 +31,7 @@ from algen_agent_runtime.orchestration.validation import (
 from algen_agent_runtime.workflows.contracts import (
     TOOL_HANDLER_PREFIX,
     WorkflowManifest,
-    upstream_approval_nodes,
+    covering_approval_nodes,
 )
 
 Severity = Literal["error", "warning"]
@@ -172,10 +172,13 @@ def workflow_approval_issues(
 ) -> Iterator[CheckIssue]:
     """Warnings for approval-required tool steps whose call the approver did not see.
 
-    The nearest upstream approval covers a step. The step's arguments should read what that
-    approval showed (``review_from``, ``parameters_from``) or its decision (its ``output_key``,
-    whose ``parameters`` hold a modified decision's values); anything else may differ from what
-    the approver saw. Tools the inventory cannot describe, such as MCP tools, are skipped.
+    A step is covered by the approvals that gate it (:func:`covering_approval_nodes`), the same
+    ones the engine requires. Its arguments should read what those approvals showed
+    (``review_from``, ``parameters_from``) or decided (their ``output_key``); anything else may
+    differ from what the approver saw. A modifiable approval's decision is read only through its
+    ``parameters``, where a modified decision's values are. Literal arguments are part of the
+    workflow's definition and are not checked. Tools the inventory cannot describe, such as MCP
+    tools, are skipped.
     """
     approval_tools = {tool.name for tool in tools if tool.requires_approval}
     for workflow in workflows.values():
@@ -185,41 +188,50 @@ def workflow_approval_issues(
             tool = handler.removeprefix(TOOL_HANDLER_PREFIX)
             if not handler.startswith(TOOL_HANDLER_PREFIX) or tool not in approval_tools:
                 continue
-            covering = upstream_approval_nodes(nodes, node.id)
-            if not covering:
+            approvals = [nodes[gate] for gate in covering_approval_nodes(nodes, node.id)]
+            if not approvals:
                 continue  # the workflow cannot start, and says so
-            approval = nodes[covering[0]]
-            assert approval.approval is not None
-            rule = approval.approval
-            shown = (approval.output_key, *rule.review_from, *filter(None, [rule.parameters_from]))
+            shown = [
+                path
+                for approval in approvals
+                if approval.approval is not None
+                for path in (
+                    approval.output_key,
+                    *approval.approval.review_from,
+                    *filter(None, [approval.approval.parameters_from]),
+                )
+            ]
             read = sorted(set(_argument_paths(node.arguments)))
             location = f"workflows.{workflow.name}.nodes.{node.id}"
+            names = ", ".join(repr(approval.id) for approval in approvals)
             unreviewed = [path for path in read if not any(_within(path, s) for s in shown)]
             if unreviewed:
                 yield CheckIssue(
                     severity="warning",
                     code="APPROVAL_ARGUMENTS_NOT_REVIEWED",
                     message=f"step {node.id!r} calls approval-required tool {tool!r} with "
-                    f"{unreviewed}, which approval {approval.id!r} did not show the approver",
+                    f"{unreviewed}, which approval {names} did not show the approver",
                     location=location,
                     name=tool,
                     suggestion=f"read the approved values, e.g. "
-                    f"{{{{{approval.output_key}.parameters.<field>}}}}, or show them with "
+                    f"{{{{{approvals[0].output_key}.parameters.<field>}}}}, or show them with "
                     "review_from or parameters_from",
                 )
-            if rule.allow_modification and not any(
-                _within(path, approval.output_key) for path in read
-            ):
-                yield CheckIssue(
-                    severity="warning",
-                    code="APPROVAL_MODIFICATION_IGNORED",
-                    message=f"approval {approval.id!r} allows modification, but step {node.id!r} "
-                    f"does not read its decision, so a modified decision would not change the "
-                    f"call to {tool!r}",
-                    location=location,
-                    name=tool,
-                    suggestion=f"read {{{{{approval.output_key}.parameters.<field>}}}}",
-                )
+            for approval in approvals:
+                if approval.approval is None or not approval.approval.allow_modification:
+                    continue
+                parameters = f"{approval.output_key}.parameters"
+                if not any(_within(path, parameters) for path in read):
+                    yield CheckIssue(
+                        severity="warning",
+                        code="APPROVAL_MODIFICATION_IGNORED",
+                        message=f"approval {approval.id!r} allows modification, but step "
+                        f"{node.id!r} does not read its parameters, so a modified decision "
+                        f"would not change the call to {tool!r}",
+                        location=location,
+                        name=tool,
+                        suggestion=f"read {{{{{parameters}.<field>}}}}",
+                    )
 
 
 def _argument_paths(value: Any) -> Iterator[str]:

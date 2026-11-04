@@ -251,6 +251,27 @@ def upstream_approval_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> 
     return tuple(found)
 
 
+def covering_approval_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> tuple[str, ...]:
+    """The approval nodes that gate a node: those upstream of it with no other approval between.
+
+    A step is approved only when every one of them approved it. An earlier approval behind one of
+    them gates that approval, not the step, so it never stands in for a later rejection.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    pending = list(nodes[node_id].depends_on)
+    while pending:
+        current = pending.pop(0)
+        if current in seen or current not in nodes:
+            continue
+        seen.add(current)
+        if nodes[current].kind is WorkflowNodeKind.APPROVAL:
+            found.append(current)
+        else:
+            pending.extend(nodes[current].depends_on)
+    return tuple(found)
+
+
 class WorkflowManifest(BaseModel):
     """Portable, validated multi-agent workflow topology owned by Runtime."""
 

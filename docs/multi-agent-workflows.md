@@ -159,8 +159,10 @@ strings have their placeholders filled in as text.
 The tool's own permissions are granted, because the workflow author declared the call. Agent
 approvals do not apply to tool steps: put an `approval` node before a step whose tool changes
 things. A tool that requires approval (`requires_approval`, an MCP overlay's `approval: true`)
-runs only after an upstream `approval` node was approved or modified in the same run; a workflow
-with such a step and no approval node before it cannot start. Tool steps work the same in process
+runs only after every approval that gates it, the nearest `approval` node on each path to the step,
+was approved or modified in the same run. An earlier approval behind a rejected one does not stand
+in for it, even with `rejection_policy: continue`. A workflow with such a step and no approval node
+before it cannot start. Tool steps work the same in process
 and under `algen-agent-runtime serve`.
 
 The approval node's own recorded status decides: no workflow value, another node's output or an

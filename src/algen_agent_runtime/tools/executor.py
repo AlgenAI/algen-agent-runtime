@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import jsonschema
@@ -18,6 +19,7 @@ from algen_agent_runtime.exceptions.errors import (
 )
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
+from algen_agent_runtime.tools.blocking import run_blocking, track_threads
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     ReconcilableToolExecutionStore,
@@ -54,15 +56,33 @@ async def _call_handler(
     """Await an async handler; run a synchronous one in a worker thread.
 
     A synchronous handler on the event loop would block every other run and outlive its
-    timeout. In a thread it is timed out on schedule, but it cannot be stopped: its side effect
-    may still finish, which is why a timed-out call that changes things is recorded
-    indeterminate.
+    timeout. In a thread the caller stops waiting on schedule, but the thread cannot be stopped:
+    its side effect may still finish, which is why a timed-out call that changes things is
+    recorded indeterminate, and why the call keeps its capacity until the thread ends.
     """
     # A callable object with an ``async def __call__`` is asynchronous too.
     if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(type(handler).__call__):
         return await handler(arguments, context)
-    result = await asyncio.to_thread(handler, arguments, context)
+    result = await run_blocking(handler, arguments, context)
     return await result if inspect.isawaitable(result) else result
+
+
+@asynccontextmanager
+async def _capacity(semaphore: asyncio.Semaphore) -> AsyncIterator[list[asyncio.Future[Any]]]:
+    """One of the tool's ``max_concurrency`` slots, held until the call and every worker thread
+    it started have finished, even when the caller stopped waiting for a thread first."""
+    await semaphore.acquire()
+    with track_threads() as threads:
+        try:
+            yield threads
+        finally:
+            running = [thread for thread in threads if not thread.done()]
+            if running:
+                asyncio.gather(*running, return_exceptions=True).add_done_callback(
+                    lambda _: semaphore.release()
+                )
+            else:
+                semaphore.release()
 
 
 class ToolExecutor:
@@ -217,7 +237,7 @@ class ToolExecutor:
                 await self._executions.complete(context.idempotency_key, wrapped)
                 return wrapped
         semaphore = self._semaphores.setdefault(name, asyncio.Semaphore(definition.max_concurrency))
-        async with semaphore:
+        async with _capacity(semaphore) as threads:
             attempts = (
                 definition.retry_policy.max_attempts
                 if definition.idempotency != Idempotency.NON_IDEMPOTENT
@@ -233,7 +253,9 @@ class ToolExecutor:
                         )
                         break
                     except TimeoutError as exc:
-                        if attempt + 1 >= attempts:
+                        # A timed-out thread still running would overlap a retry.
+                        still_running = any(not thread.done() for thread in threads)
+                        if attempt + 1 >= attempts or still_running:
                             raise ToolExecutionError(f"tool {name} timed out") from exc
                     except (PolicyDeniedError, ToolExecutionError):
                         raise
