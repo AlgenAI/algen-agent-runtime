@@ -6,6 +6,15 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.1.0a22] - 2026-11-04
+
+Fixes from an external review: a workflow tool step that needs approval is approved only by the
+approval node's recorded status (a security fix), synchronous tools no longer block the event loop
+and meet their timeout, and `check` warns when an approved tool step's arguments are not what the
+approver saw. Also a published documentation site, an offline link check and cleaner interactive
+examples. No database migrations and no new deprecations; 0.1.0a21 and 0.1.0a22 can run side by
+side, and workflows paused under 0.1.0a21 resume.
+
 ### Added
 
 - The documentation page is published at <https://algenai.github.io/algen-agent-runtime/> by the
