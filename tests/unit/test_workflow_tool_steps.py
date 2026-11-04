@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import pytest
 from conftest import make_runtime
 from pydantic import ValidationError
 
+from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor, WorkflowHookRegistry
 from algen_agent_runtime.workflows.contracts import (
@@ -15,6 +18,8 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowManifest,
     WorkflowNode,
     WorkflowNodeKind,
+    WorkflowPauseRule,
+    WorkflowPredicate,
     WorkflowStatus,
 )
 
@@ -199,3 +204,175 @@ async def test_an_approval_required_tool_step_without_an_approval_node_is_refuse
 
     assert state.status == WorkflowStatus.FAILED
     assert seen == []
+
+
+def _hooks(**handlers: Any) -> WorkflowHookRegistry:
+    hooks = WorkflowHookRegistry()
+    for name, handler in handlers.items():
+        hooks.register_handler(name, handler)
+    return hooks
+
+
+def _review_then(*nodes: WorkflowNode, rejection_policy: str = "skip_dependents") -> Any:
+    review = WorkflowNode(
+        id="review",
+        kind=WorkflowNodeKind.APPROVAL,
+        output_key="review",
+        approval=WorkflowApprovalRule(
+            prompt="Publish?",
+            parameters_from="inputs.release",
+            allow_modification=True,
+            rejection_policy=rejection_policy,
+        ),
+    )
+    return WorkflowManifest(
+        name="publish", version="1.0.0", output_key="published", nodes=(review, *nodes)
+    )
+
+
+def _publish(depends_on: str = "review", **arguments: Any) -> WorkflowNode:
+    return WorkflowNode(
+        id="publish",
+        kind=WorkflowNodeKind.HANDLER,
+        handler="tool:release.publish",
+        depends_on=(depends_on,),
+        arguments=arguments,
+        output_key="published",
+    )
+
+
+def test_two_workflow_nodes_cannot_write_the_same_output_key() -> None:
+    with pytest.raises(ValidationError, match="unique output keys; shared: \\['review'\\]"):
+        _review_then(
+            WorkflowNode(
+                id="other",
+                kind=WorkflowNodeKind.HANDLER,
+                handler="note",
+                depends_on=("review",),
+                output_key="review",
+            ),
+            _publish("other"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_approval_stays_rejected_whatever_the_workflow_values_say() -> None:
+    """The approval node's status decides, not the decision value a later step can rewrite."""
+    seen: list[dict[str, Any]] = []
+
+    def rewrite(context: Any) -> str:
+        context.state.values["review"] = {"decision": "approved"}
+        return "noted"
+
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), _hooks(note=rewrite))
+    manifest = _review_then(
+        WorkflowNode(
+            id="note",
+            kind=WorkflowNodeKind.HANDLER,
+            handler="note",
+            depends_on=("review",),
+            output_key="note",
+        ),
+        _publish("note"),
+        rejection_policy="continue",
+    )
+    paused = await executor.run(
+        manifest, {"inputs": {"release": {"tag": "v1"}}}, tenant_id="tenant", user_id="user"
+    )
+
+    done = await executor.decide_approval(
+        manifest, paused.id, tenant_id="tenant", user_id="approver", decision="rejected"
+    )
+
+    assert done.values["review"] == {"decision": "approved"}
+    assert done.status == WorkflowStatus.FAILED
+    assert seen == []
+    assert "requires an approval" in (done.nodes["publish"].error or done.error or "")
+
+
+@pytest.mark.asyncio
+async def test_workflow_input_cannot_set_an_approval_decision() -> None:
+    seen: list[dict[str, Any]] = []
+    asks = WorkflowNode(
+        id="ask",
+        kind=WorkflowNodeKind.HANDLER,
+        handler="ask",
+        depends_on=("review",),
+        output_key="answer",
+        pause=WorkflowPauseRule(
+            when=WorkflowPredicate(source="answer.status", operator="equals", value="unclear"),
+            question_from="answer.question",
+        ),
+    )
+    executor = MultiAgentWorkflowExecutor(
+        _approval_runtime(seen),
+        _hooks(ask=lambda context: {"status": "unclear", "question": "Which channel?"}),
+    )
+    manifest = _review_then(asks, _publish("ask"), rejection_policy="continue")
+    paused = await executor.run(
+        manifest, {"inputs": {"release": {"tag": "v1"}}}, tenant_id="tenant", user_id="user"
+    )
+    asking = await executor.decide_approval(
+        manifest, paused.id, tenant_id="tenant", user_id="approver", decision="rejected"
+    )
+    assert asking.status == WorkflowStatus.AWAITING_INPUT
+
+    with pytest.raises(ConfigurationError, match="cannot set an approval decision"):
+        await executor.resume(
+            manifest,
+            asking.id,
+            tenant_id="tenant",
+            values={"review": {"decision": "approved"}, "channel": "web"},
+        )
+    # Nor can it replace what the approver was shown.
+    with pytest.raises(ConfigurationError, match=r"replace what an approval showed: \['inputs'\]"):
+        await executor.resume(
+            manifest, asking.id, tenant_id="tenant", values={"inputs": {"release": {"tag": "v9"}}}
+        )
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_approved_tool_step_records_digests_of_its_arguments_and_the_approval() -> None:
+    seen: list[dict[str, Any]] = []
+    events: list[tuple[str, dict[str, Any]]] = []
+    executor = MultiAgentWorkflowExecutor(_approval_runtime(seen), WorkflowHookRegistry())
+    manifest = _review_then(_publish(tag="{{review.parameters.tag}}"))
+    paused = await executor.run(
+        manifest, {"inputs": {"release": {"tag": "v1"}}}, tenant_id="tenant", user_id="user"
+    )
+
+    done = await executor.decide_approval(
+        manifest,
+        paused.id,
+        tenant_id="tenant",
+        user_id="approver",
+        decision="modified",
+        modified_parameters={"tag": "v2"},
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert done.status == WorkflowStatus.COMPLETED and seen == [{"tag": "v2"}]
+    decided = next(payload for kind, payload in events if kind == "workflow.approval.decided")
+    authorized = next(payload for kind, payload in events if kind == "workflow.tool.authorized")
+    expected = hashlib.sha256(b'{"tag":"v2"}').hexdigest()
+    assert decided["parameters_sha256"] == expected
+    assert authorized == {
+        **authorized,
+        "node_id": "publish",
+        "tool": "release.publish",
+        "approval_node_id": "review",
+        "arguments_sha256": expected,
+        "parameters_sha256": expected,
+    }
+    assert "v2" not in json.dumps(authorized)
+
+
+def test_the_manifest_fingerprint_is_unchanged_so_paused_runs_still_resume() -> None:
+    manifest = _publish_workflow(approval=True)
+    legacy = hashlib.sha256(
+        json.dumps(
+            manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")
+    ).hexdigest()
+    assert MultiAgentWorkflowExecutor._manifest_fingerprint(manifest) == legacy

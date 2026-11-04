@@ -8,20 +8,30 @@ the warnings about code Studio cannot run, which such a host runs as written.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Sequence
+import re
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from algen_agent_runtime.config.settings import load_settings
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
 from algen_agent_runtime.orchestration.container import SUPPORTED_PROVIDER_TYPES
-from algen_agent_runtime.orchestration.describe import ComponentInventory, describe_components
+from algen_agent_runtime.orchestration.describe import (
+    ComponentInventory,
+    ToolDescription,
+    describe_components,
+)
 from algen_agent_runtime.orchestration.validation import (
     AvailableComponents,
     closest,
     unknown_agent_components,
+)
+from algen_agent_runtime.workflows.contracts import (
+    TOOL_HANDLER_PREFIX,
+    WorkflowManifest,
+    upstream_approval_nodes,
 )
 
 Severity = Literal["error", "warning"]
@@ -153,7 +163,80 @@ def check_project(
                     suggestion=suggestion,
                 )
             )
+    found.extend(workflow_approval_issues(settings.workflows, inventory.tools))
     return report([*found, *issues], inventory)
+
+
+def workflow_approval_issues(
+    workflows: Mapping[str, WorkflowManifest], tools: Iterable[ToolDescription]
+) -> Iterator[CheckIssue]:
+    """Warnings for approval-required tool steps whose call the approver did not see.
+
+    The nearest upstream approval covers a step. The step's arguments should read what that
+    approval showed (``review_from``, ``parameters_from``) or its decision (its ``output_key``,
+    whose ``parameters`` hold a modified decision's values); anything else may differ from what
+    the approver saw. Tools the inventory cannot describe, such as MCP tools, are skipped.
+    """
+    approval_tools = {tool.name for tool in tools if tool.requires_approval}
+    for workflow in workflows.values():
+        nodes = {node.id: node for node in workflow.nodes}
+        for node in workflow.nodes:
+            handler = node.handler or ""
+            tool = handler.removeprefix(TOOL_HANDLER_PREFIX)
+            if not handler.startswith(TOOL_HANDLER_PREFIX) or tool not in approval_tools:
+                continue
+            covering = upstream_approval_nodes(nodes, node.id)
+            if not covering:
+                continue  # the workflow cannot start, and says so
+            approval = nodes[covering[0]]
+            assert approval.approval is not None
+            rule = approval.approval
+            shown = (approval.output_key, *rule.review_from, *filter(None, [rule.parameters_from]))
+            read = sorted(set(_argument_paths(node.arguments)))
+            location = f"workflows.{workflow.name}.nodes.{node.id}"
+            unreviewed = [path for path in read if not any(_within(path, s) for s in shown)]
+            if unreviewed:
+                yield CheckIssue(
+                    severity="warning",
+                    code="APPROVAL_ARGUMENTS_NOT_REVIEWED",
+                    message=f"step {node.id!r} calls approval-required tool {tool!r} with "
+                    f"{unreviewed}, which approval {approval.id!r} did not show the approver",
+                    location=location,
+                    name=tool,
+                    suggestion=f"read the approved values, e.g. "
+                    f"{{{{{approval.output_key}.parameters.<field>}}}}, or show them with "
+                    "review_from or parameters_from",
+                )
+            if rule.allow_modification and not any(
+                _within(path, approval.output_key) for path in read
+            ):
+                yield CheckIssue(
+                    severity="warning",
+                    code="APPROVAL_MODIFICATION_IGNORED",
+                    message=f"approval {approval.id!r} allows modification, but step {node.id!r} "
+                    f"does not read its decision, so a modified decision would not change the "
+                    f"call to {tool!r}",
+                    location=location,
+                    name=tool,
+                    suggestion=f"read {{{{{approval.output_key}.parameters.<field>}}}}",
+                )
+
+
+def _argument_paths(value: Any) -> Iterator[str]:
+    """The workflow values a tool step's arguments read."""
+    if isinstance(value, Mapping):
+        for item in value.values():
+            yield from _argument_paths(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _argument_paths(item)
+    elif isinstance(value, str):
+        for token in re.findall(r"\{\{\s*([^{}]+?)\s*\}\}", value):
+            yield token.removesuffix(".output")
+
+
+def _within(path: str, shown: str) -> bool:
+    return path == shown or path.startswith(f"{shown}.")
 
 
 def _error(code: str, message: str) -> CheckIssue:

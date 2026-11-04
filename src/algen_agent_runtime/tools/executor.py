@@ -29,6 +29,7 @@ from algen_agent_runtime.tools.contracts import (
     ToolExecutionResolution,
     ToolExecutionStatus,
     ToolExecutionStore,
+    ToolHandler,
     ToolResult,
 )
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -45,6 +46,23 @@ _COMPENSATION_STATUSES = frozenset(
         ToolExecutionStatus.COMPENSATION_FAILED,
     }
 )
+
+
+async def _call_handler(
+    handler: ToolHandler, arguments: dict[str, Any], context: ToolContext
+) -> Any:
+    """Await an async handler; run a synchronous one in a worker thread.
+
+    A synchronous handler on the event loop would block every other run and outlive its
+    timeout. In a thread it is timed out on schedule, but it cannot be stopped: its side effect
+    may still finish, which is why a timed-out call that changes things is recorded
+    indeterminate.
+    """
+    # A callable object with an ``async def __call__`` is asynchronous too.
+    if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(type(handler).__call__):
+        return await handler(arguments, context)
+    result = await asyncio.to_thread(handler, arguments, context)
+    return await result if inspect.isawaitable(result) else result
 
 
 class ToolExecutor:
@@ -209,9 +227,10 @@ class ToolExecutor:
             try:
                 for attempt in range(attempts):
                     try:
-                        result = tool.handler(arguments, context)
-                        if inspect.isawaitable(result):
-                            result = await asyncio.wait_for(result, definition.timeout_seconds)
+                        result = await asyncio.wait_for(
+                            _call_handler(tool.handler, arguments, context),
+                            definition.timeout_seconds,
+                        )
                         break
                     except TimeoutError as exc:
                         if attempt + 1 >= attempts:

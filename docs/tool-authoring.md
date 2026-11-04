@@ -49,7 +49,10 @@ async def update_owner(account_id: str, owner: str, context: ToolContext) -> Rec
   use it. A function with no docstring is refused.
 - A parameter typed `ToolContext` receives the call's context (tenant, user, permissions,
   idempotency key, the caller's credentials) and is not part of the schema.
-- Sync and async functions both work. A sync function runs on the event loop, so keep it fast.
+- Sync and async functions both work. A sync function runs in a worker thread, so it does not
+  block the event loop and is timed out on schedule; it must be thread-safe. A thread cannot be
+  stopped, so a timed-out call may still finish its work: one that changes things is recorded
+  `indeterminate` for reconciliation. A hard deadline on blocking work needs a subprocess.
 
 `@tool` alone names the tool after the function; pass `name="crm.search"` to choose. A tool in a
 `Toolkit` is named `<toolkit>.<function>`.

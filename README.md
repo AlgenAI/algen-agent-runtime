@@ -406,7 +406,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Analytics | Typed analytical DAGs, application-registered nodes, secret-safe query sources, semantic layers, governance and evaluation gates |
 | Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, exact-version child composition, durable clarification and approval pause/resume, explicit crash recovery, typed resources, correlation, and lifecycle events |
 | Observability | Structured logs, OpenTelemetry, optional Traccia integration |
-| Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters |
+| Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters. The Runtime governs the adapter call (tenancy, timeout, cancellation, tracing); model and tool calls inside the framework stay framework-owned unless they use Runtime tools. See the [governance matrix](docs/framework-adapters.md#honest-capability--governance-matrix) |
 
 Provider and integration dependencies remain optional. See the [provider compatibility matrix](docs/provider-compatibility.md), [MCP guide](docs/mcp.md), and [framework adapter guide](docs/framework-adapters.md).
 

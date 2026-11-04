@@ -336,6 +336,8 @@ def build_tool(
         definition.input_schema
     )
 
+    blocking = not inspect.iscoroutinefunction(function)
+
     async def run(arguments: dict[str, Any], context: ToolContext) -> Any:
         validated = signature.input_model.model_validate(arguments)
         undeclared = _undeclared_fields(input_validator, arguments)
@@ -353,7 +355,12 @@ def build_tool(
             keyword_arguments = {field: getattr(validated, field) for field in signature.fields}
         if signature.context_parameter is not None:
             keyword_arguments[signature.context_parameter] = context
-        result = function(**keyword_arguments)
+        # A synchronous function runs in a worker thread, so it neither blocks the event loop
+        # nor outlives the executor's timeout (although its work may still finish).
+        if blocking:
+            result = await asyncio.to_thread(function, **keyword_arguments)
+        else:
+            result = function(**keyword_arguments)
         if inspect.isawaitable(result):
             result = await result
         return output_adapter.dump_python(result, mode="json")
