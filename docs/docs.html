@@ -4070,7 +4070,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   const LATEST_VERSION = '0.1.0a23';
   const RELEASES = {
     '0.1.0a23': {
-      date: '2026-11-04', pending: true, kind: 'Security and correctness',
+      date: '2026-11-04', pending: false, kind: 'Security and correctness',
       title: 'Tool steps need every gating approval; timed-out tools keep their capacity',
       summary: 'Fixes from a second external review of 0.1.0a22. A workflow tool step that needs approval runs only when every approval that gates it approved, so a rejected approval no longer falls back to an earlier one. Parallel approvals are asked one at a time instead of failing the workflow. A timed-out synchronous tool keeps its concurrency slot until its thread ends and is not retried over it. No migrations, no new deprecations.',
       fields: { tag: 'v0.1.0a23', package: '0.1.0a23 · pre-alpha', version: '0.1.0a23', pip: 'python -m pip install "algen-agent-runtime==0.1.0a23"' },
@@ -4088,7 +4088,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
           'A step that relied on an earlier approval after a later one was rejected now fails with <code>requires an approval</code>. Calls to a synchronous tool wait for a slot while an earlier, timed-out call&#39;s thread still runs.'
         ]},
         { kind: 'Compatibility', items: [
-          'No database migrations; 0.1.0a22 and 0.1.0a23 can run side by side. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
+          'No database migrations; 0.1.0a22 and 0.1.0a23 can run side by side. Published to PyPI on 2026-11-04; the security fix is <a href="https://github.com/AlgenAI/algen-agent-runtime/security/advisories/GHSA-xq33-rgvw-h7rf">GHSA-xq33-rgvw-h7rf</a>. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
         ]}
       ]
     },
