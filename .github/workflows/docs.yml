@@ -31,8 +31,9 @@ jobs:
           mkdir -p _site
           cp docs/docs.html _site/index.html
           touch _site/.nojekyll
-          if grep -nE '(href|src)="[^":#/][^":]*"' _site/index.html; then
-            echo "::error::docs/docs.html has relative links, which do not resolve on the site"
+          # Studio's copy links to its own routes (/tools/); those do not exist on this site either.
+          if grep -nE '(href|src)="(/[^/"]|[^":#/])[^":]*"' _site/index.html; then
+            echo "::error::docs/docs.html has relative or root-relative links, which do not resolve on the site"
             exit 1
           fi
       - uses: actions/upload-pages-artifact@v3

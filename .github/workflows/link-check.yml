@@ -1,0 +1,53 @@
+name: Link check
+
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "docs/*.md"
+      - "docs/docs.html"
+      - "examples/**/README.md"
+      - ".github/workflows/link-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "docs/*.md"
+      - "docs/docs.html"
+      - "examples/**/README.md"
+      - ".github/workflows/link-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: Relative links and anchors
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LYCHEE_VERSION: "0.24.2"
+      # SHA-256 of lychee-x86_64-unknown-linux-gnu.tar.gz from the lychee-v0.24.2 GitHub release.
+      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Install a pinned, checksum-verified binary rather than a third-party action.
+      - name: Install lychee
+        run: |
+          archive="$RUNNER_TEMP/lychee.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${LYCHEE_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+          "$RUNNER_TEMP/lychee" --version
+      # Offline only, so external sites cannot make CI flaky (#99).
+      - name: Check relative links and anchors
+        run: >-
+          "$RUNNER_TEMP/lychee" --offline --include-fragments --no-progress
+          --root-dir "$GITHUB_WORKSPACE"
+          README.md CONTRIBUTING.md 'docs/*.md' docs/docs.html 'examples/**/README.md'

@@ -16,12 +16,17 @@ contracts are explicitly marked experimental during the `0.x` series.
   safety, compatibility and impact on applications. A new `Protected paths` check fails fork pull
   requests that change agent instructions, skills, `.github/`, governance documents, `scripts/` or
   migrations, and CODEOWNERS now lists those paths.
+- A `Link check` workflow checks relative links and anchors in `README.md`, `CONTRIBUTING.md`,
+  `docs/*.md`, `docs/docs.html` and the examples' READMEs with lychee, offline (#99, #107,
+  contributed by abhirajadhikary06).
 
 ### Changed
 
 - `docs/docs.html` is now a copy of the Runtime documentation that Algen Agent Studio serves, so
   there is one page to maintain; [releasing](docs/releasing.md) describes the sync. The old page's
   "Explore architecture" button, which linked to a page that does not exist, is gone with it.
+  Its links to the Tools documentation point at <https://studio.algen.ai/tools/>, since `/tools/`
+  only exists on Studio, and the `Docs` workflow now rejects root-relative links as well.
 
 ### Fixed
 
