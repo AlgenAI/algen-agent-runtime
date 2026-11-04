@@ -4067,7 +4067,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   const LATEST_VERSION = '0.1.0a22';
   const RELEASES = {
     '0.1.0a22': {
-      date: '2026-11-04', pending: true, kind: 'Security and correctness',
+      date: '2026-11-04', pending: false, kind: 'Security and correctness',
       title: 'Workflow approvals decided by status; synchronous tools meet their timeout',
       summary: 'Fixes from an external review. A workflow tool step that needs approval is approved only by the approval node&#39;s recorded status, and check warns when its arguments are not what the approver saw. Synchronous tools run in a worker thread, so they no longer block other runs and are timed out on schedule. No migrations, no new deprecations.',
       fields: { tag: 'v0.1.0a22', package: '0.1.0a22 · pre-alpha', version: '0.1.0a22', pip: 'python -m pip install "algen-agent-runtime==0.1.0a22"' },
@@ -4086,7 +4086,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
           'Workflow nodes must have unique <code>output_key</code>s. Input sent to a paused workflow cannot set an approval&#39;s <code>output_key</code> or replace a value an approval already showed (400). Synchronous tools must be thread-safe; one that needs the running loop or a thread-bound resource should become <code>async def</code>.'
         ]},
         { kind: 'Compatibility', items: [
-          'No database migrations; 0.1.0a21 and 0.1.0a22 can run side by side, and workflows paused under 0.1.0a21 resume. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
+          'No database migrations; 0.1.0a21 and 0.1.0a22 can run side by side, and workflows paused under 0.1.0a21 resume. Published to PyPI on 2026-11-04; the security fix is <a href="https://github.com/AlgenAI/algen-agent-runtime/security/advisories/GHSA-xc6c-mcwg-gjhp">GHSA-xc6c-mcwg-gjhp</a>. <code>algen-agent-tools</code> 0.2.0a7 passes its tests on it.'
         ]}
       ]
     },
