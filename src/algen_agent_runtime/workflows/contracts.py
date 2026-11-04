@@ -300,6 +300,11 @@ class WorkflowManifest(BaseModel):
         ids = [node.id for node in self.nodes]
         if len(ids) != len(set(ids)):
             raise ValueError("workflow node identifiers must be unique")
+        # A node's output must not replace another's, such as an approval's recorded decision.
+        output_keys = [node.output_key for node in self.nodes]
+        shared = sorted({key for key in output_keys if output_keys.count(key) > 1})
+        if shared:
+            raise ValueError(f"workflow nodes must have unique output keys; shared: {shared}")
         known = set(ids)
         dependencies = {node.id: node.depends_on for node in self.nodes}
         for node in self.nodes:

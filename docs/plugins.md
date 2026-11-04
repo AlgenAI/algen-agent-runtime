@@ -184,6 +184,14 @@ exit with status 1:
 | `UNKNOWN_COMPONENT` | An agent names something nothing registered; `suggestion` holds the closest name. |
 | `UNSUPPORTED_PROVIDER_TYPE` | A provider's `type` is not one the Runtime builds. |
 
+It warns about workflow tool steps whose tool `requires_approval` (see
+[multi-agent workflows](multi-agent-workflows.md#tool-steps)):
+
+| Code | Meaning |
+| --- | --- |
+| `APPROVAL_ARGUMENTS_NOT_REVIEWED` | The step's arguments read values its covering approval did not show the approver (`review_from`, `parameters_from`) or decide. |
+| `APPROVAL_MODIFICATION_IGNORED` | The approval allows modification, but the step does not read the approval's output, so a modified decision would not change the call. |
+
 It also reads the Python under `--project-root` (skipping tests, virtual environments and hidden
 directories, and running none of it) and warns about what Studio will not run or cannot see:
 

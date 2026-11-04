@@ -19,6 +19,12 @@ contracts are explicitly marked experimental during the `0.x` series.
 - A `Link check` workflow checks relative links and anchors in `README.md`, `CONTRIBUTING.md`,
   `docs/*.md`, `docs/docs.html` and the examples' READMEs with lychee, offline (#99, #107,
   contributed by abhirajadhikary06).
+- `algen-agent-runtime check` warns when a workflow tool step whose tool `requires_approval` reads
+  values its covering approval did not show the approver (`APPROVAL_ARGUMENTS_NOT_REVIEWED`), or
+  ignores a modifiable approval's decision (`APPROVAL_MODIFICATION_IGNORED`). A covered call emits
+  `workflow.tool.authorized` with SHA-256 digests of its arguments and of the approved parameters,
+  and `workflow.approval.decided` carries `parameters_sha256`. Strict binding, which refuses a call
+  whose arguments differ from the approved parameters, is planned for 0.2. (#109)
 
 ### Changed
 
@@ -27,8 +33,22 @@ contracts are explicitly marked experimental during the `0.x` series.
   "Explore architecture" button, which linked to a page that does not exist, is gone with it.
   Its links to the Tools documentation point at <https://studio.algen.ai/tools/>, since `/tools/`
   only exists on Studio, and the `Docs` workflow now rejects root-relative links as well.
+- The README says which calls the framework adapters govern (the adapter call: tenancy, timeout,
+  cancellation, tracing) and which stay framework-owned (model and tool calls inside the
+  framework). (#110)
 
 ### Fixed
+
+- **Security:** an approval-required tool step in a workflow decides whether it is approved from
+  the approval node's recorded status. It read the decision from the workflow's values, which a
+  later step or a workflow input could change, so a rejected approval could be counted as
+  approved. Workflow nodes must now have unique output keys, and input sent to a paused workflow
+  cannot set an approval's decision or replace a value an approval already showed. Agent runs were
+  not affected.
+- A synchronous tool runs in a worker thread, whether it is a `@tool` function or a raw `Tool`
+  handler. It blocked the event loop (every other run in the process) and ran past
+  `timeout_seconds`; it is now timed out on schedule. A thread cannot be stopped, so a timed-out
+  call that changes things is recorded `indeterminate`, as before. (#108)
 
 - The interactive workflow examples end cleanly at a prompt (#96, #103, contributed by bfs2021).
   Ctrl-D prints one `No decision: ...` line and exits with status 2; Ctrl-C prints `Interrupted.`
@@ -37,6 +57,18 @@ contracts are explicitly marked experimental during the `0.x` series.
   `examples.workflow_cli` adds `NoDecisionError` and `run_cli`, which the examples' `main()` now
   use. `run_example` raises `NoDecisionError` instead of the generic end-of-input `RuntimeError`
   (it is a subclass, so existing `except RuntimeError` handlers still catch it).
+
+### Upgrade notes
+
+- A workflow manifest in which two nodes share an `output_key` no longer loads. None of the
+  workflows in the Runtime, Tools, Studio or the sample applications do this; rename one output
+  and update the placeholders that read it.
+- `POST /v1/workflows/runs/{id}/input` (and `MultiAgentWorkflowExecutor.resume`) returns 400 for
+  `values` that name an approval node's `output_key`, or the top-level key of a value an approval
+  already showed (`review_from`, `parameters_from`).
+- Synchronous tools run off the event loop and must be thread-safe. One that needs the running
+  loop (`asyncio.get_running_loop()`) or a thread-bound resource (a `sqlite3` connection made
+  elsewhere) should become `async def`.
 
 ## [0.1.0a21] - 2026-11-01
 

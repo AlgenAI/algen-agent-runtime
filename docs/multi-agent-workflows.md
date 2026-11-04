@@ -68,7 +68,7 @@ data semantics; hosts such as Studio may render it, but do not own or translate 
 - `workflow` dispatches an exact child workflow name and version through a `WorkflowRegistry`, stores
   it as an independent checkpoint, and returns its canonical output to the parent node.
 
-Every node declares an `output_key`. Downstream hooks read prior results from
+Every node declares an `output_key`, and no two nodes may share one. Downstream hooks read prior results from
 `WorkflowHookContext.state.values`. `run_if` uses the Runtime's allowlisted predicates. Agent nodes can
 reference an inline JSON schema or a registered `output_schema_hook`, plus a validator and
 `max_repairs`. A repair receives `invalid_output` and `validation_error` in its hook context and is
@@ -162,6 +162,33 @@ things. A tool that requires approval (`requires_approval`, an MCP overlay's `ap
 runs only after an upstream `approval` node was approved or modified in the same run; a workflow
 with such a step and no approval node before it cannot start. Tool steps work the same in process
 and under `algen-agent-runtime serve`.
+
+The approval node's own recorded status decides: no workflow value, another node's output or an
+answer to a later question can approve a call. An approval covers a step, not its arguments, so
+build the call from what the approver saw, and from the decision when it can be modified:
+
+```yaml
+- id: approve
+  kind: approval
+  depends_on: [draft]
+  output_key: approval
+  approval:
+    prompt: Send this payment?
+    parameters_from: draft.payment
+    allow_modification: true
+- id: pay
+  kind: handler
+  handler: tool:payments.send
+  depends_on: [approve]
+  arguments: {to: "{{approval.parameters.to}}", amount: "{{approval.parameters.amount}}"}
+  output_key: paid
+```
+
+`algen-agent-runtime check` warns (`APPROVAL_ARGUMENTS_NOT_REVIEWED`,
+`APPROVAL_MODIFICATION_IGNORED`) when a step reads anything else. Each covered call emits
+`workflow.tool.authorized` with SHA-256 digests of its arguments and of the approved parameters
+(`arguments_sha256`, `parameters_sha256`), so an audit can tell whether they match without storing
+either.
 
 An agent node's invalid JSON output (with `output_schema`) is repaired like a validation failure,
 up to `max_repairs`. Nodes with `pass_attachments: true` hand the run's files to their agent; see
@@ -355,7 +382,8 @@ runnable. See "Running workflows over HTTP" below for the routes.
 
 The executor emits `workflow.started`, node started/repairing/completed/skipped/failed/rejected
 events, `workflow.input.required`, `workflow.approval.required`,
-`workflow.approval.decided`, `workflow.approval.expired`, `workflow.input.expired`, and one
+`workflow.approval.decided` (with `parameters_sha256`, a digest of the approved parameters),
+`workflow.tool.authorized`, `workflow.approval.expired`, `workflow.input.expired`, and one
 terminal workflow event. Payloads contain workflow and node
 identity rather than prompts, model reasoning, credentials, or unrestricted outputs. The returned
 `WorkflowExecutionState` contains node attempts, child Runtime run IDs, timestamps, outputs, pause
@@ -399,7 +427,7 @@ its own inbox.
 | `POST /v1/workflows/{name}/runs` | `runs:write` | Starts a run with `input` (text) or `inputs` (an object); a `workflow_id` you choose makes a retried start find the run it started |
 | `GET /v1/workflows/runs/{workflow_id}` | `runs:read` | Where the run stands: status, each step, what a waiting step asks (`pause`), and the result (`output`, from the manifest's `output_key`) |
 | `POST /v1/workflows/runs/{workflow_id}/approval` | `runs:write` | Answers the approval step it waits on: `approved`, `rejected`, or `modified` with `modified_parameters` |
-| `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write` | Answers the question a paused step asked, with `values` |
+| `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write` | Answers the question a paused step asked, with `values`. They cannot set an approval node's `output_key`, or replace a value an approval already showed (400) |
 
 Runs execute in the background with the container's checkpoint store, so with
 `storage.workflow_store: postgres` a waiting run survives a restart. Every call sees only the

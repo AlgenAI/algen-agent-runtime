@@ -52,6 +52,12 @@ from algen_agent_runtime.workflows.store import (
 )
 
 
+def _digest(value: Any) -> str:
+    """SHA-256 of a value's canonical JSON, for audit events that must not carry the value."""
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class WorkflowHookRegistry:
     """Registry for application-owned domain hooks referenced by portable manifests."""
 
@@ -241,6 +247,12 @@ class MultiAgentWorkflowExecutor:
         nodes = {node.id: node for node in manifest.nodes}
         if node_id not in nodes:
             raise ConfigurationError("workflow checkpoint pause references an unknown node")
+        reviewed = self._reviewed_keys(manifest, state)
+        if values and reviewed.intersection(values):
+            raise ConfigurationError(
+                "workflow input cannot set an approval decision or replace what an approval "
+                f"showed: {sorted(reviewed.intersection(values))}"
+            )
         if state.pause.get("kind") == "child_workflow":
             return await self._resume_child_workflow(
                 manifest,
@@ -348,7 +360,11 @@ class MultiAgentWorkflowExecutor:
             "workflow.approval.decided",
             state,
             node,
-            {"decision": decision, "decided_by": user_id},
+            {
+                "decision": decision,
+                "decided_by": user_id,
+                "parameters_sha256": None if parameters is None else _digest(parameters),
+            },
         )
         await self._emit(
             emit,
@@ -874,14 +890,21 @@ class MultiAgentWorkflowExecutor:
             raise ConflictError("workflow checkpoint manifest fingerprint does not match")
 
     @staticmethod
+    def _reviewed_keys(manifest: WorkflowManifest, state: WorkflowExecutionState) -> set[str]:
+        """Values input must not replace: every approval's decision, and what one already showed."""
+        keys: set[str] = set()
+        for node in manifest.nodes:
+            if node.approval is None:
+                continue
+            keys.add(node.output_key)
+            if state.nodes[node.id].status is not WorkflowNodeStatus.PENDING:
+                paths = (*node.approval.review_from, *filter(None, [node.approval.parameters_from]))
+                keys.update(path.split(".", 1)[0] for path in paths)
+        return keys
+
+    @staticmethod
     def _manifest_fingerprint(manifest: WorkflowManifest) -> str:
-        payload = json.dumps(
-            manifest.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        return _digest(manifest.model_dump(mode="json"))
 
     @staticmethod
     def _validate_contract(schema: dict[str, Any], value: Any, *, contract: str) -> None:
@@ -1057,7 +1080,7 @@ class MultiAgentWorkflowExecutor:
             elif node.kind == WorkflowNodeKind.HANDLER:
                 async with semaphore:
                     if (node.handler or "").startswith(TOOL_HANDLER_PREFIX):
-                        result = await self._call_tool_step(state, node, nodes)
+                        result = await self._call_tool_step(state, node, nodes, emit)
                     else:
                         result = await self._call(
                             self._hooks.handler(node.handler or ""), self._context(state, node)
@@ -1552,14 +1575,17 @@ class MultiAgentWorkflowExecutor:
         state: WorkflowExecutionState,
         node: WorkflowNode,
         nodes: Mapping[str, WorkflowNode],
+        emit: WorkflowEventSink | None,
     ) -> Any:
         """Run the tool a ``tool:<name>`` step names, through the runtime's tool executor.
 
         The tool's own permissions are granted: the workflow author declared the call. A step
         whose tool changes things should follow an approval node; agent approvals do not apply.
         A tool that ``requires_approval`` runs only when an upstream approval node was approved
-        (or modified) in this execution. The workflow API takes no caller credentials, so
-        ``ToolContext.credentials`` is empty here; agent steps' runs have none either.
+        (or modified) in this execution. A covered call emits ``workflow.tool.authorized`` with
+        digests of its arguments and of the approved parameters. The workflow API takes no
+        caller credentials, so ``ToolContext.credentials`` is empty here; agent steps' runs have
+        none either.
         """
         name = (node.handler or "").removeprefix(TOOL_HANDLER_PREFIX)
         executor = getattr(self._runtime, "tool_executor", None)
@@ -1576,13 +1602,37 @@ class MultiAgentWorkflowExecutor:
             permissions=tool.definition.required_permissions,
             idempotency_key=f"{state.id}:{node.id}:{state.nodes[node.id].attempts}",
         )
-        approval = None
-        for approval_id in upstream_approval_nodes(nodes, node.id):
+        # The approval node's own status is the decision: only an approved or modified decision
+        # completes it, and no workflow value (another node's output, a resume) can change it.
+        approval_id = next(
+            (
+                upstream
+                for upstream in upstream_approval_nodes(nodes, node.id)
+                if state.nodes[upstream].status is WorkflowNodeStatus.COMPLETED
+            ),
+            None,
+        )
+        if approval_id is not None:
             decided = state.values.get(nodes[approval_id].output_key)
-            if isinstance(decided, dict) and decided.get("decision") in {"approved", "modified"}:
-                approval = f"workflow:{state.id}:{approval_id}"
-                break
-        result = await executor.execute(name, arguments, context, approval=approval)
+            approved = decided.get("parameters") if isinstance(decided, dict) else None
+            await self._emit(
+                emit,
+                "workflow.tool.authorized",
+                state,
+                node,
+                {
+                    "tool": name,
+                    "approval_node_id": approval_id,
+                    "arguments_sha256": _digest(arguments),
+                    "parameters_sha256": None if approved is None else _digest(approved),
+                },
+            )
+        result = await executor.execute(
+            name,
+            arguments,
+            context,
+            approval=None if approval_id is None else f"workflow:{state.id}:{approval_id}",
+        )
         return result.value
 
     @classmethod
