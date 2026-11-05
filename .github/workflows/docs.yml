@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # docs/docs.html is the site's single page, copied from Algen Agent Studio's
-      # docs/runtime-docs.html (see docs/releasing.md). It links to the guides by absolute URL.
+      # docs/docs.html is the site's single page and its source (see docs/releasing.md). It
+      # links to the guides by absolute URL.
       - name: Assemble site
         run: |
           mkdir -p _site
