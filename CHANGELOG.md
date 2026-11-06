@@ -6,6 +6,13 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+### Fixed
+
+- A file shown to a model that reads text only keeps its artifact id:
+  `[attachment: name, type, id=<artifact_id>]` instead of `[attachment: name, type]`. Without the
+  id the model could not hand the file to a reader tool that calls `context.read_attachment`, such
+  as a text extractor. Code that matches the old placeholder text exactly needs updating. (#131)
+
 ## [0.1.0a23] - 2026-11-04
 
 Fixes from a second external review of 0.1.0a22: a workflow tool step that needs approval runs only
