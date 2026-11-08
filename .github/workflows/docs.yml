@@ -36,7 +36,7 @@ jobs:
             echo "::error::docs/docs.html has relative or root-relative links, which do not resolve on the site"
             exit 1
           fi
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
