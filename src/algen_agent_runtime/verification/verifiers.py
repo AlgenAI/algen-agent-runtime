@@ -173,10 +173,14 @@ class CitationVerifier:
 
 class VerificationService:
     def __init__(self, verifiers: Sequence[Verifier] | None = None) -> None:
+        # Imported here: the coverage verifier builds on this module's result type.
+        from algen_agent_runtime.verification.coverage import ResultCoverageVerifier
+
         selected = verifiers or (
             NonEmptyVerifier(),
             JsonSchemaVerifier(),
             CitationVerifier(),
+            ResultCoverageVerifier(),
         )
         self._items: dict[str, Verifier] = {verifier.name: verifier for verifier in selected}
 

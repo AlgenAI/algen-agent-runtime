@@ -242,6 +242,52 @@ async def handler(arguments, context):
 - Raise instead when the run should fail (with `on_error: fail_run`), or for an error the model
   cannot act on.
 
+## Saying what a result covered
+
+A search or listing that reads a derived store (an index, cache, replica or extract), or returns
+only the first page, can say so, so that an empty or short result is not read as "nothing
+exists". Return a `ResultCoverage` under `"coverage"` in the result object:
+
+```python
+from algen_agent_runtime.tools.contracts import ResultCoverage
+
+
+@mail.tool(read())
+async def list_attachments(message_id: str) -> dict:
+    """List an email's attachments from the search index."""
+    rows = await index.attachments(message_id, limit=50)
+    coverage = ResultCoverage(
+        searched="mail.attachments_index",
+        filters={"message_id": message_id},
+        returned=len(rows),
+        capped=len(rows) == 50,
+        source="derived",
+    )
+    return coverage.attach({"items": rows})
+```
+
+A tool that returns a Pydantic model can declare the field instead:
+`coverage: ResultCoverage | None = None`.
+
+| Field | Meaning |
+| --- | --- |
+| `searched` | The collection or index searched (1 to 256 characters). A name, not user data. |
+| `filters` | The constraints applied, as JSON values (at most 2 KiB). Optional. |
+| `total` | How many items matched, when the tool knows. Optional. |
+| `returned` | How many items the result holds. |
+| `capped` | A limit or page cut the result, so more may exist. Default `false`. |
+| `source` | `system_of_record`, or `derived` for a store that may lag or miss items. |
+
+- `coverage.complete` is true only for an uncapped search of the system of record that returned
+  every match. `ResultCoverage.of(result)` reads coverage back from a result value or its JSON
+  text, and returns `None` when there is none or it is malformed.
+- The coverage is part of the result, so the model reads it too; an output schema must allow the
+  `coverage` property. Unknown coverage keys are ignored, and an offloaded result keeps its
+  coverage in the reference.
+- The `result_coverage` verifier uses it to stop an answer stating absence on a partial search;
+  see [answer verification](verification.md#absence-claims-and-result-coverage). Reporting
+  coverage is optional: a tool without it behaves as before.
+
 ## Notes for the user interface
 
 A tool can tell the user interface what a call did (a title, the files it touched, follow-ups to

@@ -191,6 +191,79 @@ class ToolNote(BaseModel):
 NoteSink = Callable[[ToolNote], Awaitable[None]]
 
 
+# The key under which a tool's result object reports what it covered.
+COVERAGE_KEY = "coverage"
+MAX_COVERAGE_FILTERS_BYTES = 2_048
+
+
+class ResultCoverage(BaseModel):
+    """What a search or listing covered, so an empty or short result is not read as absence.
+
+    A tool returns it under ``"coverage"`` in its result object (``ResultCoverage.attach``).
+    ``searched`` names the collection or index searched, ``filters`` the constraints applied
+    (JSON values), ``total`` how many items matched when the tool knows, ``returned`` how many it
+    returned, ``capped`` whether a limit or page cut the result, and ``source`` whether it read the
+    system of record or a derived store (an index, cache, replica or extract) that may lag or miss
+    items. Unknown keys are ignored, so a result from a newer tool still reads.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    searched: str = Field(min_length=1, max_length=256)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    total: int | None = Field(default=None, ge=0)
+    returned: int = Field(ge=0)
+    capped: bool = False
+    source: Literal["system_of_record", "derived"]
+
+    @field_validator("filters")
+    @classmethod
+    def _bounded_filters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            encoded = json.dumps(value, allow_nan=False).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("coverage filters must be JSON values") from exc
+        if len(encoded) > MAX_COVERAGE_FILTERS_BYTES:
+            raise ValueError(f"coverage filters are at most {MAX_COVERAGE_FILTERS_BYTES} bytes")
+        return value
+
+    @property
+    def complete(self) -> bool:
+        """The system of record was searched and everything that matched was returned."""
+        return (
+            self.source == "system_of_record"
+            and not self.capped
+            and (self.total is None or self.returned >= self.total)
+        )
+
+    def attach(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """``result`` with this coverage under ``"coverage"``."""
+        return {**result, COVERAGE_KEY: self.model_dump(mode="json", exclude_none=True)}
+
+    @classmethod
+    def of(cls, result: Any) -> ResultCoverage | None:
+        """The coverage a tool result reports, or ``None`` when it reports none or a malformed one.
+
+        ``result`` is the result value or its JSON text. A result the Runtime wrapped (an
+        offloaded reference, or an untrusted-content warning around ``"result"``) is looked into.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                return None
+        if not isinstance(result, Mapping):
+            return None
+        candidate = result.get(COVERAGE_KEY)
+        if candidate is None and isinstance(result.get("result"), Mapping):
+            candidate = result["result"].get(COVERAGE_KEY)
+        if not isinstance(candidate, Mapping):
+            return None
+        try:
+            return cls.model_validate(candidate)
+        except ValueError:
+            return None
+
+
 class ToolContext(BaseModel):
     """What a tool knows about a call: who, which run and step, and what it may do.
 

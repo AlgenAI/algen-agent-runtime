@@ -429,6 +429,7 @@ Provider and integration dependencies remain optional. See the [provider compati
 | HTTP API tools | [HTTP API tools](docs/http-tools.md) |
 | Code components | [Plugins and the component inventory](docs/plugins.md), [writing agent tools](docs/tool-authoring.md) and [Studio compatibility](docs/studio-compatibility.md) |
 | Agent tool behaviour | [Errors, declines, guardrails, parallel calls, memory](docs/agent-tooling.md) |
+| Answer verification | [Verifiers, repair, and absence claims on partial searches](docs/verification.md) |
 | Framework adapters | [Framework adapters](docs/framework-adapters.md) |
 | File attachments | [Attachments](docs/attachments.md) and the [artifact lifecycle](docs/artifacts.md) |
 | Untrusted documents | [Document security](docs/document-security.md) |
