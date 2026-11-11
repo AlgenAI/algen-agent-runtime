@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.2.0b1] - 2026-11-11
+
 The first `0.2` beta. Everything deprecated during `0.1` is removed, the server and OTLP
 dependencies become optional, the examples move to their own package name, and approvals are bound
 to the exact call they approve. The public API is a candidate for freezing: later `0.2` betas take
@@ -140,4 +142,5 @@ only fixes and additive changes. Read the upgrade notes first; migrations 017 an
 
 The `0.1` pre-releases (`0.1.0a1` to `0.1.0a23`) are in [CHANGELOG-0.1.md](CHANGELOG-0.1.md).
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a23...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b1...HEAD
+[0.2.0b1]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a23...v0.2.0b1
