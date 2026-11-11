@@ -170,6 +170,18 @@ class WorkflowService:
         executor = await self._executor(state.manifest_name)
         if state.status is not WorkflowStatus.AWAITING_APPROVAL:
             raise ConfigurationError(f"workflow run {workflow_id!r} is not awaiting approval")
+        # The decision is applied in the background: refuse an invalid one here, so the caller
+        # learns why instead of getting the unchanged run back.
+        try:
+            executor.check_approval_decision(
+                manifest,
+                state,
+                decision=decision,
+                user_id=user_id,
+                modified_parameters=modified_parameters,
+            )
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
         self._require_open()
         self._spawn(
             executor.decide_approval(

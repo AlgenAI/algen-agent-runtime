@@ -298,6 +298,61 @@ class MultiAgentWorkflowExecutor:
         await self._emit(emit, "workflow.resumed", state, nodes[node_id])
         return await self._drive(manifest, state, emit, validate_input=False)
 
+    def check_approval_decision(
+        self,
+        manifest: WorkflowManifest,
+        state: WorkflowExecutionState,
+        *,
+        decision: str,
+        user_id: str,
+        modified_parameters: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Raise what :meth:`decide_approval` would raise for this decision, without changing
+        anything: a host that applies the decision in the background checks it first, so the
+        caller is told why it was refused. A child-workflow pause and an expired approval are
+        left to ``decide_approval``."""
+        pause = state.pause or {}
+        if state.status is not WorkflowStatus.AWAITING_APPROVAL or pause.get("kind") != "approval":
+            return
+        node = {node.id: node for node in manifest.nodes}.get(str(pause.get("node_id") or ""))
+        if node is None or node.approval is None or self._approval_is_expired(state):
+            return
+        self._checked_decision(
+            node, state, decision=decision, user_id=user_id, modified_parameters=modified_parameters
+        )
+
+    def _checked_decision(
+        self,
+        node: WorkflowNode,
+        state: WorkflowExecutionState,
+        *,
+        decision: str,
+        user_id: str,
+        modified_parameters: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """The parameters a valid decision approves; raises for an invalid one."""
+        assert node.approval is not None
+        if decision not in {"approved", "modified", "rejected"}:
+            raise ValueError("decision must be approved, modified, or rejected")
+        if not user_id.strip():
+            raise ValueError("approval user_id is required")
+        parameters: dict[str, Any] | None
+        if decision == "modified":
+            if not node.approval.allow_modification:
+                raise ConflictError(f"approval node {node.id!r} does not permit modification")
+            if modified_parameters is None:
+                raise ValueError("modified approval requires modified_parameters")
+            parameters = dict(modified_parameters)
+        else:
+            parameters = self._approval_parameters(node, state)
+        if node.approval.parameters_schema is not None and parameters is not None:
+            self._validate_contract(
+                node.approval.parameters_schema,
+                parameters,
+                contract=f"approval parameters for {node.id!r}",
+            )
+        return parameters
+
     async def decide_approval(
         self,
         manifest: WorkflowManifest,
@@ -340,25 +395,9 @@ class MultiAgentWorkflowExecutor:
         if self._approval_is_expired(state):
             await self._expire_approval(state, node, emit)
             return await self._drive(manifest, state, emit, validate_input=False)
-        if decision not in {"approved", "modified", "rejected"}:
-            raise ValueError("decision must be approved, modified, or rejected")
-        if not user_id.strip():
-            raise ValueError("approval user_id is required")
-        parameters: dict[str, Any] | None
-        if decision == "modified":
-            if not node.approval.allow_modification:
-                raise ConflictError(f"approval node {node.id!r} does not permit modification")
-            if modified_parameters is None:
-                raise ValueError("modified approval requires modified_parameters")
-            parameters = dict(modified_parameters)
-        else:
-            parameters = self._approval_parameters(node, state)
-        if node.approval.parameters_schema is not None and parameters is not None:
-            self._validate_contract(
-                node.approval.parameters_schema,
-                parameters,
-                contract=f"approval parameters for {node.id!r}",
-            )
+        parameters = self._checked_decision(
+            node, state, decision=decision, user_id=user_id, modified_parameters=modified_parameters
+        )
         result = WorkflowApprovalDecision(
             decision=cast(Any, decision),
             parameters=parameters,
