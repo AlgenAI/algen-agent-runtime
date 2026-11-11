@@ -4283,7 +4283,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   const LATEST_VERSION = '0.2.0b2';
   const RELEASES = {
     '0.2.0b2': {
-      date: '2026-11-11', pending: true, kind: 'Beta',
+      date: '2026-11-11', pending: false, kind: 'Beta',
       title: 'Review fixes: sessions, run actors, delegation and output integrity',
       summary: 'Fixes from an independent review of 0.2.0b1. Session memory belongs to its user, only a run&#39;s user (or an approver with <code>approvals:decide</code>) acts on it over HTTP, and <code>core.subagent</code> delegates only to an allowlist. A failed run returns no output, structured output is verified again after a guardrail change, and streams end on a pause. PII, secrets and injection rules refuse fewer ordinary values. Also: approvals record who decided, the client passes credentials, and <code>core.subagent</code> can be enabled from settings. Migrations 019 and 020 are additive. Read the upgrade notes first.',
       fields: { tag: 'v0.2.0b2', package: '0.2.0b2 · beta', version: '0.2.0b2', pip: 'python -m pip install --pre "algen-agent-runtime[service]==0.2.0b2"' },
