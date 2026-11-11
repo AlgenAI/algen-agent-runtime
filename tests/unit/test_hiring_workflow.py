@@ -5,10 +5,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from algen_agent_runtime.conversations import Conversation, ConversationMessage
-from algen_agent_runtime.security.documents import DocumentSecurityFinding, FindingSeverity
 from algen_agent_runtime.types.contracts import Role
-from examples.case_study_responsible_hiring.application.contracts import HiringApplication
-from examples.case_study_responsible_hiring.application.repositories import InMemoryHiringRepository
+from examples.case_study_responsible_hiring.application.contracts import (
+    DocumentFinding,
+    HiringApplication,
+)
+from examples.case_study_responsible_hiring.application.repositories import (
+    InMemoryHiringRepository,
+)
 from examples.case_study_responsible_hiring.application.workflow import (
     HiringConversationHandler,
     HiringWorkflow,
@@ -172,9 +176,9 @@ async def test_quarantine_assessment_exposes_safe_finding_summary_without_payloa
         sanitized_resume="Python engineer",
         document_sha256="0" * 64,
         document_findings=(
-            DocumentSecurityFinding(
+            DocumentFinding(
                 kind="prompt_injection.instruction_override",
-                severity=FindingSeverity.CRITICAL,
+                severity="critical",
                 message="The document contains text resembling instructions to an AI system.",
                 page=1,
                 evidence="do not display this payload",

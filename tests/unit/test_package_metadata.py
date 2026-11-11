@@ -12,7 +12,7 @@ def test_package_version_is_private_testpypi_candidate() -> None:
     assert re.match(r"^0\.1\.\d+(?:[abrc]\d+)?$", __version__)
 
 
-# Extras name a technology (postgres, mcp, documents), never a product or domain. Product
+# Extras name a technology (postgres, mcp, redis), never a product or domain. Product
 # dependency sets belong to the product's own package (a domain pack), not to the core.
 DOMAIN_TERMS = ("hiring", "talk-to-data", "text-to-sql", "hr", "hrms", "payroll", "recruit")
 

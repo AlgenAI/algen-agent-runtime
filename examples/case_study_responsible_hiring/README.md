@@ -12,9 +12,11 @@ Reusable capabilities live in `src/algen_agent_runtime`:
 
 - feedback contracts, storage, API, audit events, and linked trace spans;
 - safe follow-up question generation and persistence;
-- bounded text/PDF extraction, hidden-text findings, injection heuristics, normalization, and PII
-  redaction;
 - provider-neutral structured output, pgvector retrieval, conversations, events, and telemetry.
+
+Resume inspection (bounded text/PDF extraction, hidden-text findings, injection heuristics and PII
+redaction) comes from `algen_agent_tools.documents.inspection` in the
+[algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools) package.
 
 Hiring-specific prompts, schemas, scoring language, orchestration, persistence, decision controls,
 and UI live in this example.
@@ -42,7 +44,7 @@ Requirements: Python 3.12+, PostgreSQL with pgvector, an OpenAI API key, and Doc
 database.
 
 ```bash
-pip3 install -e '.[dev,hiring]'
+pip3 install -e '.[dev,pgvector]' 'algen-agent-tools[documents]'
 docker compose up -d postgres
 export OPENAI_API_KEY='...'
 export PGVECTOR_DSN='postgresql://postgres:postgres@localhost:5433/algen_agent_runtime'

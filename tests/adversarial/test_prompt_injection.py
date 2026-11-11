@@ -23,7 +23,6 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.policies.bundles import BundlePolicy, LoadedPolicyBundle, PolicyBundle
 from algen_agent_runtime.retrieval.contracts import SourceDocument
 from algen_agent_runtime.retrieval.memory import InMemoryRetriever
-from algen_agent_runtime.security.html import HtmlDocumentExtractor
 from algen_agent_runtime.tools.contracts import SideEffect, ToolContext
 from algen_agent_runtime.types.contracts import (
     GuardrailPolicy,
@@ -113,8 +112,10 @@ async def test_hidden_document_text_never_reaches_the_model() -> None:
         b"</span></body></html>"
     )
 
+    inspection = pytest.importorskip("algen_agent_tools.documents.inspection")
+
     def read(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        extracted = HtmlDocumentExtractor().extract(document, filename="report.html")
+        extracted = inspection.HtmlDocumentExtractor().extract(document, filename="report.html")
         return {"text": extracted.sanitized_text, "disposition": extracted.disposition.value}
 
     reader, _ = tool("read_attachment", result=read)

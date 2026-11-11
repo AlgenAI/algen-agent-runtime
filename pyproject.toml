@@ -57,7 +57,6 @@ dependencies = [
 postgres = ["asyncpg>=0.29,<1"]
 object-storage = ["asyncpg>=0.29,<1", "boto3>=1.43,<2"]
 pgvector = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1"]
-documents = ["PyMuPDF>=1.24,<2"]
 redis = ["redis>=5,<6"]
 auth = ["PyJWT[crypto]>=2.9,<3"]
 mcp = ["mcp>=1.30.0,<2"]
@@ -131,11 +130,6 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-# The deprecated connectors keep their own tests until they are removed in 0.2;
-# tests/unit/test_deprecations.py asserts the warnings themselves.
-filterwarnings = [
-  "ignore:algen_agent_runtime.security.[a-z_]+ is deprecated:DeprecationWarning",
-]
 markers = [
   "adversarial: scripted agent runs where the model or a tool behaves maliciously",
   "live: tests requiring external credentials",
@@ -160,5 +154,5 @@ strict = true
 packages = ["algen_agent_runtime"]
 
 [[tool.mypy.overrides]]
-module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "fitz", "boto3", "botocore", "botocore.*", "mcp", "mcp.*", "cryptography", "cryptography.*"]
+module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "boto3", "botocore", "botocore.*", "mcp", "mcp.*", "cryptography", "cryptography.*"]
 ignore_missing_imports = true

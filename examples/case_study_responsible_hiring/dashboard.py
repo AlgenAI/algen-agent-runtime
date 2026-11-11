@@ -5,6 +5,11 @@ import os
 from typing import Any
 
 import uvicorn
+from algen_agent_tools.documents.inspection import (
+    DocumentDisposition,
+    extractor_for,
+    redact_pii,
+)
 from fastapi import Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,14 +21,16 @@ from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.persistence.postgres import PostgresDatabase
 from algen_agent_runtime.retrieval.contracts import SourceDocument
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
-from algen_agent_runtime.security.documents import DocumentDisposition, extractor_for, redact_pii
 from examples.case_study_responsible_hiring.app import (
     CONFIG_PATH,
     MIGRATION_PATH,
     TEMPLATE_CORPUS_PATH,
     UI_PATH,
 )
-from examples.case_study_responsible_hiring.application.contracts import HiringApplication
+from examples.case_study_responsible_hiring.application.contracts import (
+    DocumentFinding,
+    HiringApplication,
+)
 from examples.case_study_responsible_hiring.application.document_pipeline import (
     candidate_identity_entities,
 )
@@ -94,7 +101,16 @@ def create_hiring_app() -> Any:
             job_description=job_description.strip(),
             sanitized_resume=sanitized,
             document_sha256=hashlib.sha256(data).hexdigest(),
-            document_findings=extracted.findings,
+            document_findings=tuple(
+                DocumentFinding(
+                    kind=item.kind,
+                    severity=item.severity.value,
+                    message=item.message,
+                    page=item.page,
+                    evidence=item.evidence,
+                )
+                for item in extracted.findings
+            ),
             quarantined=extracted.disposition == DocumentDisposition.QUARANTINE,
         )
         await repository.save_application(application)

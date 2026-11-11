@@ -7,7 +7,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from algen_agent_runtime.security.documents import DocumentSecurityFinding
 from algen_agent_runtime.types.contracts import utc_now
 
 
@@ -92,6 +91,17 @@ class ReviewAnswer(BaseModel):
     limitations: tuple[str, ...]
 
 
+class DocumentFinding(BaseModel):
+    """What the resume inspection reported (``DocumentSecurityFinding`` in algen-agent-tools)."""
+
+    model_config = ConfigDict(frozen=True)
+    kind: str
+    severity: str
+    message: str
+    page: int | None = None
+    evidence: str | None = None
+
+
 class SecurityFindingSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: str
@@ -110,7 +120,7 @@ class HiringApplication(BaseModel):
     job_description: str
     sanitized_resume: str
     document_sha256: str
-    document_findings: tuple[DocumentSecurityFinding, ...] = ()
+    document_findings: tuple[DocumentFinding, ...] = ()
     quarantined: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 

@@ -225,7 +225,7 @@ class HiringWorkflow:
         return tuple(
             SecurityFindingSummary(
                 kind=item.kind,
-                severity=item.severity.value,
+                severity=item.severity,
                 message=item.message,
                 page=item.page,
             )
@@ -252,7 +252,7 @@ class HiringWorkflow:
                 "question": question,
                 "assessment": safe_assessment,
                 "document_finding_categories": [
-                    {"kind": item.kind, "severity": item.severity.value}
+                    {"kind": item.kind, "severity": item.severity}
                     for item in application.document_findings
                 ],
                 "rules": (
