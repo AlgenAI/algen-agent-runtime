@@ -37,13 +37,20 @@ Use `--dir <path>` to target a custom folder and `--force` to overwrite existing
 
 ## Non-Interactive Workflow Execution
 
-For automated testing, CI pipelines, and headless benchmarks, use workflow decision flags:
+By default a generated or example app asks a person at every approval checkpoint, and without an
+answer (no TTY, closed input, EOF) it fails closed: nothing is applied and it exits non-zero. For
+automated tests, CI pipelines and headless benchmarks only, choose the decision explicitly:
 
-- `--approve-all`: Automatically approve human checkpoints with default values.
-- `--reject-all`: Reject all pending review checkpoints.
-- `--answers-file <path.json>`: Provide explicit answers keyed by step ID or prompt substring.
+- `--approve-all`: approve every checkpoint without asking.
+- `--reject-all`: reject every pending checkpoint.
+- `--answers-file <path.json>` (examples): explicit answers keyed by step ID or prompt substring.
 
-Interactive prompts fail closed with non-zero exit when run without a TTY or on EOF.
+Never make approval the default of an app: a human-gated starter must not approve by itself.
+Tests pass the decision explicitly too.
+
+A generated workflow project names its hook module after the project (`<project>_hooks`) and lists
+it in `security.trusted_plugin_prefixes`; the workflow service (`algen-agent-runtime serve`) loads
+hook providers only from trusted modules, and `check` reports `HOOK_PROVIDER_UNTRUSTED` otherwise.
 
 ## Safe Starter Tools
 

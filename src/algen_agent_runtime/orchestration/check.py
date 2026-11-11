@@ -36,6 +36,7 @@ from algen_agent_runtime.workflows.contracts import (
     template_paths,
     upstream_nodes,
 )
+from algen_agent_runtime.workflows.loader import WorkflowHookLoader
 
 Severity = Literal["error", "warning"]
 Profile = Literal["studio", "standalone"]
@@ -167,7 +168,47 @@ def check_project(
                 )
             )
     found.extend(workflow_approval_issues(settings.workflows, inventory.tools))
+    found.extend(
+        hook_provider_issues(
+            settings.workflows, settings.security.trusted_plugin_prefixes, profile=profile
+        )
+    )
     return report([*found, *issues], inventory)
+
+
+def hook_provider_issues(
+    workflows: Mapping[str, WorkflowManifest],
+    trusted_prefixes: Sequence[str],
+    *,
+    profile: Profile = "studio",
+) -> Iterator[CheckIssue]:
+    """Workflows whose hook provider the workflow service would refuse to load.
+
+    The service (``algen-agent-runtime serve``) imports a hook provider only from a module
+    ``security.trusted_plugin_prefixes`` allows, and lists any other workflow as unavailable. A
+    host that loads the hooks itself, as a generated ``app.py`` does, still runs, so the problem
+    shows only once the project is served. Studio authorizes hook modules by its own operator
+    review, so for the studio profile this is a warning.
+    """
+    loader = WorkflowHookLoader(allowed_modules=tuple(trusted_prefixes))
+    for name, manifest in sorted(workflows.items()):
+        if manifest.hook_provider is None:
+            continue
+        module = manifest.hook_provider.split(":", 1)[0]
+        if loader.is_module_allowed(module):
+            continue
+        yield CheckIssue(
+            severity="error" if profile == "standalone" else "warning",
+            code="HOOK_PROVIDER_UNTRUSTED",
+            message=(
+                f"workflow {name!r} loads hooks from {module!r}, which "
+                "security.trusted_plugin_prefixes does not allow; the workflow service lists it "
+                "as unavailable and refuses to start it"
+            ),
+            field=f"workflows.{name}.hook_provider",
+            name=module,
+            suggestion=module,
+        )
 
 
 def workflow_approval_issues(
@@ -349,8 +390,22 @@ class _CodeScanner(ast.NodeVisitor):
         self._functions: list[str] = []
         self._env_reads: list[int] = []
         self._issues: list[CheckIssue] = []
+        # Names bound to a WorkflowHookRegistry: what a declared hook provider returns. Their
+        # register_handler calls are the workflow's own hooks, not container registration.
+        self._hook_registries: set[str] = set()
 
     def scan(self, tree: ast.AST) -> list[CheckIssue]:
+        for node in ast.walk(tree):
+            value = getattr(node, "value", None)
+            if (
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and isinstance(value, ast.Call)
+                and _call_name(value) == "WorkflowHookRegistry"
+            ):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                self._hook_registries.update(
+                    target.id for target in targets if isinstance(target, ast.Name)
+                )
         self.visit(tree)
         if self._env_reads:
             lines = ", ".join(str(line) for line in self._env_reads[:10])
@@ -445,16 +500,21 @@ class _CodeScanner(ast.NodeVisitor):
         elif not in_plugin and name in {"register", "register_provider", "register_handler"}:
             target = node.func.value if isinstance(node.func, ast.Attribute) else None
             registry = target.attr if isinstance(target, ast.Attribute) else None
-            if name in {"register_provider", "register_handler"} or registry in {
-                "tools",
-                "planners",
-                "contexts",
-                "verifiers",
-                "composers",
-                "policies",
-                "retrievers",
-                "semantics",
-            }:
+            hook_registry = isinstance(target, ast.Name) and target.id in self._hook_registries
+            if not hook_registry and (
+                name in {"register_provider", "register_handler"}
+                or registry
+                in {
+                    "tools",
+                    "planners",
+                    "contexts",
+                    "verifiers",
+                    "composers",
+                    "policies",
+                    "retrievers",
+                    "semantics",
+                }
+            ):
                 self._warn(
                     "POST_BUILD_REGISTRATION",
                     "registers a component on a built container or router; Studio cannot see "

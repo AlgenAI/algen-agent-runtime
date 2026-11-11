@@ -246,3 +246,55 @@ def test_check_profile_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
         )
     assert exited.value.code == 0
     assert json.loads(capsys.readouterr().out)["profile"] == "standalone"
+
+
+def test_registering_on_a_workflow_hook_registry_is_not_container_registration(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "hooks.py").write_text(
+        textwrap.dedent(
+            """
+            from algen_agent_runtime.workflows import WorkflowHookRegistry
+
+            def create_hooks(**_):
+                hooks = WorkflowHookRegistry()
+                hooks.register_handler("step.apply", lambda context: {})
+                return hooks
+
+            def build(container):
+                container.router.register_provider(object())
+            """
+        )
+    )
+
+    codes = [(issue.code, issue.location) for issue in scan_project_code(tmp_path)]
+
+    # The hook provider's registry is the workflow's; the router is the built container's.
+    assert codes == [("POST_BUILD_REGISTRATION", "hooks.py:10")]
+
+
+@pytest.mark.parametrize(("profile", "severity"), [("standalone", "error"), ("studio", "warning")])
+def test_an_untrusted_hook_provider_is_reported(
+    tmp_path: Path, profile: str, severity: str
+) -> None:
+    config = tmp_path / "agent.yaml"
+    workflow = textwrap.dedent(
+        """
+        workflows:
+          flow:
+            name: flow
+            version: 1.0.0
+            hook_provider: project_hooks:create_hooks
+            nodes:
+              - {id: step, kind: handler, handler: step.run, output_key: result}
+        """
+    )
+    config.write_text(workflow)
+
+    untrusted = check_project((config,), profile=profile)  # type: ignore[arg-type]
+    [issue] = [item for item in untrusted.issues if item.code == "HOOK_PROVIDER_UNTRUSTED"]
+    assert issue.severity == severity and issue.name == "project_hooks"
+
+    config.write_text("security:\n  trusted_plugin_prefixes: [project_hooks]\n" + workflow)
+    trusted = check_project((config,), profile=profile)  # type: ignore[arg-type]
+    assert not [item for item in trusted.issues if item.code == "HOOK_PROVIDER_UNTRUSTED"]
