@@ -332,8 +332,25 @@ class OpenAICompatibleProvider:
         return {"type": "text", "text": describe_for_text(block)}
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
-        messages = []
+        messages: list[dict[str, Any]] = []
+        # A tool message takes text only, so files a tool returned follow the run of tool
+        # results they belong to, in one user message.
+        held: dict[str, list[dict[str, Any]]] = {}
+
+        def release() -> None:
+            if held:
+                parts: list[dict[str, Any]] = []
+                for call_id, files in held.items():
+                    parts.append(
+                        {"type": "text", "text": f"Files returned by tool call {call_id}:"}
+                    )
+                    parts.extend(files)
+                messages.append({"role": "user", "content": parts})
+                held.clear()
+
         for message in request.messages:
+            if message.role != Role.TOOL:
+                release()
             content: Any = message.text_content
             blocks: list[dict[str, Any]] = []
             for block in message.content:
@@ -343,7 +360,11 @@ class OpenAICompatibleProvider:
                     url = block.url or f"data:{block.media_type};base64,{block.data}"
                     blocks.append({"type": "image_url", "image_url": {"url": url}})
                 elif block.type == "file":
-                    blocks.append(self._file_part(block))
+                    part = self._file_part(block)
+                    if message.role == Role.TOOL and part["type"] != "text":
+                        held.setdefault(message.tool_call_id or "", []).append(part)
+                        part = {"type": "text", "text": f"{describe_for_text(block)} (below)"}
+                    blocks.append(part)
             if len(blocks) > 1 or any(block["type"] != "text" for block in blocks):
                 content = blocks
             item: dict[str, Any] = {"role": message.role.value, "content": content}
@@ -368,6 +389,7 @@ class OpenAICompatibleProvider:
                     for call in message.tool_calls
                 ]
             messages.append(item)
+        release()
         payload: dict[str, Any] = {
             "model": request.model or self._default_model,
             "messages": messages,

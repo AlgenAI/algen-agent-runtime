@@ -6,7 +6,12 @@ import pytest
 from conftest import make_agent, make_runtime
 from pydantic import ValidationError
 
-from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_model_request
+from algen_agent_runtime.context.budget import (
+    estimate_request_tokens,
+    message_token_budget,
+    prepare_model_request,
+)
+from algen_agent_runtime.context.packing import estimate_message
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
@@ -17,6 +22,7 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.types.contracts import (
     Budget,
     ErrorKind,
+    FileBlock,
     FinishReason,
     ImageBlock,
     Message,
@@ -26,6 +32,7 @@ from algen_agent_runtime.types.contracts import (
     ModelStreamEvent,
     Role,
     RunRequest,
+    TextBlock,
     TokenUsage,
     ToolCall,
     ToolSpec,
@@ -213,8 +220,30 @@ def test_multimodal_input_is_not_silently_counted_as_a_short_url() -> None:
             )
         }
     )
-    with pytest.raises(ConfigurationError, match="image/file token costs"):
+    with pytest.raises(ConfigurationError, match="inline image token costs"):
         prepare_model_request(original, profile("small"))
+
+
+def test_attached_files_count_at_their_rough_cost_within_a_context_window() -> None:
+    original = request().model_copy(
+        update={
+            "messages": (
+                Message(
+                    role=Role.USER,
+                    content=(
+                        TextBlock(text="What is this?"),
+                        FileBlock(artifact_id="a", media_type="image/png"),
+                    ),
+                ),
+            )
+        }
+    )
+    selected = profile("small")
+
+    budget = message_token_budget(original, selected)
+
+    assert budget is not None
+    assert estimate_message(original.messages[0]) > 1_600
 
 
 @pytest.mark.parametrize(

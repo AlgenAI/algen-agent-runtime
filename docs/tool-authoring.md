@@ -288,6 +288,30 @@ A tool that returns a Pydantic model can declare the field instead:
   see [answer verification](verification.md#absence-claims-and-result-coverage). Reporting
   coverage is optional: a tool without it behaves as before.
 
+## Reading attachments and returning files
+
+A tool reads the run's attached files with `await context.read_attachment(artifact_id)`; a model
+that reads text only finds the id in the file's `[attachment: name, type, id=...]` placeholder.
+Documents attached for a tool to read (`attachments.tool_read_types`) reach tools only this way.
+
+A tool can show the model files it produced, such as page images of a poor scan, by returning
+them by reference. It must declare `returns_files` (off by default, since every file costs
+tokens):
+
+```python
+@tool(read(), returns_files=True)
+async def render_pages(document_id: str) -> ToolResult:
+    """Render a document's pages as images."""
+    stored = await artifacts.put(Artifact(tenant_id=..., name="page-1.png",
+                                          media_type="image/png", data=png))
+    return ToolResult(value={"pages": 1},
+                      files=(ToolFile(artifact_id=stored.id, media_type="image/png"),))
+```
+
+A function annotated `-> ToolResult` gets an open output schema, and its `ToolResult` (value,
+`files`, `failed`) reaches the Runtime whole. Each file is checked like a run attachment, tenant
+included; see [attachments](attachments.md#11-files-a-tool-returns).
+
 ## Notes for the user interface
 
 A tool can tell the user interface what a call did (a title, the files it touched, follow-ups to

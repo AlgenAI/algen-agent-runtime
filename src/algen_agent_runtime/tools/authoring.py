@@ -34,6 +34,7 @@ from algen_agent_runtime.tools.contracts import (
     Tool,
     ToolContext,
     ToolDefinition,
+    ToolResult,
 )
 from algen_agent_runtime.types.contracts import RetryPolicy
 
@@ -226,6 +227,10 @@ def _signature(function: Callable[..., Any]) -> _Signature:
         default = ... if parameter.default is parameter.empty else parameter.default
         fields[name] = (hints[name], default)
     output = hints.get("return", Any)
+    if output is ToolResult:
+        # A function returning a ToolResult (to hand files to the model, say) describes its
+        # value nowhere else, so its output schema is open.
+        output = Any
     if len(fields) == 1:
         [(name, (annotation, default))] = fields.items()
         if _is_model(annotation) and default is ...:
@@ -282,6 +287,7 @@ def build_tool(
     reconcile: Reconciler | None = None,
     compensation: CompensationHandler | None = None,
     failure_field: str | None = None,
+    returns_files: bool = False,
 ) -> Tool:
     """The :class:`Tool` for a typed function; ``@tool`` and ``Toolkit.tool`` call this.
 
@@ -293,6 +299,8 @@ def build_tool(
     effect; ``compensation`` undoes a call when an operator asks for it. ``failure_field`` names
     a field of the result that reports failure when it is ``false`` (``"ok"`` for
     ``{"ok": false, "error": ...}``): the call is recorded as failed and the model still gets it.
+    ``returns_files`` lets the function return a ``ToolResult`` whose ``files`` the model is
+    shown (docs/attachments.md, "Files a tool returns").
     """
     preset = preset or read()
     tool_name = name or function.__name__
@@ -329,6 +337,7 @@ def build_tool(
         volatile=volatile,
         cache_context=frozenset(cache_context),
         failure_field=failure_field,
+        returns_files=returns_files,
     )
 
     # The advertised schema closes every object, but a caller's Pydantic model may ignore unknown
@@ -364,6 +373,11 @@ def build_tool(
             result = function(**keyword_arguments)
         if inspect.isawaitable(result):
             result = await result
+        if isinstance(result, ToolResult):
+            # Kept whole, so its files and failure reach the executor.
+            return result.model_copy(
+                update={"value": output_adapter.dump_python(result.value, mode="json")}
+            )
         return output_adapter.dump_python(result, mode="json")
 
     approval = preset.approval_handler

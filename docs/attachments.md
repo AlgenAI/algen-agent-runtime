@@ -5,7 +5,8 @@ screenshot or a PDF. The model sees the file natively (vision or PDF input) in t
 as the question. Files are passed **by reference** to an uploaded artifact, never as inline bytes.
 
 Other documents (Word, Excel and PowerPoint files, CSV, text, e-mail) can ride along with a run
-for a **tool** to read: they never reach a model (section 10).
+for a **tool** to read: they never reach a model (section 10). A tool can also hand files it
+produces, such as page images, back to the model (section 11).
 
 Attachments are off by default: an agent or workflow must opt in. Text-only runs are unchanged.
 
@@ -212,6 +213,49 @@ These files never reach a provider and need no model capability. The model sees 
 `[attachment: contract.docx, application/vnd.openxmlformats-officedocument.wordprocessingml.document,
 id=<artifact_id>]` (no bytes are loaded for it) and passes the id to a tool, which reads the file
 with `await context.read_attachment(artifact_id)` (section 7).
+
+## 11. Files a tool returns
+
+A tool can show the model files it produced, such as page images of a scan its text extraction
+could not read. The tool declares `returns_files=True` (off by default: every file costs tokens)
+and returns them by reference to artifacts it stored, for the run's tenant, in the Runtime's
+artifact store (`store` below; the host hands the tool that store):
+
+```python
+from algen_agent_runtime.tools.contracts import ToolFile, ToolResult
+
+async def render_pages(arguments, context):
+    artifact = await store.put(Artifact(tenant_id=context.tenant_id, name="page-1.png",
+                                        media_type="image/png", data=png))
+    return ToolResult(
+        value={"pages": 1, "coverage": "none"},
+        files=(ToolFile(artifact_id=artifact.id, media_type="image/png", name="page 1"),),
+    )
+```
+
+Each file is checked like a run attachment: it must be the run tenant's and `available`, an image
+or PDF (by its bytes) that `security.allowed_attachment_types` allows and that matches a declared
+`media_type`, and within model limits (5 MB and 8000 px for images, 32 MB for PDFs), at most
+`security.max_attachments_per_run` files and `security.max_attachment_bytes_total` bytes per
+result. It must also fit the run's remaining token budget at its rough cost (section 5).
+
+A file that passes becomes a `file` block on the tool's result message when one of the agent's
+models can read it (`images`, or `files` for PDF); the run then uses such a model for the calls
+that follow. Otherwise the model sees the `[attachment: name, type, id=...]` placeholder. A file
+that fails a check becomes a note naming why (`[file page 1 from the tool was refused: ...]`); the
+call itself still succeeds. A tool without `returns_files` that returns files gets every file
+refused that way. The `tool.completed` event reports `file_count` and `files_refused`, and a
+refusal is audited (`tool.files`, `refused`).
+
+A profile with `context_window_tokens` now packs messages holding attached files (at the rough
+cost of section 5) instead of failing with a configuration error.
+
+As with run attachments, the run's checkpoints, events and memory hold only the reference, the
+bytes are loaded for each provider call and a note that files are data follows them, and
+`retention: turn` retires them from session memory. Anthropic places images and PDFs inside the
+`tool_result` block. OpenAI-compatible APIs take only text in a tool message, so the files follow
+the call's results in a user message (`Files returned by tool call <id>:`), with the placeholder in
+the tool message itself.
 
 ## Privacy and retention
 

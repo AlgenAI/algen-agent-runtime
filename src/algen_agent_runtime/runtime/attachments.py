@@ -19,12 +19,14 @@ import io
 import re
 import struct
 import zipfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from algen_agent_runtime.exceptions.errors import CapabilityError
 from algen_agent_runtime.types.contracts import (
     KNOWN_ATTACHMENT_TYPES,
+    MODEL_ATTACHMENT_TYPES,
     TEXT_ATTACHMENT_TYPES,
     TOOL_READ_ATTACHMENT_TYPES,
     AgentDefinition,
@@ -42,6 +44,9 @@ from algen_agent_runtime.types.contracts import (
     TextBlock,
 )
 from algen_agent_runtime.types.interfaces import ArtifactStore
+
+if TYPE_CHECKING:
+    from algen_agent_runtime.tools.contracts import ToolFile
 
 # Provider limits that hold for the providers the Runtime ships (Anthropic's are the tightest):
 # larger files are refused rather than sent to fail at the provider. Conversion and downscaling
@@ -476,3 +481,91 @@ def rendered_text(message: Message) -> str:
         if isinstance(block, TextBlock | FileBlock)
     ]
     return "\n".join(parts)
+
+
+@dataclass(frozen=True)
+class ToolFiles:
+    """What a tool result's files became: blocks for the TOOL message (a ``FileBlock`` per file a
+    model will read, a placeholder or a refusal note otherwise) and how many were refused."""
+
+    blocks: tuple[ContentBlock, ...] = ()
+    shown: int = 0
+    refused: int = 0
+
+
+async def tool_files(
+    files: Sequence[ToolFile],
+    *,
+    declared: bool,
+    tenant_id: str,
+    artifacts: ArtifactStore | None,
+    limits: AttachmentLimits,
+    remaining_tokens: int | None,
+    readable: Callable[[frozenset[str]], Awaitable[bool]],
+) -> ToolFiles:
+    """Check the files a tool returned like run attachments, and turn them into message blocks.
+
+    Each must be the tenant's, available, an image or PDF by its bytes (matching any declared
+    type) that the deployment allows, within model limits, the per-result count and size limits,
+    and the run's remaining token budget. A file that passes is a ``FileBlock`` when
+    ``readable(capabilities)`` says one of the agent's models can read it, else the
+    ``[attachment: ...]`` placeholder. A file that fails is a note naming why; the call itself
+    stands. ``declared`` is the tool's ``returns_files``: without it every file is refused.
+    """
+    blocks: list[ContentBlock] = []
+    needed: frozenset[str] = frozenset()
+    allowed = MODEL_ATTACHMENT_TYPES & limits.allowed_types
+    total = 0
+    shown = refused = 0
+    for index, file in enumerate(files):
+        label = file.name or file.artifact_id
+        problem: str | None = None
+        real: str | None = None
+        name: str | None = file.name
+        if not declared:
+            problem = "the tool does not declare returns_files"
+        elif index >= limits.max_count:
+            problem = f"a result may hand at most {limits.max_count} files to the model"
+        else:
+            artifact = await artifacts.get(file.artifact_id, tenant_id) if artifacts else None
+            # Another tenant's artifact is reported exactly like a missing one.
+            if artifact is None:
+                problem = "was not found"
+            elif artifact.status is not ArtifactStatus.AVAILABLE:
+                problem = f"is {artifact.status.value}, not available"
+            else:
+                name = name or artifact.name
+                sniffed = sniff_media_type(artifact.data)
+                real = accepted_media_type(sniffed, file.media_type) if sniffed else None
+                if sniffed is None:
+                    problem = "is an unrecognised type"
+                elif real is None:
+                    problem = f"is declared {file.media_type} but is {sniffed}"
+                elif real not in allowed:
+                    problem = f"is {real}; a model reads only {', '.join(sorted(allowed))}"
+                elif reason := file_problem(artifact.data, real):
+                    problem = reason
+                elif total + len(artifact.data) > limits.max_bytes_total:
+                    problem = f"would take the result past {limits.max_bytes_total} bytes"
+                else:
+                    cost = estimated_tokens(
+                        FileBlock(artifact_id=file.artifact_id, media_type=real)
+                    )
+                    if remaining_tokens is not None and cost > remaining_tokens:
+                        problem = "does not fit the run's remaining token budget"
+                    else:
+                        total += len(artifact.data)
+                        if remaining_tokens is not None:
+                            remaining_tokens -= cost
+        if problem is not None or real is None:
+            refused += 1
+            blocks.append(TextBlock(text=f"[file {label} from the tool was refused: {problem}]"))
+            continue
+        wanted = needed | required_capabilities([real])
+        if await readable(wanted):
+            needed = wanted
+            shown += 1
+            blocks.append(FileBlock(artifact_id=file.artifact_id, media_type=real))
+        else:
+            blocks.append(TextBlock(text=placeholder(file.artifact_id, name, real)))
+    return ToolFiles(blocks=tuple(blocks), shown=shown, refused=refused)

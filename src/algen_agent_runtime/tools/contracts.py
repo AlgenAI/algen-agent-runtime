@@ -87,6 +87,13 @@ class ToolDefinition(BaseModel):
         "be an importable top-level function and its arguments, context and result must pickle.",
     )
 
+    returns_files: bool = Field(
+        default=False,
+        description="The tool may hand files to the model (``ToolResult.files``), such as page "
+        "images; the Runtime refuses files from a tool that does not set this. Off by default: "
+        "every file costs tokens.",
+    )
+
     failure_field: str | None = Field(
         default=None,
         min_length=1,
@@ -385,14 +392,29 @@ class ToolContext(BaseModel):
         )
 
 
+class ToolFile(BaseModel):
+    """A file a tool hands to the model, by reference to an artifact stored for the run's tenant
+    (an image or PDF). ``media_type``, when given, must match the file's bytes; ``name`` labels
+    it for the model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_id: str = Field(min_length=1, max_length=128)
+    media_type: str | None = Field(default=None, max_length=127)
+    name: str | None = Field(default=None, max_length=200)
+
+
 class ToolResult(BaseModel):
     """What a call returned. A handler may return one instead of a bare value, to set
-    ``failed`` or ``metadata``; its ``value`` is checked like any other result."""
+    ``failed``, ``metadata`` or ``files``; its ``value`` is checked like any other result.
+
+    ``files`` are shown to the model with the result, for a tool whose definition sets
+    ``returns_files`` (see docs/attachments.md, "Files a tool returns")."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     value: Any
     metadata: dict[str, Any] = Field(default_factory=dict)
     artifact_ids: tuple[str, ...] = ()
+    files: tuple[ToolFile, ...] = Field(default=(), max_length=32)
     redacted: bool = False
     failed: bool = Field(
         default=False,
@@ -410,6 +432,9 @@ class ToolResult(BaseModel):
         data = handler(self)
         if isinstance(data, dict) and not self.failed:
             data.pop("failed", None)
+        # Likewise for 0.1 replicas, which have no ``files``.
+        if isinstance(data, dict) and not self.files:
+            data.pop("files", None)
         return data
 
 

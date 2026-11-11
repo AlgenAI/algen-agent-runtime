@@ -7,7 +7,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import aclosing
 from contextvars import Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
@@ -318,6 +318,7 @@ class _ToolCallOutcome:
     working_update: WorkingState | None = None
     skill_update: LoadedSkills | None = None
     memory_receipt: MemoryReceipt | None = None
+    files: run_attachments.ToolFiles = field(default_factory=run_attachments.ToolFiles)
 
 
 @dataclass(frozen=True)
@@ -2774,13 +2775,63 @@ class AgentRuntime:
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
             if self.telemetry_include_content:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
+            files = (
+                await self._tool_files(state, agent, tool.definition, result)
+                if result.files
+                else run_attachments.ToolFiles()
+            )
+            span.set_attribute("tool.file_count", files.shown)
         return _ToolCallOutcome(
             result=result,
             text=tool_text,
             working_update=working_update,
             skill_update=skill_update,
             memory_receipt=memory_receipt,
+            files=files,
         )
+
+    async def _tool_files(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        definition: ToolDefinition,
+        result: ToolResult,
+    ) -> run_attachments.ToolFiles:
+        """The blocks a tool result's files add to its message: checked like run attachments,
+        tenant included, and shown as files only when one of the agent's models reads them."""
+        profiles = (agent.default_model, *agent.fallback_models)
+        # The run's earlier files already narrow the models it can use.
+        earlier = run_attachments.required_capabilities(
+            block.media_type or ""
+            for message in state.messages
+            for block in message.content
+            if isinstance(block, FileBlock)
+        )
+
+        async def readable(needed: frozenset[str]) -> bool:
+            narrowed = run_attachments.with_capabilities(profiles, earlier | needed)
+            return bool(await self.router.candidates(narrowed, agent.model_allowlist))
+
+        files = await run_attachments.tool_files(
+            result.files,
+            declared=definition.returns_files,
+            tenant_id=state.request.tenant_id,
+            artifacts=self.artifacts,
+            limits=self.attachment_limits,
+            remaining_tokens=max(
+                0, self._token_limit(state, agent) - state.summary.usage.total_tokens
+            ),
+            readable=readable,
+        )
+        if files.refused:
+            await self._audit(
+                state,
+                "tool.files",
+                "refused",
+                definition.name,
+                {"refused": files.refused, "shown": files.shown},
+            )
+        return files
 
     async def _record_tool_call(
         self,
@@ -2810,6 +2861,8 @@ class AgentRuntime:
                 tool_call_id=call_id,
                 content=(
                     TextBlock(text=tool_text),
+                    # Files by reference only: the bytes are loaded for each provider call.
+                    *outcome.files.blocks,
                     *await self._wrap_up_blocks(state, agent, action),
                 ),
             )
@@ -2829,6 +2882,11 @@ class AgentRuntime:
                 "result_chars": len(tool_text),
                 "artifact_count": len(result.artifact_ids),
                 "artifact_ids": list(result.artifact_ids) if self.telemetry_include_content else [],
+                **(
+                    {"file_count": outcome.files.shown, "files_refused": outcome.files.refused}
+                    if result.files
+                    else {}
+                ),
             },
             action.id,
         )
@@ -3330,8 +3388,9 @@ class AgentRuntime:
                 persisted = [run_attachments.user_message(state.request)]
                 if state.output_text:
                     persisted.append(Message.text(Role.ASSISTANT, state.output_text))
-            if state.request.attachments and agent.attachments.retention == "turn":
-                # Later turns see a note, not the file: it is not re-sent and billed again.
+            if run_attachments.has_files(persisted) and agent.attachments.retention == "turn":
+                # Later turns see a note, not the file: it is not re-sent and billed again. That
+                # holds for files a tool returned as well as the run's own attachments.
                 persisted = await run_attachments.retire(
                     persisted, state.request.tenant_id, self.artifacts
                 )
