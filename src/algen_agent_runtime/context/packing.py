@@ -4,7 +4,7 @@ import logging
 from collections.abc import Sequence
 
 from algen_agent_runtime.exceptions.errors import BudgetExceededError, ConflictError
-from algen_agent_runtime.runtime.attachments import IMAGE_TOKENS, PDF_TOKENS
+from algen_agent_runtime.runtime.attachments import estimated_tokens
 from algen_agent_runtime.types.contracts import (
     DEFAULT_SHORTENED_TOOL_RESULT_NOTE,
     FileBlock,
@@ -29,12 +29,11 @@ def estimate_message(message: Message) -> int:
     """Dependency-free estimate including tool arguments and content metadata.
 
     This bounds our estimate, not a provider's tokenizer. An attached image or PDF counts at a
-    rough fixed cost, since only its reference is in the message.
+    rough fixed cost, since only its reference is in the message; a file a tool reads costs only
+    its placeholder.
     """
     files = sum(
-        PDF_TOKENS if block.media_type == "application/pdf" else IMAGE_TOKENS
-        for block in message.content
-        if isinstance(block, FileBlock)
+        estimated_tokens(block) for block in message.content if isinstance(block, FileBlock)
     )
     return max(1, (len(message.model_dump_json(exclude_none=True)) + 3) // 4) + files
 

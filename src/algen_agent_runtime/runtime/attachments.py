@@ -7,17 +7,26 @@ limits, and that a model able to read them is configured. The user message then 
 ``FileBlock`` per file: history, memory, checkpoints and events hold only the reference. Just
 before a provider call the bytes are loaded onto a copy of the request; that copy is never
 stored.
+
+Files of a type the agent lists under ``tool_read_types`` (Office documents, CSV, text, e-mail)
+never reach a provider: the model sees ``[attachment: name, type, id=...]`` and hands the id to a
+tool that reads it.
 """
 
 from __future__ import annotations
 
+import io
+import re
 import struct
+import zipfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from algen_agent_runtime.exceptions.errors import CapabilityError
 from algen_agent_runtime.types.contracts import (
-    DEFAULT_ATTACHMENT_TYPES,
+    KNOWN_ATTACHMENT_TYPES,
+    TEXT_ATTACHMENT_TYPES,
+    TOOL_READ_ATTACHMENT_TYPES,
     AgentDefinition,
     ArtifactDescriptor,
     ArtifactStatus,
@@ -55,13 +64,19 @@ DATA_NOTE = (
 class AttachmentLimits:
     """Deployment limits (``security.*``), applied on top of each agent's AttachmentPolicy."""
 
-    allowed_types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    allowed_types: frozenset[str] = KNOWN_ATTACHMENT_TYPES
     max_count: int = 10
     max_bytes_total: int = 20_971_520
 
 
 def sniff_media_type(data: bytes) -> str | None:
-    """The file's real type from its first bytes; None when it is none the Runtime knows."""
+    """The file's real type from its bytes; None when it is none the Runtime knows.
+
+    Images and PDF by their magic numbers; Office documents by their container (the parts of an
+    OOXML zip, the streams of an OLE compound file); e-mail (RFC 822) by its header block; and
+    any other text (no NUL byte) as ``text/plain``. The declared type tells text apart (CSV,
+    Markdown, JSON): see :func:`accepted_media_type`.
+    """
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -74,7 +89,127 @@ def sniff_media_type(data: bytes) -> str | None:
         return "application/pdf"
     if data[4:8] == b"ftyp" and data[8:12] in {b"heic", b"heix", b"mif1", b"msf1", b"heim"}:
         return "image/heic"
+    if data.startswith(_OLE_MAGIC):
+        return _ole_type(data)
+    if data.startswith(b"PK\x03\x04"):
+        return _ooxml_type(data)
+    if _is_text(data):
+        return "message/rfc822" if _is_rfc822(data) else "text/plain"
     return None
+
+
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+# Streams that name an OLE compound file's application, most specific first: an Outlook message
+# can carry a Word document as an attachment, never the other way round.
+_OLE_STREAMS = (
+    ("__properties_version1.0", "application/vnd.ms-outlook"),
+    ("WordDocument", "application/msword"),
+    ("Workbook", "application/vnd.ms-excel"),
+    ("Book", "application/vnd.ms-excel"),
+    ("PowerPoint Document", "application/vnd.ms-powerpoint"),
+)
+_OOXML_PARTS = (
+    ("word/", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("xl/", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ("ppt/", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+)
+
+
+def _ole_type(data: bytes) -> str | None:
+    """The application of an OLE compound file (legacy .doc, .xls, .ppt, .msg), from the names in
+    its directory. Directory entries are 128 bytes, aligned to 128 after the 512-byte header: a
+    UTF-16 name, its length in bytes at +64 and the object type at +66 (1 storage, 2 stream,
+    5 root)."""
+    names: set[str] = set()
+    for offset in range(512, len(data) - 127, 128):
+        (length,) = struct.unpack("<H", data[offset + 64 : offset + 66])
+        if not 4 <= length <= 64 or length % 2 or data[offset + 66] not in {1, 2, 5}:
+            continue
+        try:
+            names.add(data[offset : offset + length - 2].decode("utf-16-le"))
+        except UnicodeDecodeError:
+            continue
+    for stream, media_type in _OLE_STREAMS:
+        if stream in names:
+            return media_type
+    return None
+
+
+def _ooxml_type(data: bytes) -> str | None:
+    """The kind of an Office Open XML document, from the parts its zip lists. Only the central
+    directory is read; nothing is decompressed."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = archive.namelist()
+    except (zipfile.BadZipFile, ValueError, OSError):
+        return None
+    if "[Content_Types].xml" not in names:
+        return None
+    for prefix, media_type in _OOXML_PARTS:
+        if any(name.startswith(prefix) for name in names):
+            return media_type
+    return None
+
+
+_TEXT_SAMPLE_BYTES = 65_536
+# Control bytes that text does not hold (tab, line and form feed, carriage return and escape do).
+_BINARY_BYTES = bytes(range(0x01, 0x09)) + bytes(range(0x0E, 0x1B)) + bytes(range(0x1C, 0x20))
+
+
+def _is_text(data: bytes) -> bool:
+    """Not empty, no NUL byte anywhere, and almost no other control bytes in its first 64 KiB."""
+    if not data or b"\x00" in data:
+        return False
+    sample = data[:_TEXT_SAMPLE_BYTES]
+    return len(sample.translate(None, _BINARY_BYTES)) >= len(sample) * 0.99
+
+
+_HEADER_FIELD = re.compile(rb"^[!-9;-~]+:")
+_MESSAGE_FIELDS = frozenset(
+    {b"to", b"cc", b"subject", b"date", b"message-id", b"mime-version", b"received"}
+)
+
+
+def _is_rfc822(data: bytes) -> bool:
+    """Whether text is an e-mail message: it opens with a header block (``Name: value`` lines and
+    their folded continuations) holding a From field and at least two other message fields."""
+    fields: set[bytes] = set()
+    for index, line in enumerate(data[:_TEXT_SAMPLE_BYTES].splitlines()):
+        if not line:
+            break
+        if index and line[:1] in {b" ", b"\t"}:
+            continue
+        if not _HEADER_FIELD.match(line):
+            return False
+        fields.add(line.split(b":", 1)[0].lower())
+    return b"from" in fields and len(fields & _MESSAGE_FIELDS) >= 2
+
+
+def accepted_media_type(real: str, declared: str | None) -> str | None:
+    """The file's type from its sniffed type and the one declared for it; None when the two
+    disagree. The bytes only say "text", so a declared text type (``text/csv``) names text; any
+    other type must match exactly. With nothing declared, the sniffed type."""
+    if not declared:
+        return real
+    declared = declared.split(";", 1)[0].strip().lower()
+    if declared == real:
+        return real
+    if real in {"text/plain", "message/rfc822"} and declared in TEXT_ATTACHMENT_TYPES:
+        return declared
+    return None
+
+
+def is_tool_read(media_type: str | None) -> bool:
+    """Whether files of this type are read by a tool and never sent to a model."""
+    return media_type in TOOL_READ_ATTACHMENT_TYPES
+
+
+def estimated_tokens(block: FileBlock) -> int:
+    """Rough model-input cost of one file reference, for budgets and context packing: a file a
+    tool reads costs only its placeholder."""
+    if is_tool_read(block.media_type):
+        return 0
+    return PDF_TOKENS if block.media_type == "application/pdf" else IMAGE_TOKENS
 
 
 def image_size(data: bytes, media_type: str) -> tuple[int, int] | None:
@@ -149,9 +284,11 @@ def file_problem(data: bytes, media_type: str) -> str | None:
 
 
 def required_capabilities(media_types: Iterable[str]) -> frozenset[str]:
-    """The model capabilities reading these files needs."""
+    """The model capabilities reading these files needs (none for files a tool reads)."""
     needed: set[str] = set()
     for media_type in media_types:
+        if is_tool_read(media_type):
+            continue
         needed.add("images" if media_type.startswith("image/") else "files")
     return frozenset(needed)
 
@@ -211,7 +348,7 @@ async def validate(
         )
     if len({item.artifact_id for item in attachments}) != len(attachments):
         raise CapabilityError("an attachment is listed more than once")
-    allowed = policy.types & limits.allowed_types
+    allowed = (policy.types | policy.tool_read_types) & limits.allowed_types
     checked: list[RunAttachment] = []
     total = 0
     for item in attachments:
@@ -223,15 +360,23 @@ async def validate(
             raise CapabilityError(
                 f"attachment {item.artifact_id!r} is {artifact.status.value}, not available"
             )
-        real = sniff_media_type(artifact.data)
-        if real is None or real not in allowed:
-            shown = real or "an unrecognised type"
+        sniffed = sniff_media_type(artifact.data)
+        if sniffed is None:
             raise CapabilityError(
-                f"attachment {item.artifact_id!r} is {shown}; allowed: {', '.join(sorted(allowed))}"
+                f"attachment {item.artifact_id!r} is an unrecognised type; "
+                f"allowed: {', '.join(sorted(allowed))}"
             )
-        if item.media_type and item.media_type != real:
+        real = accepted_media_type(sniffed, item.media_type)
+        if real is None:
             raise CapabilityError(
-                f"attachment {item.artifact_id!r} is declared {item.media_type} but is {real}"
+                f"attachment {item.artifact_id!r} is declared {item.media_type} but is {sniffed}"
+            )
+        if not item.media_type and sniffed == "text/plain":
+            # Text names its kind only by the type it was uploaded with (text/csv, say).
+            real = accepted_media_type(sniffed, artifact.media_type) or sniffed
+        if real not in allowed:
+            raise CapabilityError(
+                f"attachment {item.artifact_id!r} is {real}; allowed: {', '.join(sorted(allowed))}"
             )
         if problem := file_problem(artifact.data, real):
             raise CapabilityError(f"attachment {item.artifact_id!r} {problem}")
@@ -249,7 +394,8 @@ async def resolve(
 
     Files are loaded again, tenant-checked, at every call; an artifact that has since expired,
     been deleted or stopped being available becomes a short text note instead of failing the
-    run. A note that files are data, not instructions, follows them.
+    run. A file a tool reads becomes its ``[attachment: name, type, id=...]`` placeholder, and
+    its bytes are not loaded. A note that files are data, not instructions, follows them.
     """
     if not has_files(request.messages):
         return request
@@ -272,6 +418,12 @@ async def resolve(
 async def _resolved(
     block: FileBlock, tenant_id: str, artifacts: ArtifactStore | None
 ) -> ContentBlock:
+    if is_tool_read(block.media_type):
+        described = await artifacts.describe(block.artifact_id, tenant_id) if artifacts else None
+        if described is None or described.status is not ArtifactStatus.AVAILABLE:
+            name = described.name if described is not None else block.artifact_id
+            return TextBlock(text=f"[attachment {name} is no longer available]")
+        return TextBlock(text=placeholder(block.artifact_id, described.name, block.media_type))
     artifact = await artifacts.get(block.artifact_id, tenant_id) if artifacts else None
     if artifact is None or artifact.status is not ArtifactStatus.AVAILABLE:
         name = artifact.name if artifact is not None else block.artifact_id
@@ -307,9 +459,12 @@ async def retire(
 def describe_for_text(block: FileBlock) -> str:
     """How a provider that cannot read files shows one: ``[attachment: name, type, id=...]``.
     The artifact id lets a text-only model hand the file to a tool that reads attachments."""
-    name = block.name or block.artifact_id
-    media_type = block.media_type or "unknown"
-    return f"[attachment: {name}, {media_type}, id={block.artifact_id}]"
+    return placeholder(block.artifact_id, block.name, block.media_type)
+
+
+def placeholder(artifact_id: str, name: str | None, media_type: str | None) -> str:
+    """``[attachment: name, type, id=artifact_id]``: a file shown to a model as text."""
+    return f"[attachment: {name or artifact_id}, {media_type or 'unknown'}, id={artifact_id}]"
 
 
 def rendered_text(message: Message) -> str:

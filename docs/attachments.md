@@ -4,6 +4,9 @@ An agent can read files a caller gives it: a photo of an ID document, a scanned 
 screenshot or a PDF. The model sees the file natively (vision or PDF input) in the same model call
 as the question. Files are passed **by reference** to an uploaded artifact, never as inline bytes.
 
+Other documents (Word, Excel and PowerPoint files, CSV, text, e-mail) can ride along with a run
+for a **tool** to read: they never reach a model (section 10).
+
 Attachments are off by default: an agent or workflow must opt in. Text-only runs are unchanged.
 
 ## 1. Opt in
@@ -15,24 +18,32 @@ agents:
     attachments:
       enabled: true
       types: [image/png, image/jpeg, image/webp, image/gif, application/pdf]  # the default
+      tool_read_types: []   # none by default; see section 10
       max_count: 5          # default 5, at most 32
       retention: turn       # turn (default) or session; see "Cost" below
 ```
+
+`types` lists what the model reads, and may only hold images and PDF; a type a model cannot read
+(`text/csv`, say) belongs in `tool_read_types`, and settings validation rejects it in `types`.
 
 The deployment sets the outer limits (an agent can only narrow them):
 
 ```yaml
 security:
-  allowed_attachment_types: [image/png, image/jpeg, image/webp, image/gif, application/pdf]
+  allowed_attachment_types: [image/png, application/pdf, text/csv]  # default: every known type
   max_attachments_per_run: 10
   max_attachment_bytes_total: 20971520   # 20 MiB per run
   upload_scanner: basic                  # none (default) or basic; see "Scanning"
 ```
 
+`allowed_attachment_types` defaults to every type the Runtime recognises (the model types and the
+tool-read types of section 10); agents still opt in to each.
+
 `GET /v1/agents` returns each agent's `attachments` policy and `GET /v1/workflows` each
 workflow's. A host shows an attach control only when the agent (or workflow) has
 `enabled: true` **and** its default or fallback model reports the needed capability (`images`, or
-`files` for PDF), and uses `types` as the file picker's `accept` list.
+`files` for PDF), and uses `types` plus `tool_read_types` as the file picker's `accept` list
+(files a tool reads need no model capability).
 
 ## 2. Upload, then run
 
@@ -66,7 +77,8 @@ The run is refused (it fails with a clear error, and no model is called) when:
 - an artifact is missing, belongs to another tenant (reported as missing), or is not `available`;
 - its **real** type, read from the bytes (magic numbers), is not allowed by the agent and by
   `security.allowed_attachment_types`, or differs from the declared `media_type`. Formats models do
-  not read, such as HEIC, are refused; the Runtime does not convert or downscale;
+  not read, such as HEIC, are refused unless a tool reads them (section 10); the Runtime does not
+  convert or downscale;
 - the count or total size exceeds `max_count`, `security.max_attachments_per_run` or
   `security.max_attachment_bytes_total`;
 - a file exceeds what models accept: images over 5 MB or 8000 px on a side, malformed images, PDFs
@@ -159,10 +171,47 @@ or when nodes pass attachments in a workflow that does not accept them.
 Uploads start `pending_scan` and are unusable until something makes them `available`. With
 `security.upload_scanner: basic` the Runtime's `BasicArtifactScanner` scans each upload as it
 arrives: it quarantines an image or PDF whose bytes are not what it claims, is malformed, or exceeds
-model limits, and makes everything else available (types it does not know with
-`reason_code: not_inspected`). It records scan evidence before the status changes. It does not
-inspect content: hosts add that with their own `ArtifactScanner`, for example over the document
-inspectors (moving to `algen-agent-tools`).
+model limits, and a document or text file declared as an image or PDF. Everything else is made
+available: `reason_code: clean` when the declared type agrees with the bytes, `not_inspected` for
+types it does not know or a document whose declared type disagrees (a run still refuses that
+mismatch). It records scan evidence before the status changes. It does not inspect content: hosts
+add that with their own `ArtifactScanner`, for example over the document inspectors (moving to
+`algen-agent-tools`).
+
+## 10. Files a tool reads
+
+Word, Excel and PowerPoint files, CSV, text and e-mail can be attached to a run for a tool to read,
+such as `algen-agent-tools`' `documents.extract_text`. List them under `tool_read_types`:
+
+```yaml
+attachments:
+  enabled: true
+  tool_read_types:
+    - application/vnd.openxmlformats-officedocument.*   # .docx, .xlsx, .pptx
+    - text/csv
+    - message/rfc822
+```
+
+A trailing `*` stands for every known type with that prefix. The types a tool can read, each
+recognised from the file's bytes:
+
+| Type | Recognised by |
+|---|---|
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (and `.spreadsheetml.sheet`, `.presentationml.presentation`) | a zip with `[Content_Types].xml` and `word/`, `xl/` or `ppt/` parts (only the zip's directory is read) |
+| `application/msword`, `application/vnd.ms-excel`, `application/vnd.ms-powerpoint`, `application/vnd.ms-outlook` | an OLE compound file with a `WordDocument`, `Workbook`, `PowerPoint Document` or `__properties_version1.0` stream |
+| `message/rfc822` | text opening with a header block that has `From` and two of `To`, `Cc`, `Subject`, `Date`, `Message-ID`, `MIME-Version`, `Received` |
+| `text/plain`, `text/csv`, `text/tab-separated-values`, `text/markdown`, `text/html`, `text/xml`, `application/xml`, `application/json` | text: no NUL byte, almost no other control bytes |
+| `image/heic` | its `ftyp` box |
+
+Text only says it is text, so the declared type names it: `media_type` on the attachment, or else
+the type the file was uploaded with, and plain `text/plain` otherwise. Any other declared type must
+match the bytes. A type cannot be in both `types` and `tool_read_types` (settings validation fails),
+and every other check of section 3 holds, the tenant check included.
+
+These files never reach a provider and need no model capability. The model sees each as
+`[attachment: contract.docx, application/vnd.openxmlformats-officedocument.wordprocessingml.document,
+id=<artifact_id>]` (no bytes are loaded for it) and passes the id to a tool, which reads the file
+with `await context.read_attachment(artifact_id)` (section 7).
 
 ## Privacy and retention
 

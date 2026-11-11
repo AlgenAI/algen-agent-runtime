@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -498,6 +499,41 @@ class WrapUpPolicy(StrictModel):
 DEFAULT_ATTACHMENT_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
 )
+# The types a model reads natively (vision or PDF input): what ``AttachmentPolicy.types`` lists.
+MODEL_ATTACHMENT_TYPES = DEFAULT_ATTACHMENT_TYPES
+# Text types. The bytes only say "text", so the declared type tells them apart.
+TEXT_ATTACHMENT_TYPES = frozenset(
+    {
+        "text/plain",
+        "text/csv",
+        "text/tab-separated-values",
+        "text/markdown",
+        "text/html",
+        "text/xml",
+        "application/xml",
+        "application/json",
+    }
+)
+# The types a run may carry for a tool to read (``AttachmentPolicy.tool_read_types``). They never
+# reach a model, which sees ``[attachment: name, type, id=...]`` instead, and each is recognised
+# from its bytes.
+TOOL_READ_ATTACHMENT_TYPES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.ms-outlook",
+        "message/rfc822",
+        "image/heic",
+        *TEXT_ATTACHMENT_TYPES,
+    }
+)
+# Every type a run may carry: the deployment's default ceiling (security.allowed_attachment_types).
+# Agents still opt in to each type.
+KNOWN_ATTACHMENT_TYPES = MODEL_ATTACHMENT_TYPES | TOOL_READ_ATTACHMENT_TYPES
 
 
 class RunAttachment(StrictModel):
@@ -513,12 +549,70 @@ class AttachmentPolicy(StrictModel):
     Off by default. ``retention`` says how long a file stays in what the model reads: ``turn``
     replaces it with a short note once the turn ends, so it is not billed on every later turn;
     ``session`` keeps it for the session's later turns.
+
+    ``types`` are read by the model; ``tool_read_types`` (Office documents, CSV, text, e-mail)
+    never reach a model: it sees ``[attachment: name, type, id=...]`` and hands the id to a
+    reader tool, which calls ``ToolContext.read_attachment``.
     """
 
     enabled: bool = False
     types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    tool_read_types: frozenset[str] = Field(
+        default=frozenset(),
+        description="Types a run may carry for a tool to read; they never reach a model. A "
+        "trailing '*' (application/vnd.openxmlformats-officedocument.*) matches every known "
+        "type with that prefix. None by default.",
+    )
     max_count: int = Field(default=5, ge=1, le=32)
     retention: Literal["turn", "session"] = "turn"
+
+    @field_validator("tool_read_types", mode="before")
+    @classmethod
+    def _expand_patterns(cls, value: Any) -> Any:
+        if isinstance(value, str) or not isinstance(value, list | tuple | set | frozenset):
+            return value
+        expanded: set[Any] = set()
+        for item in value:
+            if isinstance(item, str) and item.endswith("*"):
+                matched = {
+                    known for known in TOOL_READ_ATTACHMENT_TYPES if known.startswith(item[:-1])
+                }
+                if not matched:
+                    raise ValueError(f"tool_read_types: {item!r} matches no type a tool can read")
+                expanded |= matched
+            else:
+                expanded.add(item)
+        return frozenset(expanded)
+
+    @model_validator(mode="after")
+    def _types_known_and_apart(self) -> AttachmentPolicy:
+        both = self.types & self.tool_read_types
+        if both:
+            raise ValueError(
+                f"{', '.join(sorted(both))} is listed in both types (read by the model) and "
+                "tool_read_types (read by a tool); list each type once"
+            )
+        unreadable = self.types & TOOL_READ_ATTACHMENT_TYPES
+        if unreadable:
+            raise ValueError(
+                f"types: a model cannot read {', '.join(sorted(unreadable))}; list it under "
+                "tool_read_types for a tool to read"
+            )
+        unknown = self.tool_read_types - TOOL_READ_ATTACHMENT_TYPES
+        if unknown:
+            raise ValueError(
+                f"tool_read_types: {', '.join(sorted(unknown))} cannot be recognised from a "
+                f"file's bytes; known: {', '.join(sorted(TOOL_READ_ATTACHMENT_TYPES))}"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_tool_read_types(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A manifest that does not use tool_read_types keeps its earlier fingerprint.
+        data = handler(self)
+        if isinstance(data, dict) and not self.tool_read_types:
+            data.pop("tool_read_types", None)
+        return data
 
 
 class AgentDefinition(StrictModel):

@@ -139,7 +139,8 @@ async def test_a_text_only_run_is_unchanged() -> None:
         (_artifact(HEIC, name="photo.heic", media_type="image/heic"), None, "image/heic"),
         (_artifact(png()), "image/jpeg", "declared image/jpeg but is image/png"),
         (_artifact(png(9000, 10)), None, "at most 8000 per side"),
-        (_artifact(b"not an image", media_type="image/png"), None, "unrecognised type"),
+        (_artifact(b"\x01\x02\x03\x04 binary", media_type="image/png"), None, "unrecognised type"),
+        (_artifact(b"not an image", media_type="image/png"), None, "is text/plain; allowed"),
     ],
 )
 async def test_a_file_the_run_cannot_take_is_refused_before_any_model_call(
@@ -291,7 +292,8 @@ def test_the_real_type_is_read_from_the_bytes() -> None:
     assert sniff_media_type(png()) == "image/png"
     assert sniff_media_type(PDF) == "application/pdf"
     assert sniff_media_type(HEIC) == "image/heic"
-    assert sniff_media_type(b"<html>") is None
+    assert sniff_media_type(b"<html>") == "text/plain"
+    assert sniff_media_type(b"\x7fELF\x02\x01\x01\x00") is None
 
 
 async def test_the_mock_shows_files_it_cannot_read_as_text() -> None:

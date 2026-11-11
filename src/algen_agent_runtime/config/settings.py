@@ -35,7 +35,7 @@ from algen_agent_runtime.security.sandbox import SandboxSettings
 from algen_agent_runtime.tools.blocking import DEFAULT_MAX_QUEUED
 from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import (
-    DEFAULT_ATTACHMENT_TYPES,
+    KNOWN_ATTACHMENT_TYPES,
     AgentDefinition,
     ModelCapabilities,
 )
@@ -359,7 +359,7 @@ class SecuritySettings(StrictSettings):
     trusted_plugin_prefixes: tuple[str, ...] = ()
     # Files given to runs (RunRequest.attachments). An agent narrows these further with its
     # own AttachmentPolicy; a run is refused before any model call when it goes past either.
-    allowed_attachment_types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    allowed_attachment_types: frozenset[str] = KNOWN_ATTACHMENT_TYPES
     max_attachments_per_run: int = Field(default=10, ge=1, le=32)
     max_attachment_bytes_total: int = Field(default=20_971_520, ge=1024)
     upload_scanner: Literal["none", "basic"] = Field(
