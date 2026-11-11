@@ -2,8 +2,8 @@
 
 A tool is a typed function with a docstring and one decorator. `@tool` builds the strict schemas
 and the governance fields, and returns an ordinary `Tool`, so the executor, policies and ledger
-treat it like any other. `examples/quickstart_agent_tool` is a complete project;
-`examples/pattern_guarded_tools` runs a precheck, a failure returned as data, `cache_context` and a
+treat it like any other. `algen_agent_runtime_examples/quickstart_agent_tool` is a complete project;
+`algen_agent_runtime_examples/pattern_guarded_tools` runs a precheck, a failure returned as data, `cache_context` and a
 wrapped handler through the guards below.
 
 ```python
@@ -514,7 +514,7 @@ hooks.
   the idempotency key) without caller credentials, since an operator, not the user, starts them.
 - `describe` shows `reconcile: true` and `compensation: true` for tools that have them.
 
-[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+[`algen_agent_runtime_examples/pattern_side_effect_reconciliation`](../algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
 is a runnable tool with both hooks, over a fake external system.
 
 ## Decorating a handler

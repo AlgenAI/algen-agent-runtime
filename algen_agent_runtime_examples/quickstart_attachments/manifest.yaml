@@ -1,0 +1,24 @@
+id: quickstart_attachments
+display_name: "Attachments Quickstart"
+tier: quickstart
+status: runnable
+description: >
+  Files attached to a run by reference: an image the model reads and a CSV a reader tool reads,
+  staged, scanned and checked, offline with the mock provider.
+
+extras: []
+external_services: []
+
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.quickstart_attachments.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.quickstart_attachments.app"
+  test: "python -m pytest tests/integration/test_all_examples_run.py -q -k quickstart_attachments"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 10
+deterministic_mock_support: true

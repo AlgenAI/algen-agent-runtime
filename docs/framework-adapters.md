@@ -102,7 +102,7 @@ result = await container.frameworks.get("langgraph").invoke(
 ## Adapter Details
 
 - **LangGraph**: Uses `input_factory` (defaults to `{"messages": [{"role": "user", "content": request.input}]}`) and `output_selector`. The `session_id` is mapped to `configurable.thread_id` and metadata contains `run_id`, `tenant_id`, and `user_id`.
-- **OpenAI Agents SDK**: Accepts an application-owned SDK `Agent` plus optional `Runner` and `RunConfig`. Automatically propagates `run_id`, `tenant_id`, `user_id`, and `session_id` into context and trace metadata. Defaults to `RunConfig(tracing_disabled=True)` to ensure tracing does not leak or upload unexpectedly. Interruptions are surfaced as `FrameworkRunStatus.AWAITING_INPUT` with bounded metadata without claiming durable resume (`capabilities.persistence=False`). A runnable offline example is provided in `examples/pattern_openai_agents_integration`.
+- **OpenAI Agents SDK**: Accepts an application-owned SDK `Agent` plus optional `Runner` and `RunConfig`. Automatically propagates `run_id`, `tenant_id`, `user_id`, and `session_id` into context and trace metadata. Defaults to `RunConfig(tracing_disabled=True)` to ensure tracing does not leak or upload unexpectedly. Interruptions are surfaced as `FrameworkRunStatus.AWAITING_INPUT` with bounded metadata without claiming durable resume (`capabilities.persistence=False`). A runnable offline example is provided in `algen_agent_runtime_examples/pattern_openai_agents_integration`.
 - **AutoGen**: Accepts an agent or team implementing `run` and `run_stream`.
 - **CrewAI**: Accepts a `Crew`; default input mapping is `{"input": request.input}`.
 

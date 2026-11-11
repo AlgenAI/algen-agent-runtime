@@ -25,7 +25,9 @@ def run_example(module: str) -> str:
 
 
 def test_side_effect_reconciliation_example() -> None:
-    lines = run_example("examples.pattern_side_effect_reconciliation.app").splitlines()
+    lines = run_example(
+        "algen_agent_runtime_examples.pattern_side_effect_reconciliation.app"
+    ).splitlines()
 
     # 1. Applied, then timed out: paused, settled by the reconcile hook, resumed.
     assert "run status: awaiting_reconciliation" in lines
@@ -56,7 +58,7 @@ def test_side_effect_reconciliation_example() -> None:
 def test_secured_api_example() -> None:
     pytest.importorskip("jwt")
     pytest.importorskip("cryptography")
-    output = run_example("examples.pattern_secured_api.app")
+    output = run_example("algen_agent_runtime_examples.pattern_secured_api.app")
     lines = output.splitlines()
 
     assert (
@@ -96,7 +98,7 @@ def test_secured_api_example_explains_a_missing_auth_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setitem(sys.modules, "jwt", None)
-    from examples.pattern_secured_api.app import main
+    from algen_agent_runtime_examples.pattern_secured_api.app import main
 
     main([])
     assert "pip install 'algen-agent-runtime[auth]'" in capsys.readouterr().out

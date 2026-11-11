@@ -130,7 +130,7 @@ redaction of digit sequences. Existing UUID references remain authorized and reu
 Run a credential-free paging example with:
 
 ```bash
-python -m examples.context_offloading
+python -m algen_agent_runtime_examples.context_offloading
 ```
 
 ## Shortened older tool results
@@ -262,7 +262,7 @@ execution messages should use `RunState.append_message()`; direct edits to the a
 list do not append to initialized canonical history. Fresh retrieval evidence is rebuilt from the
 retriever, rather than repeatedly copied into canonical execution history.
 
-Run an offline example with `python -m examples.context_compaction`.
+Run an offline example with `python -m algen_agent_runtime_examples.context_compaction`.
 
 Use [context evaluations and diagnostics](context-evaluation.md) to check retention and archive
 recovery, measure checkpoint size, and inspect compaction decisions without logging message content.

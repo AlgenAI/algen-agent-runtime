@@ -24,8 +24,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
-      - run: ruff format --check src tests examples
-      - run: ruff check src tests examples
+      - run: ruff format --check src tests algen_agent_runtime_examples
+      - run: ruff check src tests algen_agent_runtime_examples
       - run: mypy src/algen_agent_runtime
       - run: pytest -q -p no:cacheprovider
 
@@ -93,12 +93,12 @@ jobs:
                   "algen_agent_runtime/persistence/migrations/001_initial.sql",
                   "algen_agent_runtime/tools/starter/__init__.py",
                   "algen_agent_runtime/mcp/__init__.py",
-                  "examples/quickstart_approval/__init__.py",
+                  "algen_agent_runtime_examples/quickstart_approval/__init__.py",
               }
               missing = required - names
               if missing:
                   raise SystemExit(f"wheel missing required files: {sorted(missing)}")
-              domain = ("examples/case_study_responsible_hiring/", "examples/pattern_text_to_sql/")
+              domain = ("algen_agent_runtime_examples/case_study_responsible_hiring/", "algen_agent_runtime_examples/pattern_text_to_sql/")
               if any(name.startswith(domain) for name in names):
                   raise SystemExit("wheel contains domain case studies (see tests/unit/test_wheel_contents.py)")
               if any("__pycache__" in name or name.endswith(".pyc") for name in names):

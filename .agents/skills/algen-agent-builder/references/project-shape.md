@@ -8,7 +8,7 @@ my_agent/
 ├── agent.yaml          # providers, agents, workflows, retrieval, stores, telemetry
 ├── app.py              # small local entry point using Runtime APIs
 ├── hooks.py            # only when a workflow needs domain hooks
-├── manifest.yaml       # catalogue metadata for examples/marketplace tooling
+├── manifest.yaml       # catalogue metadata for algen_agent_runtime_examples/marketplace tooling
 ├── README.md
 └── tests/
     └── test_smoke.py
@@ -79,7 +79,7 @@ The plugin's `register(context)` only constructs and registers components; clien
 handed to `context.add_resource` and connect on first use or in `start()`.
 `algen-agent-runtime describe --path src` lists every component and its source without calling any
 of them, and `algen-agent-runtime check agent.yaml --path src` validates the project as Studio will.
-`examples/quickstart_agent_tool` is the reference: a `Toolkit` with a read tool and an
+`algen_agent_runtime_examples/quickstart_agent_tool` is the reference: a `Toolkit` with a read tool and an
 approval-gated write tool, registered by its plugin. `algen-agent-runtime new <name>` scaffolds the
 same shape (`<name>_plugin.py` plus its `domain_plugins` entry). A project still on constructor
 arguments moves with the steps in `docs/plugins.md` ("Moving from constructor arguments").
@@ -93,7 +93,7 @@ arguments moves with the steps in `docs/plugins.md` ("Moving from constructor ar
 - Choose guardrails, verification, approvals, and model allowlists based on actual risk.
 - Use in-memory stores for examples; document PostgreSQL/Redis settings for durable deployments.
 
-Use `examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
+Use `algen_agent_runtime_examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
 `quickstart_conversation`, `pattern_guarded_tools` and `pattern_text_to_sql` as current working
 references. Copy concepts, not stale versions of internal classes.
 

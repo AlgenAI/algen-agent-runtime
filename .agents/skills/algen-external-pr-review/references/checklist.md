@@ -14,7 +14,7 @@ integrations and the example host. Other things live elsewhere:
 | A concrete tool, connector or plugin for one service (Jira, Slack, a database) | `algen-agent-tools` |
 | UI, project management, marketplace, operator workflow | `algen-agent-studio` |
 | Domain rules (hiring, invoices, a customer's policy) | the application's hook provider |
-| Example or demo behaviour | `examples/`, but note that `examples/` **ships in the wheel** (`pyproject.toml` `[tool.hatch.build.targets.wheel]`), so Studio and applications can import it |
+| Example or demo behaviour | `algen_agent_runtime_examples/`, but note that `algen_agent_runtime_examples/` **ships in the wheel** (`pyproject.toml` `[tool.hatch.build.targets.wheel]`), so Studio and applications can import it |
 
 - Does Runtime gain a new dependency, a new optional extra, or a vendor-specific code path in core?
 - Does it add a feature nobody asked for? Check for a linked issue, roadmap item or discussion. A large
@@ -73,7 +73,7 @@ gh pr diff <n> | grep -nE '^\+.*(os\._exit|sys\.exit|SystemExit|subprocess|os\.s
 Runtime is pre-1.0. Breaking changes are still allowed, but each one must be deliberate and recorded
 under the CHANGELOG's upgrade notes.
 
-- Public imports from `algen_agent_runtime.*` and `examples.*`: renamed, removed, or signatures changed?
+- Public imports from `algen_agent_runtime.*` and `algen_agent_runtime_examples.*`: renamed, removed, or signatures changed?
 - Exception types and messages: does a caller that catches the old type still catch it? Do tests or
   applications match on the old message text?
 - Exit codes, CLI flags, stdout and stderr format, and JSON output keys (smoke tests parse these).

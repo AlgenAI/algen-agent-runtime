@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from algen_agent_runtime.evaluation import ContextEvaluationArtifact, ContextEvaluationRunner
-from examples.context_evaluation import FACT, cases, execute
+from algen_agent_runtime_examples.context_evaluation import FACT, cases, execute
 
 pytestmark = pytest.mark.integration
 

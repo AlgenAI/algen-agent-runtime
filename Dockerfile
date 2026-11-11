@@ -6,7 +6,7 @@ RUN groupadd --system algen && useradd --system --gid algen --create-home algen
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE NOTICE CHANGELOG.md ./
 COPY src ./src
-COPY examples ./examples
+COPY algen_agent_runtime_examples ./algen_agent_runtime_examples
 RUN pip install --no-cache-dir '.[service,postgres]'
 USER algen
 EXPOSE 8000

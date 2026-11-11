@@ -1,11 +1,11 @@
-"""examples/README.md lists every example (#98)."""
+"""algen_agent_runtime_examples/README.md lists every example (#98)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLES = ROOT / "examples"
+EXAMPLES = ROOT / "algen_agent_runtime_examples"
 HELPERS = {"__init__.py", "offline.py", "workflow_cli.py", "plugins.py"}
 
 

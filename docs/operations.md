@@ -508,7 +508,7 @@ names it. Development headers are accepted only when the API binds to a loopback
 
 `jwt` and `oidc` need the `auth` extra (`PyJWT[crypto]`).
 
-[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md) runs the API in-process
+[`algen_agent_runtime_examples/pattern_secured_api`](../algen_agent_runtime_examples/pattern_secured_api/README.md) runs the API in-process
 behind `oidc` with a local JWKS stub: scopes from claims, the approval inbox, conversation
 ownership, token revocation and an HTTP tool that forwards the signed-in user's credential.
 
@@ -1050,7 +1050,7 @@ a dropped connection after the request left), the ledger records it `indetermina
 process stops mid-call, the reservation stays `started`. Neither is ever retried automatically:
 someone has to find out whether the effect happened.
 
-[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+[`algen_agent_runtime_examples/pattern_side_effect_reconciliation`](../algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
 walks through this section offline: a paused run, the `reconcile` hook, resolution over
 `/v1/tool-executions`, compensation, and a `ToolNotAttemptedError` refusal recorded `failed`.
 
@@ -1192,7 +1192,7 @@ and an index on `(tenant_id, status, updated_at)`.
 A run that needs a human decision pauses with `status: awaiting_approval` and the approval's id in
 `pause_payload.approval_id`. To show everything waiting for a decision, list the tenant's approval
 requests instead of polling runs (shown end to end in
-[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md)):
+[`algen_agent_runtime_examples/pattern_secured_api`](../algen_agent_runtime_examples/pattern_secured_api/README.md)):
 
 | Route | Scope | Returns |
 | --- | --- | --- |
@@ -1271,7 +1271,7 @@ tenant gets `404`, as on the approval and clarification routes.
 - **Not yet:** conversation turns do not expose steering; a host steers the turn's run by its id
   (`pending.run_id`).
 
-`examples/quickstart_conversation` steers a conversation turn's run while its tool runs, and prints
+`algen_agent_runtime_examples/quickstart_conversation` steers a conversation turn's run while its tool runs, and prints
 the `steer.delivered` event and the tool's `tool.note` beside the turn's streamed deltas.
 
 ## Maintenance and data retention
@@ -1438,7 +1438,7 @@ for input. The awaiting, completed, failed and expired events carry the assistan
 `turn_id` on awaiting events. A resumed turn opens a new `conversation.turn` span with
 `conversation.turn.resumed=true`; its agent run continues the run's original trace.
 
-`examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
+`algen_agent_runtime_examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
 for approval and resumes, driven from Python with `ConversationService.submit` and `respond`.
 
 Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.

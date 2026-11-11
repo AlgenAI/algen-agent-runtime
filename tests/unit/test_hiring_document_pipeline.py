@@ -4,7 +4,7 @@ pytest.importorskip("algen_agent_tools.documents.inspection")
 
 from algen_agent_tools.documents.inspection import redact_pii
 
-from examples.case_study_responsible_hiring.application.document_pipeline import (
+from algen_agent_runtime_examples.case_study_responsible_hiring.application.document_pipeline import (
     candidate_identity_entities,
 )
 

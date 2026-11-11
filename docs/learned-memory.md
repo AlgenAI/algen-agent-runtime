@@ -234,7 +234,7 @@ optional; migration and concurrency tests run in the container-integration job.
 Run an offline example using the ephemeral adapter:
 
 ```bash
-python -m examples.learned_memory
+python -m algen_agent_runtime_examples.learned_memory
 ```
 
 See [structured working state](context-management.md), [progressive skills](skills.md), and

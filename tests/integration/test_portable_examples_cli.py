@@ -19,7 +19,7 @@ def test_quickstart_approval_with_answers_file(tmp_path: Path) -> None:
     cmd = [
         sys.executable,
         "-m",
-        "examples.quickstart_approval.app",
+        "algen_agent_runtime_examples.quickstart_approval.app",
         "--answers-file",
         str(answers_file),
     ]
@@ -49,7 +49,7 @@ def test_customer_support_clarification_and_approval_with_answers_file(tmp_path:
     cmd = [
         sys.executable,
         "-m",
-        "examples.reference_customer_support.app",
+        "algen_agent_runtime_examples.reference_customer_support.app",
         "--answers-file",
         str(answers_file),
     ]
@@ -66,7 +66,7 @@ def test_customer_support_clarification_and_approval_with_answers_file(tmp_path:
 
 
 def test_approval_without_policy_in_non_interactive_env_fails_fast() -> None:
-    cmd = [sys.executable, "-m", "examples.quickstart_approval.app"]
+    cmd = [sys.executable, "-m", "algen_agent_runtime_examples.quickstart_approval.app"]
     result = subprocess.run(
         cmd,
         cwd=str(ROOT),

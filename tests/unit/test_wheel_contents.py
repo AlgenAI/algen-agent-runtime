@@ -18,14 +18,14 @@ def _wheel_target() -> dict[str, object]:
 def test_the_wheel_packages_examples_so_exclude_applies() -> None:
     target = _wheel_target()
 
-    assert "examples" in target["packages"]  # type: ignore[operator]
+    assert "algen_agent_runtime_examples" in target["packages"]  # type: ignore[operator]
     # force-include bypasses exclude, so it must not bring examples back.
-    assert "examples" not in dict(target.get("force-include", {}))  # type: ignore[call-overload]
+    assert "algen_agent_runtime_examples" not in dict(target.get("force-include", {}))  # type: ignore[call-overload]
 
 
 def test_domain_case_studies_stay_out_of_the_wheel() -> None:
     excluded = set(_wheel_target()["exclude"])  # type: ignore[call-overload]
 
     for name in DOMAIN_EXAMPLES:
-        assert (ROOT / "examples" / name).is_dir(), name
-        assert f"examples/{name}" in excluded, name
+        assert (ROOT / "algen_agent_runtime_examples" / name).is_dir(), name
+        assert f"algen_agent_runtime_examples/{name}" in excluded, name

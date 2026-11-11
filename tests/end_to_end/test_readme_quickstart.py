@@ -49,9 +49,11 @@ async def test_readme_offline_quickstart() -> None:
 async def test_readme_multi_agent_workflow_quickstart() -> None:
     from algen_agent_runtime.config.settings import load_settings
     from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor
-    from examples.pattern_multi_agent_fanout.hooks import create_hooks
+    from algen_agent_runtime_examples.pattern_multi_agent_fanout.hooks import create_hooks
 
-    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    settings = load_settings(
+        ("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",)
+    )
     container = build_container(settings)
     manifest = settings.workflows["multi-agent-fanout"]
     hooks = create_hooks(container=container, manifest=manifest)

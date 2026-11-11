@@ -16,7 +16,7 @@ services:
       ALGEN_AGENT_RUNTIME__STORAGE__TOOL_EXECUTION_STORE: postgres
       ALGEN_AGENT_RUNTIME__STORAGE__POSTGRES_DSN: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
     volumes:
-      - ./examples/quickstart_local_chat/agent.yaml:/config/algen-agent-runtime.yaml:ro
+      - ./algen_agent_runtime_examples/quickstart_local_chat/agent.yaml:/config/algen-agent-runtime.yaml:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]

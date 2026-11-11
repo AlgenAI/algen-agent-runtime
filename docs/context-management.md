@@ -109,7 +109,7 @@ form, each ending with a note that it was already retrieved, instead of being dr
 Run the deterministic offline example:
 
 ```bash
-python -m examples.working_state
+python -m algen_agent_runtime_examples.working_state
 ```
 
 For related capabilities, see [learned memory](learned-memory.md), [progressive skills](skills.md), [history compaction and offloading](artifacts.md),

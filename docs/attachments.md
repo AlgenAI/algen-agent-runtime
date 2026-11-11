@@ -10,7 +10,7 @@ produces, such as page images, back to the model (section 11).
 
 Attachments are off by default: an agent or workflow must opt in. Text-only runs are unchanged.
 
-To see it work offline, run `python -m examples.quickstart_attachments.app`: it stages and scans
+To see it work offline, run `python -m algen_agent_runtime_examples.quickstart_attachments.app`: it stages and scans
 an image and a CSV, attaches both, and prints what the model received and what the run stored.
 
 ## 1. Opt in

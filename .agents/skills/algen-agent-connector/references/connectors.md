@@ -40,7 +40,7 @@ A client factory that fails on configuration raises `ConfigurationError`; the to
 Register the toolkit from a declared plugin (`toolkit.register(context)`, the plugin named in
 `domain_plugins`; see `docs/plugins.md`) so Studio and `algen-agent-runtime describe` can see it.
 Test every tool with `assert_tool_contract` and call it with `fake_tool_context`
-(`algen_agent_runtime.tools.testing`). `examples/quickstart_agent_tool` is the reference. A
+(`algen_agent_runtime.tools.testing`). `algen_agent_runtime_examples/quickstart_agent_tool` is the reference. A
 hand-built `ToolDefinition` remains valid when a tool needs something the presets cannot express.
 
 A write tool that can tell in advance why a change would fail takes a `precheck`

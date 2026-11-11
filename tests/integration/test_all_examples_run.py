@@ -1,4 +1,4 @@
-"""Every runnable example under examples/ runs to completion, offline and non-interactively.
+"""Every runnable example under algen_agent_runtime_examples/ runs to completion, offline and non-interactively.
 
 A module is runnable when it has an ``if __name__ == "__main__":`` block. Each one must be in
 ``RUNS`` (with the arguments that make it offline and non-interactive) or in ``SKIPPED`` (with
@@ -19,11 +19,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLES = ROOT / "examples"
+EXAMPLES = ROOT / "algen_agent_runtime_examples"
 TIMEOUT_SECONDS = 60
 WORKERS = min(8, os.cpu_count() or 2)
 
-# Module (relative to ``examples``) -> the argument lists to run it with, one run per list.
+# Module (relative to ``algen_agent_runtime_examples``) -> the argument lists to run it with, one run per list.
 RUNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "context_compaction": ((),),
     "context_evaluation": ((),),
@@ -52,7 +52,10 @@ RUNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "pattern_side_effect_reconciliation.app": ((),),
     "pattern_text_to_sql.app": (("--offline",),),
     "reference_customer_support.app": (
-        ("--answers-file", "examples/reference_customer_support/fixtures/automation-answers.json"),
+        (
+            "--answers-file",
+            "algen_agent_runtime_examples/reference_customer_support/fixtures/automation-answers.json",
+        ),
     ),
     "reference_incident_response.app": (("--approve-all",),),
     "reference_invoice_exceptions.app": (("--approve-all",),),
@@ -110,7 +113,7 @@ def _run(module: str, arguments: tuple[str, ...]) -> subprocess.CompletedProcess
         if key not in SCRUBBED_ENVIRONMENT and not key.startswith("ALGEN_AGENT_RUNTIME__")
     }
     return subprocess.run(
-        [sys.executable, "-m", f"examples.{module}", *arguments],
+        [sys.executable, "-m", f"algen_agent_runtime_examples.{module}", *arguments],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -170,7 +173,7 @@ def test_example_runs(
     result = example_runs[(module, arguments)].result()
 
     assert result.returncode == 0, (
-        f"python -m examples.{module} {' '.join(arguments)} exited {result.returncode}\n"
+        f"python -m algen_agent_runtime_examples.{module} {' '.join(arguments)} exited {result.returncode}\n"
         f"STDOUT:\n{result.stdout[-4000:]}\nSTDERR:\n{result.stderr[-4000:]}"
     )
     assert result.stdout.strip(), "an example should print what it did"

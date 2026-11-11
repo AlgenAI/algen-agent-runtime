@@ -12,7 +12,7 @@ from algen_agent_runtime.orchestration.check import check_project, scan_project_
 REPOSITORY = Path(__file__).resolve().parents[2]
 EXAMPLE_CONFIGS = sorted(
     path
-    for path in (REPOSITORY / "examples").rglob("agent.yaml")
+    for path in (REPOSITORY / "algen_agent_runtime_examples").rglob("agent.yaml")
     if "__pycache__" not in path.parts
 )
 

@@ -66,7 +66,7 @@ canonical output validation. Parent concurrency bounds whole child executions. R
 the child ID and input before dispatch so recovery either reconciles that child or creates the same
 recorded identity after a pre-creation crash. Resume or decide through the parent checkpoint. Do not
 invoke the child directly or copy its nodes into the parent. Child inputs and outputs must be
-JSON-compatible and secret-free. See `examples/pattern_child_workflow`.
+JSON-compatible and secret-free. See `algen_agent_runtime_examples/pattern_child_workflow`.
 
 Declare tools, query sources, retrieval, memory, storage, cache, telemetry, and services in each
 node's `resources`. These references are secret-free operational topology and allow Studio to draw
@@ -92,7 +92,7 @@ from `algen_agent_runtime.workflows`:
   `LoadedHookProvider` containing verified hooks and sanitized audit metadata without serializing
   code or secrets.
 
-Use `examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
+Use `algen_agent_runtime_examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
 `pattern_child_workflow`, `pattern_governed_research`, and the reference applications as current
 examples.
 

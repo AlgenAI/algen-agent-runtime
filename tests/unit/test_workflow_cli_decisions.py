@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from examples.workflow_cli import (
+from algen_agent_runtime_examples.workflow_cli import (
     AnswersFileDecisionProvider,
     ApproveAllDecisionProvider,
     InteractiveDecisionProvider,
@@ -23,7 +23,7 @@ from examples.workflow_cli import (
 )
 
 ROOT = Path(__file__).parents[2]
-APPROVAL_CONFIG = ROOT / "examples" / "quickstart_approval" / "agent.yaml"
+APPROVAL_CONFIG = ROOT / "algen_agent_runtime_examples" / "quickstart_approval" / "agent.yaml"
 
 
 @pytest.mark.asyncio

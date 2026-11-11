@@ -153,7 +153,7 @@ JWKS:
   tenant go to the `_authentication` audit tenant, so unverified claims cannot write into a
   tenant's trail, and a per-minute cap keeps a credential flood from flooding the audit store.
 
-[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md) exercises these controls
+[`algen_agent_runtime_examples/pattern_secured_api`](../algen_agent_runtime_examples/pattern_secured_api/README.md) exercises these controls
 offline: OIDC verification against a JWKS, scope checks, conversation ownership, approval
 redaction, token revocation, and a `caller` HTTP tool that fails closed without a credential.
 

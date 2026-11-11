@@ -5,7 +5,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from algen_agent_runtime.policies.contracts import PolicyAction
 from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedactionPolicy
 from algen_agent_runtime.types.contracts import AgentDefinition
-from examples.case_study_teaching_assistant.application.policies import (
+from algen_agent_runtime_examples.case_study_teaching_assistant.application.policies import (
     AcademicIntegrityPolicy,
     EducationalEquityPolicy,
 )

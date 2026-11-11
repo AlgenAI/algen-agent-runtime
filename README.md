@@ -24,7 +24,7 @@ No API key and no network: the built-in mock provider stands in for the model.
 
 ```bash
 python -m pip install --pre algen-agent-runtime
-python -m examples.quickstart_approval.app
+python -m algen_agent_runtime_examples.quickstart_approval.app
 ```
 
 The workflow proposes a change, then pauses at an approval node and asks `Approve or reject?`.
@@ -79,7 +79,7 @@ boundaries.
 Workflows can also call exact, trusted child workflow versions through a `WorkflowRegistry`; Runtime
 preserves correlation, lineage, checkpoints, pause/approval propagation, and recovery. See
 [multi-agent workflows](docs/multi-agent-workflows.md) and the importable
-`examples/pattern_child_workflow`. For governed outbound messages, see [email](docs/email.md).
+`algen_agent_runtime_examples/pattern_child_workflow`. For governed outbound messages, see [email](docs/email.md).
 
 ## Status and support
 
@@ -224,11 +224,11 @@ from algen_agent_runtime.config.settings import load_settings
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor
-from examples.pattern_multi_agent_fanout.hooks import create_hooks
+from algen_agent_runtime_examples.pattern_multi_agent_fanout.hooks import create_hooks
 
 
 async def main() -> None:
-    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    settings = load_settings(("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",))
     container = build_container(settings)
     manifest = settings.workflows["multi-agent-fanout"]
     hooks = create_hooks(container=container, manifest=manifest)
@@ -258,7 +258,7 @@ Expected output:
 Completed bounded parallel research for: Assess a migration to managed queues
 ```
 
-For a real local model, follow the [Ollama quickstart](examples/quickstart_local_chat/README.md).
+For a real local model, follow the [Ollama quickstart](algen_agent_runtime_examples/quickstart_local_chat/README.md).
 
 ## CLI & Project Scaffolding
 
@@ -290,7 +290,7 @@ algen-agent-runtime check agent.yaml --path src --profile standalone
 From a source checkout with Ollama running and `llama3.2` installed:
 
 ```bash
-ALGEN_AGENT_RUNTIME_CONFIG=examples/quickstart_local_chat/agent.yaml \
+ALGEN_AGENT_RUNTIME_CONFIG=algen_agent_runtime_examples/quickstart_local_chat/agent.yaml \
   algen-agent-runtime serve
 ```
 
@@ -445,10 +445,10 @@ Provider and integration dependencies remain optional. See the [provider compati
 
 ## Importable examples
 
-[`examples/README.md`](examples/README.md) lists every example, what it shows, and whether it runs
+[`algen_agent_runtime_examples/README.md`](algen_agent_runtime_examples/README.md) lists every example, what it shows, and whether it runs
 offline.
 
-The source and wheel distributions include the `examples` package so portable workflow hook
+The source and wheel distributions include the `algen_agent_runtime_examples` package so portable workflow hook
 providers remain importable by Algen Agent Studio. Import an example directory—or its `agent.yaml`
 or `config/agent.yaml`—and Studio preserves the Runtime `WorkflowManifest` exactly. Credential-free
 examples use deterministic mock providers; service-backed case studies retain explicit prerequisites.
@@ -468,43 +468,43 @@ be runnable offline or listed there with the service it needs.
 
 ```bash
 # Multi-agent dynamic fan-out, evidence join, and synthesis
-python -m examples.pattern_multi_agent_fanout.app "Assess a migration to managed queues"
+python -m algen_agent_runtime_examples.pattern_multi_agent_fanout.app "Assess a migration to managed queues"
 
 # Deterministic handler and resource tool pattern
-python -m examples.quickstart_tool.app
+python -m algen_agent_runtime_examples.quickstart_tool.app
 
 # The reference tool project: a Toolkit with a read tool and an approval-gated write tool, from a plugin
-python -m examples.quickstart_agent_tool.app
+python -m algen_agent_runtime_examples.quickstart_agent_tool.app
 
 # An approval node: approve, modify or reject a proposal before it is applied
-python -m examples.quickstart_approval.app --approve-all
+python -m algen_agent_runtime_examples.quickstart_approval.app --approve-all
 
 # Files attached by reference: an image the model reads, a CSV a reader tool reads, both scanned
-python -m examples.quickstart_attachments.app
+python -m algen_agent_runtime_examples.quickstart_attachments.app
 
 # Human approval checkpoint (interactive prompt, or automated with --approve-all)
-python -m examples.pattern_approval_workflow.app --approve-all
+python -m algen_agent_runtime_examples.pattern_approval_workflow.app --approve-all
 
 # Governed research with retrieval and cited synthesis
-python -m examples.pattern_governed_research.app
+python -m algen_agent_runtime_examples.pattern_governed_research.app
 
 # A streamed conversation: deltas, a steering message, a tool note, an approval pause and resume
-python -m examples.quickstart_conversation.app
+python -m algen_agent_runtime_examples.quickstart_conversation.app
 
 # Typed tools behind a precheck, tool-call guards, a user-keyed cache and a usage meter
-python -m examples.pattern_guarded_tools.app
+python -m algen_agent_runtime_examples.pattern_guarded_tools.app
 
 # A release gate: evaluation cases decide whether a new agent version is promoted
-python -m examples.pattern_evaluation_gate.app
+python -m algen_agent_runtime_examples.pattern_evaluation_gate.app
 
 # MCP servers declared in YAML, with operator overrides deciding which tools need approval
-python -m examples.pattern_mcp_governance.app
+python -m algen_agent_runtime_examples.pattern_mcp_governance.app
 
 # Hosted-provider examples: the real provider by default, the mock provider with --offline
-python -m examples.quickstart_rag.app --offline
-python -m examples.quickstart_cloud_chat.app --offline
-python -m examples.pattern_provider_fallback.app --offline
-python -m examples.pattern_text_to_sql.app --offline
+python -m algen_agent_runtime_examples.quickstart_rag.app --offline
+python -m algen_agent_runtime_examples.quickstart_cloud_chat.app --offline
+python -m algen_agent_runtime_examples.pattern_provider_fallback.app --offline
+python -m algen_agent_runtime_examples.pattern_text_to_sql.app --offline
 ```
 
 All workflow examples support non-interactive execution in automated environments and CI pipelines:
@@ -515,7 +515,7 @@ All workflow examples support non-interactive execution in automated environment
 Examples that call a hosted provider (`quickstart_rag`, `quickstart_cloud_chat`,
 `pattern_provider_fallback`, `pattern_text_to_sql`, `case_study_teaching_assistant`) take
 `--offline`: the same `agent.yaml` with the provider swapped for the mock provider and a scripted
-reply (see `examples/offline.py`). Without `--offline` they need the provider's key and say so when
+reply (see `algen_agent_runtime_examples/offline.py`). Without `--offline` they need the provider's key and say so when
 it is missing. Traccia export is opt-in in every example
 (`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true` with the `traccia` extra).
 
@@ -526,16 +526,16 @@ Two examples walk through production controls offline, with mock models and in-p
 ```bash
 # A write whose outcome is unknown: pause, reconcile by idempotency key, resolve over
 # /v1/tool-executions, compensate on request, and ToolNotAttemptedError recorded as failed
-python -m examples.pattern_side_effect_reconciliation.app
+python -m algen_agent_runtime_examples.pattern_side_effect_reconciliation.app
 
 # The HTTP API behind OIDC with a local JWKS stub: scopes from claims, the approval inbox,
 # redacted modified parameters, conversation ownership, token revocation and auth.type: caller
 # (needs the auth extra: pip install 'algen-agent-runtime[auth]'; without it, it says so and exits 0)
-python -m examples.pattern_secured_api.app
+python -m algen_agent_runtime_examples.pattern_secured_api.app
 ```
 
-See [pattern_side_effect_reconciliation](examples/pattern_side_effect_reconciliation/README.md)
-and [pattern_secured_api](examples/pattern_secured_api/README.md).
+See [pattern_side_effect_reconciliation](algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
+and [pattern_secured_api](algen_agent_runtime_examples/pattern_secured_api/README.md).
 
 
 ## Development

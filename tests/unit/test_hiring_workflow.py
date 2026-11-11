@@ -6,14 +6,14 @@ from typing import Any
 
 from algen_agent_runtime.conversations import Conversation, ConversationMessage
 from algen_agent_runtime.types.contracts import Role
-from examples.case_study_responsible_hiring.application.contracts import (
+from algen_agent_runtime_examples.case_study_responsible_hiring.application.contracts import (
     DocumentFinding,
     HiringApplication,
 )
-from examples.case_study_responsible_hiring.application.repositories import (
+from algen_agent_runtime_examples.case_study_responsible_hiring.application.repositories import (
     InMemoryHiringRepository,
 )
-from examples.case_study_responsible_hiring.application.workflow import (
+from algen_agent_runtime_examples.case_study_responsible_hiring.application.workflow import (
     HiringConversationHandler,
     HiringWorkflow,
 )

@@ -32,8 +32,8 @@ jobs:
           ref_name="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           test "v${version}" = "${ref_name}"
       - run: python -m pip install -e '.[dev]'
-      - run: ruff format --check src tests examples
-      - run: ruff check src tests examples
+      - run: ruff format --check src tests algen_agent_runtime_examples
+      - run: ruff check src tests algen_agent_runtime_examples
       - run: mypy src/algen_agent_runtime
       - run: pytest -q -p no:cacheprovider
       - run: python -m build
@@ -78,21 +78,21 @@ jobs:
                   "algen_agent_runtime/context/skills.py",
                   "algen_agent_runtime/memory/service.py",
                   "algen_agent_runtime/evaluation/context.py",
-                  "examples/context_evaluation.py",
+                  "algen_agent_runtime_examples/context_evaluation.py",
                   "algen_agent_runtime/tools/starter/__init__.py",
                   "algen_agent_runtime/mcp/__init__.py",
-                  "examples/quickstart_approval/__init__.py",
-                  "examples/quickstart_conversation/agent.yaml",
-                  "examples/pattern_guarded_tools/agent.yaml",
-                  "examples/pattern_side_effect_reconciliation/agent.yaml",
-                  "examples/pattern_secured_api/agent.yaml",
+                  "algen_agent_runtime_examples/quickstart_approval/__init__.py",
+                  "algen_agent_runtime_examples/quickstart_conversation/agent.yaml",
+                  "algen_agent_runtime_examples/pattern_guarded_tools/agent.yaml",
+                  "algen_agent_runtime_examples/pattern_side_effect_reconciliation/agent.yaml",
+                  "algen_agent_runtime_examples/pattern_secured_api/agent.yaml",
               }
               missing = required - names
               if missing:
                   raise SystemExit(f"wheel missing required files: {sorted(missing)}")
               if any("studio" in name.lower() for name in names):
                   raise SystemExit("Runtime artifact unexpectedly contains Studio files")
-              domain = ("examples/case_study_responsible_hiring/", "examples/pattern_text_to_sql/")
+              domain = ("algen_agent_runtime_examples/case_study_responsible_hiring/", "algen_agent_runtime_examples/pattern_text_to_sql/")
               if any(name.startswith(domain) for name in names):
                   raise SystemExit("wheel contains domain case studies (see tests/unit/test_wheel_contents.py)")
               if any("__pycache__" in name or name.endswith(".pyc") for name in names):
@@ -119,7 +119,7 @@ jobs:
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
           for example in context_evaluation context_compaction context_offloading working_state progressive_skills learned_memory quickstart_conversation.app pattern_guarded_tools.app pattern_side_effect_reconciliation.app pattern_secured_api.app; do
-            /tmp/algen-release-smoke/bin/python -m "examples.${example}"
+            /tmp/algen-release-smoke/bin/python -m "algen_agent_runtime_examples.${example}"
           done
           rm -rf /tmp/smoke-scaffold-release
           mkdir -p /tmp/smoke-scaffold-release

@@ -9,7 +9,7 @@ by your own model. They do not judge factual correctness or instruction-followin
 Run the credential-free example from a repository checkout:
 
 ```bash
-python -m examples.context_evaluation
+python -m algen_agent_runtime_examples.context_evaluation
 ```
 
 It runs four isolated scenarios through Runtime with scripted model responses:
