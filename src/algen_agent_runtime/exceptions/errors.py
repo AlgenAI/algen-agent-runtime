@@ -44,6 +44,28 @@ class PolicyDeniedError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.AUTHORIZATION
 
 
+class ApprovalMismatchError(PolicyDeniedError):
+    """A call was refused because its approval does not cover it.
+
+    ``code`` says why:
+
+    - ``approval.tool_mismatch``: the approval is for another tool, or another version of it.
+    - ``approval.arguments_mismatch``: the call's arguments differ from the approved ones.
+    - ``approval.arguments_unbound``: a workflow tool step reads values that did not exist yet
+      when its approval was decided, so no approver saw them.
+    - ``approval.modification_ignored``: an approver modified the parameters, and the workflow
+      tool step does not read them.
+    - ``approval.tool_changed``: the tool's definition or code changed after the approval was
+      asked for (its fingerprint differs).
+
+    Nothing was recorded or run: the call is refused before the execution ledger.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
 class CapabilityError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_REQUEST
 

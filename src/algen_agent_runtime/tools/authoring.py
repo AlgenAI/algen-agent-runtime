@@ -389,7 +389,15 @@ def build_tool(
             ApprovalRequest(definition, arguments, context), lambda: run(arguments, context)
         )
 
-    tool = Tool(definition, handler, compensation, precheck=precheck, reconcile=reconcile)
+    tool = Tool(
+        definition,
+        handler,
+        compensation,
+        precheck=precheck,
+        reconcile=reconcile,
+        # The author's function is the code an approval's fingerprint covers.
+        source=function,
+    )
     tool.__doc__ = function.__doc__
     return tool
 

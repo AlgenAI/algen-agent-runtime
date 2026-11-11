@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
 import re
@@ -19,12 +18,13 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     VerificationError,
 )
-from algen_agent_runtime.tools.contracts import ToolContext
+from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext
 from algen_agent_runtime.types.contracts import (
     RequestOverrides,
     RunAttachment,
     RunRequest,
     RunStatus,
+    canonical_digest,
     utc_now,
 )
 from algen_agent_runtime.workflows.contracts import (
@@ -51,11 +51,8 @@ from algen_agent_runtime.workflows.store import (
     WorkflowCheckpointStore,
 )
 
-
-def _digest(value: Any) -> str:
-    """SHA-256 of a value's canonical JSON, for audit events that must not carry the value."""
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+# SHA-256 of a value's canonical JSON, for audit events that must not carry the value.
+_digest = canonical_digest
 
 
 class WorkflowHookRegistry:
@@ -1641,7 +1638,19 @@ class MultiAgentWorkflowExecutor:
             name,
             arguments,
             context,
-            approval=None if approval_id is None else f"workflow:{state.id}:{approval_id}",
+            approval=(
+                None
+                if approval_id is None
+                else ToolApproval.for_call(
+                    f"workflow:{state.id}:{approval_id}",
+                    "modified"
+                    if isinstance(decided, dict) and decided.get("decision") == "modified"
+                    else "approved",
+                    name,
+                    tool.definition.version,
+                    arguments,
+                )
+            ),
         )
         return result.value
 

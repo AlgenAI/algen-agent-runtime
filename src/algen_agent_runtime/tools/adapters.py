@@ -25,7 +25,8 @@ def mcp_tool(definition: ToolDefinition, remote_name: str, client: MCPClient) ->
     async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:
         return await client.call_tool(remote_name, arguments)
 
-    return Tool(definition, execute)
+    # It runs elsewhere: its approval fingerprint covers the definition only.
+    return Tool(definition, execute, source=None)
 
 
 def remote_tool(
@@ -63,4 +64,5 @@ def remote_tool(
         response.raise_for_status()
         return response.json()
 
-    return Tool(definition, execute)
+    # It runs elsewhere: its approval fingerprint covers the definition only.
+    return Tool(definition, execute, source=None)

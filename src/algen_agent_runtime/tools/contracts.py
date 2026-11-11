@@ -24,7 +24,14 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
 )
-from algen_agent_runtime.types.contracts import Artifact, RetryPolicy, RunAttachment, utc_now
+from algen_agent_runtime.types.contracts import (
+    Artifact,
+    RetryPolicy,
+    RunAttachment,
+    utc_now,
+)
+from algen_agent_runtime.types.contracts import ToolApproval as ToolApproval
+from algen_agent_runtime.types.contracts import canonical_digest as canonical_digest
 
 
 class SideEffect(StrEnum):
@@ -618,14 +625,20 @@ class Tool:
         precheck: Precheck | None = None,
         reconcile: Reconciler | None = None,
         reconcile_on_replay: bool = True,
+        source: Callable[..., Any] | Literal["handler"] | None = "handler",
     ) -> None:
         """``compensation`` undoes a call's effect and runs only when an operator asks for it
         (``ToolReconciliation.compensate``). ``reconcile`` asks the external system whether a
         call whose outcome is unknown took effect: an operator's auto-reconcile uses it, and so
         does the executor when it replays such a call, unless ``reconcile_on_replay`` is False.
+
+        ``source`` is the code whose source text joins the tool's approval fingerprint
+        (:func:`tool_fingerprint`): ``"handler"`` (the default) uses the handler, ``None`` hashes
+        the definition only (a tool that runs elsewhere, such as an MCP or HTTP API tool).
         """
         self.definition = definition
         self.handler = handler
+        self.source = handler if source == "handler" else source
         self.compensation = compensation
         self.replay_validator = replay_validator
         self.precheck = precheck
@@ -697,3 +710,47 @@ def wrap(tool: Tool, middleware: ToolMiddleware) -> Tool:
     ``wrap(tool, logged)`` is ``tool.with_handler(logged(tool.handler))``.
     """
     return tool.with_handler(middleware(tool.handler))
+
+
+def _source_text(source: Callable[..., Any] | None) -> str | None:
+    """The source code of ``source``, or None when it has no stable source (a lambda, a builtin
+    or C-backed callable, code without a file)."""
+    if source is None:
+        return None
+    target: Any = inspect.unwrap(source)
+    if not (inspect.isfunction(target) or inspect.ismethod(target) or inspect.isclass(target)):
+        # A callable object: its class holds the code.
+        target = type(target)
+    if getattr(target, "__name__", "") == "<lambda>":
+        return None
+    try:
+        return inspect.getsource(target)
+    except (OSError, TypeError):
+        return None
+
+
+def tool_fingerprint(tool: Tool) -> str:
+    """SHA-256 (hex) identifying what a call of ``tool`` would run.
+
+    It hashes the canonical form of the definition's name, ``version``, input and output schema,
+    side-effect class and ``requires_approval``, and the source of ``tool.source`` when it has
+    one (``@tool`` functions and plain handler functions). An approval records it when it is
+    asked for; before the approved call runs, a different fingerprint means the tool changed
+    and the approval is asked for again.
+
+    Limits: a tool that runs elsewhere (MCP, HTTP API) is fingerprinted by its declared
+    definition only, so a server that changes behaviour behind the same schema is not detected;
+    lambdas and C-backed handlers have no stable source and are fingerprinted by definition.
+    """
+    definition = tool.definition
+    return canonical_digest(
+        {
+            "name": definition.name,
+            "version": definition.version,
+            "input_schema": definition.input_schema,
+            "output_schema": definition.output_schema,
+            "side_effect": definition.side_effect.value,
+            "requires_approval": definition.requires_approval,
+            "source": _source_text(tool.source),
+        }
+    )

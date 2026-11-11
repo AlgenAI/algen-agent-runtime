@@ -345,6 +345,8 @@ def http_api_tool(
             volatile=config.volatile,
         ),
         execute,
+        # The API runs it: its approval fingerprint covers the definition only.
+        source=None,
     )
 
 

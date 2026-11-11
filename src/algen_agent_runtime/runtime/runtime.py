@@ -21,7 +21,7 @@ from opentelemetry.context import Context
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
 
-from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
+from algen_agent_runtime.approvals.service import ApprovalRequest, ApprovalService, ApprovalStatus
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
 from algen_agent_runtime.context.artifacts import (
@@ -125,6 +125,7 @@ from algen_agent_runtime.tools.contracts import (
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
+    ToolApproval,
     ToolContext,
     ToolDefinition,
     ToolExecutionRecord,
@@ -751,6 +752,11 @@ class AgentRuntime:
                         state.pending_tool_calls[index] = call.model_copy(
                             update={"arguments": approval.modified_parameters or {}}
                         )
+            approved_call = next(
+                (call for call in state.pending_tool_calls if call.id == call_id), None
+            )
+            if approved_call is not None:
+                state.tool_approvals[call_id] = self._bind_approval(approval, approved_call)
             self._restore_deadline_after_pause(state)
             state.pause_payload = None
             await self._transition(state, RunStatus.PLANNING)
@@ -758,6 +764,41 @@ class AgentRuntime:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
         await self._schedule(run_id, tenant_id, credentials)
         return state
+
+    def _bind_approval(self, approval: ApprovalRequest, call: ToolCall) -> ToolApproval:
+        """The decided ``approval`` bound to the call it approved, with the call's arguments
+        (the approver's modified ones, when they modified them)."""
+        try:
+            version = self.tools.get(call.name).definition.version
+        except NotFoundError:
+            version = ""
+        return ToolApproval.for_call(
+            approval.id,
+            "modified" if approval.status == ApprovalStatus.MODIFIED else "approved",
+            call.name,
+            version,
+            call.arguments,
+        )
+
+    def _call_approval(self, state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
+        """The approval that covers a call, or None when it was not approved.
+
+        A call approved before 0.2 has no recorded binding: it is bound to the arguments it
+        runs with, as it was then.
+        """
+        if call_id not in state.approved_tool_call_ids:
+            return None
+        bound = state.tool_approvals.get(call_id)
+        if bound is not None:
+            return bound
+        call = next((call for call in state.pending_tool_calls if call.id == call_id), None)
+        return ToolApproval.for_call(
+            f"tool_call:{call_id}",
+            "approved",
+            tool.definition.name,
+            tool.definition.version,
+            call.arguments if call is not None else {},
+        )
 
     async def _await_paused_drive(self, run_id: str) -> None:
         """Let the drive that paused a run finish before the run is resumed.
@@ -2692,9 +2733,7 @@ class AgentRuntime:
                     on_reconciled=lambda record: self._announce_replay_reconciled(state, record),
                     # Planning asked for this call's approval (side_effects is mandatory), so an
                     # approval-required tool reaches here only once its call was approved.
-                    approval=(
-                        f"tool_call:{call_id}" if call_id in state.approved_tool_call_ids else None
-                    ),
+                    approval=self._call_approval(state, call_id, tool),
                 )
                 tool_text = json.dumps(result.value, default=str)
                 if tool.definition.name in MEMORY_PERMISSIONS:

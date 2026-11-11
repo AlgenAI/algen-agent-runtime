@@ -839,6 +839,63 @@ class WorkingStateUpdate(StrictModel):
     state: WorkingStateContent
 
 
+def canonical_digest(value: Any) -> str:
+    """SHA-256 (hex) of a value's canonical JSON: sorted keys, no whitespace.
+
+    Approvals bind a call to this digest of its arguments, and audit events carry it in place of
+    the arguments themselves.
+    """
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_SHA256_HEX = r"^[0-9a-f]{64}$"
+
+
+class ToolApproval(StrictModel):
+    """A decided approval, bound to the one call it covers.
+
+    ``ToolExecutor.execute`` takes it as ``approval=`` and refuses the call unless ``tool``,
+    ``tool_version`` and ``arguments_sha256`` match the call it is asked to run, and, when the
+    approval recorded one, ``tool_fingerprint`` matches the tool's current definition and code.
+    The caller that builds it (an agent run, the workflow engine, or your own approval flow)
+    proves the decision itself: see ``docs/tool-authoring.md``, "Who proves an approval is valid".
+    """
+
+    approval_id: str = Field(min_length=1)
+    """The decided approval: an approval request id, or the workflow approval node."""
+    decision: Literal["approved", "modified"]
+    """Only an approving decision covers a call."""
+    tool: str = Field(min_length=1)
+    tool_version: str
+    arguments_sha256: str = Field(pattern=_SHA256_HEX)
+    """:func:`canonical_digest` of the arguments the approver approved (or modified to)."""
+    tool_fingerprint: str | None = Field(default=None, pattern=_SHA256_HEX)
+    """The tool's fingerprint when the approval was asked for; None on approvals recorded
+    before fingerprints, which are not checked against the tool's definition."""
+
+    @classmethod
+    def for_call(
+        cls,
+        approval_id: str,
+        decision: Literal["approved", "modified"],
+        tool: str,
+        tool_version: str,
+        arguments: Any,
+        *,
+        tool_fingerprint: str | None = None,
+    ) -> ToolApproval:
+        """The approval of a call with exactly these ``arguments``."""
+        return cls(
+            approval_id=approval_id,
+            decision=decision,
+            tool=tool,
+            tool_version=tool_version,
+            arguments_sha256=canonical_digest(arguments),
+            tool_fingerprint=tool_fingerprint,
+        )
+
+
 # Bounds on steering (``AgentRuntime.steer``): messages queued for one run, and characters each.
 MAX_PENDING_STEERING = 16
 MAX_STEERING_CHARS = 8_000
@@ -880,6 +937,11 @@ class RunState(BaseModel):
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)
+    tool_approvals: dict[str, ToolApproval] = Field(
+        default_factory=dict,
+        description="The decided approval of each approved call, by call id, bound to the "
+        "tool and the arguments the approver approved. A call approved before 0.2 has none.",
+    )
     # Tool guards, checkpointed so they survive an approval pause and a restart.
     tool_refusals: dict[str, int] = Field(
         default_factory=dict,
@@ -915,9 +977,12 @@ class RunState(BaseModel):
         # 0.1.0a17 validates stored run state with extra="forbid" and has no pending_steering:
         # leave it out while it is empty, so a17 replicas can still load what a18 checkpoints
         # during a rolling deploy or after a rollback.
+        # tool_approvals (0.2) is left out while empty for the same reason.
         data = handler(self)
         if isinstance(data, dict) and not self.pending_steering:
             data.pop("pending_steering", None)
+        if isinstance(data, dict) and not self.tool_approvals:
+            data.pop("tool_approvals", None)
         return data
 
     @model_validator(mode="after")

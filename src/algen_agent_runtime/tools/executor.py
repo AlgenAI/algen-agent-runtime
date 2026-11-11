@@ -14,6 +14,7 @@ from opentelemetry import trace
 
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import (
+    ApprovalMismatchError,
     PolicyDeniedError,
     ToolExecutionError,
     ToolNotAttemptedError,
@@ -27,6 +28,7 @@ from algen_agent_runtime.tools.contracts import (
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
+    ToolApproval,
     ToolContext,
     ToolDefinition,
     ToolExecutionRecord,
@@ -35,6 +37,8 @@ from algen_agent_runtime.tools.contracts import (
     ToolExecutionStore,
     ToolHandler,
     ToolResult,
+    canonical_digest,
+    tool_fingerprint,
 )
 from algen_agent_runtime.tools.process import run_in_process
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -212,7 +216,7 @@ class ToolExecutor:
         *,
         agent: Any = None,
         on_reconciled: ReconciledCallback | None = None,
-        approval: str | None = None,
+        approval: ToolApproval | None = None,
     ) -> ToolResult:
         """Run a call, or replay its recorded outcome.
 
@@ -220,14 +224,21 @@ class ToolExecutor:
         to the tool's ``reconcile`` hook, when it has one and allows it on replay; a settled
         outcome is recorded and ``on_reconciled`` is told about it.
 
-        ``approval`` names the approval that covers this call (an approved tool call in a run,
-        or an approved workflow approval node). A tool that ``requires_approval`` is refused
-        without one, before anything is recorded or run.
+        ``approval`` is the decided approval that covers this call (an approved tool call in a
+        run, or an approved workflow approval node), bound to the tool and the arguments it
+        approved. A tool that ``requires_approval`` is refused without one, and any call is
+        refused with an ``ApprovalMismatchError`` when its approval is for another tool or
+        version, other arguments, or a tool whose fingerprint has changed since. Both refusals
+        come before anything is recorded or run. The executor does not look the decision up:
+        its caller proves it (see "Who proves an approval is valid" in the tool docs).
         """
         tool = self._registry.get(name)
         definition = tool.definition
-        if definition.requires_approval and not approval:
-            raise PolicyDeniedError(f"tool {name} requires an approval for this call")
+        if approval is None:
+            if definition.requires_approval:
+                raise PolicyDeniedError(f"tool {name} requires an approval for this call")
+        else:
+            self._check_approval(tool, arguments, approval)
         missing = definition.required_permissions - context.permissions
         if missing:
             raise PolicyDeniedError(f"missing permissions for {name}: {sorted(missing)}")
@@ -391,6 +402,32 @@ class ToolExecutor:
                     indeterminate=indeterminate,
                 )
                 raise
+
+    @staticmethod
+    def _check_approval(tool: Tool, arguments: dict[str, Any], approval: ToolApproval) -> None:
+        """Refuse a call its approval does not cover."""
+        definition = tool.definition
+        if (approval.tool, approval.tool_version) != (definition.name, definition.version):
+            raise ApprovalMismatchError(
+                "approval.tool_mismatch",
+                f"approval {approval.approval_id} covers {approval.tool} "
+                f"version {approval.tool_version}, not {definition.name} "
+                f"version {definition.version}",
+            )
+        if canonical_digest(arguments) != approval.arguments_sha256:
+            raise ApprovalMismatchError(
+                "approval.arguments_mismatch",
+                f"the arguments of this call to {definition.name} differ from the ones "
+                f"approval {approval.approval_id} approved",
+            )
+        if approval.tool_fingerprint is not None and approval.tool_fingerprint != (
+            tool_fingerprint(tool)
+        ):
+            raise ApprovalMismatchError(
+                "approval.tool_changed",
+                f"tool {definition.name} changed after approval {approval.approval_id} "
+                "was asked for; ask for it again",
+            )
 
     async def _checked_output(
         self,
