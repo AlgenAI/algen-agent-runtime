@@ -165,5 +165,5 @@ strict = true
 packages = ["algen_agent_runtime"]
 
 [[tool.mypy.overrides]]
-module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "jwt", "boto3", "botocore", "botocore.*", "mcp", "mcp.*", "cryptography", "cryptography.*"]
+module = ["jsonschema", "yaml", "transformers", "opentelemetry.exporter.*", "asyncpg", "redis", "redis.*", "pgvector", "pgvector.*", "chromadb", "faiss", "numpy", "qdrant_client", "qdrant_client.*", "agents", "langchain_core", "langchain_core.*", "jwt", "boto3", "botocore", "botocore.*", "mcp", "mcp.*", "cryptography", "cryptography.*"]
 ignore_missing_imports = true

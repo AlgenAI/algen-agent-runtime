@@ -83,6 +83,10 @@ async def test_openai_agents_integration_example_executes_offline() -> None:
     assert "Log analysis completed" in result["output"]
     assert "started" in result["stream_events"]
     assert "completed" in result["stream_events"]
+    # Runtime tools handed to the SDK run through the executor; the approval-required one is
+    # refused there, and the SDK's own tool is not governed.
+    assert result["governed_calls"] == ["incidents.lookup INC-1024 for security-ops"]
+    assert result["native_calls"] == ["read_runbook INC-1024"]
 
 
 @pytest.mark.parametrize("relative_path", ALL_AGENT_CONFIGS)

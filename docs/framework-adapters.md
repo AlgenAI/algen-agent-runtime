@@ -16,6 +16,36 @@ Algen Agent Runtime explicitly delineates the governance boundaries between Runt
 > [!IMPORTANT]
 > **Governance Boundary**: Algen Agent Runtime governs the outer adapter boundary (request normalization, tenant isolation, request deadlines, and cancellation). Internal model calls and tool calls initiated inside the foreign framework are managed by that framework's native engine. To govern internal calls, configure framework-native hooks or observe them using shared tracing (e.g. Traccia).
 
+## Governing tool calls inside a framework
+
+Hand Runtime tools to the framework through `GovernedToolBridge`, and each call to them goes
+through the Runtime's tool executor: permissions, input validation, `before_tool` and `after_tool`
+policy, guards, idempotency, the execution ledger and tool spans apply as they do in a Runtime run.
+
+```python
+from algen_agent_runtime.frameworks import GovernedToolBridge
+
+bridge = GovernedToolBridge(
+    container.runtime.tool_executor, container.tools, request, permissions={"crm.read"}
+)
+agent = Agent(name="analyst", tools=bridge.openai_agents_tools("crm.find_account"))  # OpenAI Agents SDK
+tools = bridge.langchain_tools("crm.find_account")  # LangGraph / LangChain
+```
+
+What the Runtime enforces inside each framework:
+
+| Call inside the framework | Governed by the Runtime | How |
+| --- | --- | --- |
+| A Runtime tool handed over through the bridge | Yes: permissions, validation, policy, guards, ledger, spans | `bridge.openai_agents_tools(...)`, `bridge.langchain_tools(...)`; for AutoGen and CrewAI, wrap `await bridge.call(name, arguments)` in the framework's own tool type |
+| A Runtime tool that `requires_approval` | Refused | A foreign framework cannot pause a Runtime run; keep such tools in a Runtime agent or workflow |
+| The framework's own tools | No: run and traced by the framework | Framework-native hooks |
+| The framework's model calls | No: not routed, metered or guarded by the Runtime | Framework-native configuration; shared tracing (for example Traccia) |
+| The outer call (the adapter) | Yes: tenancy, deadline, cancellation, identity propagation | `container.frameworks` |
+
+`tests/unit/test_framework_governed_tools.py` pins this boundary with the real OpenAI Agents SDK
+and `langchain_core` when they are installed, so an upgrade that bypasses it fails CI. The
+`pattern_openai_agents_integration` example runs both kinds of tool side by side, offline.
+
 ## Installation
 
 Framework dependencies are optional and kept strictly lazy:

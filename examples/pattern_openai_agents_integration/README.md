@@ -6,6 +6,7 @@ This pattern demonstrates how an application-owned OpenAI Agents SDK `Agent` is 
 
 - **Runtime Normalization**: Runtime normalizes the outer invocation result (`FrameworkRunResult`), stream lifecycle events (`STARTED`, `DELTA`, `STEP`, `COMPLETED`), and propagates identity metadata (`run_id`, `tenant_id`, `user_id`, `session_id`) into context and tracing headers.
 - **SDK Autonomy**: The OpenAI Agents SDK owns its internal execution loop, model routing, function tools, multi-agent handoffs, guardrails, and interruption mechanisms. Runtime native policies and tool registries do not automatically intercept internal SDK calls.
+- **Governed tools**: Runtime tools handed to the SDK agent through `GovernedToolBridge` run through the Runtime's tool executor. The example's `incidents.lookup` runs governed, `incidents.close` (which requires approval) is refused there, and the SDK's own `read_runbook` runs without the Runtime. See [governing tool calls inside a framework](../../docs/framework-adapters.md#governing-tool-calls-inside-a-framework).
 
 ## Running the Example
 
