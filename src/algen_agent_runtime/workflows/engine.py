@@ -20,7 +20,7 @@ from algen_agent_runtime.exceptions.errors import (
     VerificationError,
 )
 from algen_agent_runtime.security.redaction import redact_parameters
-from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext
+from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext, tool_fingerprint
 from algen_agent_runtime.types.contracts import (
     RequestOverrides,
     RunAttachment,
@@ -68,6 +68,17 @@ _BINDING_PROBLEMS = {
     "approval.arguments_mismatch": "tool step {0!r} would run with arguments that differ from the "
     "call approval {1!r} approved",
 }
+
+
+class _ApprovalToolChanged(Exception):
+    """A tool step's tool changed after the approvals that gate it were asked for."""
+
+    def __init__(self, tool: str, gates: tuple[tuple[str, str], ...], current: str) -> None:
+        super().__init__(f"tool {tool} changed after its approval was asked for")
+        self.tool = tool
+        # (approval node id, the fingerprint it recorded)
+        self.gates = gates
+        self.current = current
 
 
 class WorkflowHookRegistry:
@@ -1028,6 +1039,12 @@ class MultiAgentWorkflowExecutor:
             outcomes = await asyncio.gather(*(execute(node) for node in ready))
             del outcomes
             pending -= {node.id for node in ready}
+            # A step whose tool changed sent its approvals back to pending, to be asked again.
+            pending |= {
+                node.id
+                for node in manifest.nodes
+                if state.nodes[node.id].status is WorkflowNodeStatus.PENDING
+            }
             failed = [
                 node for node in ready if state.nodes[node.id].status == WorkflowNodeStatus.FAILED
             ]
@@ -1181,6 +1198,8 @@ class MultiAgentWorkflowExecutor:
                 state.status = WorkflowStatus.AWAITING_INPUT
                 await self._emit(emit, "workflow.input.required", state, node, state.pause)
             await self._emit(emit, "workflow.node.completed", state, node)
+        except _ApprovalToolChanged as change:
+            await self._ask_again_for_changed_tool(state, node, nodes, change, emit)
         except Exception as exc:
             execution.status = WorkflowNodeStatus.FAILED
             execution.error = f"{type(exc).__name__}: {exc}"
@@ -1663,6 +1682,8 @@ class MultiAgentWorkflowExecutor:
         has no bound calls, and its step runs as it did then.
         """
         name = tool.definition.name
+        if tool.definition.requires_approval:
+            self._check_tool_unchanged(state, node, approved_by, tool)
         digest = _digest(arguments)
         decisions = [state.values.get(nodes[gate].output_key) for gate in approved_by]
         modified = any(
@@ -1709,13 +1730,79 @@ class MultiAgentWorkflowExecutor:
         )
         if not tool.definition.requires_approval:
             return None
+        recorded = state.nodes[approved_by[0]].approved_calls or {}
         return ToolApproval.for_call(
             f"workflow:{state.id}:{approved_by[0]}",
             "modified" if modified else "approved",
             name,
             tool.definition.version,
             arguments,
+            tool_fingerprint=getattr(recorded.get(node.id), "tool_fingerprint", None),
         )
+
+    @staticmethod
+    def _check_tool_unchanged(
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        approved_by: tuple[str, ...],
+        tool: Any,
+    ) -> None:
+        """Raise :class:`_ApprovalToolChanged` when a gate recorded a fingerprint for this
+        step's tool and the tool's fingerprint is different now. Gates that recorded none
+        (decided before 0.2, or asked before) are not checked."""
+        current = tool_fingerprint(tool)
+        changed = []
+        for gate in approved_by:
+            bound = (state.nodes[gate].approved_calls or {}).get(node.id)
+            if bound is not None and bound.tool_fingerprint not in {None, current}:
+                assert bound.tool_fingerprint is not None
+                changed.append((gate, bound.tool_fingerprint))
+        if changed:
+            raise _ApprovalToolChanged(tool.definition.name, tuple(changed), current)
+
+    async def _ask_again_for_changed_tool(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+        change: _ApprovalToolChanged,
+        emit: WorkflowEventSink | None,
+    ) -> None:
+        """Send the approvals of a step whose tool changed back to pending: each expires with
+        the reason ``tool_changed`` and emits ``workflow.approval.tool_changed`` with both
+        fingerprints, then pauses again showing the tool's current definition. The step runs
+        once they are decided again."""
+        execution = state.nodes[node.id]
+        execution.status = WorkflowNodeStatus.PENDING
+        execution.started_at = None
+        execution.error = None
+        for gate, previous in change.gates:
+            approval = nodes[gate]
+            gated = state.nodes[gate]
+            gated.status = WorkflowNodeStatus.PENDING
+            gated.started_at = None
+            gated.completed_at = None
+            gated.approved_calls = None
+            state.values.pop(approval.output_key, None)
+            await self._emit(
+                emit,
+                "workflow.approval.expired",
+                state,
+                approval,
+                {"reason": "tool_changed", "error": "the tool changed after the approval"},
+            )
+            await self._emit(
+                emit,
+                "workflow.approval.tool_changed",
+                state,
+                approval,
+                {
+                    "tool": change.tool,
+                    "tool_node_id": node.id,
+                    "previous_fingerprint": previous,
+                    "current_fingerprint": change.current,
+                },
+            )
 
     @staticmethod
     def _binding_of(
@@ -1816,6 +1903,7 @@ class MultiAgentWorkflowExecutor:
                     "node_id": step.id,
                     "tool": tool.definition.name,
                     "tool_version": tool.definition.version,
+                    "tool_fingerprint": tool_fingerprint(tool),
                     "arguments": (
                         redact_parameters(arguments)
                         if isinstance(arguments, Mapping)
@@ -1855,6 +1943,8 @@ class MultiAgentWorkflowExecutor:
             approved[step.id] = WorkflowApprovedCall(
                 tool=tool.definition.name,
                 tool_version=str(request.get("tool_version", tool.definition.version)),
+                # As it was when the approval was asked for; none for a request made before 0.2.
+                tool_fingerprint=request.get("tool_fingerprint"),
                 arguments_sha256=digest,
                 modification_ignored=decision == "modified"
                 and not any(path_within(path, parameters) for path in reads),

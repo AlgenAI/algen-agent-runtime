@@ -21,7 +21,12 @@ from opentelemetry.context import Context
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
 
-from algen_agent_runtime.approvals.service import ApprovalRequest, ApprovalService, ApprovalStatus
+from algen_agent_runtime.approvals.service import (
+    TOOL_CHANGED,
+    ApprovalRequest,
+    ApprovalService,
+    ApprovalStatus,
+)
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
 from algen_agent_runtime.context.artifacts import (
@@ -132,7 +137,9 @@ from algen_agent_runtime.tools.contracts import (
     ToolExecutionStatus,
     ToolNote,
     ToolResult,
+    canonical_digest,
     read_only_credentials,
+    tool_fingerprint,
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -766,19 +773,84 @@ class AgentRuntime:
         return state
 
     def _bind_approval(self, approval: ApprovalRequest, call: ToolCall) -> ToolApproval:
-        """The decided ``approval`` bound to the call it approved, with the call's arguments
-        (the approver's modified ones, when they modified them)."""
-        try:
-            version = self.tools.get(call.name).definition.version
-        except NotFoundError:
-            version = ""
-        return ToolApproval.for_call(
-            approval.id,
-            "modified" if approval.status == ApprovalStatus.MODIFIED else "approved",
-            call.name,
-            version,
-            call.arguments,
+        """The decided ``approval`` bound to the call it approved: the tool, version and
+        fingerprint it was asked for, and the arguments it proposed, or the approver's modified
+        ones. An approval stored before 0.2 records none of them: it is bound to the call's
+        current tool version and arguments, with no fingerprint."""
+        version = approval.tool_version
+        if version is None:
+            try:
+                version = self.tools.get(call.name).definition.version
+            except NotFoundError:
+                version = ""
+        modified = approval.status == ApprovalStatus.MODIFIED
+        return ToolApproval(
+            approval_id=approval.id,
+            decision="modified" if modified else "approved",
+            tool=approval.tool or call.name,
+            tool_version=version,
+            arguments_sha256=(
+                approval.arguments_sha256
+                if approval.arguments_sha256 is not None and not modified
+                else canonical_digest(call.arguments)
+            ),
+            tool_fingerprint=approval.tool_fingerprint,
         )
+
+    @staticmethod
+    def _stale_approval(state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
+        """The approval of an approved call whose tool changed since the approval was asked
+        for (another version or fingerprint), or None when it is current or has no
+        fingerprint."""
+        bound = state.tool_approvals.get(call_id)
+        if (
+            call_id not in state.approved_tool_call_ids
+            or bound is None
+            or bound.tool_fingerprint is None
+        ):
+            return None
+        definition = tool.definition
+        if (bound.tool, bound.tool_version) == (definition.name, definition.version) and (
+            bound.tool_fingerprint == tool_fingerprint(tool)
+        ):
+            return None
+        return bound
+
+    async def _ask_again_for_changed_tool(
+        self, state: RunState, call_id: str, tool: Tool, stale: ToolApproval
+    ) -> str:
+        """Withdraw an approval whose tool changed before the approved call ran: expire it
+        (``status_reason`` ``tool_changed``), record the audit event ``approval.tool_changed``
+        with both fingerprints, and forget the decision, so the call is asked for again with
+        the tool's current definition. Returns the expired approval's id."""
+        try:
+            await self.approvals.expire(
+                stale.approval_id, state.request.tenant_id, reason=TOOL_CHANGED
+            )
+        except (NotFoundError, ConflictError) as exc:
+            self._logger.warning(
+                "approval_expire_failed",
+                run_id=state.id,
+                approval_id=stale.approval_id,
+                error_type=type(exc).__name__,
+            )
+        await self._audit(
+            state,
+            "approval.tool_changed",
+            "expired",
+            stale.approval_id,
+            {
+                "tool": tool.definition.name,
+                "tool_call_id": call_id,
+                "previous_version": stale.tool_version,
+                "current_version": tool.definition.version,
+                "previous_fingerprint": stale.tool_fingerprint,
+                "current_fingerprint": tool_fingerprint(tool),
+            },
+        )
+        state.approved_tool_call_ids.discard(call_id)
+        state.tool_approvals.pop(call_id, None)
+        return stale.approval_id
 
     def _call_approval(self, state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
         """The approval that covers a call, or None when it was not approved.
@@ -2428,6 +2500,11 @@ class AgentRuntime:
         # The guards, the approval request and the executor all see the rewritten arguments.
         action = _planned_call(action, tool.definition, decision)
         approved = call_id in state.approved_tool_call_ids
+        replaced: str | None = None
+        stale = self._stale_approval(state, call_id, tool)
+        if stale is not None:
+            replaced = await self._ask_again_for_changed_tool(state, call_id, tool, stale)
+            approved = False
         if not approved:
             # Checked before anyone is asked; an approved call passed them when it was planned.
             held = await self._guard_tool_call(state, agent, action, tool)
@@ -2444,11 +2521,18 @@ class AgentRuntime:
                 decision.audit_metadata.get("risk", tool.definition.side_effect.value),
                 agent.approval_policy.expires_seconds,
                 agent=state.request.agent,
+                tool=tool.definition.name,
+                tool_version=tool.definition.version,
+                tool_fingerprint=tool_fingerprint(tool),
+                arguments_sha256=canonical_digest(action.arguments),
             )
             state.pause_payload = {
                 "kind": "tool_approval",
                 "approval_id": approval.id,
                 "tool_call_id": call_id,
+                "tool": approval.tool,
+                "tool_version": approval.tool_version,
+                "tool_fingerprint": approval.tool_fingerprint,
                 "proposed_action": approval.proposed_action,
                 "side_effect_summary": approval.side_effect_summary,
                 "redacted_parameters": approval.redacted_parameters,
@@ -2457,6 +2541,10 @@ class AgentRuntime:
                 "options": ["approved", "rejected", "modified"],
                 "paused_at": utc_now().isoformat(),
             }
+            if replaced is not None:
+                # Asked again because the tool changed after the earlier approval.
+                state.pause_payload["replaces_approval_id"] = replaced
+                state.pause_payload["replaced_reason"] = TOOL_CHANGED
             await self._transition(state, RunStatus.AWAITING_APPROVAL)
             await self._emit(state, "approval.required", state.pause_payload, action.id)
             return None
@@ -3021,9 +3109,13 @@ class AgentRuntime:
                 state,
                 {"agent": agent, "tool": tool.definition, "approval_policy": agent.approval_policy},
             )
+            call_id = action.id.removeprefix("tool-")
             if decision.action in _SINGLE_PATH_PLAN_ACTIONS or (
                 decision.action == PolicyAction.REQUIRE_APPROVAL
-                and action.id.removeprefix("tool-") not in state.approved_tool_call_ids
+                and (
+                    call_id not in state.approved_tool_call_ids
+                    or self._stale_approval(state, call_id, tool) is not None
+                )
             ):
                 # One at a time: the single path pauses for the approval, refuses the call or
                 # runs it with its rewritten arguments.
