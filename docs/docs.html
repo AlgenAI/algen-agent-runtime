@@ -4238,7 +4238,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   const LATEST_VERSION = '0.2.0b1';
   const RELEASES = {
     '0.2.0b1': {
-      date: '2026-11-11', pending: true, kind: 'Beta',
+      date: '2026-11-11', pending: false, kind: 'Beta',
       title: 'The first 0.2 beta: deprecations removed, approvals bound to the exact call',
       summary: 'Everything deprecated during 0.1 is removed, the HTTP server and OTLP exporter become optional extras, and the examples move to the algen_agent_runtime_examples package. Approvals are bound to the exact call they approve, record the tool&#39;s fingerprint and the model&#39;s rationale, and are asked again when the tool changed. Also: documents attached for tools to read, files returned by tools, similarity-ranked memory recall, result coverage, a bounded tool thread pool and policy rewrites before a tool runs. Read the upgrade notes first.',
       fields: { tag: 'v0.2.0b1', package: '0.2.0b1 · beta', version: '0.2.0b1', pip: 'python -m pip install --pre "algen-agent-runtime[service]==0.2.0b1"' },
