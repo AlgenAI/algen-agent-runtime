@@ -12,12 +12,14 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from algen_agent_runtime.exceptions.errors import (
+    ApprovalMismatchError,
     CapabilityError,
     ConfigurationError,
     ConflictError,
     NotFoundError,
     VerificationError,
 )
+from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext
 from algen_agent_runtime.types.contracts import (
     RequestOverrides,
@@ -34,6 +36,7 @@ from algen_agent_runtime.workflows.contracts import (
     PayloadBuilder,
     WorkflowAgentRunner,
     WorkflowApprovalDecision,
+    WorkflowApprovedCall,
     WorkflowEventSink,
     WorkflowExecutionState,
     WorkflowHookContext,
@@ -45,6 +48,8 @@ from algen_agent_runtime.workflows.contracts import (
     WorkflowPredicate,
     WorkflowStatus,
     covering_approval_nodes,
+    path_within,
+    template_paths,
 )
 from algen_agent_runtime.workflows.store import (
     InMemoryWorkflowCheckpointStore,
@@ -53,6 +58,16 @@ from algen_agent_runtime.workflows.store import (
 
 # SHA-256 of a value's canonical JSON, for audit events that must not carry the value.
 _digest = canonical_digest
+
+# Why a workflow tool step's approval does not cover its call, by ApprovalMismatchError code.
+_BINDING_PROBLEMS = {
+    "approval.arguments_unbound": "tool step {0!r} reads values that did not exist when approval "
+    "{1!r} was decided, so no approver saw them",
+    "approval.modification_ignored": "approval {1!r} modified the parameters, and tool step {0!r} "
+    "does not read them",
+    "approval.arguments_mismatch": "tool step {0!r} would run with arguments that differ from the "
+    "call approval {1!r} approved",
+}
 
 
 class WorkflowHookRegistry:
@@ -345,6 +360,8 @@ class MultiAgentWorkflowExecutor:
         self._extend_deadline_for_pause(state)
         state.values[node.output_key] = result.model_dump(mode="json")
         execution = state.nodes[node.id]
+        if decision != "rejected":
+            execution.approved_calls = self._approved_calls(state, node, nodes, decision)
         execution.status = (
             WorkflowNodeStatus.REJECTED if decision == "rejected" else WorkflowNodeStatus.COMPLETED
         )
@@ -1057,6 +1074,7 @@ class MultiAgentWorkflowExecutor:
                         key: self._path(state.values, key) for key in node.approval.review_from
                     },
                     "redacted_parameters": parameters,
+                    "calls": self._requested_calls(state, node, nodes, parameters),
                     "allow_modification": node.approval.allow_modification,
                     "expires_at": (
                         requested_at + timedelta(seconds=node.approval.expires_seconds)
@@ -1290,6 +1308,7 @@ class MultiAgentWorkflowExecutor:
                         "prompt",
                         "review",
                         "redacted_parameters",
+                        "calls",
                         "allow_modification",
                         "expires_at",
                         "question",
@@ -1617,42 +1636,230 @@ class MultiAgentWorkflowExecutor:
             and all(state.nodes[gate].status is WorkflowNodeStatus.COMPLETED for gate in covering)
             else ()
         )
-        approval_id = approved_by[0] if approved_by else None
-        if approval_id is not None:
-            decided = state.values.get(nodes[approval_id].output_key)
-            approved = decided.get("parameters") if isinstance(decided, dict) else None
-            await self._emit(
-                emit,
-                "workflow.tool.authorized",
-                state,
-                node,
-                {
-                    "tool": name,
-                    "approval_node_id": approval_id,
-                    "approval_node_ids": list(approved_by),
-                    "arguments_sha256": _digest(arguments),
-                    "parameters_sha256": None if approved is None else _digest(approved),
-                },
+        approval = None
+        if approved_by:
+            approval = await self._authorize_tool_step(
+                state, node, nodes, approved_by, tool, arguments, emit
             )
-        result = await executor.execute(
-            name,
-            arguments,
-            context,
-            approval=(
-                None
-                if approval_id is None
-                else ToolApproval.for_call(
-                    f"workflow:{state.id}:{approval_id}",
-                    "modified"
-                    if isinstance(decided, dict) and decided.get("decision") == "modified"
-                    else "approved",
-                    name,
-                    tool.definition.version,
-                    arguments,
-                )
-            ),
-        )
+        result = await executor.execute(name, arguments, context, approval=approval)
         return result.value
+
+    async def _authorize_tool_step(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+        approved_by: tuple[str, ...],
+        tool: Any,
+        arguments: Any,
+        emit: WorkflowEventSink | None,
+    ) -> ToolApproval | None:
+        """The approval that covers a tool step's call, once every gate approved this call.
+
+        For a tool that ``requires_approval``, each gate with ``binding: call`` (the default)
+        must have decided this exact call: the step's arguments must have the digest it bound
+        when the approver decided. Otherwise the call is refused with an
+        :class:`ApprovalMismatchError` and ``workflow.tool.refused``. A gate decided before 0.2
+        has no bound calls, and its step runs as it did then.
+        """
+        name = tool.definition.name
+        digest = _digest(arguments)
+        decisions = [state.values.get(nodes[gate].output_key) for gate in approved_by]
+        modified = any(
+            isinstance(decided, dict) and decided.get("decision") == "modified"
+            for decided in decisions
+        )
+        approved = decisions[0].get("parameters") if isinstance(decisions[0], dict) else None
+        binding = "not_required"
+        if tool.definition.requires_approval:
+            binding = self._binding_of(state, nodes, approved_by)
+            for gate in approved_by:
+                problem = self._binding_problem(state, nodes, gate, node, digest)
+                if problem is None:
+                    continue
+                code, bound = problem
+                await self._emit(
+                    emit,
+                    "workflow.tool.refused",
+                    state,
+                    node,
+                    {
+                        "tool": name,
+                        "reason_code": code,
+                        "approval_node_id": gate,
+                        "approval_node_ids": list(approved_by),
+                        "arguments_sha256": digest,
+                        "approved_arguments_sha256": bound,
+                    },
+                )
+                raise ApprovalMismatchError(code, _BINDING_PROBLEMS[code].format(node.id, gate))
+        await self._emit(
+            emit,
+            "workflow.tool.authorized",
+            state,
+            node,
+            {
+                "tool": name,
+                "approval_node_id": approved_by[0],
+                "approval_node_ids": list(approved_by),
+                "binding": binding,
+                "arguments_sha256": digest,
+                "parameters_sha256": None if approved is None else _digest(approved),
+            },
+        )
+        if not tool.definition.requires_approval:
+            return None
+        return ToolApproval.for_call(
+            f"workflow:{state.id}:{approved_by[0]}",
+            "modified" if modified else "approved",
+            name,
+            tool.definition.version,
+            arguments,
+        )
+
+    @staticmethod
+    def _binding_of(
+        state: WorkflowExecutionState,
+        nodes: Mapping[str, WorkflowNode],
+        approved_by: tuple[str, ...],
+    ) -> str:
+        """How the gates bind a step's call: ``call`` when any binds the exact call, else
+        ``step`` (declared) or ``legacy`` (decided before 0.2)."""
+        bindings = set()
+        for gate in approved_by:
+            rule = nodes[gate].approval
+            if state.nodes[gate].approved_calls is None:
+                bindings.add("legacy")
+            elif rule is not None:
+                bindings.add(rule.binding)
+        for binding in ("call", "step", "legacy"):
+            if binding in bindings:
+                return binding
+        return "legacy"
+
+    @staticmethod
+    def _binding_problem(
+        state: WorkflowExecutionState,
+        nodes: Mapping[str, WorkflowNode],
+        gate: str,
+        node: WorkflowNode,
+        digest: str,
+    ) -> tuple[str, str | None] | None:
+        """Why approval node ``gate`` does not cover this call of ``node``, as an error code and
+        the digest it bound, or None when it does."""
+        rule = nodes[gate].approval
+        approved_calls = state.nodes[gate].approved_calls
+        if rule is None or rule.binding == "step" or approved_calls is None:
+            return None
+        bound = approved_calls.get(node.id)
+        if bound is None or bound.arguments_sha256 is None:
+            return "approval.arguments_unbound", None
+        if bound.modification_ignored:
+            return "approval.modification_ignored", bound.arguments_sha256
+        if bound.arguments_sha256 != digest:
+            return "approval.arguments_mismatch", bound.arguments_sha256
+        return None
+
+    def _gated_tool_steps(
+        self, nodes: Mapping[str, WorkflowNode], approval_id: str
+    ) -> list[tuple[WorkflowNode, Any]]:
+        """The steps an approval node gates that call an approval-required tool, with the tool."""
+        tools = getattr(self._runtime, "tools", None)
+        if tools is None:
+            return []
+        steps: list[tuple[WorkflowNode, Any]] = []
+        for step in nodes.values():
+            handler = step.handler or ""
+            if not handler.startswith(TOOL_HANDLER_PREFIX):
+                continue
+            if approval_id not in covering_approval_nodes(nodes, step.id):
+                continue
+            try:
+                tool = tools.get(handler.removeprefix(TOOL_HANDLER_PREFIX))
+            except NotFoundError:
+                continue  # the step fails when it runs
+            if tool.definition.requires_approval:
+                steps.append((step, tool))
+        return steps
+
+    def _resolved_call(self, step: WorkflowNode, values: dict[str, Any]) -> Any | None:
+        """A step's arguments resolved against ``values``, or None when it reads a value they do
+        not have yet."""
+        try:
+            return self._tool_arguments(step.arguments, values, step)
+        except ConfigurationError:
+            return None
+
+    def _requested_calls(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+        parameters: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """The calls an approval would approve, as the approver is shown them.
+
+        Each gated approval-required tool step's arguments are resolved as if the approver
+        approved the parameters unchanged, and redacted like an approval's parameters.
+        ``arguments`` is None when the call reads a value the workflow does not have yet (the
+        decision's ``decided_by``, or a later node's output).
+        """
+        values = {
+            **state.values,
+            node.output_key: {"decision": "approved", "parameters": parameters},
+        }
+        calls: list[dict[str, Any]] = []
+        for step, tool in self._gated_tool_steps(nodes, node.id):
+            arguments = self._resolved_call(step, values)
+            calls.append(
+                {
+                    "node_id": step.id,
+                    "tool": tool.definition.name,
+                    "tool_version": tool.definition.version,
+                    "arguments": (
+                        redact_parameters(arguments)
+                        if isinstance(arguments, Mapping)
+                        else arguments
+                    ),
+                    "arguments_sha256": None if arguments is None else _digest(arguments),
+                }
+            )
+        return calls
+
+    def _approved_calls(
+        self,
+        state: WorkflowExecutionState,
+        node: WorkflowNode,
+        nodes: Mapping[str, WorkflowNode],
+        decision: str,
+    ) -> dict[str, WorkflowApprovedCall]:
+        """The calls an approving decision covers, by step id.
+
+        An approved decision covers the call the approver was shown; a modified one, or one
+        whose call could not be shown, the call resolved now, with the decision in the values.
+        """
+        shown = {
+            str(call.get("node_id")): call
+            for call in (state.pause or {}).get("calls") or ()
+            if isinstance(call, Mapping)
+        }
+        parameters = f"{node.output_key}.parameters"
+        approved: dict[str, WorkflowApprovedCall] = {}
+        for step, tool in self._gated_tool_steps(nodes, node.id):
+            request = shown.get(step.id, {})
+            digest = request.get("arguments_sha256") if decision == "approved" else None
+            if digest is None:
+                arguments = self._resolved_call(step, state.values)
+                digest = None if arguments is None else _digest(arguments)
+            reads = template_paths(step.arguments)
+            approved[step.id] = WorkflowApprovedCall(
+                tool=tool.definition.name,
+                tool_version=str(request.get("tool_version", tool.definition.version)),
+                arguments_sha256=digest,
+                modification_ignored=decision == "modified"
+                and not any(path_within(path, parameters) for path in reads),
+            )
+        return approved
 
     @classmethod
     def _tool_arguments(cls, value: Any, values: dict[str, Any], node: WorkflowNode) -> Any:

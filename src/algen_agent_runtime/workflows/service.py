@@ -501,6 +501,7 @@ def public_pause(pause: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "question",
         "review",
         "redacted_parameters",
+        "calls",
         "allow_modification",
         "requested_at",
         "expires_at",
