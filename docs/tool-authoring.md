@@ -318,6 +318,62 @@ async def apply_patch(path: str, patch: str, context: ToolContext) -> Receipt:
 - Outside a run (a unit test, `fake_tool_context`, a reconcile or compensation hook) the note is
   checked and returned, and nothing is emitted.
 
+## Timeouts: what stops and what does not
+
+An `async` handler is cancelled when its `timeout_seconds` passes: it stops at its next `await`.
+A synchronous handler (a plain `def`, including a synchronous `@tool` function) runs in a worker
+thread, and Python cannot stop a thread. The guarantee is exactly this: **the caller stops waiting
+on schedule; the work may continue.** The call fails with `tool <name> timed out` on time, while
+the thread runs to its end and its side effect may still happen (a call that writes is recorded
+`indeterminate`).
+
+What bounds that leftover work:
+
+- The call keeps its `max_concurrency` slot until its thread ends, so a tool never has more than
+  `max_concurrency` handlers actually running, and a timed-out call is never retried over its own
+  still-running thread.
+- Every synchronous tool in the process shares one pool of worker threads,
+  `runtime.tool_threads.max_workers` (default `min(32, CPUs + 4)`), apart from asyncio's default
+  executor. When all are busy, up to `runtime.tool_threads.max_queued` calls (default 128) wait;
+  past that a call is refused at once with `ToolCapacityError` ("tool thread pool is full",
+  `details()["code"] == "tool_capacity_exceeded"`). A queued call whose caller times out is
+  withdrawn before it starts and fails with "timed out waiting for a worker thread; it did not
+  start". Both are recorded `failed`, not `indeterminate`: nothing ran.
+
+When a tool needs a hard deadline, set `execution="process"` on its `ToolDefinition`. Each call
+then runs in a new subprocess (the `spawn` start method), which is killed when the deadline
+passes: the work really stops. Its cost and requirements:
+
+- The handler must be a function defined at the top level of an importable module, because the
+  subprocess imports it by name. A lambda, a closure, a `@tool` function or a handler wrapped with
+  `wrap()` cannot be sent; `ToolRegistry.register` refuses such a tool.
+- The arguments, the `ToolContext` and the result must pickle. The caller's credentials are passed
+  to the subprocess explicitly; `emit_note` and `read_attachment` do not work there.
+- Starting an interpreter and importing the handler's module takes time (often a few hundred
+  milliseconds) and counts against `timeout_seconds`.
+- A side effect sent before the kill still happened: a timed-out call that writes is still
+  recorded `indeterminate`, and the tool's `reconcile` hook still applies.
+
+```python
+# billing/tools.py
+def export_ledger(arguments: dict, context: ToolContext) -> dict:
+    ...
+
+export = Tool(
+    ToolDefinition(
+        name="billing.export",
+        version="1",
+        description="Export the ledger.",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        side_effect=SideEffect.READ,
+        timeout_seconds=20,
+        execution="process",
+    ),
+    export_ledger,
+)
+```
+
 ## Unknown outcomes: reconcile and compensation
 
 A call that changes something can fail without saying whether it took effect: the request left,

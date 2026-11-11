@@ -107,6 +107,28 @@ class ToolNotAttemptedError(ToolExecutionError):
     """
 
 
+class ToolCapacityError(ToolNotAttemptedError):
+    """Every tool worker thread is busy and the queue is full: the call was refused unstarted.
+
+    Nothing ran, so the call is recorded ``failed``, never ``indeterminate``.
+    """
+
+    def __init__(self, max_workers: int, max_queued: int) -> None:
+        self.max_workers = max_workers
+        self.max_queued = max_queued
+        super().__init__(
+            f"tool thread pool is full ({max_workers} running, {max_queued} queued); "
+            "the call was not started, try again later"
+        )
+
+    def details(self) -> dict[str, object]:
+        return {
+            "code": "tool_capacity_exceeded",
+            "max_workers": self.max_workers,
+            "max_queued": self.max_queued,
+        }
+
+
 class ToolkitConfigurationError(ToolNotAttemptedError, ConfigurationError):
     """A toolkit's client could not open because of its configuration (a missing setting or
     credential, a missing extra). It is a ``ConfigurationError`` with the toolkit's own message,

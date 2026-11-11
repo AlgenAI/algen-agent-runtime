@@ -176,6 +176,7 @@ from algen_agent_runtime.security.network import (
 from algen_agent_runtime.security.outbound import build_outbound_network
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.authoring import Toolkit
+from algen_agent_runtime.tools.blocking import configure_tool_threads
 from algen_agent_runtime.tools.builtin import http_tool, subprocess_tool
 from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
@@ -986,6 +987,10 @@ def build_container(
             ),
             outbound=outbound,
         )
+    # Per process: the last container built sizes the pool every synchronous tool runs in.
+    configure_tool_threads(
+        settings.runtime.tool_threads.max_workers, settings.runtime.tool_threads.max_queued
+    )
     executor = ToolExecutor(
         tools,
         policies,

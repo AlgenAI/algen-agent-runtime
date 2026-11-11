@@ -79,6 +79,14 @@ class ToolDefinition(BaseModel):
         "the key on the tool, version and arguments within the policy's scope.",
     )
 
+    execution: Literal["thread", "process"] = Field(
+        default="thread",
+        description="Where a synchronous handler runs. 'thread': a worker thread; on timeout the "
+        "caller stops waiting on schedule but the work may continue until it ends. 'process': a "
+        "new subprocess per call, killed on timeout, so the work really stops; the handler must "
+        "be an importable top-level function and its arguments, context and result must pickle.",
+    )
+
     failure_field: str | None = Field(
         default=None,
         min_length=1,

@@ -44,6 +44,9 @@ runtime:
   recovery_limit: 1000
   shutdown_grace_seconds: 10
   recover_service_workflows: true
+  tool_threads:                 # the process's pool for synchronous tools; see docs/tool-authoring.md
+    max_workers: null           # null: min(32, CPUs + 4)
+    max_queued: 128             # waiting calls; past it a call is refused unstarted
   readiness:
     model_providers: any        # any | all | none
     require_durable_stores: true

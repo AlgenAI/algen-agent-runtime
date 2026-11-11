@@ -32,6 +32,7 @@ from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocumen
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.security.outbound import NetworkSettings
 from algen_agent_runtime.security.sandbox import SandboxSettings
+from algen_agent_runtime.tools.blocking import DEFAULT_MAX_QUEUED
 from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import (
     DEFAULT_ATTACHMENT_TYPES,
@@ -578,6 +579,25 @@ class ReadinessSettings(StrictSettings):
         return self
 
 
+class ToolThreadSettings(StrictSettings):
+    """The process's pool of worker threads for synchronous tool handlers."""
+
+    max_workers: int | None = Field(
+        default=None,
+        ge=1,
+        le=1024,
+        description="Worker threads shared by every synchronous tool in the process; unset uses "
+        "min(32, CPUs + 4). A timed-out call's thread keeps its worker until it ends.",
+    )
+    max_queued: int = Field(
+        default=DEFAULT_MAX_QUEUED,
+        ge=0,
+        le=100_000,
+        description="Calls that may wait for a busy pool; past it a call is refused at once "
+        "(not started, recorded failed) with a 'tool thread pool is full' error.",
+    )
+
+
 class RuntimeSettings(StrictSettings):
     component_check: Literal["error", "warn"] = Field(
         default="error",
@@ -594,6 +614,10 @@ class RuntimeSettings(StrictSettings):
         "executor keep calling executor.recover themselves.",
     )
     readiness: ReadinessSettings = Field(default_factory=ReadinessSettings)
+    tool_threads: ToolThreadSettings = Field(
+        default_factory=ToolThreadSettings,
+        description="Size and queue limit of the per-process pool that runs synchronous tools.",
+    )
     stream_delta_interval_ms: int = Field(
         default=50,
         ge=0,
