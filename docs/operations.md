@@ -274,7 +274,9 @@ once with the executor, or let a decision or answer through the API continue the
 
 | Event | When |
 | --- | --- |
-| `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. |
+| `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. With `reason: tool_changed`, the gated tool changed after the approval was asked for, and the approval node pauses again instead. |
+| `workflow.approval.tool_changed` | A gated tool's fingerprint changed between the approval request and the call; carries `previous_fingerprint` and `current_fingerprint`. |
+| `workflow.tool.refused` | An approval-required tool step was refused because its arguments are not the call its approval bound (`reason_code` `approval.arguments_mismatch`, `approval.arguments_unbound` or `approval.modification_ignored`). |
 | `workflow.input.expired` | An input (clarification) wait was older than `maintenance.clarification_timeout_seconds` when the sweep ran; the asking node fails with `workflow input expired`. |
 | `workflow.recovered` | A recovered run continues after a restart. |
 
@@ -430,6 +432,7 @@ results, approval requests) is written so the previous release can read it, so:
 | --- | --- | --- | --- |
 | `015_approval_agent.sql` | `0.1.0a18` | Nullable `agent` column and an index on approvals. | Yes; `0.1.0a17` does not read it. Approvals created by the previous release have no `agent`. |
 | `016_resource_bounds.sql` | `0.1.0a18` | Per-tenant storage usage table, triggers that keep it current on artifact, memory and learned-memory writes, and retention indexes. | Yes; `0.1.0a17` does not read the usage table, and its writes still fire the triggers, so usage stays current. |
+| `017_approval_tool_fingerprint.sql` | `0.2.0b1` | Nullable approval columns `tool`, `tool_version`, `tool_fingerprint`, `arguments_sha256`, `rationale` and `status_reason`. | Yes; the previous release does not read them, and the approval JSON keeps its earlier shape. Approvals created by the previous release have none and run without a fingerprint check. |
 | `018_learned_memory_vectors.sql` | `0.2.0b1` | Learned-memory vector table for semantic and hybrid recall (`real[]`, no extension needed). | Yes; the previous release does not read it. Vectors of records it corrects or deletes are not ranked, and the next maintenance sweep of the new release removes them. |
 
 Restore from backup instead of rolling back only when a release's notes say a migration is not

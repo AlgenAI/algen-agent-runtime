@@ -84,8 +84,8 @@ The permission prefix is the toolkit's `permission_prefix` (its name by default)
 - `approval=True` sets `requires_approval` on the definition: the Runtime asks for approval before
   every call, whatever the agent's policy. It can add approval, never waive it. The tool executor
   enforces it too: `ToolExecutor.execute(..., approval=...)` refuses such a call without a
-  reference to the approval that covers it, so a workflow `tool:` step or code calling the
-  executor directly cannot skip it by leaving the reference out. See
+  `ToolApproval` that covers it, so a workflow `tool:` step or code calling the executor
+  directly cannot skip it by leaving the approval out. See
   [Who proves an approval is valid](#who-proves-an-approval-is-valid).
 - `approval=<handler>` runs the deployment's own flow. The handler implements `ApprovalHandler`:
 
@@ -104,19 +104,80 @@ class ChangeRequests:
 
 ### Who proves an approval is valid
 
-The executor checks that an approval reference is present; it does not look the approval up. The
-layer that calls it proves the approval is real and covers this call:
+`ToolExecutor.execute(..., approval=...)` takes a `ToolApproval`, a decided approval bound to one
+call:
+
+```python
+from algen_agent_runtime.tools.contracts import ToolApproval
+
+approval = ToolApproval.for_call(
+    approval_id="change-4711",  # your record of the decision
+    decision="approved",        # or "modified"; nothing else covers a call
+    tool="crm.reassign",
+    tool_version="1",
+    arguments=arguments,        # exactly what the approver approved
+    tool_fingerprint=None,      # or tool_fingerprint(tool) when the approval was asked for
+)
+await executor.execute("crm.reassign", arguments, context, approval=approval)
+```
+
+The executor refuses the call, before anything is recorded or run, with an
+`ApprovalMismatchError` (a `PolicyDeniedError`) whose `code` says why:
+
+| `code` | Refused because |
+| --- | --- |
+| `approval.tool_mismatch` | The approval is for another tool, or another version of it. |
+| `approval.arguments_mismatch` | The call's arguments differ from the approved ones (`arguments_sha256`, the SHA-256 of their canonical JSON: sorted keys, no whitespace). |
+| `approval.tool_changed` | The approval recorded a `tool_fingerprint` and the tool's fingerprint is different now. |
+
+The executor does not look the decision up: the layer that calls it proves the approval is real,
+and builds the `ToolApproval` only from a decided approval:
 
 | Caller | What proves the approval | Bound to |
 | --- | --- | --- |
-| An agent run | The run's approval record: the call's id is in the run's approved calls only after `resume()` recorded an approved or modified decision for it. A call id the model repeats from earlier in the run is replaced with a new one, so an approval never carries over to another call. | The call and its arguments: the call runs with the stored arguments, or with the approver's modified ones. |
-| A workflow `tool:` step | The engine: every approval that gates the step (the nearest approval on each path to it) must have the recorded status `completed`, which only an approved or modified decision sets. No workflow value or input can change it. | The step, not its arguments. Build the arguments from what the approver saw; `check` warns when they read anything else, and `workflow.tool.authorized` records digests of both. |
-| Your own code calling `ToolExecutor.execute` | You. Pass `approval=` only after your own approval flow decided this call. | Whatever your flow binds it to. |
+| An agent run | The run's approval record: `resume()` binds an approved or modified decision to the call it was asked for (`RunState.tool_approvals`). A call id the model repeats from earlier in the run is replaced with a new one, so an approval never carries over to another call. | The tool, its version and fingerprint, and the call's arguments: the stored ones, or the approver's modified ones. |
+| A workflow `tool:` step | The engine: every approval that gates the step (the nearest approval on each path to it) must have the recorded status `completed`, which only an approved or modified decision sets, and must have approved this exact call. No workflow value or input can change it. | The tool, its version and fingerprint, and the step's resolved arguments (see [strict binding](multi-agent-workflows.md#approvals-bind-the-exact-call)). |
+| Your own code calling `ToolExecutor.execute` | You. Build a `ToolApproval` only after your own approval flow decided this call, with the arguments your approver saw. | The tool and arguments in the `ToolApproval`. |
 
-Treat code that calls the executor directly as part of your trust boundary. Binding a workflow
-approval to the exact arguments it covers, and passing the executor a validated approval instead of a
-reference, are planned ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109),
-[#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117)).
+Treat code that calls the executor directly as part of your trust boundary. A call approved
+before 0.2 and still waiting after the upgrade is bound to the arguments it runs with.
+
+### Approvals and tool changes
+
+An approval covers a tool name and arguments, so a deploy that lands between the request and the
+decision would otherwise run new code under an approval given for the old. When an approval is
+asked for, the Runtime records the tool's fingerprint (`tool_fingerprint(tool)`): the SHA-256 of the
+canonical name, `version`, input and output schema, side-effect class and `requires_approval`, plus
+the source of `tool.source` when it has one. `@tool` functions use the author's function, a
+`Tool(definition, handler)` its handler; pass `source=` to name other code, or `source=None` for
+the definition only. The approval record and the run's pause carry `tool`, `tool_version`,
+`tool_fingerprint` and `arguments_sha256`.
+
+Before the approved call runs, a different version or fingerprint does not run it: the old
+approval is expired with `status_reason: tool_changed`, the audit event `approval.tool_changed`
+records `previous_fingerprint` and `current_fingerprint`, and the run pauses for a new approval
+showing the current definition (its pause has `replaces_approval_id` and `replaced_reason:
+tool_changed`). Workflow approvals do the same (see
+[multi-agent workflows](multi-agent-workflows.md#approvals-bind-the-exact-call)). Approvals
+recorded before 0.2 have no fingerprint and run as before.
+
+Limits:
+
+- MCP, HTTP API and remote tools run elsewhere, so only their declared definition is hashed: a
+  server that changes behaviour behind the same schema is not detected.
+- Lambdas and C-backed handlers have no stable source and are fingerprinted by definition only.
+- During a rolling deploy, a run resumed on the other build may be asked again.
+
+### Why the agent wants the call
+
+A tool call's approval request carries a `rationale`: the text of the model reply that made the
+call, with whitespace collapsed, redacted like the parameters (bearer tokens and `key=value`
+credentials) and capped at 500 characters (`MAX_RATIONALE_CHARS`). It is `null` when the reply had
+no text. The approval API (`GET /v1/approvals`, `GET /v1/approvals/{id}`), the run's pause, the
+`approval.required` event and a conversation turn's pending action include it. It is never logged
+and stays out of spans unless content telemetry is on (`telemetry_include_content`), when the span
+gets `approval.rationale`. It is the model's own account, not a verified reason: show it next to
+the parameters, not instead of them.
 
 ## Caching results
 
