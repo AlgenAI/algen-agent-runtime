@@ -6,7 +6,15 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from algen_agent_runtime.conversations.visualization import validate_vega_lite_specification
 from algen_agent_runtime.exceptions.errors import ConflictError
@@ -130,12 +138,23 @@ class ConversationPendingAction(BaseModel):
     """The decisions accepted: some of ``approved``, ``rejected`` and ``modified``."""
     redacted_parameters: dict[str, Any] = Field(default_factory=dict)
     """The proposed arguments after redaction, exactly as the approval event exposes them."""
+    rationale: str | None = None
+    """Why the agent wants to make the call: the model's text that accompanied it, redacted and
+    capped in length, as the approval request shows it. None when the model wrote none."""
     parameters_schema: dict[str, Any] | None = None
     """The tool's input JSON schema, for a UI that offers ``modified`` parameters."""
     question: str | None = None
     """The question to answer (``kind="input"``)."""
     paused_at: datetime = Field(default_factory=utc_now)
     """When the turn paused."""
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_rationale(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # Earlier releases load stored messages with extra="forbid": leave it out while unset.
+        data = handler(self)
+        if isinstance(data, dict) and self.rationale is None:
+            data.pop("rationale", None)
+        return data
 
 
 class ConversationApprovalDecision(BaseModel):

@@ -35,7 +35,14 @@ A17_FIELDS = {
     "status",
     "modified_parameters",
 }
-COLUMNS = ("tool", "tool_version", "tool_fingerprint", "arguments_sha256", "status_reason")
+COLUMNS = (
+    "tool",
+    "tool_version",
+    "tool_fingerprint",
+    "arguments_sha256",
+    "rationale",
+    "status_reason",
+)
 
 
 @pytest.fixture
@@ -104,8 +111,10 @@ async def test_the_fingerprint_and_expiry_reason_live_in_columns(
         tool_version="1",
         tool_fingerprint=fingerprint,
         arguments_sha256=digest,
+        rationale="The invoice is due.",
     )
     stored = await _row(database, created.id)
+    assert stored["rationale"] == "The invoice is due."
     assert set(stored["json"]) <= A17_FIELDS  # type: ignore[arg-type]
     assert (stored["tool"], stored["tool_version"], stored["tool_fingerprint"]) == (
         "mail.send",
@@ -122,7 +131,7 @@ async def test_the_fingerprint_and_expiry_reason_live_in_columns(
     assert set(stored["json"]) <= A17_FIELDS  # type: ignore[arg-type]
 
     read = await service.get(created.id, tenant)
-    assert read is not None
+    assert read is not None and read.rationale == "The invoice is due."
     assert (read.status, read.status_reason, read.tool_fingerprint, read.arguments_sha256) == (
         ApprovalStatus.EXPIRED,
         "tool_changed",

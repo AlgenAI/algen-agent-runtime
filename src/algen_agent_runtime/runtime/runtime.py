@@ -22,6 +22,7 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
 
 from algen_agent_runtime.approvals.service import (
+    MAX_RATIONALE_CHARS,
     TOOL_CHANGED,
     ApprovalRequest,
     ApprovalService,
@@ -796,6 +797,27 @@ class AgentRuntime:
             ),
             tool_fingerprint=approval.tool_fingerprint,
         )
+
+    @staticmethod
+    def _call_rationale(state: RunState, call_id: str) -> str | None:
+        """Why the agent wants to make a call, for its approval request: the text of the model
+        reply that made it, redacted like the parameters and at most ``MAX_RATIONALE_CHARS``.
+        None when the reply had no text."""
+        reply = next(
+            (
+                message
+                for message in reversed(state.messages)
+                if message.role == Role.ASSISTANT
+                and any(call.id == call_id for call in message.tool_calls)
+            ),
+            None,
+        )
+        text = " ".join(redact_text(reply.text_content).split()) if reply is not None else ""
+        if not text:
+            return None
+        if len(text) > MAX_RATIONALE_CHARS:
+            text = text[: MAX_RATIONALE_CHARS - 1].rstrip() + "\u2026"
+        return text
 
     @staticmethod
     def _stale_approval(state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
@@ -2512,6 +2534,11 @@ class AgentRuntime:
                 await self._hold_tool_call(state, agent, action, held)
                 return None
         if decision.action == PolicyAction.REQUIRE_APPROVAL and not approved:
+            rationale = self._call_rationale(state, call_id)
+            if rationale is not None and self.telemetry_include_content:
+                trace.get_current_span().set_attribute(
+                    "approval.rationale", self._telemetry_content(rationale)
+                )
             approval = await self.approvals.create(
                 state.id,
                 action.id,
@@ -2525,6 +2552,7 @@ class AgentRuntime:
                 tool_version=tool.definition.version,
                 tool_fingerprint=tool_fingerprint(tool),
                 arguments_sha256=canonical_digest(action.arguments),
+                rationale=rationale,
             )
             state.pause_payload = {
                 "kind": "tool_approval",
@@ -2536,6 +2564,7 @@ class AgentRuntime:
                 "proposed_action": approval.proposed_action,
                 "side_effect_summary": approval.side_effect_summary,
                 "redacted_parameters": approval.redacted_parameters,
+                "rationale": approval.rationale,
                 "risk": approval.risk,
                 "expires_at": approval.expires_at.isoformat(),
                 "options": ["approved", "rejected", "modified"],

@@ -217,7 +217,8 @@ async def test_postgres_keeps_the_new_fields_in_columns_not_the_json() -> None:
 
 def test_migration_017_adds_nullable_columns_and_is_forward_only() -> None:
     migration = (MIGRATIONS / "017_approval_tool_fingerprint.sql").read_text(encoding="utf-8")
-    for column in ("tool", "tool_version", "tool_fingerprint", "arguments_sha256", "status_reason"):
+    columns = ("tool", "tool_version", "tool_fingerprint", "arguments_sha256", "rationale")
+    for column in (*columns, "status_reason"):
         assert (
             f"ALTER TABLE algen_agent_runtime_approvals ADD COLUMN IF NOT EXISTS {column} text;"
             in migration

@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from algen_agent_runtime.exceptions.errors import ConflictError, NotFoundError
 from algen_agent_runtime.types.contracts import utc_now
 
+# The longest rationale an approval request shows the approver.
+MAX_RATIONALE_CHARS = 500
+
 
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
@@ -46,6 +49,9 @@ class ApprovalRequest(BaseModel):
     tool_version: str | None = None
     tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     arguments_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Why the agent wants to make the call: the model's text that accompanied it, redacted like
+    # the parameters and at most MAX_RATIONALE_CHARS. None when the model wrote none.
+    rationale: str | None = Field(default=None, max_length=MAX_RATIONALE_CHARS)
     # Why the request reached its status, when the status alone does not say: "tool_changed"
     # for an approval expired because its tool changed before the approved call ran.
     status_reason: str | None = Field(default=None, max_length=64)
@@ -72,11 +78,12 @@ STORED_JSON_EXCLUDE = frozenset(
         "tool_version",
         "tool_fingerprint",
         "arguments_sha256",
+        "rationale",
         "status_reason",
     }
 )
 # The columns that hold them, besides created_at (set by the database).
-_COLUMNS = ("agent", "tool", "tool_version", "tool_fingerprint", "arguments_sha256")
+_COLUMNS = ("agent", "tool", "tool_version", "tool_fingerprint", "arguments_sha256", "rationale")
 # Why an approval was expired before its call ran: its tool changed after it was asked for.
 TOOL_CHANGED = "tool_changed"
 
@@ -104,9 +111,11 @@ class ApprovalService(Protocol):
         tool_version: str | None = None,
         tool_fingerprint: str | None = None,
         arguments_sha256: str | None = None,
+        rationale: str | None = None,
     ) -> ApprovalRequest:
         """A pending request. For a tool call, ``tool``, ``tool_version``, ``tool_fingerprint``
-        and ``arguments_sha256`` record what it covers."""
+        and ``arguments_sha256`` record what it covers, and ``rationale`` why the agent wants to
+        make it (already redacted and at most ``MAX_RATIONALE_CHARS``)."""
         ...
 
     async def decide(
@@ -169,6 +178,7 @@ class InMemoryApprovalService:
         tool_version: str | None = None,
         tool_fingerprint: str | None = None,
         arguments_sha256: str | None = None,
+        rationale: str | None = None,
     ) -> ApprovalRequest:
         now = utc_now()
         request = ApprovalRequest(
@@ -186,6 +196,7 @@ class InMemoryApprovalService:
             tool_version=tool_version,
             tool_fingerprint=tool_fingerprint,
             arguments_sha256=arguments_sha256,
+            rationale=rationale,
         )
         async with self._lock:
             self._items[request.id] = request
@@ -281,6 +292,7 @@ class PostgresApprovalService:
         tool_version: str | None = None,
         tool_fingerprint: str | None = None,
         arguments_sha256: str | None = None,
+        rationale: str | None = None,
     ) -> ApprovalRequest:
         now = utc_now()
         request = ApprovalRequest(
@@ -297,11 +309,12 @@ class PostgresApprovalService:
             tool_version=tool_version,
             tool_fingerprint=tool_fingerprint,
             arguments_sha256=arguments_sha256,
+            rationale=rationale,
         )
         row = await self._database.fetchrow(
             "INSERT INTO algen_agent_runtime_approvals "
             "(id, run_id, tenant_id, agent, approval, tool, tool_version, tool_fingerprint, "
-            "arguments_sha256) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9) "
+            "arguments_sha256, rationale) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10) "
             "RETURNING created_at",
             request.id,
             run_id,
@@ -312,6 +325,7 @@ class PostgresApprovalService:
             tool_version,
             tool_fingerprint,
             arguments_sha256,
+            rationale,
         )
         # The row's time (the database clock), as get and list report it.
         return request.model_copy(update={"created_at": row["created_at"]})
