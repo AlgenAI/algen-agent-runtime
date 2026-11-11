@@ -44,7 +44,11 @@ and map fan-out.
 
 Use a first-class `approval` node—not a clarification predicate—before consequential work. A
 `tool:` step that calls a tool with `requires_approval` must depend on an approval node, or the
-executor refuses the call otherwise. Declare a
+executor refuses the call otherwise. The approval is bound to the exact call it shows: template the
+step's arguments only from what the approval shows (`<output_key>.parameters`, its `review_from`
+values, literals), and put the approval after the nodes that produce them. A step whose arguments
+differ, or that ignores a modification, is refused (`workflow.tool.refused`); `check` reports
+`APPROVAL_ARGUMENTS_UNBOUND`. Do not use `binding: step` to silence it. Declare a
 clear prompt, only deliberately reviewable `review_from` paths, optional secret-free parameters and
 their JSON Schema, a bounded expiry, and whether modification is permitted. Keep the defaults
 `allow_modification: false` and `rejection_policy: skip_dependents`; use `continue` only for a branch

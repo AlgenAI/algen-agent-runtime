@@ -245,6 +245,7 @@ td code { white-space: nowrap; }
 .copy-btn:hover { color: var(--console-ink); border-color: #45412f; }
 pre { margin: 0; font: 400 12.5px/1.7 var(--font-mono); tab-size: 4; }
 .ide-code { padding: 12px 0; overflow: auto; max-height: 560px; }
+.ide-code code[hidden] { display: none; }
 .ide-code code { display: block; width: max-content; min-width: 100%; counter-reset: ln; font-size: inherit; }
 .line { position: relative; display: block; padding: 0 24px 0 70px; }
 .line::before { counter-increment: ln; content: counter(ln); position: absolute; left: 0; width: 34px; text-align: right; color: var(--ide-gutter); }
@@ -2041,7 +2042,7 @@ security:                   # the deployment's outer limits; an agent can only n
             </div>
             <div class="ide-main">
               <div class="ide-tabs"><button class="on" type="button" data-file="sk-builder">agent-builder</button><button type="button" data-file="sk-connector">agent-connector</button><button type="button" data-file="sk-extension">runtime-extension</button><button type="button" data-file="sk-contributor">runtime-contributor</button><span class="sp"></span><button class="copy-btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy</button></div>
-<pre class="ide-code" data-file="sk-builder" data-hl="2-3"><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-builder" data-hl="2-3"><code data-version-max="0.1.0a23"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-agent-builder
 <span class="t-y">description</span>: Create or update an Algen-compatible single-agent or multi-agent project that uses Runtime manifests, governance, tests, and Studio-importable packaging.
 <span class="t-c">---</span>
@@ -2095,8 +2096,90 @@ agents" in `references/project-shape.md`.
 
 Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
 Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy
+unless the user explicitly requests that external action.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-agent-builder
+<span class="t-y">description</span>: Create or update an Algen-compatible single-agent or multi-agent project that uses Runtime manifests, governance, tests, and Studio-importable packaging.
+<span class="t-c">---</span>
+
+<span class="t-k"># Build an Algen agent project</span>
+
+Start by choosing the smallest topology that fits: one agent for a single governed conversation, or
+a Runtime `WorkflowManifest` for coordination. Scaffolding is available via the CLI:
+`algen-agent-runtime new &lt;name&gt; [--template agent|approval|workflow]`. Read `references/project-shape.md`;
+for a workflow, also read `references/workflows.md`. Use `$algen-agent-connector` when external tools,
+safe starter tools (`algen_agent_runtime.tools.starter`), databases, retrieval, MCP, or remote APIs are part
+of the request.
+
+Prefer configuration for provider routing, policies, memory, retrieval, storage, telemetry, and
+workflow topology. Keep only domain-specific payload builders, validators, schemas, predicates, and
+deterministic handlers in the project's hook provider. Never implement a second scheduler or a
+Studio-specific workflow dialect. For automated CI and headless evaluation, use non-interactive workflow
+options (`--approve-all`, `--reject-all`, `--answers-file PATH`).
+
+Produce an importable project with secret references, bounded execution, deterministic offline
+tests, documented optional dependencies, and a small runnable entry point. Depend on
+`algen-agent-runtime[service]` only when the project serves the HTTP API or exports OTLP
+telemetry; an embedded library use needs no extra. A project intended for
+Studio must keep its Runtime configuration and `WorkflowManifest` authoritative. Studio sees only
+what the settings declare, never constructor arguments, so:
+
+- Every name an agent uses (`enabled_tools`, `planning_strategy`, `response_composer`, `verification_policy.verifiers`,
+  `context_builder`, `guardrail_policy.policies`, provider types) must come from the Runtime,
+  the settings (`http_tools`,
+  `mcp_servers`, `providers`, `retrieval`) or a plugin listed in `domain_plugins`. Register code
+  components from a declared plugin, never through `build_container(additional_tools=...)`; see
+  `docs/plugins.md`.
+- Credentials only through `env://` references; list a plugin's variables in `PluginManifest.env`.
+- If the project runs its own server, workers or approval flow, say plainly that Studio runs only
+  the Runtime contract, not that code.
+- `build_container` fails on any name no source registered and suggests the closest one; fix the
+  name or its registration, never switch `runtime.component_check` to `warn` to hide it.
+- A project that runs its own host (not Studio) checks with
+  `algen-agent-runtime check agent.yaml --path src --profile standalone`, which leaves out the
+  Studio-only warnings but keeps every error.
+- Before calling a project Studio-importable, run `algen-agent-runtime check agent.yaml --path src`.
+  It must report no errors; read every warning to the user, since each names code Studio will not
+  run or cannot see. `algen-agent-runtime describe --path src` shows the full inventory, and
+  `docs/studio-compatibility.md` lists what Studio can and cannot see.
+- Write tools as typed functions with `@tool` or a `Toolkit` and a preset (`docs/tool-authoring.md`),
+  and test each with `assert_tool_contract`.
+
+An agent that makes many tool calls or changes state should use the Runtime's own guards rather than
+rules in its instructions or plugin code: prechecks, refusal limits, the repeat guard and call
+limits, the wrap-up notice and shortened older tool results. A tool that must act as the signed-in
+user reads the caller's credentials from `ToolContext.credentials`. See "Tool-heavy and acting
+agents" in `references/project-shape.md`.
+
+Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
+Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy
 unless the user explicitly requests that external action.</code></pre>
-<pre class="ide-code" data-file="sk-connector" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-connector" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-agent-connector
+<span class="t-y">description</span>: Connect an Algen Runtime agent or workflow to typed tools, MCP, HTTP APIs, databases, retrieval stores, model providers, memory, persistence, or telemetry without bypassing governance.
+<span class="t-c">---</span>
+
+<span class="t-k"># Connect an Algen agent</span>
+
+Identify the requested systems, data direction, side effects, credentials, network boundary,
+tenancy, and expected failure behavior. Read the matching parts of `references/connectors.md` and
+combine connectors only when the use case needs them.
+
+Expose external actions as typed Runtime tools or workflow resources. Do not call a connector
+directly from orchestration code to bypass policy, approvals, idempotency, audit events, budgets, or
+telemetry. Use secret references in configuration and resolve values only at execution time.
+When a tool acts as the signed-in user, forward the caller's credentials from
+`ToolContext.credentials`; the host supplies them on every run and resume, and they are never
+persisted. Remote MCP servers that need per-user sign-in use the Runtime's MCP OAuth, not a token
+in an environment variable.
+
+For each connection, declare least-privilege permissions, read/write behavior, idempotency, strict
+schemas, timeout, retry policy, concurrency, result-size limit, and allowed destinations. Mark it on
+the consuming workflow node with a `WorkflowResourceReference` so Studio can display the actual
+topology.
+
+Test with a deterministic fake or local fixture. Live credentials and paid services belong only in
+explicit live tests. Document the required Runtime extra and environment variable names without
+including secret values.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-agent-connector
 <span class="t-y">description</span>: Connect an Algen Runtime agent or workflow to typed tools, MCP, HTTP APIs, databases, retrieval stores, model providers, memory, persistence, or telemetry without bypassing governance.
 <span class="t-c">---</span>
@@ -2123,7 +2206,29 @@ topology.
 Test with a deterministic fake or local fixture. Live credentials and paid services belong only in
 explicit live tests. Document the required Runtime extra and environment variable names without
 including secret values.</code></pre>
-<pre class="ide-code" data-file="sk-extension" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-extension" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-runtime-extension
+<span class="t-y">description</span>: Add or review an Algen Agent Runtime extension such as a model provider, tool adapter, retrieval backend, persistence store, telemetry integration, or external-framework adapter.
+<span class="t-c">---</span>
+
+<span class="t-k"># Extend Algen Agent Runtime</span>
+
+First identify the extension point and inspect its Protocol, registry, existing adapter, contract
+tests, optional extra, and documentation. Read only the matching section of
+`references/extension-points.md`.
+
+Implement against Runtime contracts rather than leaking a vendor SDK into orchestration or public
+state. Normalize vendor inputs, outputs, usage, errors, streaming behavior, and cancellation at the
+adapter boundary. Keep the dependency optional and fail with an actionable installation message
+when its extra is absent.
+
+Treat all extension inputs as untrusted. Carry tenant and identity context, enforce permissions,
+validate outbound destinations, classify side effects and idempotency, bound time and result size,
+and prevent secrets from entering logs or persisted events.
+
+Add deterministic contract tests without credentials. Put live integration tests behind the `live`
+marker. Update the optional dependency extra, compatibility documentation, an importable example
+when useful, and `CHANGELOG.md` for user-visible support.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-runtime-extension
 <span class="t-y">description</span>: Add or review an Algen Agent Runtime extension such as a model provider, tool adapter, retrieval backend, persistence store, telemetry integration, or external-framework adapter.
 <span class="t-c">---</span>
@@ -2146,7 +2251,35 @@ and prevent secrets from entering logs or persisted events.
 Add deterministic contract tests without credentials. Put live integration tests behind the `live`
 marker. Update the optional dependency extra, compatibility documentation, an importable example
 when useful, and `CHANGELOG.md` for user-visible support.</code></pre>
-<pre class="ide-code" data-file="sk-contributor" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-contributor" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-runtime-contributor
+<span class="t-y">description</span>: Implement or review contributions to Algen Agent Runtime while preserving its public API, provider neutrality, tenant isolation, optional dependencies, and repository boundary.
+<span class="t-c">---</span>
+
+<span class="t-k"># Contribute to Algen Agent Runtime</span>
+
+Work from the Runtime repository root. Read `CONTRIBUTING.md` and the documentation most closely
+related to the change before editing. Use `references/change-checklist.md` when planning or reviewing
+a code change.
+
+Keep reusable execution contracts, orchestration, governance, persistence, and integrations in
+Runtime. Keep Studio UI, project management, marketplace, and product-specific behavior out of this
+repository. Domain behavior belongs in an application hook provider, not in the Runtime executor.
+
+Preserve these invariants:
+
+- provider-neutral public contracts and typed boundaries;
+- explicit tenant, user, permission, secret, and idempotency context;
+- deterministic offline behavior and tests by default;
+- optional provider, database, vector-store, telemetry, and framework dependencies;
+- stable error codes and forward migrations for persisted data;
+- secret-free configuration committed to source control.
+
+Add the narrowest meaningful test and cover the relevant failure path. Update public documentation,
+examples, and `CHANGELOG.md` for user-visible behavior. Run the repository quality gates before
+finishing; report any gate that could not run and why. Provide a concise, well-structured Git commit
+message summarizing the verified changes. Do not commit, push, publish, or open a pull
+request unless the user explicitly requests it.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-runtime-contributor
 <span class="t-y">description</span>: Implement or review contributions to Algen Agent Runtime while preserving its public API, provider neutrality, tenant isolation, optional dependencies, and repository boundary.
 <span class="t-c">---</span>
@@ -3507,10 +3640,12 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     return lines;
   };
   $$('.ide-code').forEach((pre) => {
-    const code = $('code', pre);
     const highlighted = parseRanges(pre.dataset.hl || '');
-    code.innerHTML = code.innerHTML.replace(/\n$/, '').split('\n')
-      .map((line, i) => `<span class="line${highlighted.has(i + 1) ? ' hl' : ''}">${line || ' '}</span>`).join('');
+    // A file can hold one <code> per release line (the skills); number each.
+    $$('code', pre).forEach((code) => {
+      code.innerHTML = code.innerHTML.replace(/\n$/, '').split('\n')
+        .map((line, i) => `<span class="line${highlighted.has(i + 1) ? ' hl' : ''}">${line || ' '}</span>`).join('');
+    });
   });
   document.addEventListener('click', (event) => {
     const fileButton = event.target.closest('.ide [data-file]:not(pre)');
@@ -3541,7 +3676,8 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       text = $$('.cmd', term).map(plainText).join('\n');
     } else {
       const pre = $$('.ide-code', button.closest('.ide')).find((el) => !el.hidden);
-      text = $$('.line', pre).map(plainText).join('\n');
+      const code = $$('code', pre).find((el) => !el.hidden) || pre;
+      text = $$('.line', code).map(plainText).join('\n');
     }
     try {
       await navigator.clipboard.writeText(text);

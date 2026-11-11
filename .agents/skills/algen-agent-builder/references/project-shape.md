@@ -131,7 +131,12 @@ agents:
   metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
   tools an empty mapping, so return an "authentication required" tool error then.
 - `requires_approval` is enforced when the tool runs, not only when the model plans the call. A
-  workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it.
+  workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it, and
+  runs only with the exact arguments that approval showed (see references/workflows.md).
+  The approver sees the model's own rationale for the call, and is asked again if the tool's
+  definition or code changed before the call runs.
+- A policy that rewrites a call answers `transform` (at `plan_tool`, so the approver sees the
+  rewritten call); `redact` refuses the call rather than running it on masked data.
 - A tool that refuses before sending anything raises `ToolNotAttemptedError` (or
   `PolicyDeniedError`), so the ledger records `failed` rather than `indeterminate`.
 - Usage metering is a deployment setting, not an agent field: the host passes a `UsageMeter` to
@@ -140,12 +145,18 @@ agents:
 
 ## File attachments
 
-An agent that reads images or PDFs the caller attaches (an ID document, a scanned invoice) opts in:
+An agent that reads images or PDFs the caller attaches (an ID document, a scanned invoice) opts in.
+Documents a tool reads instead (Office files, e-mail, CSV) go in `tool_read_types`; they never
+reach the model provider, and the model passes their id to a reader tool:
 
 ```yaml
 agents:
   - name: kyc-reader
-    attachments: {enabled: true, max_count: 2, retention: turn}
+    attachments:
+      enabled: true
+      max_count: 2
+      retention: turn
+      tool_read_types: [text/csv, "application/vnd.openxmlformats-officedocument.*"]
 security:
   upload_scanner: basic          # uploads stay pending_scan until something scans them
 ```
