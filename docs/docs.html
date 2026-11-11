@@ -520,6 +520,41 @@ body.arch-full-open { overflow: hidden; }
   .mui-exec { grid-template-columns: 1fr; }
 }
 
+/* ─── Architecture: request flow ─── */
+.af { position: relative; display: grid; gap: 6px; justify-items: center; padding: 18px 12px; }
+.af-row { display: flex; gap: 10px; justify-content: center; align-items: stretch; flex-wrap: wrap; width: 100%; }
+.af-box { position: relative; display: grid; gap: 2px; min-width: 150px; max-width: 220px; padding: 12px 30px 12px 14px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); text-align: left; cursor: pointer; box-shadow: var(--shadow-xs); color: inherit; font: inherit; transition: opacity .15s, border-color .15s; }
+.af-box:hover:not(:disabled) { border-color: var(--gold-light); }
+.af-box strong { font-size: 14px; }
+.af-box > span:not(.af-count):not(.af-delta) { font-size: 12px; color: var(--muted, #6b6b6b); }
+.af-box:disabled { cursor: default; }
+.af-ghost { border-style: dashed; background: transparent; box-shadow: none; }
+.af-side { opacity: .9; }
+.af-wide { max-width: none; width: 100%; text-align: center; justify-items: center; }
+.af-count { position: absolute; top: 8px; right: 10px; font: 600 11px var(--font-mono, monospace); color: var(--muted, #6b6b6b); }
+.af-delta { justify-self: start; margin-top: 4px; }
+.af-box.is-selected { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold-light); }
+.af-box.is-dim { opacity: .45; }
+.af-arrow { display: block; width: 2px; height: 18px; background: var(--divider); position: relative; }
+.af-arrow::after { content: ''; position: absolute; left: -4px; bottom: -2px; border: 5px solid transparent; border-top-color: var(--divider); }
+.af-arrow.af-right { width: 18px; height: 2px; align-self: center; }
+.af-arrow.af-right::after { left: auto; right: -6px; bottom: -4px; border-top-color: transparent; border-left-color: var(--divider); }
+.af-loop { width: 100%; display: grid; gap: 8px; padding: 12px; border: 1.5px solid var(--gold-light); border-radius: calc(var(--radius) + 4px); background: color-mix(in srgb, var(--gold-light) 12%, transparent); }
+.af-loop-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.af-loop-head svg { width: 18px; height: 18px; }
+.af-loop-head span { color: var(--muted, #6b6b6b); }
+.af-steps .af-box { flex: 1 1 140px; }
+.af-return { text-align: center; font-size: 12px; color: var(--muted, #6b6b6b); }
+.af-planes .af-box { flex: 1 1 150px; }
+.af-caps { display: grid; gap: 6px; margin-top: 10px; }
+.af-cap { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); cursor: pointer; text-align: left; color: inherit; font: inherit; font-size: 13px; }
+.af-cap:hover { border-color: var(--gold-light); }
+.af-cap.is-absent { opacity: .5; }
+.af-all { margin: 10px 14px 14px; }
+.af-all > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.af-all-group { margin-top: 10px; }
+.af-all-group h5 { margin: 0 0 6px; font-size: 12px; }
+@media (max-width: 720px) { .af-arrow.af-right { display: none; } .af-box { max-width: none; flex: 1 1 100%; } }
 /* ─── Skills & prompts ─── */
 button.feature { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform .15s var(--ease); }
 button.feature:hover { border-color: var(--gold-light); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
@@ -749,7 +784,8 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
       <a class="nav-link" href="#resources"><svg class="i"><use href="#i-link"/></svg>Deep dives</a>
     </div>
     <p class="nav-empty" id="navEmpty">No sections match.</p>
-    <div class="nav-status"><strong>Pre-alpha release</strong><p>Evaluate and contribute. Review production gaps before deployment.</p></div>
+    <div class="nav-status" data-version-max="0.1.0a23"><strong>Pre-alpha release</strong><p>Evaluate and contribute. Review production gaps before deployment.</p></div>
+    <div class="nav-status" data-version-min="0.2.0b1"><strong>Beta release</strong><p>The public API is a candidate for 1.0. Read the upgrade notes before moving from 0.1.</p></div>
   </nav>
   <div class="scrim" id="scrim"></div>
 
@@ -826,6 +862,7 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
         <div class="table-wrap"><table>
           <thead><tr><th>Extra</th><th>Adds</th></tr></thead>
           <tbody>
+            <tr data-version-min="0.2.0b1"><td><code>service</code> · <code>server</code> · <code>otlp</code></td><td>The HTTP API and <code>algen-agent-runtime serve</code> (<code>server</code>), OTLP trace and metric export (<code>otlp</code>), or both (<code>service</code>). The base package is the library only.</td></tr>
             <tr><td><code>postgres</code> · <code>redis</code></td><td>Durable run, event, audit, approval, checkpoint, and session stores.</td></tr>
             <tr><td><code>object-storage</code></td><td>S3-compatible artifact byte storage.</td></tr>
             <tr><td><code>auth</code></td><td>JWT authentication for the HTTP service.</td></tr>
@@ -928,11 +965,11 @@ Hello</pre></div>
       <section class="doc" id="architecture">
         <div class="section-kicker"><span class="section-icon"><svg class="i"><use href="#i-layers"/></svg></span>Get started</div>
         <h2>Architecture<a class="anchor" href="#architecture" aria-label="Link to this section">#</a></h2>
-        <p>Runtime is <strong>execution as nested authority</strong>. Requests enter through the host boundary, are composed from strict configuration, and run inside a native kernel where policies, tools, approvals, and workflows sit in the path of execution. Integration, state, and evidence planes wrap the kernel without owning it.</p>
+        <p>A request enters through the API and runs in the <strong>agent loop</strong>: plan the next step, check it against policy (and ask a person when it matters), run the tool or model, and verify the answer. The loop reads and writes storage, reaches outside through integrations, and records everything as telemetry. Click a box to see what is inside it.</p>
         <div class="arch" id="arch">
           <div class="arch-toolbar">
             <svg class="i"><use href="#i-layers"/></svg>
-            <div class="arch-title"><strong>Execution as nested authority</strong><span id="archStatus"></span></div>
+            <div class="arch-title"><strong>How a request runs</strong><span id="archStatus"></span></div>
             <span class="pill brand mono" id="archStamp"></span>
             <span class="sp"></span>
             <button class="arch-btn" type="button" id="archCompare" aria-pressed="false"><svg class="i"><use href="#i-compare"/></svg>Compare</button>
@@ -941,8 +978,6 @@ Hello</pre></div>
             <button class="arch-btn" type="button" id="archFull" aria-pressed="false"><svg class="i"><use href="#i-maximize"/></svg><span>Full screen</span></button>
           </div>
           <p class="arch-summary" id="archSummary"></p>
-          <div class="arch-chips" id="archDomains"><span class="arch-chips-label">Domains</span></div>
-          <div class="arch-chips" id="archLayers"><span class="arch-chips-label">Layers</span></div>
           <div class="arch-chips arch-compare-key" id="archCompareKey" hidden><span class="arch-chips-label" id="archCompareText"></span><span class="pill success mono">added</span><span class="pill warning mono">changed</span><span class="pill error mono">removed</span></div>
           <div class="arch-body">
             <div class="arch-canvas"><div class="arch-map" id="archMap"><svg class="arch-lines" id="archLines" aria-hidden="true"></svg></div></div>
@@ -951,11 +986,12 @@ Hello</pre></div>
               <div id="archDetail"></div>
             </aside>
           </div>
+          <details class="af-all"><summary>All capabilities</summary><div id="archAll"></div></details>
         </div>
         <p class="figcaption">Interactive architecture map — follows the documentation version selected in the header</p>
         <ul>
-          <li><strong>Click a capability</strong> to inspect its contracts, source anchor, and direct relationships, then jump to its guide.</li>
-          <li><strong>Domains</strong> focus one concern, such as governance, across every layer.</li>
+          <li><strong>Click a box</strong> to see what it does and the capabilities inside it; click a capability for its contracts, source and guide.</li>
+          <li><strong>All capabilities</strong> under the map lists every capability by box.</li>
           <li><strong>Compare</strong> marks what was added, changed, or removed since an earlier release.</li>
           <li><strong>Full screen</strong> gives the map the whole window; press <span class="kbd">Esc</span> to return.</li>
         </ul>
@@ -2558,7 +2594,7 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))</code></
           <p>To refuse, raise <code>MeterRefusedError</code>: the call is not retried, not passed to a fallback model and not counted against provider health. The run ends <code>failed</code> with the reason on <code>RunState.error</code>; a <code>budget.refused</code> event and audit record carrying <code>reason</code>, <code>provider</code> (the registration id) and <code>model</code> of the refused candidate, never <code>metadata</code> values; <code>run.failed</code> with <code>reason: budget_refused</code>; and <code>budget.refused</code> on the <code>agent.run</code> span. The router also sets <code>provider</code> and <code>model</code> on the <code>MeterRefusedError</code> before re-raising it. Any other exception from <code>reserve</code> is an internal error, not a refusal. The meter holds its own state, so a run resumed after approval is charged only for the calls it makes after resuming. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/agent-tooling.md#metering-model-calls" target="_blank" rel="noopener noreferrer">Metering model calls</a> and <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#usage-metering" target="_blank" rel="noopener noreferrer">Operations · usage metering</a>.</p>
           </div>
         </div>
-        <div data-version-min="0.1.0a14">
+        <div data-version-min="0.1.0a14" data-version-max="0.1.0a23">
           <h3 id="document-inspection">Untrusted document inspection<a class="anchor" href="#document-inspection" aria-label="Link to this section">#</a></h3>
           <p><code>extractor_for(filename)</code> in <code>algen_agent_runtime.security.documents</code> turns an uploaded document into text a model can safely read: the full <code>text</code>, a <code>sanitized_text</code> with only what a reader would see, security <code>findings</code> and a <code>disposition</code> (<code>pass</code>, <code>review</code> or <code>quarantine</code>). 0.1.0a14 adds Excel, PowerPoint, HTML and CSV/TSV, all on the standard library.</p>
           <div class="table-wrap"><table>
@@ -2574,6 +2610,10 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))</code></
           </table></div>
           <p>Hidden sheets, rows, columns, slides, shapes and HTML elements are kept out of the sanitized text and reported as <code>hidden_text.*</code> findings. XLSX and PPTX get the DOCX package limits (part count, size, compression ratio, no DTD) and the macro and remote-content findings. XLSX text is one line per row under <code>--- Sheet: &lt;name&gt; ---</code>, a formula contributes its last calculated value, date and time cells come out as ISO dates and times, and a sheet longer than <code>max_rows_per_sheet</code> (5,000) is cut and reported as <code>document.truncated</code>. PPTX text is one line per paragraph under <code>--- Slide &lt;n&gt; ---</code>, without speaker notes or comments; HTML text is the visible body only. Any other suffix raises <code>ValueError</code> naming every supported format; legacy <code>.doc</code>, <code>.xls</code> and <code>.ppt</code> are not supported.</p>
           <div class="callout warning"><svg class="i"><use href="#i-alert"/></svg><p><strong>Known limitations.</strong> Not detected yet: in XLSX, the <code>;;;</code> number format and a font colour that matches the cell fill; in HTML, styles from stylesheets, <code>font-size: 0 !important</code>, <code>opacity: .0</code>, <code>color: transparent</code> and off-screen positioning; in PPTX (and DOCX), images linked from outside the file. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/document-security.md" target="_blank" rel="noopener noreferrer">Untrusted document inspection</a>.</p></div>
+        </div>
+        <div data-version-min="0.2.0b1">
+          <h3 id="document-inspection-moved">Untrusted document inspection<a class="anchor" href="#document-inspection-moved" aria-label="Link to this section">#</a></h3>
+          <p>The document extractors live in <a href="https://algenai.github.io/algen-agent-tools/" target="_blank" rel="noopener noreferrer">algen-agent-tools</a> and were removed from the Runtime in 0.2. Install <code>algen-agent-tools[documents]</code> and import the same names from <code>algen_agent_tools.documents.inspection</code>; a reader tool reads run attachments through <code>context.read_attachment</code>, and documents attached for tools to read go in <code>attachments.tool_read_types</code>.</p>
         </div>
         <p data-version-min="0.1.0a18">From 0.1.0a18 a deployment can add rules every agent runs, as signed policy bundles, and decide what each boundary does when a policy fails; see <a href="#policy-bundles">Policy bundles &amp; fail modes</a>.</p>
         <div class="callout tip"><svg class="i"><use href="#i-bulb"/></svg><p>Start strict and loosen with evidence: keep default guardrails, set a small <code>budget</code>, and watch <code>policy.evaluated</code> events before raising limits.</p></div>
@@ -4002,6 +4042,23 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       { id: 'analytical', title: 'Analytical execution plane', code: '06', domain: 'orchestration', children: ['analytics', 'query-governance', 'work-queue'] },
       { id: 'signals', title: 'Evidence & operations plane', code: '07', domain: 'operations', children: ['observability'] }
     ];
+    // The request flow drawn on the map. Each box groups capabilities; its details list them.
+    const FLOW = {
+      caller: { title: 'Caller', sub: 'Your app · Studio · CLI', about: 'Applications, Algen Agent Studio and the command line start runs, conversations and workflows.', ids: [] },
+      build: { title: 'Build & ship', sub: 'Scaffold · examples · release', about: 'How a project is created, explored and packaged before anything runs.', ids: ['scaffold', 'examples', 'agent-ui', 'release'] },
+      api: { title: 'HTTP API', sub: 'Auth · quotas · limits', about: 'The service boundary: who is calling, what they may do, and how much they may send.', ids: ['host', 'api', 'identity', 'api-admission', 'body-limit'] },
+      config: { title: 'Configuration', sub: 'YAML · plugins · check', about: 'Strict configuration and declared plugins are composed into one container when the service starts.', ids: ['settings', 'container', 'plugins', 'project-check'] },
+      plan: { title: 'Plan', sub: 'Agent state machine', about: 'The agent decides its next step from the conversation, its memory and its instructions; every transition is checkpointed.', ids: ['native-runtime', 'memory'] },
+      policy: { title: 'Policy & approval', sub: 'Allow · rewrite · ask a person', about: 'Every planned call passes policy; a consequential one waits for a person, bound to the exact call.', ids: ['policies', 'approvals'] },
+      act: { title: 'Tool or model', sub: 'Run the call', about: 'Tools run through the executor and its ledger; model calls go through the router, its fallbacks and metering.', ids: ['tools', 'tool-authoring', 'starter-tools', 'model-router', 'provider-instance'] },
+      verify: { title: 'Verify', sub: 'Check · repair', about: 'The answer is checked before it is returned, and repaired when a check fails.', ids: ['verification'] },
+      workflows: { title: 'Workflows', sub: 'Many agents, tools and approvals in one typed graph', about: 'A workflow runs agents, tool steps and approval nodes as a typed graph, with trusted application hooks.', ids: ['workflow-engine', 'workflow-hooks', 'hook-loader'] },
+      storage: { title: 'Storage', sub: 'Runs · memory · files', about: 'Durable state the loop reads and writes: checkpoints, caches, retrieval and artifacts.', ids: ['stores', 'cache', 'retrieval', 'artifacts'] },
+      integrations: { title: 'Integrations', sub: 'MCP · frameworks · network', about: 'Everything outside the process: MCP servers, foreign frameworks, model services and the outbound network.', ids: ['mcp', 'mcp-config', 'mcp-http', 'framework-registry', 'langgraph', 'openai-agents', 'model-services', 'network'] },
+      analytics: { title: 'Analytics', sub: 'Governed queries', about: 'Analytical methods and governed queries, optionally on a distributed work queue.', ids: ['analytics', 'query-governance', 'work-queue'] },
+      telemetry: { title: 'Telemetry', sub: 'Events · audit · traces', about: 'What happened, as events, audit records, traces and metrics.', ids: ['event-bus', 'observability'] }
+    };
+    const flowOf = (id) => Object.keys(FLOW).find((key) => FLOW[key].ids.includes(id));
     const DOMAINS = { execution: 'Native execution', governance: 'Governance', orchestration: 'Orchestration', data: 'Data & state', integration: 'Integrations', operations: 'Operations', product: 'Product surface' };
     // Capability → docs section that explains how to use it.
     const GUIDE = { plugins: 'plugins', 'tool-authoring': 'plugins', 'project-check': 'plugins', api: 'http', identity: 'http', 'api-admission': 'http', 'body-limit': 'http', settings: 'configuration', container: 'configuration', 'model-router': 'configuration', 'provider-instance': 'configuration', scaffold: 'cli', 'agent-ui': 'agent-ui', release: 'releases', 'native-runtime': 'execution', policies: 'governance', verification: 'governance', tools: 'tools', 'starter-tools': 'tools', approvals: 'approvals', memory: 'persistence', stores: 'persistence', artifacts: 'persistence', 'workflow-engine': 'workflows', 'workflow-hooks': 'workflows', 'hook-loader': 'workflows', mcp: 'mcp', 'mcp-config': 'mcp', 'mcp-http': 'mcp', 'event-bus': 'observability', observability: 'observability' };
@@ -4028,20 +4085,33 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       if (a.state !== b.state || a.note !== b.note || (versions[current].changes.changed || []).includes(id)) return 'changed';
       return '';
     }
-    const tile = (id) => {
-      const node = nodeAt(id, current), change = delta(id);
-      return `<button type="button" class="cap${change ? ` is-${change}` : ''}${node.state === 'absent' ? ' is-absent' : ''}" data-id="${id}" data-domain="${node.domain}" style="--tone:${tone(node.domain)}"><span class="cap-name">${node.name}</span><span class="cap-note">${node.note || node.summary}</span><span class="cap-state">${node.state}</span></button>`;
+    const box_ = (key, extra = '') => {
+      const step = FLOW[key];
+      const present = step.ids.filter((id) => nodeAt(id, current).state !== 'absent');
+      const changes = step.ids.map(delta).filter(Boolean);
+      const mark = changes.length ? `<span class="af-delta pill mono ${DELTA_PILL[changes.includes('added') ? 'added' : changes.includes('removed') ? 'removed' : 'changed']}">${changes.length} ${changes.length === 1 ? 'change' : 'changes'}</span>` : '';
+      const count = step.ids.length ? `<span class="af-count">${present.length}</span>` : '';
+      return `<button type="button" class="af-box${extra}" data-step="${key}"${step.ids.length ? '' : ' disabled'}><strong>${step.title}</strong><span>${step.sub}</span>${count}${mark}</button>`;
     };
-    const head = (code, title, sub) => `<div class="arch-layer-head"><span class="arch-code">${code}</span><span class="arch-layer-title">${title}</span><span class="arch-layer-sub">${sub}</span></div>`;
+    const arrow = (dir = 'down') => `<span class="af-arrow af-${dir}" aria-hidden="true"></span>`;
 
     function render() {
-      map.querySelector('.arch-root')?.remove();
-      const layers = layout.map((layer) => {
-        const nested = (layer.nested || []).map((zone) => `<div class="arch-nested">${head(zone.code, zone.title, 'inside native execution')}<div class="arch-grid">${zone.children.map(tile).join('')}</div></div>`).join('');
-        const domain = layer.domain || nodes[layer.id]?.domain || 'product';
-        return `<section class="arch-layer" id="arch-layer-${layer.id}" style="--tone:${tone(domain)}">${head(layer.code, layer.title, `${layer.children.length} capabilities`)}<div class="arch-grid">${layer.children.map(tile).join('')}${nested}</div></section>`;
-      }).join('');
-      map.insertAdjacentHTML('beforeend', `<div class="arch-root"><div class="arch-root-head"><svg><use href="#rt-mark"/></svg><strong>Algen Agent Runtime boundary</strong><span>governed by one process contract</span></div>${layers}</div>`);
+      map.querySelector('.af')?.remove();
+      map.insertAdjacentHTML('beforeend', `<div class="af">
+        <div class="af-row af-top">${box_('caller', ' af-ghost')}${box_('build', ' af-side')}</div>
+        ${arrow()}
+        <div class="af-row af-entry">${box_('api')}${box_('config', ' af-side')}</div>
+        ${arrow()}
+        <div class="af-loop" aria-label="The agent loop">
+          <div class="af-loop-head"><svg><use href="#rt-mark"/></svg><strong>Agent loop</strong><span>repeats until the answer passes</span></div>
+          <div class="af-row af-steps">${box_('plan')}${arrow('right')}${box_('policy')}${arrow('right')}${box_('act')}${arrow('right')}${box_('verify')}</div>
+          <div class="af-return" aria-hidden="true">↺ back to Plan with the result</div>
+          ${box_('workflows', ' af-wide')}
+        </div>
+        ${arrow()}
+        <div class="af-row af-planes">${box_('storage')}${box_('integrations')}${box_('analytics')}${box_('telemetry')}</div>
+      </div>`);
+      $('#archAll').innerHTML = Object.keys(FLOW).filter((key) => FLOW[key].ids.length).map((key) => `<div class="af-all-group"><h5>${FLOW[key].title}</h5><div class="arch-rel">${FLOW[key].ids.filter((id) => nodeAt(id, current).state !== 'absent' || delta(id)).map((id) => `<button type="button" data-rel="${id}">${nodes[id].name}</button>`).join('')}</div></div>`).join('');
       $('#archStamp').textContent = `v${current}`;
       $('#archStatus').textContent = versions[current].status;
       $('#archSummary').textContent = versions[current].summary;
@@ -4049,36 +4119,45 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       $('#archCompareText').textContent = compare ? `v${current} compared with v${compare}` : '';
       if (selected && nodeAt(selected, current).state !== 'absent') select(selected); else clear();
     }
-    const syncDomainChips = () => $$('[data-domain-chip]').forEach((chip) => chip.setAttribute('aria-pressed', String(chip.dataset.domainChip === domainFocus)));
-    function applyDomainFocus() {
-      if (!selected) $$('.cap', map).forEach((cap) => cap.classList.toggle('is-dim', Boolean(domainFocus) && cap.dataset.domain !== domainFocus));
-      syncDomainChips();
+    const syncDomainChips = () => {};
+    function applyDomainFocus() {}
+    function highlight(key) {
+      $$('.af-box', map).forEach((el) => {
+        el.classList.toggle('is-selected', el.dataset.step === key);
+        el.classList.toggle('is-dim', Boolean(key) && el.dataset.step !== key && !el.classList.contains('af-ghost'));
+      });
+    }
+    function showStep(key) {
+      const step = FLOW[key];
+      highlight(key);
+      detail.className = 'arch-detail';
+      detail.style.removeProperty('--tone');
+      detail.innerHTML = `
+        <div class="arch-kicker">${step.ids.length} capabilities</div>
+        <h4>${step.title}</h4>
+        <p>${step.about}</p>
+        <div class="af-caps">${step.ids.map((id) => {
+          const node = nodeAt(id, current), change = delta(id);
+          return `<button type="button" data-rel="${id}" class="af-cap${node.state === 'absent' ? ' is-absent' : ''}"><span>${node.name}</span>${change ? `<span class="pill mono ${DELTA_PILL[change]}">${change}</span>` : ''}</button>`;
+        }).join('')}</div>`;
+      inspector.classList.add('is-open');
     }
     function select(id, scroll = false) {
       selected = id;
       related = (nodes[id].relations || []).filter((rel) => nodes[rel]);
-      domainFocus = null;
-      syncDomainChips();
-      $$('.cap', map).forEach((cap) => {
-        const capId = cap.dataset.id;
-        cap.classList.toggle('is-selected', capId === id);
-        cap.classList.toggle('is-related', related.includes(capId));
-        cap.classList.toggle('is-dim', capId !== id && !related.includes(capId));
-      });
+      highlight(flowOf(id));
       showDetails(id);
-      requestAnimationFrame(drawLines);
       inspector.classList.add('is-open');
-      if (scroll) map.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (scroll) inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     function clear() {
       selected = null;
       related = [];
-      $$('.cap', map).forEach((cap) => cap.classList.remove('is-selected', 'is-related', 'is-dim'));
+      highlight(null);
       lines.innerHTML = '';
       inspector.classList.remove('is-open');
       detail.className = 'arch-empty';
-      detail.innerHTML = '<div><div class="target"><svg class="i"><use href="#i-target"/></svg></div><strong>Select a capability</strong>Inspect its responsibility, contracts, source anchor, relationships, and version history.</div>';
-      applyDomainFocus();
+      detail.innerHTML = '<div><div class="target"><svg class="i"><use href="#i-target"/></svg></div><strong>Select a box</strong>See what it does and the capabilities inside it.</div>';
     }
     function showDetails(id) {
       const node = nodeAt(id, current), change = delta(id);
@@ -4101,29 +4180,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
         <div class="arch-rel">${relatedNow.map((rel) => `<button type="button" data-rel="${rel}">${nodes[rel].name}</button>`).join('') || '<span class="arch-muted">None mapped</span>'}</div>
         ${guide ? `<a class="btn" href="#${guide}" data-arch-guide>Read the guide →</a>` : ''}`;
     }
-    function drawLines() {
-      lines.innerHTML = '';
-      if (!selected) return;
-      const host = map.getBoundingClientRect();
-      const from = map.querySelector(`[data-id="${selected}"]`)?.getBoundingClientRect();
-      if (!from) return;
-      const ns = 'http://www.w3.org/2000/svg';
-      const dot = (x, y) => {
-        const circle = document.createElementNS(ns, 'circle');
-        circle.setAttribute('cx', x); circle.setAttribute('cy', y); circle.setAttribute('r', 3);
-        lines.appendChild(circle);
-      };
-      related.forEach((id) => {
-        const to = map.querySelector(`[data-id="${id}"]`)?.getBoundingClientRect();
-        if (!to) return;
-        const x1 = from.left + from.width / 2 - host.left, y1 = from.top + from.height / 2 - host.top;
-        const x2 = to.left + to.width / 2 - host.left, y2 = to.top + to.height / 2 - host.top, mid = (x1 + x2) / 2;
-        const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`);
-        lines.appendChild(path);
-        dot(x1, y1); dot(x2, y2);
-      });
-    }
+    function drawLines() {}
     const setFull = (on) => {
       box.classList.toggle('is-full', on);
       document.body.classList.toggle('arch-full-open', on);
@@ -4132,21 +4189,13 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       requestAnimationFrame(drawLines);
     };
 
-    $('#archDomains').insertAdjacentHTML('beforeend', Object.entries(DOMAINS).map(([key, label]) => `<button type="button" class="arch-chip" data-domain-chip="${key}" aria-pressed="false" style="--tone:${tone(key)}"><i></i>${label}</button>`).join(''));
-    $('#archLayers').insertAdjacentHTML('beforeend', layout.map((layer) => `<button type="button" class="arch-chip" data-layer="${layer.id}"><b>${layer.code}</b>${layer.title}</button>`).join(''));
-    $('#archDomains').addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-domain-chip]');
-      if (!chip) return;
-      domainFocus = domainFocus === chip.dataset.domainChip ? null : chip.dataset.domainChip;
-      if (selected) clear(); else applyDomainFocus();
-    });
-    $('#archLayers').addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-layer]');
-      if (chip) $(`#arch-layer-${chip.dataset.layer}`).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
     map.addEventListener('click', (event) => {
-      const cap = event.target.closest('.cap');
-      if (cap) select(cap.dataset.id);
+      const step = event.target.closest('[data-step]');
+      if (step && !step.disabled) { selected = null; showStep(step.dataset.step); }
+    });
+    $('#archAll').addEventListener('click', (event) => {
+      const rel = event.target.closest('[data-rel]');
+      if (rel) select(rel.dataset.rel, true);
     });
     detail.addEventListener('click', (event) => {
       const rel = event.target.closest('[data-rel]');
