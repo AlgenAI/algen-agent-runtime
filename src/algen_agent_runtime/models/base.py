@@ -4,9 +4,8 @@ import asyncio
 import math
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
 
 import structlog
 
@@ -23,7 +22,7 @@ from algen_agent_runtime.models.metering import (
     DEFAULT_RESERVED_OUTPUT_TOKENS,
     MeterCall,
     UsageMeter,
-    reserve_accepts_call,
+    require_call_parameter,
 )
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
@@ -145,8 +144,8 @@ class ModelRouter:
         # Reserves before and settles after every provider dispatch; see models/metering.py.
         self._usage_meter = usage_meter
         self._reserve_input_margin = reserve_input_margin
-        # Inspected once here, never per call: a 0.1.0a14 meter is called without ``call``.
-        self._meter_takes_call = usage_meter is None or reserve_accepts_call(usage_meter)
+        if usage_meter is not None:
+            require_call_parameter(usage_meter)
 
     async def _capabilities(
         self,
@@ -488,12 +487,6 @@ class ModelRouter:
         max_input_tokens = math.ceil(estimate_request_tokens(request) * self._reserve_input_margin)
         max_output_tokens = request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS
         try:
-            if not self._meter_takes_call:
-                # The 0.1.0a14 form, warned about when this router was built; removed in 0.2.
-                legacy = cast(Callable[..., Awaitable[object]], self._usage_meter.reserve)
-                return await legacy(
-                    max_input_tokens=max_input_tokens, max_output_tokens=max_output_tokens
-                )
             call = replace(
                 meter_call if meter_call is not None else MeterCall(purpose="other"),
                 provider=registration_id,

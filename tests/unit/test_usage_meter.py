@@ -19,7 +19,7 @@ from algen_agent_runtime.cache import CachePolicy, CacheScope, CacheService, InM
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.context.artifacts import CONTEXT_READ_TOOL, ContextArtifactService
 from algen_agent_runtime.context.budget import estimate_request_tokens
-from algen_agent_runtime.exceptions.errors import ProviderError
+from algen_agent_runtime.exceptions.errors import ConfigurationError, ProviderError
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.observability.traccia_adapter import NoopObservabilityAdapter
@@ -733,30 +733,11 @@ class LegacyMeter:
         raise AssertionError("nothing fails in this test")
 
 
-async def test_a14_meter_still_works_without_call_and_warns_once() -> None:
-    meter = LegacyMeter()
-
-    with pytest.warns(DeprecationWarning, match="removed in 0.2") as caught:
-        router = ModelRouter(usage_meter=meter)  # type: ignore[arg-type]
-        ModelRouter(usage_meter=meter)  # type: ignore[arg-type]
-
-    [warning] = [item for item in caught if issubclass(item.category, DeprecationWarning)]
-    assert "LegacyMeter.reserve() has no 'call' parameter" in str(warning.message)
-    # Attributed to the meter's own module, where the fix belongs.
-    assert warning.filename == __file__
-
-    router.register_provider(MockModelProvider(["answer"]))
-    profile = ModelProfile(name="m", provider="mock", model="deterministic")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # the signature is not inspected again per call
-        response = await router.generate(
-            ModelRequest(messages=(Message.text(Role.USER, "hi"),), max_output_tokens=64),
-            (profile,),
-        )
-
-    assert response.message.text_content == "answer"
-    assert len(meter.reserved) == 1 and meter.reserved[0][1] == 64
-    assert meter.settled == [1]
+def test_a14_meter_without_call_is_refused_when_the_router_is_built() -> None:
+    with pytest.raises(
+        ConfigurationError, match=r"LegacyMeter.reserve\(\) has no 'call' parameter"
+    ):
+        ModelRouter(usage_meter=LegacyMeter())  # type: ignore[arg-type]
 
 
 class KwargsMeter(RecordingMeter):

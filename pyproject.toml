@@ -134,8 +134,6 @@ pythonpath = ["."]
 # The deprecated connectors keep their own tests until they are removed in 0.2;
 # tests/unit/test_deprecations.py asserts the warnings themselves.
 filterwarnings = [
-  "ignore:algen_agent_runtime.communications is deprecated:DeprecationWarning",
-  "ignore:database_tool is deprecated:DeprecationWarning",
   "ignore:algen_agent_runtime.security.[a-z_]+ is deprecated:DeprecationWarning",
 ]
 markers = [

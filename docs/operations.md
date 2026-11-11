@@ -711,7 +711,7 @@ decided or recovered; schedule deployment-owned recovery/maintenance if expiry m
 there is no operator or startup traffic. Alert on approval age and never place secrets or expiring
 download URLs in approval state.
 
-For outbound email, use the contract and SMTP setup in [Email](email.md). Resolve SMTP credentials
+For outbound email, use the SMTP or Gmail toolkit from algen-agent-tools ([Email](email.md)). Resolve SMTP credentials
 from the deployment secret manager, require TLS outside explicitly permitted loopback development,
 and persist the tool-execution ledger. A transport failure after submission is indeterminate; do not
 retry automatically. Reconcile with the provider using the stable Message-ID/idempotency key before
