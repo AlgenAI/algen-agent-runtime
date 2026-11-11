@@ -236,8 +236,9 @@ def _planned_call(
     if change == PolicyAction.REQUIRE_APPROVAL:
         change = PolicyAction(decision.audit_metadata.get(PAYLOAD_CHANGE_KEY, change))
     if change == PolicyAction.REDACT:
+        # Name the redaction, not the approval a require_approval decision carried it in.
         raise PolicyDeniedError(
-            f"{decision.reason_code}: a redaction refuses the call to {definition.name}; "
+            f"policy.redacted: a redaction refuses the call to {definition.name}; "
             "it is not run with masked arguments"
         )
     if change == PolicyAction.REQUIRE_CLARIFICATION:

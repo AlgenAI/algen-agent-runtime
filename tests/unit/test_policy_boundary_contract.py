@@ -355,6 +355,8 @@ async def test_a_redaction_with_an_approval_requirement_refuses_before_anyone_is
     run = await runtime.run(_request())
 
     assert run.status == RunStatus.FAILED
+    # The error names the redaction, not the approval requirement it was combined with.
+    assert (run.error or "").startswith("policy.redacted:")
     assert list(await runtime.approvals.list(TENANT, run_id=run.run_id)) == []
     assert tool.calls == []  # type: ignore[attr-defined]
 
