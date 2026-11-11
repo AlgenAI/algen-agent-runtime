@@ -248,7 +248,7 @@ class ToolExecutor:
             raise ToolExecutionError(f"invalid input for {name}: {exc.message}") from exc
         decision = await self._evaluate_policy("before_tool", arguments, definition, context, agent)
         arguments = _checked_arguments(
-            name, definition, arguments, decision, approved=bool(approval)
+            name, definition, arguments, decision, approved=approval is not None
         )
         execution, reserved = await self._executions.begin(context, name)
         if not reserved:

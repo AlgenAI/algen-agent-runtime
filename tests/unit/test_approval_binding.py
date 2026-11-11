@@ -11,6 +11,7 @@ from conftest import make_agent, make_runtime
 from algen_agent_runtime.exceptions.errors import ApprovalMismatchError, PolicyDeniedError
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
+from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision, PolicyPoint
 from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.tools.contracts import (
@@ -24,7 +25,7 @@ from algen_agent_runtime.tools.contracts import (
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
-from algen_agent_runtime.types.contracts import RunRequest, RunState, RunStatus
+from algen_agent_runtime.types.contracts import GuardrailPolicy, RunRequest, RunState, RunStatus
 
 
 def _definition(**updates: Any) -> ToolDefinition:
@@ -244,3 +245,52 @@ def test_run_state_leaves_out_empty_tool_approvals_for_earlier_releases() -> Non
     state.tool_approvals["c1"] = ToolApproval.for_call("a1", "approved", "mail.send", "1", {})
     restored = RunState.model_validate_json(state.model_dump_json())
     assert restored.tool_approvals == state.tool_approvals
+
+
+class _Suffix:
+    """A plan_tool transform that appends "!" to "to": applied twice, it would show."""
+
+    name = "suffix"
+    category = "test"
+    enforcement_mode = "block"
+    applies_to = frozenset({PolicyPoint.PLAN_TOOL})
+
+    async def evaluate(self, point: str, payload: Any, context: Any) -> PolicyDecision:
+        return PolicyDecision(
+            action=PolicyAction.TRANSFORM,
+            reason_code="test",
+            reason="test",
+            value={**payload, "to": f"{payload['to']}!"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"decision": "approved"}, {"to": "bob!"}),
+        ({"decision": "modified", "modified_parameters": {"to": "carol"}}, {"to": "carol"}),
+    ],
+)
+async def test_an_approved_call_is_not_rewritten_again_by_a_plan_tool_transform(
+    payload: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    seen: list[dict[str, Any]] = []
+    provider = MockModelProvider([tool_call_response("mail.send", {"to": "bob"}), "done"])
+    runtime = make_runtime(
+        provider,
+        make_agent(
+            enabled_tools=frozenset({"mail.send"}),
+            guardrail_policy=GuardrailPolicy(policies=("suffix",)),
+        ),
+    )
+    runtime.tools.register(Tool(_definition(), lambda a, c: seen.append(a) or {"sent": True}))
+    runtime.policies.register(_Suffix())
+    paused = await _paused(runtime)
+    assert paused.pause_payload["redacted_parameters"] == {"to": "bob!"}
+
+    await runtime.resume(paused.id, "tenant", payload)
+    done = await runtime.wait(paused.id, "tenant")
+
+    assert done.status == RunStatus.COMPLETED, done.error
+    assert seen == [expected]
+    await runtime.shutdown(grace_seconds=5)

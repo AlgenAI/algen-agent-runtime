@@ -2519,8 +2519,6 @@ class AgentRuntime:
                 {"reason_code": decision.reason_code, "audit_metadata": decision.audit_metadata},
             )
             raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
-        # The guards, the approval request and the executor all see the rewritten arguments.
-        action = _planned_call(action, tool.definition, decision)
         approved = call_id in state.approved_tool_call_ids
         replaced: str | None = None
         stale = self._stale_approval(state, call_id, tool)
@@ -2528,6 +2526,10 @@ class AgentRuntime:
             replaced = await self._ask_again_for_changed_tool(state, call_id, tool, stale)
             approved = False
         if not approved:
+            # The guards, the approval request and the executor all see the rewritten arguments.
+            # An approved call is not rewritten again: it runs with what its approver approved,
+            # the arguments as rewritten before they were shown, or the approver's modified ones.
+            action = _planned_call(action, tool.definition, decision)
             # Checked before anyone is asked; an approved call passed them when it was planned.
             held = await self._guard_tool_call(state, agent, action, tool)
             if held is not None:
@@ -2570,6 +2572,14 @@ class AgentRuntime:
                 "options": ["approved", "rejected", "modified"],
                 "paused_at": utc_now().isoformat(),
             }
+            # The call waits with the arguments the approver is shown (after any rewrite), so the
+            # approved call runs with exactly them.
+            state.pending_tool_calls = [
+                call.model_copy(update={"arguments": action.arguments})
+                if call.id == call_id
+                else call
+                for call in state.pending_tool_calls
+            ]
             if replaced is not None:
                 # Asked again because the tool changed after the earlier approval.
                 state.pause_payload["replaces_approval_id"] = replaced
