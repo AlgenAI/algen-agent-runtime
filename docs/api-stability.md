@@ -18,6 +18,21 @@ The following are intended public integration surfaces:
 
 Imports from undocumented modules may be needed for advanced integrations during `0.x`, but they are not yet covered by the same compatibility promise.
 
+## The recorded surface
+
+[`docs/api/surface.json`](api/surface.json) records the surface as of the current release: every
+name in `algen_agent_runtime` and each subpackage's `__all__` with its signature or model fields,
+the HTTP routes, every configuration field and its type, the exception classes, the event and audit
+identifiers, the codes `check` reports, the `Protocol` extension points and the migrations.
+`scripts/api_surface.py` generates it from the code.
+
+`tests/unit/test_api_surface.py` fails when the code and the file differ, and prints the
+difference. A pull request that changes the surface on purpose regenerates the file
+(`python scripts/api_surface.py --update`), commits it with the change, and records the change in
+`CHANGELOG.md`. From `0.2.0b1`, later `0.2` betas only add to this file: a removal or an
+incompatible change needs an upgrade note and restarts the stability window
+([GA criteria](ga-criteria.md)).
+
 ## Compatibility rules
 
 - Patch releases fix defects without intentionally breaking documented public interfaces.

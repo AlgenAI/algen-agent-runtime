@@ -1,0 +1,3002 @@
+{
+ "check_codes": [
+  "APPROVAL_ARGUMENTS_NOT_REVIEWED",
+  "APPROVAL_ARGUMENTS_UNBOUND",
+  "APPROVAL_BINDING_STEP",
+  "APPROVAL_MODIFICATION_IGNORED",
+  "DIRECT_ENV_READ",
+  "HOOK_PROVIDER_UNTRUSTED",
+  "UNREADABLE_SOURCE",
+  "UNSUPPORTED_PROVIDER_TYPE"
+ ],
+ "configuration": {
+  "agents": "list[object]",
+  "agents[].approval_policy": "object",
+  "agents[].approval_policy.expires_seconds": "integer",
+  "agents[].approval_policy.on_rejection": "enum[\"fail_run\", \"continue\"]",
+  "agents[].approval_policy.require_for_destructive": "boolean",
+  "agents[].approval_policy.require_for_side_effects": "boolean",
+  "agents[].attachments": "object",
+  "agents[].attachments.enabled": "boolean",
+  "agents[].attachments.max_count": "integer",
+  "agents[].attachments.retention": "enum[\"turn\", \"session\"]",
+  "agents[].attachments.tool_read_types": "list[string]",
+  "agents[].attachments.types": "list[string]",
+  "agents[].budget": "object",
+  "agents[].budget.max_cost_usd": "number",
+  "agents[].budget.max_events": "integer",
+  "agents[].budget.max_latency_seconds": "number",
+  "agents[].budget.max_model_calls": "integer",
+  "agents[].budget.max_output_tokens": "integer",
+  "agents[].budget.max_response_chars": "integer",
+  "agents[].budget.max_tokens": "integer",
+  "agents[].capabilities": "list[string]",
+  "agents[].context_builder": "string",
+  "agents[].context_policy": "object",
+  "agents[].context_policy.archive_compacted_history": "boolean",
+  "agents[].context_policy.artifact_retention_seconds": "integer",
+  "agents[].context_policy.compact_history": "boolean",
+  "agents[].context_policy.compaction_keep_recent_groups": "integer",
+  "agents[].context_policy.compaction_max_input_tokens": "integer",
+  "agents[].context_policy.compaction_max_output_tokens": "integer",
+  "agents[].context_policy.compaction_trigger_ratio": "number | null",
+  "agents[].context_policy.compaction_trigger_tokens": "integer",
+  "agents[].context_policy.loaded_skills_max_tokens": "integer",
+  "agents[].context_policy.offload_tool_results": "boolean",
+  "agents[].context_policy.shorten_older_tool_results": "boolean",
+  "agents[].context_policy.shortened_tool_result_chars": "integer",
+  "agents[].context_policy.shortened_tool_result_note": "string",
+  "agents[].context_policy.shortened_tool_results_share": "number",
+  "agents[].context_policy.skill_catalog_max_tokens": "integer",
+  "agents[].context_policy.skills_enabled": "boolean",
+  "agents[].context_policy.tool_result_max_inline_bytes": "integer",
+  "agents[].context_policy.tool_result_preview_chars": "integer",
+  "agents[].context_policy.working_state_enabled": "boolean",
+  "agents[].context_policy.working_state_max_tokens": "integer",
+  "agents[].continuation_policy": "object",
+  "agents[].continuation_policy.approval_expires_seconds": "integer",
+  "agents[].continuation_policy.automatic_extensions": "integer",
+  "agents[].continuation_policy.cost_increment_usd": "number",
+  "agents[].continuation_policy.enabled": "boolean",
+  "agents[].continuation_policy.step_increment": "integer",
+  "agents[].continuation_policy.token_increment": "integer",
+  "agents[].default_model": "object",
+  "agents[].default_model.context_safety_margin_tokens": "integer",
+  "agents[].default_model.context_window_tokens": "integer | null",
+  "agents[].default_model.extensions": "object",
+  "agents[].default_model.max_cost_per_1k_tokens": "number | null",
+  "agents[].default_model.max_latency_ms": "number | null",
+  "agents[].default_model.model": "string | null",
+  "agents[].default_model.name": "string",
+  "agents[].default_model.provider": "string | null",
+  "agents[].default_model.quality_tier": "integer",
+  "agents[].default_model.required_capabilities": "list[string]",
+  "agents[].default_model.routing_preference": "enum[\"balanced\", \"local_first\", \"cloud_first\", \"ordered\"]",
+  "agents[].description": "string",
+  "agents[].domain_plugins": "list[string]",
+  "agents[].enabled_tools": "list[string]",
+  "agents[].fallback_models": "list[object]",
+  "agents[].fallback_models[].context_safety_margin_tokens": "integer",
+  "agents[].fallback_models[].context_window_tokens": "integer | null",
+  "agents[].fallback_models[].extensions": "object",
+  "agents[].fallback_models[].max_cost_per_1k_tokens": "number | null",
+  "agents[].fallback_models[].max_latency_ms": "number | null",
+  "agents[].fallback_models[].model": "string | null",
+  "agents[].fallback_models[].name": "string",
+  "agents[].fallback_models[].provider": "string | null",
+  "agents[].fallback_models[].quality_tier": "integer",
+  "agents[].fallback_models[].required_capabilities": "list[string]",
+  "agents[].fallback_models[].routing_preference": "enum[\"balanced\", \"local_first\", \"cloud_first\", \"ordered\"]",
+  "agents[].guardrail_policy": "object",
+  "agents[].guardrail_policy.policies": "list[string]",
+  "agents[].guardrail_policy.require_citations": "boolean",
+  "agents[].guardrail_policy.tool_policies": "list[string] | null",
+  "agents[].guardrail_policy.tool_result_injection": "enum[\"off\", \"flag\", \"block\"]",
+  "agents[].learned_memory_policy": "object",
+  "agents[].learned_memory_policy.embedding_model": "string | null",
+  "agents[].learned_memory_policy.embedding_provider": "string | null",
+  "agents[].learned_memory_policy.embedding_version": "string | null",
+  "agents[].learned_memory_policy.enabled": "boolean",
+  "agents[].learned_memory_policy.hybrid_keyword_weight": "number",
+  "agents[].learned_memory_policy.max_recall_tokens": "integer",
+  "agents[].learned_memory_policy.max_retention_seconds": "integer",
+  "agents[].learned_memory_policy.min_score": "number",
+  "agents[].learned_memory_policy.recall": "enum[\"substring\", \"semantic\", \"hybrid\"]",
+  "agents[].max_steps": "integer",
+  "agents[].memory_policy": "object",
+  "agents[].memory_policy.enabled": "boolean",
+  "agents[].memory_policy.max_items": "integer",
+  "agents[].memory_policy.redact_pii": "boolean",
+  "agents[].memory_policy.retention_seconds": "integer",
+  "agents[].memory_policy.store_tool_payloads": "boolean",
+  "agents[].memory_policy.tool_payload_max_chars": "integer",
+  "agents[].metadata": "object",
+  "agents[].model_allowlist": "list[string]",
+  "agents[].name": "string",
+  "agents[].planning_strategy": "string",
+  "agents[].prompt_templates": "object",
+  "agents[].response_composer": "string",
+  "agents[].retry_policy": "object",
+  "agents[].retry_policy.initial_backoff_seconds": "number",
+  "agents[].retry_policy.max_attempts": "integer",
+  "agents[].retry_policy.max_backoff_seconds": "number",
+  "agents[].retry_policy.retryable_errors": "list[enum[\"authentication\", \"authorization\", \"rate_limit\", \"timeout\", \"unavailable\", \"invalid_request\", \"invalid_response\", \"cancelled\", \"unknown\"]]",
+  "agents[].skills": "list[object]",
+  "agents[].skills[].description": "string",
+  "agents[].skills[].instructions": "string",
+  "agents[].skills[].name": "string",
+  "agents[].skills[].required_permissions": "list[string]",
+  "agents[].skills[].version": "string",
+  "agents[].system_instructions": "string",
+  "agents[].tags": "list[string]",
+  "agents[].tool_permissions": "list[string]",
+  "agents[].tool_policy": "object",
+  "agents[].tool_policy.max_calls_per_tool": "object",
+  "agents[].tool_policy.max_parallel_calls": "integer",
+  "agents[].tool_policy.max_refusals_per_tool": "integer | null",
+  "agents[].tool_policy.on_error": "enum[\"fail_run\", \"return_to_model\"]",
+  "agents[].tool_policy.on_indeterminate": "enum[\"on_error\", \"pause\"]",
+  "agents[].tool_policy.parallel_calls": "boolean",
+  "agents[].tool_policy.refusal_count": "enum[\"consecutive\", \"per_run\"]",
+  "agents[].tool_policy.repeat_guard": "boolean",
+  "agents[].verification_policy": "object",
+  "agents[].verification_policy.max_repairs": "integer",
+  "agents[].verification_policy.minimum_confidence": "number",
+  "agents[].verification_policy.verifiers": "list[string]",
+  "agents[].version": "string",
+  "agents[].workflow": "object | null",
+  "agents[].wrap_up_policy": "object",
+  "agents[].wrap_up_policy.enabled": "boolean",
+  "agents[].wrap_up_policy.token_answer_share": "number",
+  "agents[].wrap_up_policy.token_wrap_up_share": "number",
+  "agents[].wrap_up_policy.tool_calls_left": "integer",
+  "analytical_execution": "object",
+  "analytical_execution.default_graph_timeout_seconds": "number",
+  "analytical_execution.default_node_timeout_seconds": "number",
+  "analytical_execution.graph_store": "enum[\"memory\", \"postgres\"]",
+  "analytical_execution.maximum_concurrency": "integer",
+  "api": "object",
+  "api.agent_ui_enabled": "boolean",
+  "api.agent_ui_path": "string",
+  "api.allow_insecure_development_auth": "boolean",
+  "api.auth_mode": "enum[\"development_headers\", \"jwt\", \"oidc\"]",
+  "api.authentication_audit": "object",
+  "api.authentication_audit.max_failure_records_per_minute": "integer",
+  "api.authentication_audit.record_failures": "boolean",
+  "api.authentication_audit.record_success": "boolean",
+  "api.cors_allow_credentials": "boolean",
+  "api.cors_allowed_headers": "list[string]",
+  "api.cors_allowed_origins": "list[string]",
+  "api.host": "string",
+  "api.jwt_algorithms": "list[string]",
+  "api.jwt_audience": "string | null",
+  "api.jwt_issuer": "string | null",
+  "api.jwt_key": "string | null",
+  "api.oidc": "object",
+  "api.oidc.allow_insecure_http": "boolean",
+  "api.oidc.allow_private_networks": "boolean",
+  "api.oidc.http_timeout_seconds": "number",
+  "api.oidc.issuers": "list[object]",
+  "api.oidc.issuers[].additional_allowed_hosts": "list[string]",
+  "api.oidc.issuers[].algorithms": "list[string]",
+  "api.oidc.issuers[].audiences": "list[string]",
+  "api.oidc.issuers[].claims": "object",
+  "api.oidc.issuers[].claims.allowed_tenants": "list[string]",
+  "api.oidc.issuers[].claims.fixed_tenant": "string | null",
+  "api.oidc.issuers[].claims.role_claims": "list[string]",
+  "api.oidc.issuers[].claims.role_scopes": "object",
+  "api.oidc.issuers[].claims.scope_claims": "list[string]",
+  "api.oidc.issuers[].claims.subject_claim": "string",
+  "api.oidc.issuers[].claims.tenant_claim": "string | null",
+  "api.oidc.issuers[].issuer": "string",
+  "api.oidc.issuers[].jwks_url": "string | null",
+  "api.oidc.issuers[].leeway_seconds": "integer",
+  "api.oidc.issuers[].max_token_lifetime_seconds": "integer | null",
+  "api.oidc.issuers[].required_claims": "list[string]",
+  "api.oidc.jwks_cache_ttl_seconds": "integer",
+  "api.oidc.jwks_min_refresh_interval_seconds": "number",
+  "api.oidc.max_jwks_bytes": "integer",
+  "api.port": "integer",
+  "api.rate_limiting": "object",
+  "api.rate_limiting.default_burst": "integer",
+  "api.rate_limiting.default_rate_per_minute": "integer",
+  "api.rate_limiting.enabled": "boolean",
+  "api.rate_limiting.fail_closed": "boolean",
+  "api.rate_limiting.max_concurrent_run_requests_per_tenant": "integer",
+  "api.rate_limiting.route_overrides": "object",
+  "api.scopes_claim": "string",
+  "api.tenant_claim": "string",
+  "api.token_revocation": "object",
+  "api.token_revocation.enabled": "boolean",
+  "api.token_revocation.require_jti": "boolean",
+  "api.token_revocation.store": "enum[\"memory\", \"postgres\"]",
+  "api.trusted_proxy_identity": "object",
+  "api.trusted_proxy_identity.enabled": "boolean",
+  "api.trusted_proxy_identity.header": "string",
+  "api.trusted_proxy_identity.identities": "object",
+  "api.trusted_proxy_identity.trusted_proxies": "list[string]",
+  "cache": "object",
+  "cache.backend": "enum[\"none\", \"memory\", \"redis\"]",
+  "cache.key_prefix": "string",
+  "cache.key_secret": "string | null",
+  "cache.max_entries": "integer",
+  "cache.policies": "object",
+  "cache.redis_url": "string | null",
+  "conversation_followups": "object",
+  "conversation_followups.agent": "string",
+  "conversation_followups.enabled": "boolean",
+  "conversation_followups.history_messages": "integer",
+  "conversation_followups.max_suggestions": "integer",
+  "conversation_followups.maximum_length": "integer",
+  "conversation_presentation": "object",
+  "conversation_presentation.error_audience": "enum[\"business\", \"developer\"]",
+  "conversation_presentation.progress_audience": "enum[\"business\", \"developer\"]",
+  "conversation_presentation.show_technical_details": "boolean",
+  "conversation_presentation.technical_details_expanded": "boolean",
+  "conversation_streaming": "object",
+  "conversation_streaming.delta_interval_ms": "integer",
+  "conversation_streaming.delta_max_chars": "integer",
+  "conversation_streaming.enabled": "boolean",
+  "distributed_execution": "object",
+  "distributed_execution.enabled": "boolean",
+  "distributed_execution.lease_seconds": "integer",
+  "distributed_execution.queue_backend": "enum[\"memory\", \"postgres\"]",
+  "distributed_execution.worker_concurrency": "integer",
+  "feature_flags": "object",
+  "http_tools": "list[object]",
+  "http_tools[].auth": "object",
+  "http_tools[].auth.credential": "string",
+  "http_tools[].auth.header_name": "string | null",
+  "http_tools[].auth.password": "string | null",
+  "http_tools[].auth.scheme": "string | null",
+  "http_tools[].auth.token": "string | null",
+  "http_tools[].auth.type": "enum[\"none\", \"bearer\", \"basic\", \"header\", \"caller\"]",
+  "http_tools[].auth.username": "string | null",
+  "http_tools[].body": "Body",
+  "http_tools[].description": "string",
+  "http_tools[].headers": "object",
+  "http_tools[].idempotency": "enum[\"idempotent\", \"keyed\", \"non_idempotent\"] | null",
+  "http_tools[].max_result_bytes": "integer",
+  "http_tools[].method": "enum[\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\"]",
+  "http_tools[].name": "string",
+  "http_tools[].pagination": "object",
+  "http_tools[].pagination.items_pointer": "string",
+  "http_tools[].pagination.max_pages": "integer",
+  "http_tools[].pagination.page_param": "string",
+  "http_tools[].pagination.start_page": "integer",
+  "http_tools[].pagination.type": "enum[\"none\", \"link_header\", \"page_param\"]",
+  "http_tools[].parameters": "object",
+  "http_tools[].query": "object",
+  "http_tools[].required_permissions": "list[string]",
+  "http_tools[].response": "object",
+  "http_tools[].response.output_schema": "object | null",
+  "http_tools[].response.select": "string",
+  "http_tools[].side_effect": "enum[\"none\", \"read\", \"write\", \"external\", \"destructive\"] | null",
+  "http_tools[].timeout_seconds": "number",
+  "http_tools[].url": "string",
+  "http_tools[].version": "string",
+  "http_tools[].volatile": "boolean",
+  "maintenance": "object",
+  "maintenance.analytical_graph_retention_days": "integer | null",
+  "maintenance.audit_retention_days": "integer | null",
+  "maintenance.batch_size": "integer",
+  "maintenance.clarification_timeout_seconds": "integer | null",
+  "maintenance.conversation_retention_days": "integer | null",
+  "maintenance.enabled": "boolean",
+  "maintenance.expire_paused_runs": "boolean",
+  "maintenance.expire_paused_workflows": "boolean",
+  "maintenance.interval_seconds": "integer",
+  "maintenance.max_batches_per_sweep": "integer",
+  "maintenance.terminal_run_retention_days": "integer | null",
+  "maintenance.work_item_retention_days": "integer | null",
+  "maintenance.workflow_checkpoint_retention_days": "integer | null",
+  "mcp_servers": "list[any]",
+  "network": "object",
+  "network.egress_proxy": "object | null",
+  "network.egress_proxy.no_proxy": "list[string]",
+  "network.egress_proxy.password": "string | null",
+  "network.egress_proxy.resolve_targets": "boolean",
+  "network.egress_proxy.url": "string",
+  "network.egress_proxy.username": "string | null",
+  "network.remotes": "object",
+  "plugins": "object",
+  "plugins.require_signed": "boolean",
+  "plugins.trusted_publishers": "object",
+  "policies": "object",
+  "policies.boundary_on_error": "object",
+  "policies.bundles": "list[object]",
+  "policies.bundles[].min_version": "integer | null",
+  "policies.bundles[].path": "string",
+  "policies.bundles[].signature": "string | null",
+  "policies.bundles[].trusted_keys": "list[string]",
+  "policies.evaluation_timeout_seconds": "number | null",
+  "policies.on_error": "enum[\"closed\", \"open\"]",
+  "policies.require_signed": "boolean",
+  "policies.trusted_keys": "list[string]",
+  "providers": "object",
+  "query_governance": "object",
+  "query_governance.allow_artifact_export": "boolean",
+  "query_governance.allow_download": "boolean",
+  "query_governance.allow_sql_visibility": "boolean",
+  "query_governance.allowed_metrics": "list[string]",
+  "query_governance.allowed_purposes": "list[string]",
+  "query_governance.audit_retention_days": "integer",
+  "query_governance.denied_columns": "list[string]",
+  "query_governance.maximum_bytes_scanned": "integer",
+  "query_governance.maximum_compute_seconds": "number",
+  "query_governance.maximum_concurrency": "integer",
+  "query_governance.maximum_rows": "integer",
+  "query_governance.require_certified_sources": "boolean",
+  "query_governance.required_authorization_tags": "list[string]",
+  "query_sources": "object",
+  "retrieval": "object",
+  "runtime": "object",
+  "runtime.component_check": "enum[\"error\", \"warn\"]",
+  "runtime.readiness": "object",
+  "runtime.readiness.model_providers": "enum[\"any\", \"all\", \"none\"]",
+  "runtime.readiness.optional": "list[string]",
+  "runtime.readiness.probe_timeout_seconds": "number",
+  "runtime.readiness.require_durable_stores": "boolean",
+  "runtime.readiness.required": "list[string]",
+  "runtime.recover_incomplete_runs": "boolean",
+  "runtime.recover_service_workflows": "boolean",
+  "runtime.recovery_limit": "integer",
+  "runtime.shutdown_grace_seconds": "number",
+  "runtime.stream_delta_interval_ms": "integer",
+  "runtime.tool_threads": "object",
+  "runtime.tool_threads.max_queued": "integer",
+  "runtime.tool_threads.max_workers": "integer | null",
+  "security": "object",
+  "security.allow_private_networks": "boolean",
+  "security.allow_subprocess_tools": "boolean",
+  "security.allowed_attachment_types": "list[string]",
+  "security.allowed_http_hosts": "list[string]",
+  "security.max_artifact_bytes": "integer",
+  "security.max_attachment_bytes_total": "integer",
+  "security.max_attachments_per_run": "integer",
+  "security.max_request_bytes": "integer",
+  "security.sandbox": "object",
+  "security.sandbox.env_allowlist": "list[string] | null",
+  "security.sandbox.limits": "object",
+  "security.sandbox.limits.cpu_seconds": "integer | null",
+  "security.sandbox.limits.file_size_bytes": "integer | null",
+  "security.sandbox.limits.memory_bytes": "integer | null",
+  "security.sandbox.limits.open_files": "integer | null",
+  "security.sandbox.limits.processes": "integer | null",
+  "security.sandbox.required": "boolean",
+  "security.sandbox.subprocess_timeout_seconds": "number",
+  "security.sandbox.working_directory": "string | null",
+  "security.sandbox.wrapper": "list[string]",
+  "security.trusted_plugin_prefixes": "list[string]",
+  "security.upload_scanner": "enum[\"none\", \"basic\"]",
+  "storage": "object",
+  "storage.approval_store": "enum[\"memory\", \"postgres\"]",
+  "storage.artifact_s3_addressing_style": "enum[\"auto\", \"path\", \"virtual\"]",
+  "storage.artifact_s3_bucket": "string | null",
+  "storage.artifact_s3_endpoint_url": "string | null",
+  "storage.artifact_s3_kms_key_id": "string | null",
+  "storage.artifact_s3_prefix": "string",
+  "storage.artifact_s3_region": "string | null",
+  "storage.artifact_s3_server_side_encryption": "enum[\"AES256\", \"aws:kms\"]",
+  "storage.artifact_store": "enum[\"memory\", \"postgres\", \"s3\"]",
+  "storage.audit_store": "enum[\"memory\", \"postgres\"]",
+  "storage.conversation_store": "enum[\"memory\", \"postgres\"]",
+  "storage.event_store": "enum[\"memory\", \"postgres\"]",
+  "storage.initialize_schema": "boolean",
+  "storage.learned_memory_store": "enum[\"memory\", \"postgres\"]",
+  "storage.mcp_oauth_encryption_key": "string | null",
+  "storage.mcp_oauth_previous_encryption_keys": "list[string]",
+  "storage.mcp_oauth_token_store": "enum[\"memory\", \"postgres\"]",
+  "storage.memory_retention_seconds": "integer",
+  "storage.memory_store": "enum[\"memory\", \"postgres\", \"redis\"]",
+  "storage.postgres_command_timeout_seconds": "number | null",
+  "storage.postgres_connect_timeout_seconds": "number",
+  "storage.postgres_dsn": "string | null",
+  "storage.postgres_max_pool_size": "integer",
+  "storage.postgres_min_pool_size": "integer",
+  "storage.postgres_schema": "string | null",
+  "storage.quotas": "object",
+  "storage.quotas.default": "object",
+  "storage.quotas.default.artifact_bytes": "integer | null",
+  "storage.quotas.default.artifact_count": "integer | null",
+  "storage.quotas.default.learned_memory_bytes": "integer | null",
+  "storage.quotas.default.learned_memory_items": "integer | null",
+  "storage.quotas.default.memory_bytes": "integer | null",
+  "storage.quotas.default.memory_items": "integer | null",
+  "storage.quotas.tenants": "object",
+  "storage.redis_socket_timeout_seconds": "number | null",
+  "storage.redis_url": "string | null",
+  "storage.run_store": "enum[\"memory\", \"postgres\", \"redis\"]",
+  "storage.tool_execution_store": "enum[\"memory\", \"postgres\"]",
+  "storage.workflow_store": "enum[\"memory\", \"postgres\"]",
+  "telemetry": "object",
+  "telemetry.enabled": "boolean",
+  "telemetry.include_content": "boolean",
+  "telemetry.include_conversation_content": "boolean",
+  "telemetry.max_content_chars": "integer",
+  "telemetry.otlp_endpoint": "string | null",
+  "telemetry.otlp_metrics_endpoint": "string | null",
+  "telemetry.otlp_metrics_export_interval_seconds": "integer",
+  "telemetry.service_name": "string",
+  "telemetry.traccia": "object",
+  "telemetry.traccia.api_key": "string | null",
+  "telemetry.traccia.enable_costs": "boolean",
+  "telemetry.traccia.enable_metrics": "boolean",
+  "telemetry.traccia.enable_patching": "boolean",
+  "telemetry.traccia.enable_token_counting": "boolean",
+  "telemetry.traccia.enabled": "boolean",
+  "telemetry.traccia.endpoint": "string | null",
+  "telemetry.traccia.environment": "string",
+  "telemetry.traccia.export_foreign_traces": "boolean",
+  "telemetry.traccia.export_whole_runs": "boolean",
+  "telemetry.traccia.flush_timeout_seconds": "number",
+  "telemetry.traccia.governance_agent_id": "string | null",
+  "telemetry.traccia.governance_enabled": "boolean",
+  "telemetry.traccia.governance_fail_open": "boolean",
+  "telemetry.traccia.max_spans_per_second": "number | null",
+  "telemetry.traccia.metrics_endpoint": "string | null",
+  "telemetry.traccia.project_id": "string | null",
+  "telemetry.traccia.redact_pii": "boolean",
+  "telemetry.traccia.run_export_max_seconds": "number",
+  "telemetry.traccia.run_export_max_spans": "integer",
+  "telemetry.traccia.sample_rate": "number",
+  "telemetry.traccia.service_role": "string",
+  "telemetry.trace_level": "enum[\"minimal\", \"standard\", \"detailed\"]",
+  "workflow_notifications": "object | null",
+  "workflow_notifications.events": "list[string]",
+  "workflow_notifications.signing_secret": "string | null",
+  "workflow_notifications.webhook_url": "string",
+  "workflows": "object"
+ },
+ "errors": {
+  "AlgenAgentRuntimeError": [
+   "Exception"
+  ],
+  "ApprovalMismatchError": [
+   "PolicyDeniedError"
+  ],
+  "BudgetExceededError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "CapabilityError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "ConfigurationError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "ConflictError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "InvalidToolCallError": [
+   "ProviderError"
+  ],
+  "MCPNotConnectedError": [
+   "ToolExecutionError"
+  ],
+  "MeterRefusedError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "NotFoundError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "PolicyDeniedError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "ProviderError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "QuotaExceededError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "RunConflictError": [
+   "ConflictError"
+  ],
+  "RunPaused": [
+   "AlgenAgentRuntimeError"
+  ],
+  "StoreUnavailableError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "ToolCapacityError": [
+   "ToolNotAttemptedError"
+  ],
+  "ToolExecutionError": [
+   "AlgenAgentRuntimeError"
+  ],
+  "ToolNotAttemptedError": [
+   "ToolExecutionError"
+  ],
+  "ToolkitConfigurationError": [
+   "ToolNotAttemptedError",
+   "ConfigurationError"
+  ],
+  "VerificationError": [
+   "AlgenAgentRuntimeError"
+  ]
+ },
+ "events": [
+  "agent.status.changed",
+  "approval.required",
+  "approval.tool_changed",
+  "assistant.message.cancelled",
+  "assistant.message.failed",
+  "assistant.message.resumed",
+  "assistant.message.started",
+  "auth.subject.revoked",
+  "auth.token.revoked",
+  "budget.refused",
+  "clarification.required",
+  "context.compact",
+  "context.compacted",
+  "context.compaction.assessed",
+  "context.offload",
+  "context.retrieved",
+  "context.skills",
+  "context.skills.updated",
+  "context.working_state",
+  "context.working_state.updated",
+  "conversation.created",
+  "conversation.feedback.recorded",
+  "conversation.message.accepted",
+  "conversation.updated",
+  "mcp.auth_required",
+  "mcp.oauth.connect",
+  "mcp.oauth.revoke",
+  "memory.learned",
+  "memory.learned.updated",
+  "memory.written",
+  "model.call",
+  "model.completed",
+  "model.delta",
+  "model.output_limit_recovery",
+  "model.retrying",
+  "model.started",
+  "model.tool_call_invalid",
+  "policy.decision",
+  "policy.evaluated",
+  "run.attachments",
+  "run.cancelled",
+  "run.completed",
+  "run.continuation",
+  "run.continued",
+  "run.failed",
+  "run.limit_exceeded",
+  "run.started",
+  "run.steer",
+  "run.wrap_up",
+  "steer.delivered",
+  "steer.undelivered",
+  "step.started",
+  "storage.quota_exceeded",
+  "tool.call",
+  "tool.compensation",
+  "tool.completed",
+  "tool.files",
+  "tool.note",
+  "tool.reconcile",
+  "tool.reconciled",
+  "tool.reconciliation_required",
+  "tool.started",
+  "tool.wrap_up",
+  "verification.completed",
+  "workflow.approval.decided",
+  "workflow.approval.expired",
+  "workflow.approval.required",
+  "workflow.approval.tool_changed",
+  "workflow.cancelled",
+  "workflow.child.completed",
+  "workflow.child.event",
+  "workflow.child.failed",
+  "workflow.child.paused",
+  "workflow.child.started",
+  "workflow.completed",
+  "workflow.failed",
+  "workflow.input.expired",
+  "workflow.input.required",
+  "workflow.node.cancelled",
+  "workflow.node.completed",
+  "workflow.node.failed",
+  "workflow.node.repairing",
+  "workflow.node.skipped",
+  "workflow.node.started",
+  "workflow.progress",
+  "workflow.recovered",
+  "workflow.recovery.failed",
+  "workflow.resumed",
+  "workflow.started",
+  "workflow.tool.authorized",
+  "workflow.tool.refused"
+ ],
+ "exports": {
+  "algen_agent_runtime": {
+   "AgentDefinition": {
+    "model": {
+     "approval_policy": "ApprovalPolicy",
+     "attachments": "AttachmentPolicy",
+     "budget": "Budget",
+     "capabilities": "frozenset[str]",
+     "context_builder": "str",
+     "context_policy": "ContextPolicy",
+     "continuation_policy": "ContinuationPolicy",
+     "default_model": "ModelProfile",
+     "description": "str",
+     "domain_plugins": "tuple[str, ...]",
+     "enabled_tools": "frozenset[str]",
+     "fallback_models": "tuple[ModelProfile, ...]",
+     "guardrail_policy": "GuardrailPolicy",
+     "learned_memory_policy": "LearnedMemoryPolicy",
+     "max_steps": "int",
+     "memory_policy": "MemoryPolicy",
+     "metadata": "dict[str, str]",
+     "model_allowlist": "frozenset[str]",
+     "name": "str",
+     "planning_strategy": "str",
+     "prompt_templates": "dict[str, str]",
+     "response_composer": "str",
+     "retry_policy": "RetryPolicy",
+     "skills": "tuple[SkillDefinition, ...]",
+     "system_instructions": "str",
+     "tags": "frozenset[str]",
+     "tool_permissions": "frozenset[str]",
+     "tool_policy": "ToolPolicy",
+     "verification_policy": "VerificationPolicy",
+     "version": "str",
+     "workflow": "dict[str, Any] | None",
+     "wrap_up_policy": "WrapUpPolicy"
+    }
+   },
+   "AgentRuntime": {
+    "class": "(*, agents: 'InMemoryAgentRegistry', router: 'ModelRouter', tools: 'ToolRegistry', tool_executor: 'ToolExecutor', planners: 'PlannerRegistry', contexts: 'ContextBuilderRegistry', policies: 'Any', verifiers: 'VerificationService', composers: 'ResponseComposerRegistry', runs: 'RunStore', memory: 'MemoryStore', events: 'EventPublisher', approvals: 'ApprovalService', audits: 'AuditLog | None' = None, observability: 'ObservabilityAdapter | None' = None, cache: 'CacheService | None' = None, context_artifacts: 'ContextArtifactService | None' = None, learned_memory_store: 'LearnedMemoryStore | None' = None, telemetry_include_content: 'bool' = False, telemetry_max_content_chars: 'int' = 16384, telemetry_trace_level: 'TraceLevel' = 'detailed', stream_delta_interval_seconds: 'float' = 0.0, artifacts: 'ArtifactStore | None' = None, attachment_limits: 'run_attachments.AttachmentLimits | None' = None) -> 'None'",
+    "methods": {
+     "cancel": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState'",
+     "expire_paused_runs": "(self, *, clarification_timeout_seconds: 'float | None' = None, limit: 'int' = 1000) -> 'int'",
+     "narrative": "(self, run_id: 'str', tenant_id: 'str') -> 'RunNarrative'",
+     "recover": "(self, limit: 'int' = 1000) -> 'int'",
+     "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+     "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
+     "shutdown": "(self, grace_seconds: 'float' = 10.0) -> 'None'",
+     "start": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+     "status": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState'",
+     "steer": "(self, run_id: 'str', tenant_id: 'str', text: 'str') -> 'SteeringMessage'",
+     "wait": "(self, run_id: 'str', tenant_id: 'str') -> 'RunResult'"
+    }
+   },
+   "AlgenAgentRuntimeClient": {
+    "class": "(runtime: 'AgentRuntime') -> 'None'",
+    "methods": {
+     "run": "(self, request: 'RunRequest') -> 'RunResult'",
+     "run_sync": "(self, request: 'RunRequest') -> 'RunResult'",
+     "stream": "(self, request: 'RunRequest') -> 'AsyncIterator[RunEvent]'"
+    }
+   },
+   "Artifact": {
+    "model": {
+     "created_at": "datetime",
+     "data": "bytes",
+     "expires_at": "datetime | None",
+     "id": "str",
+     "media_type": "str",
+     "metadata": "dict[str, str]",
+     "name": "str",
+     "run_id": "str | None",
+     "sha256": "str | None",
+     "size_bytes": "int | None",
+     "status": "ArtifactStatus",
+     "tenant_id": "str"
+    }
+   },
+   "ArtifactDescriptor": {
+    "model": {
+     "created_at": "datetime",
+     "expires_at": "datetime | None",
+     "id": "str",
+     "media_type": "str",
+     "metadata": "dict[str, str]",
+     "name": "str",
+     "run_id": "str | None",
+     "sha256": "str",
+     "size_bytes": "int",
+     "status": "ArtifactStatus",
+     "tenant_id": "str"
+    }
+   },
+   "ArtifactLifecycleService": {
+    "class": "(store: 'ArtifactStore', audit: 'AuditLog') -> 'None'",
+    "methods": {
+     "scan": "(self, artifact_id: 'str', tenant_id: 'str', actor_id: 'str', scanner: 'ArtifactScanner') -> 'ArtifactDescriptor'"
+    }
+   },
+   "ArtifactScanResult": {
+    "model": {
+     "reason_code": "str | None",
+     "scanner": "str",
+     "scanner_version": "str | None",
+     "status": "ArtifactStatus"
+    }
+   },
+   "ArtifactScanner": {
+    "protocol": {
+     "scan": "(self, artifact: 'Artifact') -> 'ArtifactScanResult'"
+    }
+   },
+   "ArtifactStatus": {
+    "class": "(*values)"
+   },
+   "CacheContext": {
+    "model": {
+     "authorization_fingerprint": "str | None",
+     "run_id": "str | None",
+     "session_id": "str | None",
+     "tenant_id": "str | None",
+     "user_id": "str | None"
+    }
+   },
+   "CachePolicy": {
+    "model": {
+     "enabled": "bool",
+     "maximum_value_bytes": "int",
+     "scope": "CacheScope",
+     "ttl_seconds": "int"
+    }
+   },
+   "CacheScope": {
+    "class": "(*values)"
+   },
+   "CacheService": {
+    "class": "(store: 'CacheStore', policies: 'Mapping[str, CachePolicy] | None' = None, *, key_secret: 'str | None' = None, telemetry_trace_level: 'TraceLevel' = 'detailed') -> 'None'",
+    "methods": {
+     "get_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', context: 'CacheContext') -> 'Any | None'",
+     "get_or_set_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', context: 'CacheContext', loader: 'Callable[[], Awaitable[Any]]', *, tags: 'tuple[str, ...]' = ()) -> 'tuple[Any, bool]'",
+     "invalidate_tags": "(self, *tags: 'str') -> 'int'",
+     "policy": "(self, name: 'str') -> 'CachePolicy'",
+     "set_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', value: 'Any', context: 'CacheContext', *, tags: 'tuple[str, ...]' = ()) -> 'bool'"
+    }
+   },
+   "Citation": {
+    "model": {
+     "chunk_id": "str",
+     "document_id": "str",
+     "id": "str",
+     "score": "float",
+     "source": "str",
+     "title": "str | None",
+     "uri": "str | None"
+    }
+   },
+   "HashingEmbedder": {
+    "class": "(dimensions: 'int' = 128) -> 'None'",
+    "methods": {
+     "embed": "(self, texts: 'Sequence[str]') -> 'list[list[float]]'"
+    }
+   },
+   "InMemoryRetriever": {
+    "class": "(documents: 'tuple[RetrievedDocument, ...]' = (), *, source_documents: 'tuple[SourceDocument, ...]' = (), embedder: 'Embedder | None' = None, chunker: 'Chunker | None' = None, reranker: 'Reranker | None' = None) -> 'None'",
+    "methods": {
+     "add": "(self, document: 'RetrievedDocument') -> 'None'",
+     "add_source": "(self, document: 'SourceDocument') -> 'None'",
+     "delete": "(self, tenant_id: 'str', document_id: 'str') -> 'int'",
+     "ingest": "(self, documents: 'Sequence[SourceDocument]') -> 'int'",
+     "retrieve": "(self, query: 'RetrievalQuery') -> 'tuple[RetrievedDocument, ...]'"
+    }
+   },
+   "MeterCall": {
+    "class": "(*, tenant_id: 'str | None' = None, user_id: 'str | None' = None, run_id: 'str | None' = None, parent_run_id: 'str | None' = None, session_id: 'str | None' = None, conversation_id: 'str | None' = None, turn_id: 'str | None' = None, agent: 'str | None' = None, agent_version: 'str | None' = None, step_id: 'str | None' = None, purpose: 'MeterPurpose' = 'other', attempt: 'int' = 0, provider: 'str' = '', model: 'str' = '', streaming: 'bool' = False, metadata: 'Mapping[str, str]' = <factory>) -> None"
+   },
+   "MeterRefusedError": {
+    "class": "(…)"
+   },
+   "RetrievalQuery": {
+    "model": {
+     "filters": "dict[str, Any]",
+     "keyword_weight": "float",
+     "limit": "int",
+     "minimum_score": "float",
+     "mode": "RetrievalMode",
+     "tenant_id": "str",
+     "text": "str",
+     "vector_weight": "float"
+    }
+   },
+   "RetrievedDocument": {
+    "model": {
+     "chunk_index": "int",
+     "document_id": "str | None",
+     "id": "str",
+     "keyword_score": "float",
+     "metadata": "dict[str, Any]",
+     "score": "float",
+     "source": "str",
+     "text": "str",
+     "title": "str | None",
+     "uri": "str | None",
+     "vector_score": "float"
+    }
+   },
+   "RunRequest": {
+    "model": {
+     "agent": "str",
+     "agent_version": "str | None",
+     "attachments": "tuple[RunAttachment, ...]",
+     "conversation_id": "str | None",
+     "correlation_id": "str",
+     "input": "str",
+     "metadata": "dict[str, str]",
+     "overrides": "RequestOverrides",
+     "parent_run_id": "str | None",
+     "session_id": "str | None",
+     "stream": "bool",
+     "tenant_id": "str",
+     "timeout_seconds": "float | None",
+     "turn_id": "str | None",
+     "user_id": "str",
+     "workflow_run_id": "str | None"
+    }
+   },
+   "RunResult": {
+    "model": {
+     "artifacts": "tuple[str, ...]",
+     "citations": "tuple[Citation, ...]",
+     "confidence": "float | None",
+     "error": "str | None",
+     "execution_summary": "ExecutionSummary",
+     "output": "str | None",
+     "run_id": "str",
+     "session_id": "str",
+     "sources": "tuple[str, ...]",
+     "status": "RunStatus",
+     "undelivered_steering": "tuple[SteeringMessage, ...]",
+     "warnings": "tuple[str, ...]"
+    }
+   },
+   "SourceDocument": {
+    "model": {
+     "id": "str",
+     "metadata": "dict[str, Any]",
+     "source": "str",
+     "text": "str",
+     "title": "str | None",
+     "uri": "str | None"
+    }
+   },
+   "UsageMeter": {
+    "protocol": {
+     "release": "(self, ticket: 'object') -> 'None'",
+     "reserve": "(self, *, max_input_tokens: 'int', max_output_tokens: 'int', call: 'MeterCall') -> 'object'",
+     "settle": "(self, ticket: 'object', usage: 'TokenUsage') -> 'None'"
+    }
+   }
+  },
+  "algen_agent_runtime.analytics": {
+   "AnalyticalGraphEngine": {
+    "class": "(registry: 'AnalyticalNodeRegistry', store: 'AnalyticalGraphStore', *, cache: 'CacheService | None' = None, maximum_concurrency: 'int' = 8, maximum_node_timeout_seconds: 'float' = 30, maximum_graph_timeout_seconds: 'float' = 300) -> 'None'",
+    "methods": {
+     "handler_kinds": "(self) -> 'tuple[AnalyticalNodeKind, ...]'",
+     "register_handler": "(self, kind: 'AnalyticalNodeKind', handler: 'AnalyticalNodeHandler') -> 'None'",
+     "resume": "(self, graph_id: 'str', context: 'GraphExecutionContext') -> 'AnalyticalGraphState'",
+     "run": "(self, graph: 'AnalyticalGraph', context: 'GraphExecutionContext') -> 'AnalyticalGraphState'"
+    }
+   },
+   "AnalyticalNodeRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "get": "(self, kind: 'AnalyticalNodeKind') -> 'AnalyticalNodeHandler'",
+     "kinds": "(self) -> 'tuple[AnalyticalNodeKind, ...]'",
+     "register": "(self, kind: 'AnalyticalNodeKind', handler: 'AnalyticalNodeHandler') -> 'None'"
+    }
+   },
+   "InMemoryAnalyticalGraphStore": {
+    "class": "() -> 'None'",
+    "methods": {
+     "create": "(self, state: 'AnalyticalGraphState') -> 'None'",
+     "get": "(self, graph_id: 'str', tenant_id: 'str') -> 'AnalyticalGraphState | None'",
+     "purge_finished": "(self, cutoff: 'datetime', limit: 'int') -> 'int'",
+     "save": "(self, state: 'AnalyticalGraphState', expected_version: 'int') -> 'None'"
+    }
+   },
+   "PostgresAnalyticalGraphStore": {
+    "class": "(database: 'Any') -> 'None'",
+    "methods": {
+     "create": "(self, state: 'AnalyticalGraphState') -> 'None'",
+     "get": "(self, graph_id: 'str', tenant_id: 'str') -> 'AnalyticalGraphState | None'",
+     "save": "(self, state: 'AnalyticalGraphState', expected_version: 'int') -> 'None'"
+    }
+   },
+   "builtin_handlers": {
+    "function": "() -> 'dict[str, Callable[..., Any]]'"
+   }
+  },
+  "algen_agent_runtime.artifacts": {
+   "ArtifactLifecycleService": {
+    "class": "(store: 'ArtifactStore', audit: 'AuditLog') -> 'None'",
+    "methods": {
+     "scan": "(self, artifact_id: 'str', tenant_id: 'str', actor_id: 'str', scanner: 'ArtifactScanner') -> 'ArtifactDescriptor'"
+    }
+   },
+   "ArtifactScanResult": {
+    "model": {
+     "reason_code": "str | None",
+     "scanner": "str",
+     "scanner_version": "str | None",
+     "status": "ArtifactStatus"
+    }
+   },
+   "ArtifactScanner": {
+    "protocol": {
+     "scan": "(self, artifact: 'Artifact') -> 'ArtifactScanResult'"
+    }
+   },
+   "BasicArtifactScanner": {
+    "class": "()",
+    "methods": {
+     "scan": "(self, artifact: 'Artifact') -> 'ArtifactScanResult'"
+    }
+   }
+  },
+  "algen_agent_runtime.auth": {
+   "AUTHENTICATION_AUDIT_TENANT": {
+    "value": "str"
+   },
+   "AUTH_AUDIT_ACTION": {
+    "value": "str"
+   },
+   "AUTH_AUDIT_SUPPRESSED_ACTION": {
+    "value": "str"
+   },
+   "AUTH_METRIC_NAME": {
+    "value": "str"
+   },
+   "ApiAuthenticator": {
+    "class": "(settings: 'ApiSettings', *, audits: 'AuditLog | None' = None, revocations: 'TokenRevocationStore | None' = None, oidc_transport: 'httpx.AsyncBaseTransport | None' = None, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "authenticate": "(self, *, authorization: 'str', proxy_identity: 'Sequence[str]' = (), peer: 'str | None' = None) -> 'AuthenticatedIdentity'"
+    }
+   },
+   "AuthFailureReason": {
+    "alias": "Literal['missing_credentials', 'malformed_token', 'algorithm_not_allowed', 'unknown_issuer', 'missing_key_id', 'unknown_key', 'keys_unavailable', 'invalid_signature', 'expired', 'not_yet_valid', 'invalid_issued_at', 'invalid_audience', 'invalid_issuer', 'missing_claim', 'token_lifetime_exceeded', 'missing_subject', 'missing_tenant', 'tenant_not_allowed', 'missing_jti', 'revoked', 'revocation_unavailable', 'untrusted_proxy', 'invalid_service_identity', 'unknown_service_identity', 'invalid_token']"
+   },
+   "AuthenticatedIdentity": {
+    "class": "(tenant_id: 'str', user_id: 'str', scopes: 'frozenset[str]', method: 'AuthMethod', issuer: 'str | None' = None, key_id: 'str | None' = None, claims: 'dict[str, Any]' = <factory>) -> None"
+   },
+   "AuthenticationAuditor": {
+    "class": "(audits: 'AuditLog | None', settings: 'AuthenticationAuditSettings | None' = None, *, clock: 'Callable[[], float]' = <built-in function monotonic>) -> 'None'",
+    "methods": {
+     "failure": "(self, failure: 'AuthenticationFailure') -> 'None'",
+     "success": "(self, identity: 'AuthenticatedIdentity') -> 'None'"
+    }
+   },
+   "AuthenticationFailure": {
+    "class": "(reason: 'AuthFailureReason', *, method: 'AuthMethod', detail: 'str' = 'invalid bearer token', status_code: 'int' = 401, issuer: 'Any' = None, key_id: 'Any' = None, subject: 'Any' = None, tenant_id: 'str | None' = None) -> 'None'"
+   },
+   "InMemoryTokenRevocationStore": {
+    "class": "(max_entries: 'int' = 100000) -> 'None'",
+    "methods": {
+     "purge_expired": "(self, now: 'datetime | None' = None) -> 'int'",
+     "revoke_subject": "(self, tenant_id: 'str', subject: 'str', revoked_before: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "revoke_token": "(self, tenant_id: 'str', jti: 'str', expires_at: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "state": "(self, tenant_id: 'str', jti: 'str | None', subject: 'str') -> 'RevocationState'"
+    }
+   },
+   "JsonWebKey": {
+    "class": "(kid: 'str', key_type: 'str', algorithm: 'str | None', key: 'Any') -> None"
+   },
+   "JwksCache": {
+    "class": "(issuer: 'str', *, jwks_url: 'str | None' = None, additional_allowed_hosts: 'tuple[str, ...]' = (), allow_private_networks: 'bool' = False, allow_insecure_http: 'bool' = False, ttl_seconds: 'float' = 300, min_refresh_interval_seconds: 'float' = 30, timeout_seconds: 'float' = 5, max_bytes: 'int' = 262144, transport: 'httpx.AsyncBaseTransport | None' = None, clock: 'Callable[[], float]' = <built-in function monotonic>, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "get_key": "(self, kid: 'str') -> 'JsonWebKey'"
+    }
+   },
+   "JwksError": {
+    "class": "(…)"
+   },
+   "OidcVerifier": {
+    "class": "(settings: 'OidcSettings', *, transport: 'httpx.AsyncBaseTransport | None' = None, clock: 'Callable[[], float]' = <built-in function monotonic>, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "jwks": "(self, issuer: 'str') -> 'JwksCache'",
+     "verify": "(self, token: 'str') -> 'AuthenticatedIdentity'"
+    }
+   },
+   "PostgresTokenRevocationStore": {
+    "class": "(database: 'Any') -> 'None'",
+    "methods": {
+     "purge_expired": "(self, now: 'datetime | None' = None) -> 'int'",
+     "revoke_subject": "(self, tenant_id: 'str', subject: 'str', revoked_before: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "revoke_token": "(self, tenant_id: 'str', jti: 'str', expires_at: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "state": "(self, tenant_id: 'str', jti: 'str | None', subject: 'str') -> 'RevocationState'"
+    }
+   },
+   "RevocationState": {
+    "class": "(token_revoked: 'bool' = False, subject_revoked_before: 'datetime | None' = None) -> None"
+   },
+   "TokenRevocationStore": {
+    "protocol": {
+     "purge_expired": "(self, now: 'datetime | None' = None) -> 'int'",
+     "revoke_subject": "(self, tenant_id: 'str', subject: 'str', revoked_before: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "revoke_token": "(self, tenant_id: 'str', jti: 'str', expires_at: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+     "state": "(self, tenant_id: 'str', jti: 'str | None', subject: 'str') -> 'RevocationState'"
+    }
+   },
+   "TrustedProxyIdentity": {
+    "class": "(settings: 'TrustedProxyIdentitySettings') -> 'None'",
+    "methods": {
+     "is_trusted_peer": "(self, peer: 'str | None') -> 'bool'",
+     "resolve": "(self, values: 'Sequence[str]', peer: 'str | None') -> 'AuthenticatedIdentity | None'"
+    }
+   },
+   "map_claims": {
+    "function": "(claims: 'dict[str, Any]', mapping: 'OidcClaimMappingSettings') -> 'tuple[str, str, frozenset[str]]'"
+   }
+  },
+  "algen_agent_runtime.cache": {
+   "CacheContext": {
+    "model": {
+     "authorization_fingerprint": "str | None",
+     "run_id": "str | None",
+     "session_id": "str | None",
+     "tenant_id": "str | None",
+     "user_id": "str | None"
+    }
+   },
+   "CachePolicy": {
+    "model": {
+     "enabled": "bool",
+     "maximum_value_bytes": "int",
+     "scope": "CacheScope",
+     "ttl_seconds": "int"
+    }
+   },
+   "CacheScope": {
+    "class": "(*values)"
+   },
+   "CacheService": {
+    "class": "(store: 'CacheStore', policies: 'Mapping[str, CachePolicy] | None' = None, *, key_secret: 'str | None' = None, telemetry_trace_level: 'TraceLevel' = 'detailed') -> 'None'",
+    "methods": {
+     "get_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', context: 'CacheContext') -> 'Any | None'",
+     "get_or_set_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', context: 'CacheContext', loader: 'Callable[[], Awaitable[Any]]', *, tags: 'tuple[str, ...]' = ()) -> 'tuple[Any, bool]'",
+     "invalidate_tags": "(self, *tags: 'str') -> 'int'",
+     "policy": "(self, name: 'str') -> 'CachePolicy'",
+     "set_json": "(self, policy_name: 'str', namespace: 'str', material: 'Any', value: 'Any', context: 'CacheContext', *, tags: 'tuple[str, ...]' = ()) -> 'bool'"
+    }
+   },
+   "InMemoryCacheStore": {
+    "class": "(max_entries: 'int' = 10000) -> 'None'",
+    "methods": {
+     "delete": "(self, key: 'str') -> 'None'",
+     "get": "(self, key: 'str') -> 'bytes | None'",
+     "health": "(self) -> 'bool'",
+     "invalidate_tags": "(self, tags: 'tuple[str, ...]') -> 'int'",
+     "set": "(self, key: 'str', value: 'bytes', ttl_seconds: 'int', tags: 'tuple[str, ...]' = ()) -> 'None'"
+    }
+   },
+   "NullCacheStore": {
+    "class": "()",
+    "methods": {
+     "delete": "(self, key: 'str') -> 'None'",
+     "get": "(self, key: 'str') -> 'bytes | None'",
+     "health": "(self) -> 'bool'",
+     "invalidate_tags": "(self, tags: 'tuple[str, ...]') -> 'int'",
+     "set": "(self, key: 'str', value: 'bytes', ttl_seconds: 'int', tags: 'tuple[str, ...]' = ()) -> 'None'"
+    }
+   },
+   "RedisCacheStore": {
+    "class": "(client: 'Any', prefix: 'str' = 'algen-agent-runtime:cache') -> 'None'",
+    "methods": {
+     "delete": "(self, key: 'str') -> 'None'",
+     "get": "(self, key: 'str') -> 'bytes | None'",
+     "health": "(self) -> 'bool'",
+     "invalidate_tags": "(self, tags: 'tuple[str, ...]') -> 'int'",
+     "set": "(self, key: 'str', value: 'bytes', ttl_seconds: 'int', tags: 'tuple[str, ...]' = ()) -> 'None'"
+    }
+   }
+  },
+  "algen_agent_runtime.conversations": {
+   "ChartBlock": {
+    "model": {
+     "description": "str | None",
+     "grammar": "Literal['vega-lite']",
+     "specification": "dict[str, Any]",
+     "title": "str | None",
+     "type": "Literal['chart']"
+    }
+   },
+   "CodeBlock": {
+    "model": {
+     "code": "str",
+     "language": "str",
+     "title": "str | None",
+     "type": "Literal['code']"
+    }
+   },
+   "Conversation": {
+    "model": {
+     "agent": "str",
+     "created_at": "datetime",
+     "handler": "str",
+     "id": "str",
+     "metadata": "dict[str, Any]",
+     "status": "ConversationStatus",
+     "tenant_id": "str",
+     "title": "str",
+     "updated_at": "datetime",
+     "user_id": "str",
+     "version": "int"
+    }
+   },
+   "ConversationApprovalDecision": {
+    "model": {
+     "decision": "Literal['approved', 'rejected', 'modified']",
+     "modified_parameters": "dict[str, Any] | None",
+     "reason": "str | None"
+    }
+   },
+   "ConversationContentBlock": {
+    "alias": "Annotated[algen_agent_runtime.types.contracts.TextBlock | algen_agent_runtime.types.contracts.ImageBlock | algen_agent_runtime.types.contracts.FileBlock | algen_agent_runtime.conversations.contracts.CodeBlock | algen_agent_runtime.conversations.contracts.TableBlock | algen_agent_runtime.conversations.contracts.ChartBlock | algen_agent_runtime.conversations.contracts.NoticeBlock | algen_agent_runtime.conversations.contracts.DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')]"
+   },
+   "ConversationEvent": {
+    "model": {
+     "conversation_id": "str",
+     "data": "dict[str, Any]",
+     "id": "str",
+     "message_id": "str | None",
+     "schema_version": "Literal['1.0']",
+     "sequence": "int",
+     "tenant_id": "str",
+     "timestamp": "datetime",
+     "type": "str"
+    }
+   },
+   "ConversationFeedback": {
+    "model": {
+     "category": "str | None",
+     "comment": "str | None",
+     "conversation_id": "str",
+     "created_at": "datetime",
+     "id": "str",
+     "message_id": "str",
+     "rating": "FeedbackRating",
+     "run_ids": "tuple[str, ...]",
+     "tags": "tuple[str, ...]",
+     "tenant_id": "str",
+     "updated_at": "datetime",
+     "user_id": "str"
+    }
+   },
+   "ConversationHandlerRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "get": "(self, name: 'str') -> 'ConversationHandler'",
+     "list": "(self) -> 'tuple[str, ...]'",
+     "register": "(self, handler: 'ConversationHandler') -> 'None'"
+    }
+   },
+   "ConversationInputAnswer": {
+    "model": {
+     "text": "str"
+    }
+   },
+   "ConversationMessage": {
+    "model": {
+     "artifacts": "tuple[str, ...]",
+     "citations": "tuple[dict[str, Any], ...]",
+     "content": "tuple[Annotated[TextBlock | ImageBlock | FileBlock | CodeBlock | TableBlock | ChartBlock | NoticeBlock | DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')], ...]",
+     "conversation_id": "str",
+     "created_at": "datetime",
+     "id": "str",
+     "metadata": "dict[str, Any]",
+     "pending": "ConversationPendingAction | None",
+     "reply_to_message_id": "str | None",
+     "role": "Role",
+     "run_ids": "tuple[str, ...]",
+     "status": "MessageStatus",
+     "suggested_followups": "tuple[str, ...]",
+     "tenant_id": "str",
+     "updated_at": "datetime"
+    }
+   },
+   "ConversationPendingAction": {
+    "model": {
+     "approval_id": "str | None",
+     "approval_kind": "str | None",
+     "expires_at": "datetime | None",
+     "kind": "Literal['approval', 'input']",
+     "options": "tuple[str, ...]",
+     "parameters_schema": "dict[str, Any] | None",
+     "paused_at": "datetime",
+     "proposed_action": "str | None",
+     "question": "str | None",
+     "rationale": "str | None",
+     "redacted_parameters": "dict[str, Any]",
+     "risk": "str | None",
+     "run_id": "str | None",
+     "side_effect_summary": "str | None",
+     "tool": "str | None",
+     "turn_id": "str"
+    }
+   },
+   "ConversationPresentation": {
+    "class": "(progress_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, error_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, show_technical_details: 'bool' = False, technical_details_expanded: 'bool' = False) -> None",
+    "methods": {
+     "error_message": "(self, error: 'Exception', *, business_message: 'str' = \"I couldn't complete that request safely. Please try again or refine the question.\") -> 'str'",
+     "progress": "(self, business: 'dict[str, Any]', developer: 'dict[str, Any]') -> 'dict[str, Any]'",
+     "unexpected_error_message": "(self, error: 'Exception') -> 'str'"
+    }
+   },
+   "ConversationService": {
+    "class": "(store: 'ConversationStore', events: 'ConversationEventPublisher', handlers: 'ConversationHandlerRegistry', audits: 'Any | None' = None, observability: 'ObservabilityAdapter | None' = None, telemetry_include_content: 'bool' = False, telemetry_max_content_chars: 'int' = 16384, presentation: 'ConversationPresentation | None' = None, feedback_store: 'ConversationFeedbackStore | None' = None, followup_provider: 'FollowupSuggestionProvider | None' = None) -> 'None'",
+    "methods": {
+     "cancel": "(self, conversation_id: 'str', tenant_id: 'str') -> 'None'",
+     "create": "(self, *, tenant_id: 'str', user_id: 'str', agent: 'str', handler: 'str' = 'runtime', title: 'str' = 'New conversation', metadata: 'dict[str, Any] | None' = None) -> 'Conversation'",
+     "delete": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str') -> 'None'",
+     "feedback": "(self, conversation_id: 'str', message_id: 'str', tenant_id: 'str', user_id: 'str') -> 'ConversationFeedback | None'",
+     "get": "(self, conversation_id: 'str', tenant_id: 'str') -> 'Conversation'",
+     "list": "(self, tenant_id: 'str', user_id: 'str', limit: 'int' = 50, before: 'datetime | None' = None) -> 'Sequence[Conversation]'",
+     "messages": "(self, conversation_id: 'str', tenant_id: 'str', limit: 'int' = 100, before: 'datetime | None' = None) -> 'Sequence[ConversationMessage]'",
+     "reconcile_pending_turns": "(self, limit: 'int' = 1000) -> 'int'",
+     "record_feedback": "(self, conversation_id: 'str', message_id: 'str', tenant_id: 'str', user_id: 'str', rating: 'FeedbackRating', *, category: 'str | None' = None, comment: 'str | None' = None, tags: 'tuple[str, ...]' = ()) -> 'ConversationFeedback'",
+     "recover": "(self, limit: 'int' = 1000) -> 'int'",
+     "respond": "(self, conversation_id: 'str', turn_id: 'str', tenant_id: 'str', user_id: 'str', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'ConversationMessage'",
+     "shutdown": "(self, grace_seconds: 'float' = 10) -> 'None'",
+     "submit": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str', text: 'str', metadata: 'dict[str, Any] | None' = None, *, credentials: 'Mapping[str, str] | None' = None, attachments: 'tuple[RunAttachment, ...]' = ()) -> 'tuple[ConversationMessage, ConversationMessage]'",
+     "suggestions": "(self, handler: 'str', tenant_id: 'str', user_id: 'str', limit: 'int' = 5) -> 'tuple[str, ...]'",
+     "update": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str', *, title: 'str | None' = None, status: 'ConversationStatus | None' = None) -> 'Conversation'"
+    }
+   },
+   "ConversationTurnResponse": {
+    "alias": "algen_agent_runtime.conversations.contracts.ConversationApprovalDecision | algen_agent_runtime.conversations.contracts.ConversationInputAnswer"
+   },
+   "ConversationTurnResult": {
+    "model": {
+     "artifacts": "tuple[str, ...]",
+     "citations": "tuple[dict[str, Any], ...]",
+     "content": "tuple[Annotated[TextBlock | ImageBlock | FileBlock | CodeBlock | TableBlock | ChartBlock | NoticeBlock | DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')], ...]",
+     "metadata": "dict[str, Any]",
+     "outcome": "Literal['completed', 'failed', 'blocked', 'awaiting_clarification', 'awaiting_approval', 'awaiting_input', 'cancelled', 'expired']",
+     "pending": "ConversationPendingAction | None",
+     "run_ids": "tuple[str, ...]",
+     "suggested_followups": "tuple[str, ...]"
+    }
+   },
+   "DetailsBlock": {
+    "model": {
+     "content": "tuple[TextBlock | CodeBlock | TableBlock | NoticeBlock, ...]",
+     "description": "str | None",
+     "expanded": "bool",
+     "title": "str",
+     "type": "Literal['details']"
+    }
+   },
+   "FeedbackRating": {
+    "class": "(*values)"
+   },
+   "FollowupSuggestionProvider": {
+    "protocol": {
+     "suggest": "(self, *, tenant_id: 'str', user_id: 'str', conversation_id: 'str', history: 'Sequence[ConversationMessage]', user_text: 'str', assistant_text: 'str') -> 'tuple[str, ...]'"
+    }
+   },
+   "FollowupSuggestions": {
+    "model": {
+     "suggestions": "tuple[str, ...]"
+    }
+   },
+   "MessageStatus": {
+    "class": "(*values)"
+   },
+   "ModelFollowupSuggestionProvider": {
+    "class": "(runtime: 'Any', *, agent: 'str', max_suggestions: 'int' = 3, history_messages: 'int' = 8, maximum_length: 'int' = 240) -> 'None'",
+    "methods": {
+     "suggest": "(self, *, tenant_id: 'str', user_id: 'str', conversation_id: 'str', history: 'Sequence[ConversationMessage]', user_text: 'str', assistant_text: 'str') -> 'tuple[str, ...]'"
+    }
+   },
+   "NoticeBlock": {
+    "model": {
+     "level": "Literal['info', 'warning', 'error']",
+     "text": "str",
+     "type": "Literal['notice']"
+    }
+   },
+   "PendingTurnExpiredError": {
+    "class": "(…)"
+   },
+   "PresentationAudience": {
+    "class": "(*values)"
+   },
+   "ResumableConversationHandler": {
+    "protocol": {
+     "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
+     "follow": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', emit: 'DeltaEmitter') -> 'ConversationTurnResult'",
+     "pending_state": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> \"Literal['paused', 'running', 'ended']\"",
+     "resume": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
+     "settle": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'ConversationTurnResult'"
+    }
+   },
+   "RuntimeConversationHandler": {
+    "class": "(runtime: 'Runtime', presentation: 'ConversationPresentation | None' = None, *, stream: 'bool' = True, delta_interval_seconds: 'float' = 0.05, delta_max_chars: 'int' = 2048) -> 'None'",
+    "methods": {
+     "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
+     "follow": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', emit: 'Any') -> 'ConversationTurnResult'",
+     "handle": "(self, conversation: 'Conversation', user_message: 'ConversationMessage', history: 'Sequence[ConversationMessage]', emit: 'Any', *, credentials: 'Mapping[str, str] | None' = None) -> 'ConversationTurnResult'",
+     "pending_state": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> \"Literal['paused', 'running', 'ended']\"",
+     "resume": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
+     "settle": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'ConversationTurnResult'"
+    }
+   },
+   "TableBlock": {
+    "model": {
+     "columns": "tuple[str, ...]",
+     "rows": "tuple[dict[str, Any], ...]",
+     "truncated": "bool",
+     "type": "Literal['table']"
+    }
+   }
+  },
+  "algen_agent_runtime.decisions": {
+   "JevAnswer": {
+    "model": {
+     "choice": "str | None",
+     "confidence": "float | None",
+     "noul": "float | None",
+     "probabilities": "dict[str, float]",
+     "score": "float | None",
+     "type": "Literal['choice', 'score', 'noul']"
+    }
+   },
+   "JevDecisionClient": {
+    "class": "(settings: 'JevSettings', *, client: 'httpx.AsyncClient | None' = None) -> 'None'",
+    "methods": {
+     "aclose": "(self) -> 'None'",
+     "decide": "(self, request: 'JevRequest') -> 'JevResponse'"
+    }
+   },
+   "JevDecisionError": {
+    "class": "(…)"
+   },
+   "JevQuestion": {
+    "model": {
+     "criteria": "dict[str, str] | tuple[str, ...] | None",
+     "instructions": "str",
+     "type": "Literal['choice', 'score', 'noul']"
+    }
+   },
+   "JevRequest": {
+    "model": {
+     "model": "str",
+     "questions": "dict[str, JevQuestion]",
+     "state": "str | dict[str, Any] | list[Any]"
+    }
+   },
+   "JevResponse": {
+    "model": {
+     "answers": "dict[str, JevAnswer]",
+     "model": "str",
+     "usage": "JevUsage"
+    }
+   },
+   "JevSettings": {
+    "model": {
+     "api_key": "SecretStr",
+     "base_url": "str",
+     "timeout_seconds": "float"
+    }
+   },
+   "JevUsage": {
+    "model": {
+     "input_tokens": "int",
+     "output_tokens": "int"
+    }
+   }
+  },
+  "algen_agent_runtime.distributed": {
+   "DistributedWorker": {
+    "class": "(worker_id: 'str', queue: 'WorkQueue', *, lease_seconds: 'int' = 30) -> 'None'",
+    "methods": {
+     "register": "(self, kind: 'str', handler: 'WorkHandler') -> 'None'",
+     "run_once": "(self) -> 'bool'"
+    }
+   },
+   "InMemoryWorkQueue": {
+    "class": "() -> 'None'",
+    "methods": {
+     "claim": "(self, worker_id: 'str', lease_seconds: 'int') -> 'WorkItem | None'",
+     "complete": "(self, item_id: 'str', worker_id: 'str', result: 'dict[str, object]') -> 'None'",
+     "enqueue": "(self, item: 'WorkItem') -> 'tuple[WorkItem, bool]'",
+     "fail": "(self, item_id: 'str', worker_id: 'str', error: 'str', retry: 'bool') -> 'None'",
+     "purge_finished": "(self, cutoff: 'datetime', limit: 'int') -> 'int'",
+     "renew": "(self, item_id: 'str', worker_id: 'str', lease_seconds: 'int') -> 'bool'"
+    }
+   },
+   "PostgresWorkQueue": {
+    "class": "(database: 'Any') -> 'None'",
+    "methods": {
+     "claim": "(self, worker_id: 'str', lease_seconds: 'int') -> 'WorkItem | None'",
+     "complete": "(self, item_id: 'str', worker_id: 'str', result: 'dict[str, object]') -> 'None'",
+     "enqueue": "(self, item: 'WorkItem') -> 'tuple[WorkItem, bool]'",
+     "fail": "(self, item_id: 'str', worker_id: 'str', error: 'str', retry: 'bool') -> 'None'",
+     "renew": "(self, item_id: 'str', worker_id: 'str', lease_seconds: 'int') -> 'bool'"
+    }
+   },
+   "WorkItem": {
+    "model": {
+     "attempts": "int",
+     "available_at": "datetime",
+     "created_at": "datetime",
+     "deduplication_key": "str",
+     "error": "str | None",
+     "id": "str",
+     "kind": "str",
+     "lease_expires_at": "datetime | None",
+     "lease_owner": "str | None",
+     "maximum_attempts": "int",
+     "payload": "dict[str, Any]",
+     "result": "dict[str, Any] | None",
+     "status": "WorkStatus",
+     "tenant_id": "str",
+     "updated_at": "datetime"
+    }
+   },
+   "WorkQueue": {
+    "protocol": {
+     "claim": "(self, worker_id: 'str', lease_seconds: 'int') -> 'WorkItem | None'",
+     "complete": "(self, item_id: 'str', worker_id: 'str', result: 'dict[str, Any]') -> 'None'",
+     "enqueue": "(self, item: 'WorkItem') -> 'tuple[WorkItem, bool]'",
+     "fail": "(self, item_id: 'str', worker_id: 'str', error: 'str', retry: 'bool') -> 'None'",
+     "renew": "(self, item_id: 'str', worker_id: 'str', lease_seconds: 'int') -> 'bool'"
+    }
+   },
+   "WorkStatus": {
+    "class": "(*values)"
+   }
+  },
+  "algen_agent_runtime.evaluation": {
+   "CaseEvaluation": {
+    "model": {
+     "case_id": "str",
+     "checks": "dict[str, bool]",
+     "failures": "tuple[str, ...]",
+     "passed": "bool",
+     "score": "float"
+    }
+   },
+   "ContextEvaluationArtifact": {
+    "model": {
+     "checkpoint_bytes": "int | None",
+     "messages": "tuple[Message, ...]",
+     "recovered_messages": "tuple[Message, ...] | None"
+    }
+   },
+   "ContextEvaluationCase": {
+    "model": {
+     "expected_recovered_messages": "tuple[Message, ...] | None",
+     "forbidden_text": "tuple[str, ...]",
+     "id": "str",
+     "max_checkpoint_bytes": "int | None",
+     "max_estimated_tokens": "int | None",
+     "required_messages": "tuple[Message, ...]",
+     "required_text": "tuple[str, ...]"
+    }
+   },
+   "ContextEvaluationRunner": {
+    "class": "()",
+    "methods": {
+     "evaluate": "(case: 'ContextEvaluationCase', artifact: 'ContextEvaluationArtifact') -> 'CaseEvaluation'",
+     "run": "(self, cases: 'Sequence[ContextEvaluationCase]', executor: 'ContextCaseExecutor', *, promotion_threshold: 'float' = 1.0) -> 'EvaluationReport'"
+    }
+   },
+   "EvaluationArtifact": {
+    "model": {
+     "claims": "tuple[str, ...]",
+     "node_kinds": "tuple[str, ...]",
+     "sql": "tuple[str, ...]",
+     "values": "dict[str, Any]"
+    }
+   },
+   "EvaluationReport": {
+    "model": {
+     "cases": "tuple[CaseEvaluation, ...]",
+     "promoted": "bool",
+     "promotion_threshold": "float",
+     "score": "float"
+    }
+   },
+   "EvaluationRunner": {
+    "class": "() -> 'None'",
+    "methods": {
+     "evaluate": "(case: 'GoldenQuestion', artifact: 'EvaluationArtifact') -> 'CaseEvaluation'",
+     "run": "(self, cases: 'Sequence[GoldenQuestion]', executor: 'CaseExecutor', *, promotion_threshold: 'float' = 0.9) -> 'EvaluationReport'"
+    }
+   },
+   "GoldenQuestion": {
+    "model": {
+     "allowed_claims": "tuple[str, ...]",
+     "attachments": "tuple[RunAttachment, ...]",
+     "expected_node_kinds": "tuple[str, ...]",
+     "forbidden_claims": "tuple[str, ...]",
+     "forbidden_sql_patterns": "tuple[str, ...]",
+     "id": "str",
+     "metadata": "dict[str, Any]",
+     "numeric_expectations": "tuple[NumericExpectation, ...]",
+     "question": "str",
+     "required_sql_patterns": "tuple[str, ...]"
+    }
+   },
+   "NumericExpectation": {
+    "model": {
+     "absolute_tolerance": "float",
+     "expected": "float",
+     "path": "str",
+     "relative_tolerance": "float"
+    }
+   }
+  },
+  "algen_agent_runtime.frameworks": {
+   "AutoGenAdapter": {
+    "class": "(agent_or_team: 'Any') -> 'None'",
+    "methods": {
+     "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+    }
+   },
+   "CrewAIAdapter": {
+    "class": "(crew: 'Any', *, input_factory: 'Callable[[FrameworkRunRequest], Mapping[str, Any]] | None' = None) -> 'None'",
+    "methods": {
+     "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+    }
+   },
+   "FrameworkAdapter": {
+    "protocol": {
+     "cancel": "(self, run_id: 'str') -> 'bool'",
+     "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+    }
+   },
+   "FrameworkAdapterRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "capabilities": "(self) -> 'Mapping[str, FrameworkCapabilities]'",
+     "get": "(self, framework_id: 'str') -> 'FrameworkAdapter'",
+     "has": "(self, framework_id: 'str') -> 'bool'",
+     "list": "(self) -> 'tuple[str, ...]'",
+     "register": "(self, adapter: 'FrameworkAdapter') -> 'None'"
+    }
+   },
+   "FrameworkCapabilities": {
+    "model": {
+     "cancellation": "bool",
+     "human_in_the_loop": "bool",
+     "multi_agent": "bool",
+     "persistence": "bool",
+     "streaming": "bool"
+    }
+   },
+   "FrameworkEventType": {
+    "class": "(*values)"
+   },
+   "FrameworkRunRequest": {
+    "model": {
+     "context": "dict[str, Any]",
+     "input": "str",
+     "run_id": "str",
+     "session_id": "str",
+     "tenant_id": "str",
+     "user_id": "str"
+    }
+   },
+   "FrameworkRunResult": {
+    "model": {
+     "metadata": "dict[str, Any]",
+     "output": "str",
+     "resume_state": "Any | None",
+     "status": "FrameworkRunStatus",
+     "usage": "TokenUsage"
+    }
+   },
+   "FrameworkRunStatus": {
+    "class": "(*values)"
+   },
+   "FrameworkStreamEvent": {
+    "model": {
+     "data": "dict[str, Any]",
+     "delta": "str | None",
+     "result": "FrameworkRunResult | None",
+     "type": "FrameworkEventType"
+    }
+   },
+   "GovernedToolBridge": {
+    "class": "(executor: 'ToolExecutor', registry: 'ToolRegistry', request: 'FrameworkRunRequest', *, permissions: 'Iterable[str]' = (), secrets: 'Mapping[str, str] | None' = None) -> 'None'",
+    "methods": {
+     "call": "(self, name: 'str', arguments: 'dict[str, Any]') -> 'Any'",
+     "call_for_model": "(self, name: 'str', arguments: 'dict[str, Any]') -> 'str'",
+     "definition": "(self, name: 'str') -> 'ToolDefinition'",
+     "langchain_tools": "(self, *names: 'str') -> 'list[Any]'",
+     "openai_agents_tools": "(self, *names: 'str') -> 'list[Any]'"
+    }
+   },
+   "LangGraphAdapter": {
+    "class": "(graph: 'Any', *, input_factory: 'Callable[[FrameworkRunRequest], Any] | None' = None, output_selector: 'Callable[[Any], str]' = <function _text>) -> 'None'",
+    "methods": {
+     "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+    }
+   },
+   "OpenAIAgentsAdapter": {
+    "class": "(agent: 'Any', *, runner: 'Any | None' = None, run_config: 'Any' = None) -> 'None'",
+    "methods": {
+     "cancel": "(self, run_id: 'str') -> 'bool'",
+     "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+    }
+   },
+   "framework_tool_name": {
+    "function": "(name: 'str') -> 'str'"
+   }
+  },
+  "algen_agent_runtime.governance": {
+   "DataTrustRequirement": {
+    "model": {
+     "certified": "bool",
+     "completeness": "float | None",
+     "lineage": "dict[str, tuple[str, ...]]",
+     "maximum_age_seconds": "int | None",
+     "minimum_completeness": "float | None",
+     "observed_at": "datetime | None",
+     "source_id": "str"
+    }
+   },
+   "ExportAction": {
+    "class": "(*values)"
+   },
+   "GovernanceDecision": {
+    "model": {
+     "audit_metadata": "dict[str, Any]",
+     "decision": "GovernanceDecisionType",
+     "reason_code": "str",
+     "reasons": "tuple[str, ...]"
+    }
+   },
+   "GovernanceDecisionType": {
+    "class": "(*values)"
+   },
+   "GovernedQueryExecutor": {
+    "class": "(backend: 'QueryBackend', governance: 'QueryGovernanceEngine', *, estimator: 'QueryEstimator | None' = None, cache: 'CacheService | None' = None, audit: 'AuditSink | None' = None) -> 'None'",
+    "methods": {
+     "execute": "(self, sql: 'str', parameters: 'tuple[Any, ...]', request: 'GovernedQueryRequest', *, semantic_digest: 'str | None' = None, authorization_fingerprint: 'str | None' = None) -> 'tuple[list[dict[str, Any]], str, bool]'"
+    }
+   },
+   "GovernedQueryRequest": {
+    "model": {
+     "authorization_tags": "tuple[str, ...]",
+     "columns": "tuple[str, ...]",
+     "estimate": "QueryEstimate",
+     "metadata": "dict[str, Any]",
+     "metrics": "tuple[str, ...]",
+     "purpose": "str",
+     "query_fingerprint": "str | None",
+     "requested_actions": "tuple[ExportAction, ...]",
+     "source_ids": "tuple[str, ...]",
+     "tenant_id": "str",
+     "trust": "tuple[DataTrustRequirement, ...]",
+     "user_id": "str"
+    }
+   },
+   "QueryBackend": {
+    "protocol": {
+     "execute": "(self, sql: 'str', parameters: 'tuple[Any, ...]') -> 'list[dict[str, Any]]'"
+    }
+   },
+   "QueryEstimate": {
+    "model": {
+     "estimated_bytes_scanned": "int",
+     "estimated_compute_seconds": "float",
+     "estimated_rows": "int"
+    }
+   },
+   "QueryGovernanceEngine": {
+    "class": "(policy: 'QueryGovernancePolicy') -> 'None'",
+    "methods": {
+     "enforce": "(self, request: 'GovernedQueryRequest') -> 'GovernanceDecision'",
+     "evaluate": "(self, request: 'GovernedQueryRequest') -> 'GovernanceDecision'"
+    }
+   },
+   "QueryGovernancePolicy": {
+    "model": {
+     "allow_artifact_export": "bool",
+     "allow_download": "bool",
+     "allow_sql_visibility": "bool",
+     "allowed_metrics": "tuple[str, ...]",
+     "allowed_purposes": "tuple[str, ...]",
+     "audit_retention_days": "int",
+     "denied_columns": "tuple[str, ...]",
+     "maximum_bytes_scanned": "int",
+     "maximum_compute_seconds": "float",
+     "maximum_concurrency": "int",
+     "maximum_rows": "int",
+     "require_certified_sources": "bool",
+     "required_authorization_tags": "tuple[str, ...]"
+    }
+   },
+   "query_fingerprint": {
+    "function": "(sql: 'str', parameters: 'tuple[object, ...]', *, semantic_digest: 'str | None' = None, authorization_fingerprint: 'str | None' = None) -> 'str'"
+   }
+  },
+  "algen_agent_runtime.mcp": {
+   "InMemoryMCPTokenStore": {
+    "class": "() -> 'None'",
+    "methods": {
+     "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+     "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
+     "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
+     "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+     "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
+    }
+   },
+   "MCPClientManager": {
+    "class": "(servers: 'Sequence[MCPServerConfigBase]' = (), *, environment: 'Mapping[str, str] | None' = None, security: 'SecuritySettings | None' = None, dns_resolver: 'DNSResolver | None' = None, session_factory: 'Any | None' = None, http_client_factory: 'Any | None' = None, oauth: 'MCPOAuthManager | None' = None, max_oauth_connections: 'int' = 256, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "aclose": "(self) -> 'None'",
+     "add_server": "(self, config: 'MCPServerConfigBase') -> 'None'",
+     "close": "(self) -> 'None'",
+     "connect": "(self, server_name: 'str', *, tenant_id: 'str | None' = None, user_id: 'str | None' = None) -> 'MCPConnection'",
+     "disconnect": "(self, server_name: 'str') -> 'None'",
+     "discover_tools": "(self, server_name: 'str | None' = None, *, tenant_id: 'str | None' = None, user_id: 'str | None' = None) -> 'tuple[Tool, ...]'",
+     "get_server": "(self, name: 'str') -> 'MCPServerConfigBase'"
+    }
+   },
+   "MCPConnection": {
+    "class": "(config: 'MCPServerConfigBase', exit_stack: 'AsyncExitStack', session: 'Any') -> 'None'",
+    "methods": {
+     "close": "(self) -> 'None'"
+    }
+   },
+   "MCPNotConnectedError": {
+    "class": "(server: 'str', *, token_scope: 'str', start_path: 'str') -> 'None'",
+    "methods": {
+     "details": "(self) -> 'dict[str, str]'"
+    }
+   },
+   "MCPOAuthError": {
+    "class": "(…)"
+   },
+   "MCPOAuthManager": {
+    "class": "(servers: 'Sequence[MCPServerConfigBase]', store: 'MCPTokenStore', *, environment: 'Mapping[str, str] | None' = None, security: 'SecuritySettings | None' = None, dns_resolver: 'DNSResolver | None' = None, http_client: 'httpx.AsyncClient | None' = None, clock: 'Callable[[], datetime]' = <function utc_now>, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "access_token": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None', *, rejected_token: 'str | None' = None) -> 'str'",
+     "aclose": "(self) -> 'None'",
+     "auth": "(self, server: 'str') -> 'OAuthClientAuth'",
+     "complete": "(self, state: 'str | None', code: 'str | None', error: 'str | None' = None) -> 'MCPOAuthCompletion'",
+     "discovery_principal": "(self, server: 'str') -> 'tuple[str, str | None] | None'",
+     "endpoints": "(self, server: 'str') -> 'AuthorizationServerEndpoints'",
+     "key_for": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPTokenKey'",
+     "not_connected": "(self, server: 'str') -> 'MCPNotConnectedError'",
+     "on_disconnect": "(self, listener: 'Callable[[MCPTokenKey], Awaitable[None]]') -> 'None'",
+     "revoke": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPOAuthRevocation'",
+     "start": "(self, server: 'str', tenant_id: 'str', user_id: 'str') -> 'MCPOAuthStart'",
+     "status": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPOAuthStatus'"
+    }
+   },
+   "MCPOAuthStateError": {
+    "class": "(…)"
+   },
+   "MCPOAuthStatus": {
+    "model": {
+     "connected": "bool",
+     "connected_at": "datetime | None",
+     "connected_by": "str | None",
+     "expires_at": "datetime | None",
+     "refreshable": "bool",
+     "scopes": "tuple[str, ...]",
+     "server": "str",
+     "token_scope": "MCPOAuthTokenScope"
+    }
+   },
+   "MCPOAuthTokenScope": {
+    "class": "(*values)"
+   },
+   "MCPOAuthTokenSet": {
+    "model": {
+     "access_token": "SecretStr",
+     "connected_at": "datetime",
+     "connected_by": "str",
+     "expires_at": "datetime | None",
+     "refresh_token": "SecretStr | None",
+     "scopes": "tuple[str, ...]",
+     "token_type": "str"
+    }
+   },
+   "MCPServerConfig": {
+    "alias": "Annotated[algen_agent_runtime.mcp.contracts.MCPStdioServerConfig | algen_agent_runtime.mcp.contracts.MCPSseServerConfig | algen_agent_runtime.mcp.contracts.MCPStreamableHttpServerConfig, FieldInfo(annotation=NoneType, required=True, discriminator='transport')]"
+   },
+   "MCPServerConfigBase": {
+    "model": {
+     "allowed_tools": "frozenset[str]",
+     "max_result_bytes": "int",
+     "name": "str",
+     "prefix": "str | None",
+     "required": "bool",
+     "timeout_seconds": "float",
+     "tool_policies": "dict[str, MCPToolPolicyOverride]",
+     "transport": "MCPTransportType",
+     "trust_tool_annotations": "bool"
+    }
+   },
+   "MCPSseServerConfig": {
+    "model": {
+     "allowed_tools": "frozenset[str]",
+     "auth": "OAuthClientAuth | None",
+     "auth_token_ref": "str | None",
+     "headers": "dict[str, str]",
+     "max_result_bytes": "int",
+     "name": "str",
+     "prefix": "str | None",
+     "required": "bool",
+     "secret_headers": "dict[str, str]",
+     "timeout_seconds": "float",
+     "tool_policies": "dict[str, MCPToolPolicyOverride]",
+     "transport": "Literal[<MCPTransportType.SSE: 'sse'>]",
+     "trust_tool_annotations": "bool",
+     "url": "str"
+    }
+   },
+   "MCPStdioServerConfig": {
+    "model": {
+     "allowed_tools": "frozenset[str]",
+     "args": "list[str]",
+     "command": "str",
+     "cwd": "str | None",
+     "env": "dict[str, str]",
+     "max_result_bytes": "int",
+     "name": "str",
+     "prefix": "str | None",
+     "required": "bool",
+     "sandbox": "SubprocessSandbox | None",
+     "timeout_seconds": "float",
+     "tool_policies": "dict[str, MCPToolPolicyOverride]",
+     "transport": "Literal[<MCPTransportType.STDIO: 'stdio'>]",
+     "trust_tool_annotations": "bool"
+    }
+   },
+   "MCPStreamableHttpServerConfig": {
+    "model": {
+     "allowed_tools": "frozenset[str]",
+     "auth": "OAuthClientAuth | None",
+     "auth_token_ref": "str | None",
+     "headers": "dict[str, str]",
+     "max_result_bytes": "int",
+     "name": "str",
+     "prefix": "str | None",
+     "required": "bool",
+     "secret_headers": "dict[str, str]",
+     "timeout_seconds": "float",
+     "tool_policies": "dict[str, MCPToolPolicyOverride]",
+     "transport": "Literal[<MCPTransportType.STREAMABLE_HTTP: 'streamable_http'>]",
+     "trust_tool_annotations": "bool",
+     "url": "str"
+    }
+   },
+   "MCPTokenKey": {
+    "class": "(tenant_id: 'str', user_id: 'str | None', server: 'str') -> None",
+    "methods": {
+     "associated_data": "(self) -> 'bytes'"
+    }
+   },
+   "MCPTokenStore": {
+    "protocol": {
+     "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+     "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
+     "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
+     "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+     "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
+    }
+   },
+   "MCPToolPolicyOverride": {
+    "model": {
+     "idempotency": "Idempotency | None",
+     "max_result_bytes": "int | None",
+     "side_effect": "SideEffect | None",
+     "timeout_seconds": "float | None"
+    }
+   },
+   "MCPTransportType": {
+    "class": "(*values)"
+   },
+   "OAuthClientAuth": {
+    "model": {
+     "authorization_endpoint": "str | None",
+     "authorize_params": "dict[str, str]",
+     "client_id": "str | None",
+     "client_id_ref": "str | None",
+     "client_secret_ref": "str | None",
+     "discovery_tenant_id": "str | None",
+     "discovery_user_id": "str | None",
+     "issuer": "str | None",
+     "redirect_uri": "str",
+     "refresh_margin_seconds": "int",
+     "revocation_endpoint": "str | None",
+     "scopes": "tuple[str, ...]",
+     "send_resource": "bool",
+     "state_ttl_seconds": "int",
+     "success_redirect_url": "str | None",
+     "token_endpoint": "str | None",
+     "token_endpoint_auth_method": "Literal['client_secret_post', 'client_secret_basic']",
+     "token_scope": "MCPOAuthTokenScope",
+     "type": "Literal['oauth']"
+    }
+   },
+   "PostgresMCPTokenStore": {
+    "class": "(database: 'Any', cipher: 'SecretCipher') -> 'None'",
+    "methods": {
+     "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+     "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
+     "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
+     "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+     "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
+    }
+   }
+  },
+  "algen_agent_runtime.methods": {
+   "AnalyticalMethodManifest": {
+    "model": {
+     "analysis_kinds": "tuple[AnalysisKind, ...]",
+     "approval_required": "bool",
+     "backtest_reference": "str | None",
+     "deprecation_message": "str | None",
+     "description": "str",
+     "emits_uncertainty": "bool",
+     "implementation_kind": "MethodImplementationKind",
+     "input_schema": "dict[str, Any]",
+     "lifecycle": "MethodLifecycle",
+     "metadata": "dict[str, Any]",
+     "minimum_sample_size": "int",
+     "name": "str",
+     "output_schema": "dict[str, Any]",
+     "parameter_schema": "dict[str, Any]",
+     "remote_model_service": "str | None",
+     "required_dimensions": "tuple[str, ...]",
+     "required_history_points": "int",
+     "required_metrics": "tuple[str, ...]",
+     "required_model_artifacts": "tuple[str, ...]",
+     "validation_reference": "str | None",
+     "version": "str"
+    }
+   },
+   "AnalyticalMethodRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "discover": "(self, *, include_deprecated: 'bool' = False) -> 'tuple[AnalyticalMethodManifest, ...]'",
+     "execute": "(self, request: 'MethodExecutionRequest', context: 'GraphExecutionContext') -> 'AnalysisOutcome'",
+     "register": "(self, manifest: 'AnalyticalMethodManifest', implementation: 'AnalyticalMethod') -> 'None'",
+     "resolve": "(self, name: 'str', version: 'str | None' = None) -> 'tuple[AnalyticalMethodManifest, AnalyticalMethod]'"
+    }
+   },
+   "MethodExecutionRequest": {
+    "model": {
+     "available_model_artifacts": "tuple[str, ...]",
+     "inputs": "tuple[AnalyticalResult, ...]",
+     "method": "str",
+     "parameters": "dict[str, Any]",
+     "version": "str | None"
+    }
+   },
+   "MethodImplementationKind": {
+    "class": "(*values)"
+   },
+   "MethodLifecycle": {
+    "class": "(*values)"
+   },
+   "adapt_sync_method": {
+    "function": "(function: 'Callable[[list[dict[str, Any]], dict[str, Any]], AnalysisOutcome]') -> 'AnalyticalMethod'"
+   }
+  },
+  "algen_agent_runtime.model_services": {
+   "DeterministicModelService": {
+    "class": "(manifest: 'ModelServiceManifest', function: 'Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]') -> 'None'",
+    "methods": {
+     "health": "(self) -> 'ModelServiceHealth'",
+     "predict": "(self, request: 'ModelServiceRequest') -> 'ModelServiceResponse'"
+    }
+   },
+   "DriftState": {
+    "class": "(*values)"
+   },
+   "HTTPModelService": {
+    "class": "(manifest: 'ModelServiceManifest', endpoint: 'str', *, headers: 'dict[str, str] | None' = None, allowed_hosts: 'tuple[str, ...]' = (), health_endpoint: 'str | None' = None, client: 'httpx.AsyncClient | None' = None, outbound: 'OutboundNetwork | None' = None) -> 'None'",
+    "methods": {
+     "health": "(self) -> 'ModelServiceHealth'",
+     "predict": "(self, request: 'ModelServiceRequest') -> 'ModelServiceResponse'"
+    }
+   },
+   "ModelServiceHealth": {
+    "model": {
+     "drift_state": "DriftState",
+     "healthy": "bool",
+     "message": "str | None"
+    }
+   },
+   "ModelServiceKind": {
+    "class": "(*values)"
+   },
+   "ModelServiceManifest": {
+    "model": {
+     "confidence_supported": "bool",
+     "description": "str",
+     "drift_state": "DriftState",
+     "enabled": "bool",
+     "feature_lineage": "dict[str, tuple[str, ...]]",
+     "input_schema": "dict[str, Any]",
+     "kind": "ModelServiceKind",
+     "maximum_batch_size": "int",
+     "metadata": "dict[str, Any]",
+     "name": "str",
+     "output_schema": "dict[str, Any]",
+     "timeout_seconds": "float",
+     "training_reference": "str | None",
+     "validation_reference": "str | None",
+     "version": "str"
+    }
+   },
+   "ModelServiceRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "discover": "(self, kind: 'ModelServiceKind | None' = None) -> 'tuple[ModelServiceManifest, ...]'",
+     "invoke": "(self, request: 'ModelServiceRequest', *, fallback: 'tuple[tuple[str, str | None], ...]' = (), allow_drifted: 'bool' = False) -> 'ModelServiceResponse'",
+     "register": "(self, service: 'ModelService') -> 'None'"
+    }
+   },
+   "ModelServiceRequest": {
+    "model": {
+     "id": "str",
+     "inputs": "tuple[dict[str, Any], ...]",
+     "model": "str",
+     "parameters": "dict[str, Any]",
+     "timeout_seconds": "float | None",
+     "version": "str | None"
+    }
+   },
+   "ModelServiceResponse": {
+    "model": {
+     "confidence_intervals": "tuple[tuple[float, float] | None, ...]",
+     "feature_lineage": "dict[str, tuple[str, ...]]",
+     "metadata": "dict[str, Any]",
+     "model": "str",
+     "outputs": "tuple[dict[str, Any], ...]",
+     "request_id": "str",
+     "version": "str",
+     "warnings": "tuple[str, ...]"
+    }
+   }
+  },
+  "algen_agent_runtime.semantics": {
+   "Aggregation": {
+    "class": "(*values)"
+   },
+   "AnalysisKind": {
+    "class": "(*values)"
+   },
+   "AnalysisOutcome": {
+    "model": {
+     "assumptions": "tuple[Assumption, ...]",
+     "confidence": "float | None",
+     "confidence_interval": "tuple[float, float] | None",
+     "evidence_ids": "tuple[str, ...]",
+     "kind": "AnalysisKind",
+     "method": "str | None",
+     "model_version": "str | None",
+     "requirements": "tuple[DataRequirement, ...]",
+     "status": "AnalysisStatus",
+     "summary": "str",
+     "values": "dict[str, Any]",
+     "warnings": "tuple[str, ...]"
+    }
+   },
+   "AnalysisStatus": {
+    "class": "(*values)"
+   },
+   "AnalyticalOperation": {
+    "class": "(*values)"
+   },
+   "Assumption": {
+    "model": {
+     "material": "bool",
+     "statement": "str",
+     "user_confirmed": "bool"
+    }
+   },
+   "CalendarDefinition": {
+    "model": {
+     "fiscal_year_start_month": "int",
+     "name": "str",
+     "timezone": "str",
+     "week_start": "Literal['monday', 'sunday']"
+    }
+   },
+   "Certification": {
+    "alias": "Literal['draft', 'verified', 'certified']"
+   },
+   "CompiledSemanticQuery": {
+    "model": {
+     "dialect": "SQLDialect",
+     "explanation": "tuple[str, ...]",
+     "joins": "tuple[str, ...]",
+     "lineage": "dict[str, tuple[str, ...]]",
+     "parameters": "tuple[str | int | float | bool, ...]",
+     "selected_models": "tuple[str, ...]",
+     "semantic_layer": "str",
+     "semantic_layer_digest": "str",
+     "semantic_layer_version": "str",
+     "semantic_model": "str",
+     "sql": "str",
+     "warnings": "tuple[str, ...]"
+    }
+   },
+   "DataRequirement": {
+    "model": {
+     "available": "bool",
+     "name": "str",
+     "reason": "str",
+     "source": "str | None"
+    }
+   },
+   "DimensionDefinition": {
+    "model": {
+     "authorization_tags": "tuple[str, ...]",
+     "calendar": "str | None",
+     "description": "str",
+     "expression": "str",
+     "is_time": "bool",
+     "label": "str",
+     "late_arrival_seconds": "int",
+     "lineage": "tuple[str, ...]",
+     "name": "str",
+     "sensitivity": "Literal['public', 'internal', 'confidential', 'restricted']",
+     "synonyms": "tuple[str, ...]",
+     "type": "SemanticType"
+    }
+   },
+   "FilterOperator": {
+    "class": "(*values)"
+   },
+   "FreshnessPolicy": {
+    "model": {
+     "field": "str",
+     "max_age_seconds": "int"
+    }
+   },
+   "JoinDefinition": {
+    "model": {
+     "authorization_tags": "tuple[str, ...]",
+     "description": "str",
+     "fanout_safe": "bool",
+     "left_model": "str",
+     "name": "str",
+     "relationship": "Literal['one_to_one', 'one_to_many', 'many_to_one']",
+     "right_model": "str",
+     "sql_on": "str"
+    }
+   },
+   "MetricBehavior": {
+    "class": "(*values)"
+   },
+   "MetricDefinition": {
+    "model": {
+     "additive": "bool",
+     "aggregation": "Aggregation",
+     "allowed_dimensions": "tuple[str, ...]",
+     "authorization_tags": "tuple[str, ...]",
+     "behavior": "MetricBehavior",
+     "certification": "Literal['draft', 'verified', 'certified']",
+     "denominator": "str | None",
+     "description": "str",
+     "expression": "str",
+     "filters": "tuple[str, ...]",
+     "format": "str",
+     "label": "str",
+     "lineage": "tuple[str, ...]",
+     "name": "str",
+     "null_behavior": "NullBehavior",
+     "numerator": "str | None",
+     "owner": "str | None",
+     "semi_additive_dimensions": "tuple[str, ...]",
+     "sensitivity": "Literal['public', 'internal', 'confidential', 'restricted']",
+     "synonyms": "tuple[str, ...]"
+    }
+   },
+   "MetricFilter": {
+    "model": {
+     "field": "str",
+     "operator": "FilterOperator",
+     "value": "str | int | float | bool | tuple[str | int | float | bool, ...] | None"
+    }
+   },
+   "MetricQuery": {
+    "model": {
+     "cohort_dimensions": "tuple[str, ...]",
+     "comparison": "PeriodComparison | None",
+     "dimensions": "tuple[str, ...]",
+     "filters": "tuple[MetricFilter, ...]",
+     "funnel_metrics": "tuple[str, ...]",
+     "limit": "int",
+     "metrics": "tuple[str, ...]",
+     "operation": "AnalyticalOperation",
+     "operation_metric": "str | None",
+     "order_by": "tuple[MetricSort, ...]",
+     "relative_period": "RelativePeriod | None",
+     "rolling_windows": "tuple[RollingWindow, ...]",
+     "snapshot": "SnapshotSelection | None",
+     "time_grain": "TimeGrain | None",
+     "time_range": "str | None"
+    }
+   },
+   "MetricSort": {
+    "model": {
+     "direction": "SortDirection",
+     "field": "str"
+    }
+   },
+   "NullBehavior": {
+    "class": "(*values)"
+   },
+   "PeriodComparison": {
+    "model": {
+     "mode": "Literal['previous_period', 'previous_year', 'same_dtd']",
+     "offset": "int"
+    }
+   },
+   "ProductionSemanticQueryCompiler": {
+    "class": "(*, minimum_certification: 'Certification' = 'verified', maximum_sensitivity: 'Sensitivity' = 'restricted', authorization_tags: 'frozenset[str]' = frozenset()) -> 'None'",
+    "methods": {
+     "compile": "(self, layer: 'SemanticLayer', query: 'MetricQuery') -> 'CompiledSemanticQuery'"
+    }
+   },
+   "RelativePeriod": {
+    "model": {
+     "count": "int",
+     "field": "str",
+     "include_current": "bool",
+     "unit": "TimeGrain"
+    }
+   },
+   "RollingWindow": {
+    "model": {
+     "function": "Literal['sum', 'avg', 'min', 'max']",
+     "metric": "str",
+     "periods": "int"
+    }
+   },
+   "SQLDialect": {
+    "class": "(*values)"
+   },
+   "SemanticAnalysisPlan": {
+    "model": {
+     "maximum_concurrency": "int",
+     "maximum_nodes": "int",
+     "metadata": "dict[str, Any]",
+     "name": "str",
+     "queries": "tuple[SemanticQueryTask, ...]",
+     "timeout_seconds": "float",
+     "transformations": "tuple[AnalyticalNode, ...]",
+     "version": "str"
+    }
+   },
+   "SemanticLayer": {
+    "class": "(definition: 'SemanticLayerDefinition') -> 'None'",
+    "methods": {
+     "dimension": "(self, name: 'str') -> 'tuple[str, DimensionDefinition]'",
+     "dimension_names": "(self) -> 'tuple[str, ...]'",
+     "from_yaml": "(…)",
+     "metric": "(self, name: 'str') -> 'tuple[str, MetricDefinition]'",
+     "metric_names": "(self) -> 'tuple[str, ...]'",
+     "prompt_context": "(self) -> 'str'",
+     "query_policy_context": "(self, metrics: 'tuple[str, ...]', dimensions: 'tuple[str, ...]') -> 'dict[str, Any]'",
+     "validate_generated_sql": "(self, metrics: 'tuple[str, ...]', dimensions: 'tuple[str, ...]', sql: 'str') -> 'None'",
+     "validate_query": "(self, query: 'MetricQuery', *, minimum_certification: 'Certification' = 'draft', maximum_sensitivity: 'Sensitivity' = 'restricted', authorization_tags: 'frozenset[str]' = frozenset()) -> 'None'",
+     "validate_references": "(self, metrics: 'tuple[str, ...]', dimensions: 'tuple[str, ...]') -> 'tuple[list[tuple[str, MetricDefinition]], list[tuple[str, DimensionDefinition]]]'",
+     "validate_selection": "(self, metrics: 'tuple[str, ...]', dimensions: 'tuple[str, ...]', *, minimum_certification: 'Certification' = 'draft', maximum_sensitivity: 'Sensitivity' = 'restricted', authorization_tags: 'frozenset[str]' = frozenset()) -> 'tuple[list[tuple[str, MetricDefinition]], list[tuple[str, DimensionDefinition]]]'"
+    }
+   },
+   "SemanticLayerDefinition": {
+    "model": {
+     "calendars": "tuple[CalendarDefinition, ...]",
+     "currency": "str | None",
+     "description": "str",
+     "joins": "tuple[JoinDefinition, ...]",
+     "metadata": "dict[str, Any]",
+     "models": "tuple[SemanticModelDefinition, ...]",
+     "name": "str",
+     "timezone": "str",
+     "version": "str"
+    }
+   },
+   "SemanticLayerRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "get": "(self, name: 'str') -> 'SemanticLayer'",
+     "list": "(self) -> 'tuple[str, ...]'",
+     "register": "(self, layer: 'SemanticLayer') -> 'None'"
+    }
+   },
+   "SemanticModelDefinition": {
+    "model": {
+     "authorization_tags": "tuple[str, ...]",
+     "certification": "Literal['draft', 'verified', 'certified']",
+     "default_filters": "tuple[MetricFilter, ...]",
+     "default_time_dimension": "str | None",
+     "description": "str",
+     "dimensions": "tuple[DimensionDefinition, ...]",
+     "freshness": "FreshnessPolicy | None",
+     "late_arrival_seconds": "int",
+     "metadata": "dict[str, Any]",
+     "metrics": "tuple[MetricDefinition, ...]",
+     "name": "str",
+     "primary_key": "tuple[str, ...]",
+     "required_filter_dimensions": "tuple[str, ...]",
+     "sensitivity": "Literal['public', 'internal', 'confidential', 'restricted']",
+     "table": "str",
+     "valid_from_dimension": "str | None",
+     "valid_to_dimension": "str | None"
+    }
+   },
+   "SemanticQueryCompiler": {
+    "class": "(*, minimum_certification: 'Certification' = 'draft', maximum_sensitivity: 'Sensitivity' = 'restricted', authorization_tags: 'frozenset[str]' = frozenset()) -> 'None'",
+    "methods": {
+     "compile": "(self, layer: 'SemanticLayer', query: 'MetricQuery') -> 'CompiledSemanticQuery'"
+    }
+   },
+   "SemanticQueryGraphPlanner": {
+    "class": "(compiler: 'ProductionSemanticQueryCompiler') -> 'None'",
+    "methods": {
+     "plan": "(self, layer: 'SemanticLayer', definition: 'SemanticAnalysisPlan') -> 'AnalyticalGraph'"
+    }
+   },
+   "SemanticQueryTask": {
+    "model": {
+     "budget": "NodeBudget",
+     "cache": "NodeCachePolicy",
+     "concurrency_key": "str | None",
+     "id": "str",
+     "output_schema": "dict[str, Any]",
+     "query": "MetricQuery",
+     "retry": "NodeRetryPolicy"
+    }
+   },
+   "SemanticType": {
+    "class": "(*values)"
+   },
+   "Sensitivity": {
+    "alias": "Literal['public', 'internal', 'confidential', 'restricted']"
+   },
+   "SnapshotSelection": {
+    "model": {
+     "as_of": "str | None",
+     "field": "str",
+     "mode": "Literal['latest', 'as_of', 'same_dtd']"
+    }
+   },
+   "SortDirection": {
+    "class": "(*values)"
+   },
+   "TimeGrain": {
+    "class": "(*values)"
+   }
+  },
+  "algen_agent_runtime.ui": {
+   "export_agent_ui_html": {
+    "function": "(config_files: 'tuple[str | Path, ...] | None' = None, settings: 'AppSettings | None' = None, output_path: 'str | Path' = 'agent-ui.html', title: 'str | None' = None) -> 'Path'"
+   },
+   "extract_agent_manifest_spec": {
+    "function": "(settings: 'AppSettings', container: 'Container | None' = None, raw_yaml: 'str | None' = None, live_server: 'bool' = False, api_base_url: 'str' = '', title: 'str | None' = None) -> 'dict[str, Any]'"
+   },
+   "generate_agent_ui_html": {
+    "function": "(settings: 'AppSettings | None' = None, container: 'Container | None' = None, raw_yaml: 'str | None' = None, live_server: 'bool' = False, api_base_url: 'str' = '', title: 'str | None' = None) -> 'str'"
+   },
+   "render_agent_ui": {
+    "function": "(spec: 'dict[str, Any]') -> 'str'"
+   }
+  },
+  "algen_agent_runtime.workflows": {
+   "InMemoryWorkflowCheckpointStore": {
+    "class": "() -> 'None'",
+    "methods": {
+     "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+     "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+     "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
+     "purge_finished": "(self, cutoff: 'datetime', limit: 'int') -> 'int'",
+     "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
+    }
+   },
+   "LoadedHookProvider": {
+    "class": "(provider: 'str', module_name: 'str', factory_name: 'str', hooks: 'WorkflowHookRegistry', package_name: 'str | None' = None, package_version: 'str | None' = None, api_version: 'str | None' = None, audit_metadata: 'dict[str, str]' = <factory>, close: 'Callable[[], Awaitable[None] | None] | None' = None) -> None",
+    "methods": {
+     "aclose": "(self) -> 'None'"
+    }
+   },
+   "MultiAgentWorkflowExecutor": {
+    "class": "(runtime: 'Any', hooks: 'WorkflowHookRegistry', *, agent_runner: 'WorkflowAgentRunner | None' = None, store: 'WorkflowCheckpointStore | None' = None, workflow_registry: 'WorkflowRegistry | None' = None, maximum_workflow_depth: 'int' = 8, interrupted: 'Callable[[], bool] | None' = None) -> 'None'",
+    "methods": {
+     "check_approval_decision": "(self, manifest: 'WorkflowManifest', state: 'WorkflowExecutionState', *, decision: 'str', user_id: 'str', modified_parameters: 'Mapping[str, Any] | None' = None) -> 'None'",
+     "decide_approval": "(self, manifest: 'WorkflowManifest', workflow_id: 'str', *, tenant_id: 'str', user_id: 'str', decision: 'str', modified_parameters: 'Mapping[str, Any] | None' = None, comment: 'str | None' = None, emit: 'WorkflowEventSink | None' = None) -> 'WorkflowExecutionState'",
+     "expire_pause": "(self, manifest: 'WorkflowManifest', workflow_id: 'str', *, tenant_id: 'str', input_timeout_seconds: 'float | None' = None, emit: 'WorkflowEventSink | None' = None) -> 'WorkflowExecutionState'",
+     "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState'",
+     "manifest_matches": "(…)",
+     "pause_expired": "(…)",
+     "recover": "(self, manifest: 'WorkflowManifest', workflow_id: 'str', *, tenant_id: 'str', emit: 'WorkflowEventSink | None' = None) -> 'WorkflowExecutionState'",
+     "resume": "(self, manifest: 'WorkflowManifest', workflow_id: 'str', *, tenant_id: 'str', values: 'Mapping[str, Any] | None' = None, emit: 'WorkflowEventSink | None' = None) -> 'WorkflowExecutionState'",
+     "run": "(self, manifest: 'WorkflowManifest', values: 'dict[str, Any]', *, tenant_id: 'str', user_id: 'str', conversation_id: 'str | None' = None, turn_id: 'str | None' = None, correlation_id: 'str | None' = None, workflow_id: 'str | None' = None, parent_workflow_id: 'str | None' = None, parent_workflow_node_id: 'str | None' = None, root_workflow_id: 'str | None' = None, workflow_depth: 'int' = 0, workflow_ancestry: 'tuple[str, ...]' = (), emit: 'WorkflowEventSink | None' = None, owner: 'str | None' = None, attachments: 'tuple[RunAttachment, ...]' = ()) -> 'WorkflowExecutionState'"
+    }
+   },
+   "NodeHandler": {
+    "alias": "Callable[[algen_agent_runtime.workflows.contracts.WorkflowHookContext], Awaitable[Any] | Any]"
+   },
+   "OutputValidator": {
+    "alias": "Callable[[Any, algen_agent_runtime.workflows.contracts.WorkflowHookContext], Awaitable[str | None] | str | None]"
+   },
+   "PayloadBuilder": {
+    "alias": "Callable[[algen_agent_runtime.workflows.contracts.WorkflowHookContext], Awaitable[Any] | Any]"
+   },
+   "PostgresWorkflowCheckpointStore": {
+    "class": "(database: 'Any') -> 'None'",
+    "methods": {
+     "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+     "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+     "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
+     "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
+    }
+   },
+   "WorkflowAgentRunner": {
+    "alias": "Callable[[Any, algen_agent_runtime.workflows.contracts.WorkflowHookContext], Awaitable[Any]]"
+   },
+   "WorkflowApprovalDecision": {
+    "model": {
+     "comment": "str | None",
+     "decided_at": "datetime",
+     "decided_by": "str",
+     "decision": "Literal['approved', 'modified', 'rejected']",
+     "parameters": "dict[str, Any] | None"
+    }
+   },
+   "WorkflowApprovalRule": {
+    "model": {
+     "allow_modification": "bool",
+     "binding": "Literal['call', 'step']",
+     "expires_seconds": "int",
+     "parameters_from": "str | None",
+     "parameters_schema": "dict[str, Any] | None",
+     "prompt": "str",
+     "rejection_policy": "Literal['skip_dependents', 'continue']",
+     "review_from": "tuple[str, ...]"
+    }
+   },
+   "WorkflowApprovedCall": {
+    "model": {
+     "arguments_sha256": "str | None",
+     "modification_ignored": "bool",
+     "tool": "str",
+     "tool_fingerprint": "str | None",
+     "tool_version": "str"
+    }
+   },
+   "WorkflowCheckpointStore": {
+    "protocol": {
+     "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+     "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+     "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
+     "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
+    }
+   },
+   "WorkflowEventSink": {
+    "alias": "Callable[[str, dict[str, Any]], Awaitable[None] | None]"
+   },
+   "WorkflowExecutionState": {
+    "model": {
+     "attachments": "tuple[RunAttachment, ...]",
+     "conversation_id": "str | None",
+     "correlation_id": "str | None",
+     "created_at": "datetime",
+     "deadline_at": "datetime",
+     "error": "str | None",
+     "id": "str",
+     "manifest_fingerprint": "str | None",
+     "manifest_name": "str",
+     "manifest_version": "str",
+     "nodes": "dict[str, WorkflowNodeExecution]",
+     "owner": "str | None",
+     "parent_workflow_id": "str | None",
+     "parent_workflow_node_id": "str | None",
+     "pause": "dict[str, Any] | None",
+     "root_workflow_id": "str | None",
+     "status": "WorkflowStatus",
+     "tenant_id": "str",
+     "turn_id": "str | None",
+     "updated_at": "datetime",
+     "user_id": "str",
+     "values": "dict[str, Any]",
+     "version": "int",
+     "workflow_ancestry": "tuple[str, ...]",
+     "workflow_depth": "int"
+    }
+   },
+   "WorkflowHookContext": {
+    "model": {
+     "invalid_output": "Any",
+     "item": "Any",
+     "item_index": "int | None",
+     "node": "WorkflowNode",
+     "request_payload": "Any",
+     "state": "WorkflowExecutionState",
+     "validation_error": "str | None"
+    }
+   },
+   "WorkflowHookLoader": {
+    "class": "(*, allowed_modules: 'Sequence[str]' = (), allowed_entry_point_groups: 'Sequence[str]' = ('algen.workflow_hooks',), allow_all_installed_entry_points: 'bool' = False) -> 'None'",
+    "methods": {
+     "aload": "(self, reference: 'str', **factory_kwargs: 'Any') -> 'LoadedHookProvider'",
+     "is_module_allowed": "(self, module_name: 'str') -> 'bool'",
+     "load": "(self, reference: 'str', **factory_kwargs: 'Any') -> 'LoadedHookProvider'"
+    }
+   },
+   "WorkflowHookRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "builder": "(self, name: 'str') -> 'PayloadBuilder'",
+     "handler": "(self, name: 'str') -> 'NodeHandler'",
+     "register_builder": "(self, name: 'str', builder: 'PayloadBuilder') -> 'None'",
+     "register_handler": "(self, name: 'str', handler: 'NodeHandler') -> 'None'",
+     "register_schema": "(self, name: 'str', schema: 'dict[str, Any]') -> 'None'",
+     "register_validator": "(self, name: 'str', validator: 'OutputValidator') -> 'None'",
+     "schema": "(self, name: 'str') -> 'dict[str, Any]'",
+     "validator": "(self, name: 'str') -> 'OutputValidator'"
+    }
+   },
+   "WorkflowManifest": {
+    "model": {
+     "attachments": "AttachmentPolicy",
+     "description": "str",
+     "hook_provider": "str | None",
+     "input_schema": "dict[str, Any] | None",
+     "maximum_concurrency": "int",
+     "metadata": "dict[str, str]",
+     "name": "str",
+     "nodes": "tuple[WorkflowNode, ...]",
+     "output_key": "str | None",
+     "output_schema": "dict[str, Any] | None",
+     "timeout_seconds": "float",
+     "version": "str"
+    }
+   },
+   "WorkflowNode": {
+    "model": {
+     "agent": "str | None",
+     "approval": "WorkflowApprovalRule | None",
+     "arguments": "dict[str, Any]",
+     "condition": "WorkflowPredicate | None",
+     "depends_on": "tuple[str, ...]",
+     "failure_policy": "Literal['fail_workflow', 'skip_dependents', 'continue']",
+     "handler": "str | None",
+     "id": "str",
+     "input_builder": "str | None",
+     "input_template": "str | None",
+     "join_strategy": "Literal['concat', 'json_array', 'first']",
+     "kind": "WorkflowNodeKind",
+     "loop_until": "WorkflowPredicate | None",
+     "map_from": "str | None",
+     "max_fan_out": "int",
+     "max_iterations": "int",
+     "max_repairs": "int",
+     "metadata": "dict[str, str]",
+     "metadata_builder": "str | None",
+     "output_key": "str",
+     "output_schema": "dict[str, Any] | None",
+     "output_schema_hook": "str | None",
+     "pass_attachments": "bool",
+     "pause": "WorkflowPauseRule | None",
+     "recovery_policy": "Literal['fail', 'retry']",
+     "resources": "tuple[WorkflowResourceReference, ...]",
+     "run_if": "WorkflowPredicate | None",
+     "validator": "str | None",
+     "workflow_name": "str | None",
+     "workflow_version": "str | None"
+    }
+   },
+   "WorkflowNodeExecution": {
+    "model": {
+     "approved_calls": "dict[str, WorkflowApprovedCall] | None",
+     "attempts": "int",
+     "child_workflow_ids": "list[str]",
+     "child_workflow_inputs": "dict[str, dict[str, Any]]",
+     "completed_at": "datetime | None",
+     "error": "str | None",
+     "node_id": "str",
+     "run_ids": "list[str]",
+     "started_at": "datetime | None",
+     "status": "WorkflowNodeStatus"
+    }
+   },
+   "WorkflowNodeKind": {
+    "class": "(*values)"
+   },
+   "WorkflowNodeStatus": {
+    "class": "(*values)"
+   },
+   "WorkflowPauseRule": {
+    "model": {
+     "maximum_occurrences": "int",
+     "occurrences_from": "str | None",
+     "question_from": "str",
+     "state_from": "tuple[str, ...]",
+     "when": "WorkflowPredicate"
+    }
+   },
+   "WorkflowPredicate": {
+    "model": {
+     "operator": "Literal['equals', 'not_equals', 'contains', 'not_contains', 'truthy', 'falsy', 'in']",
+     "source": "str",
+     "value": "Any"
+    }
+   },
+   "WorkflowRegistry": {
+    "class": "() -> 'None'",
+    "methods": {
+     "list": "(self) -> 'tuple[WorkflowManifest, ...]'",
+     "register": "(self, manifest: 'WorkflowManifest', hooks: 'WorkflowHookRegistry') -> 'None'",
+     "resolve": "(self, name: 'str', version: 'str') -> 'tuple[WorkflowManifest, WorkflowHookRegistry]'"
+    }
+   },
+   "WorkflowResourceKind": {
+    "class": "(*values)"
+   },
+   "WorkflowResourceReference": {
+    "model": {
+     "access": "Literal['read', 'write', 'read_write', 'invoke', 'observe']",
+     "description": "str",
+     "kind": "WorkflowResourceKind",
+     "name": "str"
+    }
+   },
+   "WorkflowStatus": {
+    "class": "(*values)"
+   },
+   "load_hook_provider": {
+    "function": "(reference: 'str', *, loader: 'WorkflowHookLoader | None' = None, allowed_modules: 'Sequence[str]' = (), **factory_kwargs: 'Any') -> 'LoadedHookProvider'"
+   }
+  }
+ },
+ "http_routes": [
+  "DELETE /v1/artifacts/{artifact_id}",
+  "DELETE /v1/conversations/{conversation_id}",
+  "DELETE /v1/conversations/{conversation_id}/active-response",
+  "DELETE /v1/mcp/servers/{server}/oauth",
+  "DELETE /v1/runs/{run_id}",
+  "GET /agent-ui",
+  "GET /agent-ui/",
+  "GET /docs",
+  "GET /docs/oauth2-redirect",
+  "GET /health/live",
+  "GET /health/ready",
+  "GET /openapi.json",
+  "GET /redoc",
+  "GET /v1/agents",
+  "GET /v1/approvals",
+  "GET /v1/approvals/{approval_id}",
+  "GET /v1/artifacts",
+  "GET /v1/artifacts/{artifact_id}",
+  "GET /v1/artifacts/{artifact_id}/metadata",
+  "GET /v1/conversations",
+  "GET /v1/conversations/suggestions",
+  "GET /v1/conversations/{conversation_id}",
+  "GET /v1/conversations/{conversation_id}/events",
+  "GET /v1/conversations/{conversation_id}/messages",
+  "GET /v1/conversations/{conversation_id}/messages/{message_id}/feedback",
+  "GET /v1/mcp/oauth/callback",
+  "GET /v1/mcp/oauth/servers",
+  "GET /v1/mcp/servers/{server}/oauth/status",
+  "GET /v1/runs/{run_id}",
+  "GET /v1/runs/{run_id}/events",
+  "GET /v1/runs/{run_id}/narrative",
+  "GET /v1/semantic-layers",
+  "GET /v1/semantic-layers/{name}",
+  "GET /v1/storage/usage",
+  "GET /v1/tool-executions",
+  "GET /v1/tool-executions/{idempotency_key}",
+  "GET /v1/workflows",
+  "GET /v1/workflows/runs/{workflow_id}",
+  "PATCH /v1/artifacts/{artifact_id}/status",
+  "PATCH /v1/conversations/{conversation_id}",
+  "POST /v1/agents",
+  "POST /v1/artifacts",
+  "POST /v1/auth/revocations/subjects",
+  "POST /v1/auth/revocations/tokens",
+  "POST /v1/conversations",
+  "POST /v1/conversations/{conversation_id}/messages",
+  "POST /v1/conversations/{conversation_id}/turns/{turn_id}/approval",
+  "POST /v1/conversations/{conversation_id}/turns/{turn_id}/input",
+  "POST /v1/mcp/servers/{server}/oauth/start",
+  "POST /v1/runs",
+  "POST /v1/runs/{run_id}/approval",
+  "POST /v1/runs/{run_id}/clarification",
+  "POST /v1/runs/{run_id}/steer",
+  "POST /v1/tool-executions/{idempotency_key}/compensate",
+  "POST /v1/tool-executions/{idempotency_key}/reconcile",
+  "POST /v1/tool-executions/{idempotency_key}/resolve",
+  "POST /v1/tool-executions/{idempotency_key}/resume",
+  "POST /v1/workflows/runs/{workflow_id}/approval",
+  "POST /v1/workflows/runs/{workflow_id}/input",
+  "POST /v1/workflows/{name}/runs",
+  "PUT /v1/conversations/{conversation_id}/messages/{message_id}/feedback"
+ ],
+ "migrations": [
+  "001_initial.sql",
+  "002_conversations.sql",
+  "003_analytical_execution.sql",
+  "004_conversation_feedback.sql",
+  "005_algen_agent_runtime_rename.sql",
+  "006_artifact_lifecycle.sql",
+  "007_s3_artifacts.sql",
+  "008_workflow_checkpoints.sql",
+  "009_preserve_run_state_json_order.sql",
+  "010_retention_indexes.sql",
+  "011_learned_memory.sql",
+  "012_mcp_oauth.sql",
+  "013_token_revocation.sql",
+  "014_tool_execution_reconciliation.sql",
+  "015_approval_agent.sql",
+  "016_resource_bounds.sql",
+  "017_approval_tool_fingerprint.sql",
+  "018_learned_memory_vectors.sql"
+ ],
+ "protocols": {
+  "algen_agent_runtime.analytics.contracts.AnalyticalGraphStore": {
+   "create": "(self, state: 'AnalyticalGraphState') -> 'None'",
+   "get": "(self, graph_id: 'str', tenant_id: 'str') -> 'AnalyticalGraphState | None'",
+   "save": "(self, state: 'AnalyticalGraphState', expected_version: 'int') -> 'None'"
+  },
+  "algen_agent_runtime.analytics.contracts.AnalyticalNodeHandler": {},
+  "algen_agent_runtime.api.rate_limiting.ApiRateLimiter": {
+   "acquire": "(self, tenant_id: 'str', route_class: 'str', principal_id: 'str | None' = None) -> 'LimiterDecision'",
+   "release": "(self, tenant_id: 'str', route_class: 'str', principal_id: 'str | None' = None) -> 'None'"
+  },
+  "algen_agent_runtime.approvals.service.ApprovalService": {
+   "create": "(self, run_id: 'str', step_id: 'str', tenant_id: 'str', proposed_action: 'str', parameters: 'dict[str, Any]', risk: 'str', expires_seconds: 'int', *, agent: 'str | None' = None, tool: 'str | None' = None, tool_version: 'str | None' = None, tool_fingerprint: 'str | None' = None, arguments_sha256: 'str | None' = None, rationale: 'str | None' = None) -> 'ApprovalRequest'",
+   "decide": "(self, approval_id: 'str', tenant_id: 'str', decision: 'ApprovalStatus', modified_parameters: 'dict[str, Any] | None' = None) -> 'ApprovalRequest'",
+   "expire": "(self, approval_id: 'str', tenant_id: 'str', *, reason: 'str') -> 'ApprovalRequest'",
+   "get": "(self, approval_id: 'str', tenant_id: 'str') -> 'ApprovalRequest | None'",
+   "list": "(self, tenant_id: 'str', *, status: 'ApprovalStatus | None' = None, run_id: 'str | None' = None, agent: 'str | None' = None, limit: 'int' = 50, offset: 'int' = 0) -> 'Sequence[ApprovalRequest]'"
+  },
+  "algen_agent_runtime.artifacts.service.ArtifactScanner": {
+   "scan": "(self, artifact: 'Artifact') -> 'ArtifactScanResult'"
+  },
+  "algen_agent_runtime.auth.revocation.TokenRevocationStore": {
+   "purge_expired": "(self, now: 'datetime | None' = None) -> 'int'",
+   "revoke_subject": "(self, tenant_id: 'str', subject: 'str', revoked_before: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+   "revoke_token": "(self, tenant_id: 'str', jti: 'str', expires_at: 'datetime', *, reason: 'str | None' = None) -> 'None'",
+   "state": "(self, tenant_id: 'str', jti: 'str | None', subject: 'str') -> 'RevocationState'"
+  },
+  "algen_agent_runtime.cache.contracts.CacheStore": {
+   "delete": "(self, key: 'str') -> 'None'",
+   "get": "(self, key: 'str') -> 'bytes | None'",
+   "health": "(self) -> 'bool'",
+   "invalidate_tags": "(self, tags: 'tuple[str, ...]') -> 'int'",
+   "set": "(self, key: 'str', value: 'bytes', ttl_seconds: 'int', tags: 'tuple[str, ...]' = ()) -> 'None'"
+  },
+  "algen_agent_runtime.conversations.contracts.ConversationEventPublisher": {
+   "history": "(self, conversation_id: 'str', after: 'int' = 0) -> 'Sequence[ConversationEvent]'",
+   "next_sequence": "(self, conversation_id: 'str') -> 'int'",
+   "publish": "(self, event: 'ConversationEvent') -> 'None'",
+   "subscribe": "(self, conversation_id: 'str', after: 'int' = 0) -> 'AsyncIterator[ConversationEvent]'"
+  },
+  "algen_agent_runtime.conversations.contracts.ConversationHandler": {
+   "handle": "(self, conversation: 'Conversation', user_message: 'ConversationMessage', history: 'Sequence[ConversationMessage]', emit: 'DeltaEmitter') -> 'ConversationTurnResult'"
+  },
+  "algen_agent_runtime.conversations.contracts.ConversationStore": {
+   "append_message": "(self, message: 'ConversationMessage') -> 'None'",
+   "create": "(self, conversation: 'Conversation') -> 'None'",
+   "delete": "(self, conversation_id: 'str', tenant_id: 'str') -> 'bool'",
+   "get": "(self, conversation_id: 'str', tenant_id: 'str') -> 'Conversation | None'",
+   "list": "(self, tenant_id: 'str', user_id: 'str', limit: 'int', before: 'datetime | None' = None) -> 'Sequence[Conversation]'",
+   "messages": "(self, conversation_id: 'str', tenant_id: 'str', limit: 'int', before: 'datetime | None' = None) -> 'Sequence[ConversationMessage]'",
+   "pending_messages": "(self, limit: 'int' = 1000) -> 'Sequence[ConversationMessage]'",
+   "save": "(self, conversation: 'Conversation', expected_version: 'int') -> 'None'",
+   "update_message": "(self, message: 'ConversationMessage') -> 'None'"
+  },
+  "algen_agent_runtime.conversations.contracts.ResumableConversationHandler": {
+   "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
+   "follow": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', emit: 'DeltaEmitter') -> 'ConversationTurnResult'",
+   "pending_state": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> \"Literal['paused', 'running', 'ended']\"",
+   "resume": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
+   "settle": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'ConversationTurnResult'"
+  },
+  "algen_agent_runtime.conversations.feedback.ConversationFeedbackStore": {
+   "get": "(self, tenant_id: 'str', user_id: 'str', message_id: 'str') -> 'ConversationFeedback | None'",
+   "list_for_conversation": "(self, tenant_id: 'str', user_id: 'str', conversation_id: 'str') -> 'Sequence[ConversationFeedback]'",
+   "put": "(self, feedback: 'ConversationFeedback') -> 'ConversationFeedback'"
+  },
+  "algen_agent_runtime.conversations.followups.FollowupSuggestionProvider": {
+   "suggest": "(self, *, tenant_id: 'str', user_id: 'str', conversation_id: 'str', history: 'Sequence[ConversationMessage]', user_text: 'str', assistant_text: 'str') -> 'tuple[str, ...]'"
+  },
+  "algen_agent_runtime.distributed.contracts.WorkQueue": {
+   "claim": "(self, worker_id: 'str', lease_seconds: 'int') -> 'WorkItem | None'",
+   "complete": "(self, item_id: 'str', worker_id: 'str', result: 'dict[str, Any]') -> 'None'",
+   "enqueue": "(self, item: 'WorkItem') -> 'tuple[WorkItem, bool]'",
+   "fail": "(self, item_id: 'str', worker_id: 'str', error: 'str', retry: 'bool') -> 'None'",
+   "renew": "(self, item_id: 'str', worker_id: 'str', lease_seconds: 'int') -> 'bool'"
+  },
+  "algen_agent_runtime.frameworks.contracts.FrameworkAdapter": {
+   "cancel": "(self, run_id: 'str') -> 'bool'",
+   "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
+   "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+  },
+  "algen_agent_runtime.governance.executor.QueryBackend": {
+   "execute": "(self, sql: 'str', parameters: 'tuple[Any, ...]') -> 'list[dict[str, Any]]'"
+  },
+  "algen_agent_runtime.mcp.tokens.MCPTokenStore": {
+   "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+   "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
+   "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
+   "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+   "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
+  },
+  "algen_agent_runtime.memory.contracts.LearnedMemoryStore": {
+   "apply": "(self, mutation: 'MemoryMutation') -> 'MemoryReceipt'",
+   "get": "(self, scope: 'MemoryScope', key: 'str') -> 'LearnedMemory | None'",
+   "purge_expired": "(self, limit: 'int' = 1000) -> 'int'",
+   "search": "(self, scope: 'MemoryScope', query: 'str', limit: 'int') -> 'tuple[LearnedMemory, ...]'"
+  },
+  "algen_agent_runtime.memory.contracts.SimilarityMemoryStore": {
+   "apply_embedded": "(self, mutation: 'MemoryMutation', embedding: 'MemoryEmbedding | None') -> 'MemoryReceipt'",
+   "put_embedding": "(self, scope: 'MemoryScope', key: 'str', revision: 'int', embedding: 'MemoryEmbedding') -> 'bool'",
+   "rank": "(self, scope: 'MemoryScope', embedding: 'MemoryEmbedding', limit: 'int') -> 'tuple[tuple[LearnedMemory, float], ...]'",
+   "unembedded": "(self, scope: 'MemoryScope', model: 'str', limit: 'int') -> 'tuple[LearnedMemory, ...]'"
+  },
+  "algen_agent_runtime.methods.contracts.AnalyticalMethod": {},
+  "algen_agent_runtime.model_services.contracts.ModelService": {
+   "health": "(self) -> 'ModelServiceHealth'",
+   "predict": "(self, request: 'ModelServiceRequest') -> 'ModelServiceResponse'"
+  },
+  "algen_agent_runtime.models.metering.UsageMeter": {
+   "release": "(self, ticket: 'object') -> 'None'",
+   "reserve": "(self, *, max_input_tokens: 'int', max_output_tokens: 'int', call: 'MeterCall') -> 'object'",
+   "settle": "(self, ticket: 'object', usage: 'TokenUsage') -> 'None'"
+  },
+  "algen_agent_runtime.observability.traccia_adapter.ObservabilityAdapter": {
+   "govern": "(self, invocation: 'Any', *, agent_id: 'str', agent_name: 'str') -> 'Any'",
+   "guardrail_scope": "(self, *, name: 'str', category: 'str', enforcement_mode: 'str', policy_id: 'str | None' = None) -> 'AbstractContextManager[Any]'",
+   "run_scope": "(self, *, agent_id: 'str', agent_name: 'str', tenant_id: 'str') -> 'AbstractContextManager[Any]'",
+   "set_span_outcome": "(self, span: 'Any', *, failed: 'bool', description: 'str | None' = None) -> 'None'",
+   "span_attributes": "(self) -> 'Mapping[str, str]'",
+   "span_scope": "(self, name: 'str', *, attributes: 'Mapping[str, Any]', root: 'bool' = False) -> 'AbstractContextManager[Any] | None'",
+   "start": "(self) -> 'None'",
+   "stop": "(self) -> 'None'",
+   "tracer": "(self, name: 'str') -> 'Any'"
+  },
+  "algen_agent_runtime.orchestration.lifecycle.OwnedWorkflows": {
+   "aclose": "(self, grace_seconds: 'float' = 0) -> 'None'",
+   "expire_paused": "(self, *, limit: 'int' = 1000, input_timeout_seconds: 'float | None' = None) -> 'int'",
+   "recover": "(self, limit: 'int' = 1000) -> 'int'"
+  },
+  "algen_agent_runtime.persistence.retention.RetentionSweeper": {
+   "sweep": "(self, policy: 'RetentionPolicy') -> 'RetentionReport'"
+  },
+  "algen_agent_runtime.plugins.sdk.AlgenAgentRuntimePlugin": {
+   "register": "(self, context: 'PluginContext') -> 'None'"
+  },
+  "algen_agent_runtime.plugins.sdk.PluginContext": {
+   "add_resource": "(self, resource: 'object') -> 'None'",
+   "declare_env": "(self, *names: 'str') -> 'None'"
+  },
+  "algen_agent_runtime.plugins.sdk.PluginRegistry": {
+   "register": "(self, *args: 'Any', **kwargs: 'Any') -> 'None'"
+  },
+  "algen_agent_runtime.policies.engine.Policy": {
+   "evaluate": "(self, point: 'str', payload: 'Any', context: 'Mapping[str, Any]') -> 'PolicyDecision'"
+  },
+  "algen_agent_runtime.retrieval.ingestion.Chunker": {
+   "chunk": "(self, document: 'SourceDocument') -> 'tuple[RetrievedDocument, ...]'"
+  },
+  "algen_agent_runtime.retrieval.memory.Embedder": {
+   "embed": "(self, texts: 'Sequence[str]') -> 'list[list[float]]'"
+  },
+  "algen_agent_runtime.retrieval.memory.ModelEmbeddingProvider": {
+   "embed": "(self, texts: 'Sequence[str]', model: 'str | None' = None) -> 'list[list[float]]'"
+  },
+  "algen_agent_runtime.retrieval.memory.Reranker": {
+   "rerank": "(self, query: 'str', documents: 'Sequence[RetrievedDocument]') -> 'Sequence[RetrievedDocument]'"
+  },
+  "algen_agent_runtime.security.encryption.SecretCipher": {
+   "decrypt": "(self, ciphertext: 'str', associated_data: 'bytes') -> 'bytes'",
+   "encrypt": "(self, plaintext: 'bytes', associated_data: 'bytes') -> 'str'"
+  },
+  "algen_agent_runtime.tools.adapters.MCPClient": {
+   "call_tool": "(self, name: 'str', arguments: 'Mapping[str, Any]') -> 'Any'"
+  },
+  "algen_agent_runtime.tools.authoring.ApprovalHandler": {
+   "handle": "(self, request: 'ApprovalRequest', execute: 'Callable[[], Awaitable[Any]]') -> 'Any'"
+  },
+  "algen_agent_runtime.tools.contracts.ReconcilableToolExecutionStore": {
+   "find": "(self, tenant_id: 'str', *, statuses: 'Collection[ToolExecutionStatus]', run_id: 'str | None' = None, tool_name: 'str | None' = None, min_age: 'timedelta | None' = None, limit: 'int' = 100) -> 'Sequence[ToolExecutionRecord]'",
+   "get": "(self, idempotency_key: 'str', tenant_id: 'str') -> 'ToolExecutionRecord | None'",
+   "transition": "(self, record: 'ToolExecutionRecord', *, expected: 'Collection[ToolExecutionStatus]') -> 'ToolExecutionRecord | None'"
+  },
+  "algen_agent_runtime.tools.contracts.ToolExecutionStore": {
+   "begin": "(self, context: 'ToolContext', tool_name: 'str') -> 'tuple[ToolExecutionRecord, bool]'",
+   "complete": "(self, idempotency_key: 'str', result: 'ToolResult') -> 'None'",
+   "fail": "(self, idempotency_key: 'str', error: 'str', *, indeterminate: 'bool') -> 'None'"
+  },
+  "algen_agent_runtime.types.interfaces.AgentRegistry": {
+   "get": "(self, name: 'str', version: 'str | None' = None) -> 'AgentDefinition'",
+   "list": "(self) -> 'Sequence[AgentDefinition]'",
+   "register": "(self, definition: 'AgentDefinition') -> 'None'"
+  },
+  "algen_agent_runtime.types.interfaces.ArtifactStore": {
+   "delete": "(self, artifact_id: 'str', tenant_id: 'str') -> 'bool'",
+   "describe": "(self, artifact_id: 'str', tenant_id: 'str') -> 'ArtifactDescriptor | None'",
+   "get": "(self, artifact_id: 'str', tenant_id: 'str') -> 'Artifact | None'",
+   "list": "(self, tenant_id: 'str', *, run_id: 'str | None' = None, status: 'ArtifactStatus | None' = None, limit: 'int' = 100) -> 'Sequence[ArtifactDescriptor]'",
+   "purge_expired": "(self, *, limit: 'int' = 1000) -> 'int'",
+   "put": "(self, artifact: 'Artifact') -> 'None'",
+   "set_status": "(self, artifact_id: 'str', tenant_id: 'str', status: 'ArtifactStatus', *, expected_status: 'ArtifactStatus | None' = None) -> 'ArtifactDescriptor | None'"
+  },
+  "algen_agent_runtime.types.interfaces.AuditLog": {
+   "append": "(self, event: 'Any') -> 'None'",
+   "list": "(self, tenant_id: 'str', resource_id: 'str | None' = None) -> 'Sequence[Any]'"
+  },
+  "algen_agent_runtime.types.interfaces.ContextBuilder": {
+   "build": "(self, state: 'RunState', agent: 'AgentDefinition') -> 'Sequence[Message]'"
+  },
+  "algen_agent_runtime.types.interfaces.DocumentIndexer": {
+   "delete": "(self, tenant_id: 'str', document_id: 'str') -> 'int'",
+   "ingest": "(self, documents: 'Sequence[SourceDocument]') -> 'int'"
+  },
+  "algen_agent_runtime.types.interfaces.EventPublisher": {
+   "history": "(self, run_id: 'str', after: 'int' = 0) -> 'Sequence[Any]'",
+   "next_sequence": "(self, run_id: 'str') -> 'int'",
+   "publish": "(self, event: 'Any') -> 'None'",
+   "subscribe": "(self, run_id: 'str', after: 'int' = 0) -> 'AsyncIterator[Any]'"
+  },
+  "algen_agent_runtime.types.interfaces.MemoryStore": {
+   "append": "(self, tenant_id: 'str', session_id: 'str', messages: 'Sequence[Message]') -> 'None'",
+   "delete": "(self, tenant_id: 'str', session_id: 'str') -> 'None'",
+   "get": "(self, tenant_id: 'str', session_id: 'str', limit: 'int') -> 'Sequence[Message]'"
+  },
+  "algen_agent_runtime.types.interfaces.ModelProvider": {
+   "capabilities": "(self, model: 'str') -> 'ModelCapabilities'",
+   "embed": "(self, texts: 'Sequence[str]', model: 'str | None' = None) -> 'list[list[float]]'",
+   "generate": "(self, request: 'ModelRequest') -> 'ModelResponse'",
+   "health": "(self) -> 'bool'",
+   "stream": "(self, request: 'ModelRequest') -> 'AsyncIterator[ModelStreamEvent]'"
+  },
+  "algen_agent_runtime.types.interfaces.Planner": {
+   "plan": "(self, state: 'RunState', agent: 'AgentDefinition') -> 'Any'"
+  },
+  "algen_agent_runtime.types.interfaces.PolicyEngine": {
+   "evaluate": "(self, point: 'str', payload: 'Any', context: 'Mapping[str, Any]') -> 'Any'"
+  },
+  "algen_agent_runtime.types.interfaces.ResponseComposer": {
+   "compose": "(self, state: 'RunState') -> 'RunResult'"
+  },
+  "algen_agent_runtime.types.interfaces.Retriever": {
+   "retrieve": "(self, query: 'RetrievalQuery') -> 'Sequence[RetrievedDocument]'"
+  },
+  "algen_agent_runtime.types.interfaces.RunStore": {
+   "create": "(self, state: 'RunState') -> 'None'",
+   "get": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState | None'",
+   "list_active": "(self, limit: 'int' = 1000) -> 'Sequence[RunState]'",
+   "save": "(self, state: 'RunState', expected_version: 'int') -> 'None'"
+  },
+  "algen_agent_runtime.types.interfaces.Runtime": {
+   "cancel": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState'",
+   "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+   "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
+   "start": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+   "wait": "(self, run_id: 'str', tenant_id: 'str') -> 'RunResult'"
+  },
+  "algen_agent_runtime.types.interfaces.SecretProvider": {
+   "get": "(self, reference: 'str') -> 'str'"
+  },
+  "algen_agent_runtime.types.interfaces.VectorStore": {},
+  "algen_agent_runtime.types.interfaces.Verifier": {
+   "verify": "(self, value: 'Any', context: 'Mapping[str, Any]') -> 'Any'"
+  },
+  "algen_agent_runtime.workflows.store.WorkflowCheckpointStore": {
+   "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+   "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+   "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
+   "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
+  }
+ }
+}
