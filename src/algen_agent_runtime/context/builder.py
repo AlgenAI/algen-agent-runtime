@@ -75,12 +75,15 @@ class DefaultContextBuilder:
     def pack(
         self, messages: Sequence[Message], policy: ContextPolicy | None = None
     ) -> tuple[Message, ...]:
-        shorten = (
-            policy.shortened_tool_result_chars
-            if policy is not None and policy.shorten_older_tool_results
-            else None
+        if policy is None or not policy.shorten_older_tool_results:
+            return pack_messages(messages, self._max_tokens)
+        return pack_messages(
+            messages,
+            self._max_tokens,
+            shorten_tool_results_to=policy.shortened_tool_result_chars,
+            shortened_share=policy.shortened_tool_results_share,
+            shortened_note=policy.shortened_tool_result_note,
         )
-        return pack_messages(messages, self._max_tokens, shorten_tool_results_to=shorten)
 
 
 class ContextBuilderRegistry:

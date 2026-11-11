@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from algen_agent_runtime.context.builder import DefaultContextBuilder, RetrievalContextBuilder
 from algen_agent_runtime.context.packing import (
+    REPAIR_MESSAGE_NAME,
     SHORTENED_TOOL_RESULT_NOTE,
     pack_messages,
     shorten_tool_group,
@@ -17,6 +18,7 @@ from algen_agent_runtime.types.contracts import (
     Role,
     RunRequest,
     RunState,
+    TextBlock,
     ToolCall,
 )
 
@@ -71,7 +73,7 @@ def test_shortening_keeps_older_exchanges_with_their_results() -> None:
     assert budget_for(list(packed)) <= budget
 
 
-def test_packing_stops_when_even_the_shortened_exchange_does_not_fit() -> None:
+def test_an_exchange_is_dropped_when_even_its_shortened_form_does_not_fit() -> None:
     messages = transcript()
     budget = budget_for([*messages[:2], *messages[-2:]]) + 5
     packed = pack_messages(messages, budget, shorten_tool_results_to=200)
@@ -163,3 +165,122 @@ async def test_retrieval_builder_honours_the_policy() -> None:
     assert len([m for m in shortening if m.role == Role.TOOL]) > len(
         [m for m in plain if m.role == Role.TOOL]
     )
+
+
+def long_run(rounds: int = 12, chars: int = 9_000) -> list[Message]:
+    return [
+        Message.text(Role.SYSTEM, "instructions"),
+        Message.text(Role.USER, "payslips for everyone since joining"),
+        *(
+            message
+            for index in range(rounds)
+            for message in exchange(f"call_{index}", f"{index}:" + "x" * chars)
+        ),
+    ]
+
+
+def assert_calls_travel_with_results(packed: tuple[Message, ...]) -> None:
+    pending: set[str] = set()
+    for message in packed:
+        if message.tool_calls:
+            pending = {call.id for call in message.tool_calls}
+        elif message.role == Role.TOOL:
+            assert message.tool_call_id in pending
+            pending.discard(message.tool_call_id or "")
+    calls = {call.id for message in packed for call in message.tool_calls}
+    results = {message.tool_call_id for message in packed if message.role == Role.TOOL}
+    assert calls == results
+
+
+def test_long_run_keeps_the_oldest_result_shortened() -> None:
+    policy = ContextPolicy(shorten_older_tool_results=True)
+    packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(long_run(), policy)
+
+    results = {m.tool_call_id: m.text_content for m in packed if m.role == Role.TOOL}
+    assert set(results) == {f"call_{index}" for index in range(12)}
+    assert results["call_0"].startswith("0:")
+    assert results["call_0"].endswith(policy.shortened_tool_result_note)
+    assert len(results["call_0"]) == 1_200 + len(policy.shortened_tool_result_note)
+    assert results["call_11"] == "11:" + "x" * 9_000
+    assert packed[1].text_content == "payslips for everyone since joining"
+    assert_calls_travel_with_results(packed)
+    assert budget_for(list(packed)) <= 16_000
+
+
+def test_whole_results_keep_most_of_the_budget_newest_first() -> None:
+    policy = ContextPolicy(shorten_older_tool_results=True, shortened_tool_results_share=0.25)
+    packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(long_run(), policy)
+    whole = [
+        m.tool_call_id
+        for m in packed
+        if m.role == Role.TOOL and not m.text_content.endswith(policy.shortened_tool_result_note)
+    ]
+    # Whole results are a contiguous newest run; everything older is shortened.
+    assert whole == [f"call_{index}" for index in range(12 - len(whole), 12)]
+    assert len(whole) >= 4
+
+
+def test_without_shortening_the_long_run_drops_the_oldest_exchanges() -> None:
+    packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(long_run())
+    assert "call_0" not in {m.tool_call_id for m in packed}
+    assert_calls_travel_with_results(packed)
+
+
+def test_small_runs_are_unchanged() -> None:
+    messages = long_run(rounds=3, chars=500)
+    packed = pack_messages(messages, 16_000, shorten_tool_results_to=64)
+    assert packed == tuple(messages)
+
+
+def test_a_stray_tool_result_is_dropped_not_raised() -> None:
+    stray = Message.text(Role.TOOL, "orphan").model_copy(update={"tool_call_id": "gone"})
+    messages = long_run(rounds=2, chars=100)
+    messages.insert(2, stray)
+    policy = ContextPolicy(shorten_older_tool_results=True)
+    packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(messages, policy)
+    assert stray not in packed
+    assert [m.tool_call_id for m in packed if m.role == Role.TOOL] == ["call_0", "call_1"]
+
+
+def test_the_shortened_note_is_configurable_and_can_be_left_out() -> None:
+    note = " [earlier result shortened to save space; it was already retrieved in this task]"
+    for configured in (note, ""):
+        policy = ContextPolicy(
+            shorten_older_tool_results=True, shortened_tool_result_note=configured
+        )
+        packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(long_run(), policy)
+        oldest = next(m for m in packed if m.tool_call_id == "call_0").text_content
+        assert oldest == "0:" + "x" * 1_198 + configured
+
+
+def test_an_exchange_too_large_even_shortened_is_skipped_and_older_ones_kept() -> None:
+    messages = long_run(rounds=12)
+    # An old exchange whose arguments alone are larger than the budget left for it.
+    big = ToolCall(id="big", name="records.lookup", arguments={"id": "y" * 20_000})
+    messages.insert(4, Message(role=Role.ASSISTANT, content=(), tool_calls=(big,)))
+    messages.insert(5, Message.text(Role.TOOL, "ok").model_copy(update={"tool_call_id": "big"}))
+    policy = ContextPolicy(shorten_older_tool_results=True)
+    packed = DefaultContextBuilder(InMemoryMemoryStore(), 16_000).pack(messages, policy)
+    kept = {m.tool_call_id for m in packed if m.role == Role.TOOL}
+    assert "big" not in kept
+    assert {"call_0", "call_11"} <= kept
+    assert_calls_travel_with_results(packed)
+
+
+def test_the_request_that_started_the_run_survives_a_repair_turn() -> None:
+    messages = long_run(rounds=12)
+    messages.append(Message(role=Role.ASSISTANT, content=(TextBlock(text="draft"),)))
+    messages.append(
+        Message.text(Role.USER, "repair the answer").model_copy(
+            update={"name": REPAIR_MESSAGE_NAME}
+        )
+    )
+    packed = pack_messages(messages, 4_000)
+    assert packed[1].text_content == "payslips for everyone since joining"
+    assert packed[-1].name == REPAIR_MESSAGE_NAME
+
+
+@pytest.mark.parametrize("share", [0, 1, 1.5])
+def test_shortened_share_is_bounded(share: float) -> None:
+    with pytest.raises(ValidationError):
+        ContextPolicy(shortened_tool_results_share=share)

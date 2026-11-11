@@ -252,6 +252,11 @@ class LearnedMemoryPolicy(StrictModel):
     max_retention_seconds: int = Field(default=2592000, ge=60, le=31536000)
 
 
+DEFAULT_SHORTENED_TOOL_RESULT_NOTE = (
+    "\n[earlier tool result shortened to fit the context; it was already retrieved in this run]"
+)
+
+
 class ContextPolicy(StrictModel):
     skills_enabled: bool = False
     skill_catalog_max_tokens: int = Field(default=2048, ge=128, le=8192)
@@ -273,6 +278,13 @@ class ContextPolicy(StrictModel):
     # long run still knows what it already retrieved and does not look it up again.
     shorten_older_tool_results: bool = False
     shortened_tool_result_chars: int = Field(default=1_200, ge=64, le=16_384)
+    # Share of the free budget held back for the shortened older results; whole results fill the
+    # rest, newest first. Used only when the history does not fit whole.
+    shortened_tool_results_share: float = Field(default=0.25, gt=0, lt=1)
+    # Appended to each shortened result so the model knows it already has it. Empty: no note.
+    shortened_tool_result_note: str = Field(
+        default=DEFAULT_SHORTENED_TOOL_RESULT_NOTE, max_length=512
+    )
 
     @model_validator(mode="after")
     def archive_requires_compaction(self) -> ContextPolicy:

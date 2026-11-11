@@ -123,7 +123,7 @@ class ContextEvaluationRunner:
                 artifact.recovered_messages == case.expected_recovered_messages
             )
         try:
-            groups = message_groups(artifact.messages)
+            groups = message_groups(artifact.messages, strict=True)
             checks["tool_protocol"] = all(
                 not group[0].tool_calls
                 or (

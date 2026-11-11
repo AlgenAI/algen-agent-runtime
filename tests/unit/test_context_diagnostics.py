@@ -136,3 +136,13 @@ async def test_pending_tool_diagnostic_does_not_dispatch_summary() -> None:
     await runtime._compact_context(current, agent())
     assert not provider.requests
     assert (await runtime.events.history(current.id))[-1].data["reason"] == "pending_tools"
+
+
+def test_a_stray_tool_result_postpones_compaction_instead_of_failing() -> None:
+    current = state()
+    current.context_history.insert(
+        1, Message(role=Role.TOOL, content=(), tool_call_id="missing-call")
+    )
+    assessment = assess_compaction(current, agent().context_policy)
+    assert assessment.diagnostic.reason == "incomplete_tool_group"
+    assert assessment.plan is None

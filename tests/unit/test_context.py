@@ -4,7 +4,7 @@ import pytest
 from conftest import make_agent
 
 from algen_agent_runtime.context.builder import DefaultContextBuilder, RetrievalContextBuilder
-from algen_agent_runtime.exceptions.errors import BudgetExceededError, ConflictError
+from algen_agent_runtime.exceptions.errors import BudgetExceededError
 from algen_agent_runtime.persistence.memory import InMemoryMemoryStore
 from algen_agent_runtime.retrieval.contracts import RetrievalQuery, RetrievedDocument
 from algen_agent_runtime.types.contracts import Message, Role, RunRequest, RunState, ToolCall
@@ -121,9 +121,11 @@ def test_tool_arguments_count_toward_context_budget() -> None:
         DefaultContextBuilder(InMemoryMemoryStore(), 100).pack([call])
 
 
-def test_orphan_tool_result_is_rejected() -> None:
-    with pytest.raises(ConflictError, match="without its tool call"):
-        DefaultContextBuilder(InMemoryMemoryStore()).pack(tool_exchange()[1:])
+def test_orphan_tool_result_is_dropped_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    user = Message.text(Role.USER, "hello")
+    packed = DefaultContextBuilder(InMemoryMemoryStore()).pack([user, *tool_exchange()[1:]])
+    assert packed == (user,)
+    assert "without its tool call" in caplog.text
 
 
 async def test_retrieval_without_results_still_enforces_context_limit() -> None:
