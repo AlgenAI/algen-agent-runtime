@@ -1,0 +1,33 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: document-reader
+    version: 1.0.0
+    description: Reads an attached image itself and hands an attached CSV to a reader tool
+    system_instructions: >-
+      Describe the attached files. Read an image yourself; for a file shown as
+      [attachment: name, type, id=...], call files.read_text with its id.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    enabled_tools: [files.read_text]
+    tool_permissions: [files.read]
+    domain_plugins: ["examples.quickstart_attachments.plugin:FilesPlugin"]
+    attachments:
+      enabled: true
+      types: [image/png]           # read by the model (vision)
+      tool_read_types: [text/csv]  # never sent to a model; read by files.read_text
+      max_count: 2
+      retention: turn
+    max_steps: 4
+security:
+  upload_scanner: basic
+  trusted_plugin_prefixes: [examples.quickstart_attachments]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+telemetry: {enabled: false}

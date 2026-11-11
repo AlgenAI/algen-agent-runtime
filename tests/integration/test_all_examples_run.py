@@ -34,6 +34,7 @@ RUNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "quickstart_tool.app": ((),),
     "quickstart_agent_tool.app": ((), ("--reject",)),
     "quickstart_approval.app": (("--approve-all",), ("--reject-all",)),
+    "quickstart_attachments.app": ((),),
     "quickstart_cloud_chat.app": (("--offline",),),
     "quickstart_conversation.app": ((), ("--reject",)),
     "quickstart_rag.app": (("--offline",), ("--offline", "--provider", "mistral")),

@@ -479,6 +479,9 @@ python -m examples.quickstart_agent_tool.app
 # An approval node: approve, modify or reject a proposal before it is applied
 python -m examples.quickstart_approval.app --approve-all
 
+# Files attached by reference: an image the model reads, a CSV a reader tool reads, both scanned
+python -m examples.quickstart_attachments.app
+
 # Human approval checkpoint (interactive prompt, or automated with --approve-all)
 python -m examples.pattern_approval_workflow.app --approve-all
 

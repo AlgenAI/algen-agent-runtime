@@ -18,6 +18,7 @@ from algen_agent_runtime.workflows import (
 from examples.pattern_mcp_governance.app import run_mcp_governance_demonstration
 from examples.pattern_openai_agents_integration.app import run_openai_agents_demonstration
 from examples.pattern_provider_fallback.app import deterministic_fallback
+from examples.quickstart_attachments.app import demonstrate
 
 ROOT = Path(__file__).parents[2]
 PORTABLE_EXAMPLES = (
@@ -57,6 +58,23 @@ async def test_provider_fallback_example_has_a_deterministic_failure_path() -> N
     route, output = await deterministic_fallback("test")
     assert route == "mock/deterministic"
     assert output == "deterministic fallback response"
+
+
+@pytest.mark.asyncio
+async def test_attachments_quickstart_passes_files_by_reference() -> None:
+    shown = await demonstrate("What are these files?")
+
+    assert [item["scan"] for item in shown["staged"]] == ["available", "available"]
+    assert all(len(item["sha256"]) == 64 for item in shown["staged"])
+    received = shown["model_received"]
+    assert any(line.startswith("file image/png:") for line in received)
+    assert any(line.startswith("[attachment: leave.csv, text/csv, id=") for line in received)
+    # The run keeps references only: no bytes, no base64.
+    assert [set(block) for block in shown["run_stored"]] == [
+        {"type", "artifact_id", "media_type"}
+    ] * 2
+    assert '"rows": 2' in shown["tool_read"]
+    assert shown["answer"]
 
 
 @pytest.mark.asyncio
