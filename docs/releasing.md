@@ -74,7 +74,7 @@ in the Studio documentation sync.
    ```bash
    python -m venv /tmp/test-venv
    /tmp/test-venv/bin/pip install --upgrade pip
-   /tmp/test-venv/bin/pip install --pre algen-agent-runtime
+   /tmp/test-venv/bin/pip install --pre 'algen-agent-runtime[service]'
    /tmp/test-venv/bin/algen-agent-runtime --help
    /tmp/test-venv/bin/algen-agent-runtime new smoke_agent --template agent
    cd smoke_agent && /tmp/test-venv/bin/python app.py

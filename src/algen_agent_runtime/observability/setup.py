@@ -12,6 +12,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from algen_agent_runtime.config.settings import TelemetrySettings
+from algen_agent_runtime.extras import MissingExtraError
 from algen_agent_runtime.security.redaction import redact
 
 _logger = structlog.get_logger("algen_agent_runtime.observability")
@@ -45,7 +46,12 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 def otlp_meter_provider(endpoint: str, *, export_interval_millis: int) -> MeterProvider:
     """A meter provider that exports every instrument to an OTLP/HTTP metrics endpoint."""
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    try:
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    except ModuleNotFoundError as exc:
+        raise MissingExtraError(
+            "telemetry.otlp_metrics_endpoint", "otlp", missing=exc.name
+        ) from exc
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
     reader = PeriodicExportingMetricReader(
@@ -58,11 +64,14 @@ def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
     # Avoid claiming OpenTelemetry's process-global providers when there is no
     # exporter. An application-level Traccia adapter may initialize them later.
     if settings.enabled and settings.otlp_endpoint:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        except ModuleNotFoundError as exc:
+            raise MissingExtraError("telemetry.otlp_endpoint", "otlp", missing=exc.name) from exc
         tracer_provider = trace.get_tracer_provider()
         if not isinstance(tracer_provider, TracerProvider):
             tracer_provider = TracerProvider()
             trace.set_tracer_provider(tracer_provider)
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
         tracer_provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otlp_endpoint))

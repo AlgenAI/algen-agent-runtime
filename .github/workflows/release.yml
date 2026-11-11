@@ -112,6 +112,9 @@ jobs:
           /tmp/algen-release-smoke/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
           test -x /tmp/algen-release-smoke/bin/algen-agent-runtime
           /tmp/algen-release-smoke/bin/algen-agent-runtime --help
+          if /tmp/algen-release-smoke/bin/algen-agent-runtime serve 2>serve.err; then exit 1; fi
+          grep -q "algen-agent-runtime\[server\]" serve.err
+          /tmp/algen-release-smoke/bin/pip install "$(ls $GITHUB_WORKSPACE/dist/*.whl)[service]"
           /tmp/algen-release-smoke/bin/algen-agent-runtime serve --help
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
           /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"

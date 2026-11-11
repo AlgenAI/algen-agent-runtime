@@ -39,7 +39,6 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
   "pydantic>=2.8,<3",
@@ -48,12 +47,20 @@ dependencies = [
   "structlog>=24.4,<27",
   "opentelemetry-api>=1.27,<2",
   "opentelemetry-sdk>=1.27,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
-  "uvicorn[standard]>=0.30,<1",
   "tzdata>=2025.2; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
+# The HTTP API and `algen-agent-runtime serve`.
+server = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1"]
+# Export traces and metrics to an OTLP/HTTP endpoint (telemetry.otlp_endpoint).
+otlp = ["opentelemetry-exporter-otlp-proto-http>=1.27,<2"]
+# A deployable service: both of the above.
+service = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+]
 postgres = ["asyncpg>=0.29,<1"]
 object-storage = ["asyncpg>=0.29,<1", "boto3>=1.43,<2"]
 pgvector = ["asyncpg>=0.29,<1", "pgvector>=0.3,<1"]
@@ -86,6 +93,10 @@ vector-stores = [
   "qdrant-client>=1.12,<2",
 ]
 dev = [
+  # The test suite covers the HTTP API and the OTLP exporter.
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
   "mypy>=1.11,<3",
   "pytest>=9.0.3,<10",
   "pytest-asyncio>=1.3,<2",

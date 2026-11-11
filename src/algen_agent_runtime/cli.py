@@ -9,6 +9,7 @@ import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from algen_agent_runtime.extras import MissingExtraError
 from algen_agent_runtime.scaffold import AVAILABLE_TEMPLATES, scaffold_project
 
 if TYPE_CHECKING:
@@ -59,11 +60,17 @@ def _run_serve(
     agent_ui: bool | None = None,
     banner: bool | None = None,
 ) -> None:
-    import uvicorn
-
-    from algen_agent_runtime.api.app import create_app
-
     settings = _settings_from_config(config)
+
+    try:
+        import uvicorn
+
+        from algen_agent_runtime.api.app import create_app
+    except ModuleNotFoundError as exc:
+        missing = exc.name if not isinstance(exc, MissingExtraError) else None
+        raise SystemExit(
+            f"error: {MissingExtraError('algen-agent-runtime serve', 'server', missing=missing)}"
+        ) from exc
 
     if agent_ui is not None:
         settings = settings.model_copy(

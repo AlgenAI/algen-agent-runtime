@@ -105,6 +105,13 @@ python -m pip install algen-agent-runtime
 python -m pip install --pre algen-agent-runtime
 ```
 
+The base package is the library. To run the HTTP API (`algen-agent-runtime serve`) and export
+telemetry over OTLP, install the `service` extra (or only `server` or `otlp`):
+
+```bash
+python -m pip install --pre 'algen-agent-runtime[service]'
+```
+
 Optional integrations are installed as extras:
 
 ```bash

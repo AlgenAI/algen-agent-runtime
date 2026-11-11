@@ -145,6 +145,10 @@ jobs:
           /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
           test -x /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime
           /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime --help
+          # Without the server extra, serve names the install command instead of a traceback.
+          if /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime serve 2>serve.err; then exit 1; fi
+          grep -q "algen-agent-runtime\[server\]" serve.err
+          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install "$(ls $GITHUB_WORKSPACE/dist/*.whl)[service]"
           /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime serve --help
           /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
           /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from importlib.resources import files; assert files('algen_agent_runtime').joinpath('persistence/migrations/001_initial.sql').is_file()"
