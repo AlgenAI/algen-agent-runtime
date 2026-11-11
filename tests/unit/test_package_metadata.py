@@ -9,7 +9,7 @@ def test_fastapi_reports_package_version() -> None:
 
 
 def test_package_version_is_private_testpypi_candidate() -> None:
-    assert re.match(r"^0\.1\.\d+(?:[abrc]\d+)?$", __version__)
+    assert re.match(r"^0\.\d+\.\d+(?:[abrc]\d+)?$", __version__)
 
 
 # Extras name a technology (postgres, mcp, redis), never a product or domain. Product
