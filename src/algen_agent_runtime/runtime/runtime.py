@@ -13,6 +13,7 @@ from functools import cached_property
 from typing import Any
 from uuid import uuid4
 
+import jsonschema
 import structlog
 from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
@@ -94,7 +95,11 @@ from algen_agent_runtime.observability.traccia_adapter import (
 from algen_agent_runtime.observability.trace_levels import TraceLevel, TraceLevelTracer
 from algen_agent_runtime.planning.contracts import ActionType, Plan, PlannedAction
 from algen_agent_runtime.planning.planners import PlannerRegistry
-from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
+from algen_agent_runtime.policies.contracts import (
+    PAYLOAD_CHANGE_KEY,
+    PolicyAction,
+    PolicyDecision,
+)
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
@@ -194,6 +199,55 @@ _OUTAGE_RETRY_SECONDS = (0.5, 30.0)
 # How long resume waits for the drive that paused a run to finish its tail (events, trace).
 _PAUSED_DRIVE_WAIT_SECONDS = 10.0
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
+# plan_tool answers a parallel reply leaves to the single path: it refuses the call, or runs it
+# with its rewritten arguments.
+_SINGLE_PATH_PLAN_ACTIONS = frozenset(
+    {
+        PolicyAction.DENY,
+        PolicyAction.REDACT,
+        PolicyAction.TRANSFORM,
+        PolicyAction.REQUIRE_CLARIFICATION,
+    }
+)
+
+
+def _planned_call(
+    action: PlannedAction, definition: ToolDefinition, decision: PolicyDecision
+) -> PlannedAction:
+    """The call as it goes on after the ``plan_tool`` decision (``deny`` is handled before).
+
+    ``allow`` and ``require_approval`` keep it. ``transform`` rewrites its arguments, which must
+    still fit the input schema, so the guards, the approval request and the executor all see
+    the rewritten call. ``redact`` refuses it, as ``before_tool`` would: the tool is never sent
+    masked arguments. ``require_clarification`` is not supported here and refuses it. A
+    ``require_approval`` decision whose other policies changed the arguments carries that change
+    (``PAYLOAD_CHANGE_KEY``) and is treated the same way.
+    """
+    change = decision.action
+    if change == PolicyAction.REQUIRE_APPROVAL:
+        change = PolicyAction(decision.audit_metadata.get(PAYLOAD_CHANGE_KEY, change))
+    if change == PolicyAction.REDACT:
+        raise PolicyDeniedError(
+            f"{decision.reason_code}: a redaction refuses the call to {definition.name}; "
+            "it is not run with masked arguments"
+        )
+    if change == PolicyAction.REQUIRE_CLARIFICATION:
+        raise PolicyDeniedError(
+            f"{decision.reason_code}: policy action require_clarification is unsupported at "
+            "boundary plan_tool"
+        )
+    if change != PolicyAction.TRANSFORM:
+        return action
+    rewritten = decision.value
+    if not isinstance(rewritten, dict):
+        raise ToolExecutionError(f"policy-transformed input for {definition.name} is not an object")
+    try:
+        jsonschema.validate(rewritten, definition.input_schema)
+    except jsonschema.ValidationError as exc:
+        raise ToolExecutionError(
+            f"policy-transformed input for {definition.name} is invalid: {exc.message}"
+        ) from exc
+    return action.model_copy(update={"arguments": rewritten})
 
 
 def _usage_attributes(usage: TokenUsage) -> dict[str, Any]:
@@ -2188,7 +2242,7 @@ class AgentRuntime:
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
         try:
-            tool = await self._admit_tool_call(state, agent, action)
+            admitted = await self._admit_tool_call(state, agent, action)
         except _UnknownToolError as exc:
             # A name no tool has is the model's slip, not a policy breach: it hears which
             # tools it has and carries on, whatever the agent's on_error.
@@ -2203,8 +2257,10 @@ class AgentRuntime:
         except Exception as exc:
             await self._tool_call_failed(state, agent, action, exc)
             return
-        if tool is None:
+        if admitted is None:
             return
+        # A plan_tool transform may have rewritten the arguments: those are the ones that run.
+        tool, action = admitted
         await self._transition(state, RunStatus.INVOKING_TOOL)
         try:
             outcome = await self._run_tool_call(state, agent, action, tool)
@@ -2294,9 +2350,10 @@ class AgentRuntime:
 
     async def _admit_tool_call(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
-    ) -> Tool | None:
-        """The tool to run, or None when the run paused for approval first or a guard answered
-        the call without running it."""
+    ) -> tuple[Tool, PlannedAction] | None:
+        """The tool to run and the call as it runs (a ``plan_tool`` transform may rewrite its
+        arguments), or None when the run paused for approval first or a guard answered the call
+        without running it."""
         call_id = action.id.removeprefix("tool-")
         if action.tool_name not in agent.enabled_tools:
             if not self._registered(action.tool_name or ""):
@@ -2312,7 +2369,7 @@ class AgentRuntime:
             "plan_tool",
             action.arguments,
             state,
-            {"tool": tool.definition, "approval_policy": agent.approval_policy},
+            {"agent": agent, "tool": tool.definition, "approval_policy": agent.approval_policy},
         )
         if decision.action == PolicyAction.DENY:
             # A denial at planning refuses the call before any approval is asked for, the same
@@ -2325,6 +2382,8 @@ class AgentRuntime:
                 {"reason_code": decision.reason_code, "audit_metadata": decision.audit_metadata},
             )
             raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
+        # The guards, the approval request and the executor all see the rewritten arguments.
+        action = _planned_call(action, tool.definition, decision)
         approved = call_id in state.approved_tool_call_ids
         if not approved:
             # Checked before anyone is asked; an approved call passed them when it was planned.
@@ -2359,7 +2418,7 @@ class AgentRuntime:
             await self._emit(state, "approval.required", state.pause_payload, action.id)
             return None
         self._count_tool_call(state, agent, tool.definition)
-        return tool
+        return tool, action
 
     async def _guard_tool_call(
         self,
@@ -2862,13 +2921,14 @@ class AgentRuntime:
                 "plan_tool",
                 action.arguments,
                 state,
-                {"tool": tool.definition, "approval_policy": agent.approval_policy},
+                {"agent": agent, "tool": tool.definition, "approval_policy": agent.approval_policy},
             )
-            if decision.action == PolicyAction.DENY or (
+            if decision.action in _SINGLE_PATH_PLAN_ACTIONS or (
                 decision.action == PolicyAction.REQUIRE_APPROVAL
                 and action.id.removeprefix("tool-") not in state.approved_tool_call_ids
             ):
-                # One at a time: the single path pauses for the approval or refuses the call.
+                # One at a time: the single path pauses for the approval, refuses the call or
+                # runs it with its rewritten arguments.
                 return False
             tools.append(tool)
         # Guards judge each call after the ones the model sent before it that will run.

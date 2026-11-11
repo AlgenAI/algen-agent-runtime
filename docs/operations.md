@@ -833,6 +833,54 @@ At the run's own boundaries the `policy.evaluated` event also carries `fail_mode
 `error_count`. Alert on any `fail_open` record: a boundary let a value through without one of its
 policies.
 
+### Actions per boundary
+
+A policy answers `allow`, `deny`, `redact`, `transform`, `require_approval` or
+`require_clarification`. What the Runtime does with each answer depends on the boundary. The table
+is the contract; `tests/unit/test_policy_boundary_contract.py` pins every cell.
+
+| Boundary | `allow` | `deny` | `redact` | `transform` | `require_approval` | `require_clarification` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `input` | continues | run fails | the run uses the policy's text (a non-text value is ignored) | as `redact` | run fails (unsupported) | run fails (unsupported) |
+| `before_retrieval` | continues | run fails | the request text becomes the policy's text (a non-text value is ignored) | as `redact` | run fails | run fails |
+| `after_retrieval` | continues | run fails | the history, and the context messages, become the policy's messages (history must stay a list of messages) | as `redact` | run fails | run fails |
+| `before_model` | continues | run fails | the model gets the policy's `ModelRequest` (another value is ignored; compaction requires a request without tools) | as `redact` | run fails | run fails |
+| `after_model` | continues | run fails | the reply text becomes the policy's text | as `redact` | run fails | run fails |
+| `plan_tool` | continues | the call is refused | **the call is refused** before guards or approval | the call's arguments become the policy's value, checked against the input schema; the guards, the approval request and the executor see the rewritten call | the run pauses for approval | the call is refused (unsupported) |
+| `before_tool` | the call runs | the call is refused | **the call is refused**: it is never run with masked arguments | the call runs with the policy's value, checked against the input schema; refused for an approved call when it changes the arguments | the call is refused | the call is refused |
+| `after_tool` | the result stands | the call fails | the result becomes the policy's value, checked against the output schema | as `redact` | the call fails | the call fails |
+| `final_response` | continues | run fails | the answer becomes the policy's text | as `redact` | run fails | run fails |
+| `before_memory_write` | continues | run fails (or the memory tool call) | what is written becomes the policy's value (conversation memory keeps the original unless it is a list of messages; other writes must keep their structure) | as `redact` | run fails | run fails |
+| `after_memory_write` | continues | run fails (the memory is already written) | no effect: the payload is only the count written | no effect | run fails | run fails |
+| `attachments` | continues | run fails before any model call | the run keeps the files the policy's list names (it can drop files, never add one) | as `redact` | run fails | run fails |
+
+A refused tool call follows the agent's `tool_policy.on_error`: it fails the run (`fail`) or goes
+back to the model as an error (`return_to_model`). `require_approval` is honoured only at
+`plan_tool`; elsewhere it, and `require_clarification` everywhere, refuse rather than let the
+value through.
+
+Several policies at one boundary: the first `deny` ends the evaluation; a `require_approval` or
+`require_clarification` stands only when no later policy denies; `redact` and `transform` chain,
+each policy seeing the previous one's value. The combined answer is `redact` when any policy
+redacted, otherwise `transform` (`reason_code: policy.redacted` or `policy.transformed`). When an
+approval requirement and a change meet at `plan_tool`, the decision carries the changed value
+and `audit_metadata.payload_change` (`redact` or `transform`): a redaction refuses the call
+before anyone is asked, and a rewrite is what the approval request shows.
+
+**Rewriting tool arguments.** `transform` is a policy's deliberate rewrite (pin a tenant id, clamp
+a limit, drop a field the tool must not receive), so the call runs with it. `redact` removes
+content the model meant to send, so a tool call would act on masked data (an email whose body says
+`[REDACTED_EMAIL]`); at the two tool-argument boundaries it refuses the call and the model hears
+why. The built-in `secrets` and `pii` policies, and a bundle's `redact_patterns`, answer `redact`.
+Put an argument rewrite at `plan_tool` (a policy can apply to both `plan_tool` and
+`before_tool`): approval binds the arguments the approval request showed, so a `before_tool`
+rewrite that changes an approved call's arguments refuses it. Workflow tool steps have no
+`plan_tool`; their `before_tool` rewrite runs unless the step carries an approval.
+
+`guardrail_policy.tool_policies`, when set, selects the policies at `plan_tool`, `before_tool`
+and `after_tool`; `guardrail_policy.policies` selects them at the other boundaries. Mandatory
+policies (authorization, side effects, bundles) run everywhere they apply.
+
 Fail modes apply to the built-in `CompositePolicyEngine`, which the container builds. An engine
 you pass to `AgentRuntime` yourself keeps its own error behaviour. Other checks are deterministic
 and always refuse: tool-call guards, approvals, tool-result injection screening, query governance,

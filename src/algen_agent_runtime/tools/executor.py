@@ -18,6 +18,7 @@ from algen_agent_runtime.exceptions.errors import (
     ToolNotAttemptedError,
 )
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
+from algen_agent_runtime.policies.contracts import PolicyAction
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.tools.blocking import run_blocking, track_threads
 from algen_agent_runtime.tools.contracts import (
@@ -65,6 +66,49 @@ async def _call_handler(
         return await handler(arguments, context)
     result = await run_blocking(handler, arguments, context)
     return await result if inspect.isawaitable(result) else result
+
+
+def _checked_arguments(
+    name: str,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    decision: Any,
+    *,
+    approved: bool,
+) -> dict[str, Any]:
+    """The arguments the call runs with after the ``before_tool`` decision.
+
+    ``allow`` keeps them. ``transform`` replaces them with the policy's value, which must still
+    fit the input schema; an approved call is refused instead when the rewrite changes them, since
+    its approval covers the arguments that were shown (rewrites belong at ``plan_tool``, before the
+    approval is asked for). ``redact`` refuses the call: the tool would act on masked data the
+    model never meant to send. Every other action refuses it too.
+    """
+    action = decision.action
+    if action == PolicyAction.ALLOW:
+        return arguments
+    if action == PolicyAction.REDACT:
+        raise PolicyDeniedError(
+            f"{decision.reason} A redaction refuses the call to {name}; it is not run with "
+            "masked arguments."
+        )
+    if action != PolicyAction.TRANSFORM:
+        raise PolicyDeniedError(decision.reason)
+    rewritten = decision.value
+    if not isinstance(rewritten, dict):
+        raise ToolExecutionError(f"policy-transformed input for {name} is not an object")
+    try:
+        jsonschema.validate(rewritten, definition.input_schema)
+    except jsonschema.ValidationError as exc:
+        raise ToolExecutionError(
+            f"policy-transformed input for {name} is invalid: {exc.message}"
+        ) from exc
+    if approved and rewritten != arguments:
+        raise PolicyDeniedError(
+            f"a before_tool policy rewrote the arguments of an approved call to {name}; "
+            "the approval does not cover them"
+        )
+    return rewritten
 
 
 @asynccontextmanager
@@ -166,8 +210,9 @@ class ToolExecutor:
         except jsonschema.ValidationError as exc:
             raise ToolExecutionError(f"invalid input for {name}: {exc.message}") from exc
         decision = await self._evaluate_policy("before_tool", arguments, definition, context, agent)
-        if decision.action != "allow":
-            raise PolicyDeniedError(decision.reason)
+        arguments = _checked_arguments(
+            name, definition, arguments, decision, approved=bool(approval)
+        )
         execution, reserved = await self._executions.begin(context, name)
         if not reserved:
             if execution.status == ToolExecutionStatus.COMPLETED and execution.result:

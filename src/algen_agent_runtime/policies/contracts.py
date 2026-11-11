@@ -55,6 +55,11 @@ class PolicyFailMode(StrEnum):
     OPEN = "open"
 
 
+#: Key in the ``audit_metadata`` of a ``require_approval`` or ``require_clarification`` decision
+#: whose other policies also changed the payload: ``redact`` or ``transform``. The decision's
+#: ``value`` is then the changed payload.
+PAYLOAD_CHANGE_KEY = "payload_change"
+
 #: Reason code of the ``deny`` decision a boundary returns when a policy failed closed.
 POLICY_ERROR_REASON_CODE = "policy.error"
 

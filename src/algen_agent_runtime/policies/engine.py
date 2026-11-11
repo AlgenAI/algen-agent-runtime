@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from algen_agent_runtime.events.contracts import AuditEvent
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
 from algen_agent_runtime.policies.contracts import (
+    PAYLOAD_CHANGE_KEY,
     POLICY_ERROR_REASON_CODE,
     PolicyAction,
     PolicyDecision,
@@ -61,8 +62,10 @@ class SecretRedactionPolicy:
     ) -> PolicyDecision:
         transformed, changed = self._redact(payload)
         if changed:
+            # A redaction, not a rewrite: at the tool-argument boundaries it refuses the call
+            # rather than sending the tool a masked credential.
             return PolicyDecision(
-                action=PolicyAction.TRANSFORM,
+                action=PolicyAction.REDACT,
                 reason_code="secret.redacted",
                 reason="Potential secret was redacted.",
                 value=transformed,
@@ -531,7 +534,9 @@ class OutputValidationPolicy:
         )
 
 
-_TOOL_POINTS = frozenset({PolicyPoint.BEFORE_TOOL, PolicyPoint.AFTER_TOOL})
+# The boundaries that see a tool's arguments or result: an agent's
+# ``guardrail_policy.tool_policies`` selects the policies that run there.
+_TOOL_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL, PolicyPoint.AFTER_TOOL})
 POLICY_ERROR_AUDIT_ACTION = "policy.error"
 POLICY_ERROR_METRIC_NAME = "algen_agent_runtime.policy.errors"
 _logger = structlog.get_logger("algen_agent_runtime.policies")
@@ -664,6 +669,7 @@ class CompositePolicyEngine:
             ) from exc
         transformed = payload
         transforms: list[str] = []
+        redacted = False
         agent = context.get("agent")
         guardrails = getattr(agent, "guardrail_policy", None)
         selected = set(getattr(guardrails, "policies", ()))
@@ -760,23 +766,35 @@ class CompositePolicyEngine:
                 transformed = decision.value
                 transforms.append(decision.reason_code)
                 triggered.append(policy.name)
+                redacted = redacted or decision.action == PolicyAction.REDACT
         if pending is not None:
-            return pending.model_copy(
-                update={
-                    "audit_metadata": {
-                        **pending.audit_metadata,
-                        "policies_invoked": invoked,
-                        "policies_triggered": triggered,
-                        "policies_skipped": skipped,
-                        **self._errors_metadata(errors),
-                    }
+            update: dict[str, Any] = {
+                "audit_metadata": {
+                    **pending.audit_metadata,
+                    "policies_invoked": invoked,
+                    "policies_triggered": triggered,
+                    "policies_skipped": skipped,
+                    **self._errors_metadata(errors),
                 }
-            )
+            }
+            if transforms:
+                # The other policies' changes still stand: plan_tool asks for approval of the
+                # rewritten arguments, or refuses a redacted call before anyone is asked.
+                update["value"] = transformed
+                update["audit_metadata"]["transforms"] = transforms
+                update["audit_metadata"][PAYLOAD_CHANGE_KEY] = (
+                    PolicyAction.REDACT.value if redacted else PolicyAction.TRANSFORM.value
+                )
+            return pending.model_copy(update=update)
         if transforms:
+            # One redaction makes the combined change a redaction: the boundaries that treat the
+            # two differently (the tool-argument ones) must see that something was removed.
             return PolicyDecision(
-                action=PolicyAction.TRANSFORM,
-                reason_code="policy.transformed",
-                reason="Payload transformed by policy.",
+                action=PolicyAction.REDACT if redacted else PolicyAction.TRANSFORM,
+                reason_code="policy.redacted" if redacted else "policy.transformed",
+                reason=(
+                    "Payload redacted by policy." if redacted else "Payload transformed by policy."
+                ),
                 value=transformed,
                 audit_metadata={
                     "transforms": transforms,
