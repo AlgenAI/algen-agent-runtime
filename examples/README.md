@@ -14,6 +14,7 @@ examples take `--offline` to run that way.
 | [`quickstart_conversation`](quickstart_conversation) | A two-turn conversation through `ConversationService` | Yes | `python -m examples.quickstart_conversation.app` |
 | [`quickstart_cloud_chat`](quickstart_cloud_chat) | One hosted-provider agent with a model allowlist, guardrails and verification | With `--offline` | `python -m examples.quickstart_cloud_chat.app --offline` |
 | [`quickstart_rag`](quickstart_rag) | Retrieval-augmented answers with citations | With `--offline` | `python -m examples.quickstart_rag.app --offline` |
+| [`quickstart_attachments`](quickstart_attachments) | Files attached to a run: an image the model reads and a CSV a tool reads by its id | Yes | `python -m examples.quickstart_attachments.app` |
 | [`quickstart_local_chat`](quickstart_local_chat) | A local model through Ollama | Needs a local Ollama server | `python -m examples.quickstart_local_chat.app` |
 
 ## Patterns
