@@ -31,6 +31,8 @@ Algen Agent Runtime supports three reproducible distribution channels:
 
 - The target version is set in `src/algen_agent_runtime/__init__.py`.
 - `CHANGELOG.md` contains the release date, changes, compatibility notes, and known limitations.
+  The Auto Release workflow takes the release notes from this file only; the `0.1` history is in
+  `CHANGELOG-0.1.md`, so a `0.1` backport release puts its entry in `CHANGELOG.md`.
 - The protected default branch is green on all required quality and security checks.
 - The `pypi` GitHub environment has required reviewers.
 - PyPI trusts `.github/workflows/release.yml` for the `AlgenAI/algen-agent-runtime` repository and `pypi` environment.

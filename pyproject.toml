@@ -131,6 +131,7 @@ include = [
   "/src/algen_agent_runtime",
   "/examples",
   "/CHANGELOG.md",
+  "/CHANGELOG-0.1.md",
   "/LICENSE",
   "/NOTICE",
   "/README.md",
