@@ -95,6 +95,25 @@ class MemoryStore(Protocol):
     async def delete(self, tenant_id: str, session_id: str) -> None: ...
 
 
+@runtime_checkable
+class SessionOwnership(Protocol):
+    """A memory store that binds each session to the user who first used it.
+
+    The built-in memory stores implement it, and the Runtime then refuses a run that names
+    another user's ``session_id`` in the tenant. A custom ``MemoryStore`` without it is trusted
+    to isolate users itself (for example a store bound to one user's conversation).
+    """
+
+    async def claim_session(self, tenant_id: str, session_id: str, user_id: str) -> bool:
+        """Record ``user_id`` as the session's owner if it has none (or its claim expired).
+
+        Returns True when the session is ``user_id``'s, now or already, and False when it
+        belongs to another user of the tenant. A claim lasts at least as long as the store keeps
+        the session's memory.
+        """
+        ...
+
+
 class ArtifactStore(Protocol):
     async def put(self, artifact: Artifact) -> None: ...
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None: ...
@@ -153,4 +172,5 @@ class Runtime(Protocol):
         payload: Mapping[str, Any],
         *,
         credentials: Mapping[str, str] | None = None,
+        decided_by: str | None = None,
     ) -> RunState: ...

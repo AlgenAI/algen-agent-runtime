@@ -48,6 +48,14 @@ The container's own components are registered first, then the plugins, then the 
 arguments `additional_tools=` and `mcp_servers=`, which keep working for tests and existing
 deployments.
 
+`additional_tools=` takes `Tool` objects and `Toolkit` instances. A toolkit passed there is
+registered as a plugin registers it, with `toolkit.register(context)`: it becomes a container
+resource (its client opens at start or on first use and closes with the container) and resolves
+`env://` references with the container's secrets. Pass the `Toolkit` itself, not its `tools`: the
+tools alone skip all of that, so the client opens on the first call with the process environment,
+is not checked at start and is never closed. Only a toolkit registered through a plugin has its
+`env` names reach `describe` and `check`, which never see constructor arguments.
+
 ## Moving from constructor arguments
 
 A deployment that passes components to `build_container` or registers them on the built container

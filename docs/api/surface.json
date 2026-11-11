@@ -72,6 +72,7 @@
   "agents[].default_model.quality_tier": "integer",
   "agents[].default_model.required_capabilities": "list[string]",
   "agents[].default_model.routing_preference": "enum[\"balanced\", \"local_first\", \"cloud_first\", \"ordered\"]",
+  "agents[].delegates": "list[string]",
   "agents[].description": "string",
   "agents[].domain_plugins": "list[string]",
   "agents[].enabled_tools": "list[string]",
@@ -88,6 +89,8 @@
   "agents[].fallback_models[].required_capabilities": "list[string]",
   "agents[].fallback_models[].routing_preference": "enum[\"balanced\", \"local_first\", \"cloud_first\", \"ordered\"]",
   "agents[].guardrail_policy": "object",
+  "agents[].guardrail_policy.pii": "object",
+  "agents[].guardrail_policy.pii.exempt_entities": "list[enum[\"email\", \"phone\", \"aadhaar\", \"card\"]]",
   "agents[].guardrail_policy.policies": "list[string]",
   "agents[].guardrail_policy.require_citations": "boolean",
   "agents[].guardrail_policy.tool_policies": "list[string] | null",
@@ -343,6 +346,9 @@
   "runtime.recovery_limit": "integer",
   "runtime.shutdown_grace_seconds": "number",
   "runtime.stream_delta_interval_ms": "integer",
+  "runtime.subagent": "object",
+  "runtime.subagent.enabled": "boolean",
+  "runtime.subagent.max_depth": "integer",
   "runtime.tool_threads": "object",
   "runtime.tool_threads.max_queued": "integer",
   "runtime.tool_threads.max_workers": "integer | null",
@@ -619,6 +625,7 @@
      "context_policy": "ContextPolicy",
      "continuation_policy": "ContinuationPolicy",
      "default_model": "ModelProfile",
+     "delegates": "frozenset[str]",
      "description": "str",
      "domain_plugins": "tuple[str, ...]",
      "enabled_tools": "frozenset[str]",
@@ -652,7 +659,7 @@
      "expire_paused_runs": "(self, *, clarification_timeout_seconds: 'float | None' = None, limit: 'int' = 1000) -> 'int'",
      "narrative": "(self, run_id: 'str', tenant_id: 'str') -> 'RunNarrative'",
      "recover": "(self, limit: 'int' = 1000) -> 'int'",
-     "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+     "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None, decided_by: 'str | None' = None) -> 'RunState'",
      "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
      "shutdown": "(self, grace_seconds: 'float' = 10.0) -> 'None'",
      "start": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
@@ -664,9 +671,10 @@
    "AlgenAgentRuntimeClient": {
     "class": "(runtime: 'AgentRuntime') -> 'None'",
     "methods": {
-     "run": "(self, request: 'RunRequest') -> 'RunResult'",
-     "run_sync": "(self, request: 'RunRequest') -> 'RunResult'",
-     "stream": "(self, request: 'RunRequest') -> 'AsyncIterator[RunEvent]'"
+     "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
+     "run_sync": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
+     "stream": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'AsyncIterator[RunEvent]'",
+     "stream_events": "(self, run_id: 'str', *, after: 'int' = 0) -> 'AsyncIterator[RunEvent]'"
     }
    },
    "Artifact": {
@@ -840,6 +848,7 @@
      "error": "str | None",
      "execution_summary": "ExecutionSummary",
      "output": "str | None",
+     "rejected_output": "str | None",
      "run_id": "str",
      "session_id": "str",
      "sources": "tuple[str, ...]",
@@ -2738,7 +2747,9 @@
   "015_approval_agent.sql",
   "016_resource_bounds.sql",
   "017_approval_tool_fingerprint.sql",
-  "018_learned_memory_vectors.sql"
+  "018_learned_memory_vectors.sql",
+  "019_session_owners.sql",
+  "020_approval_decided_by.sql"
  ],
  "protocols": {
   "algen_agent_runtime.analytics.contracts.AnalyticalGraphStore": {
@@ -2753,7 +2764,7 @@
   },
   "algen_agent_runtime.approvals.service.ApprovalService": {
    "create": "(self, run_id: 'str', step_id: 'str', tenant_id: 'str', proposed_action: 'str', parameters: 'dict[str, Any]', risk: 'str', expires_seconds: 'int', *, agent: 'str | None' = None, tool: 'str | None' = None, tool_version: 'str | None' = None, tool_fingerprint: 'str | None' = None, arguments_sha256: 'str | None' = None, rationale: 'str | None' = None) -> 'ApprovalRequest'",
-   "decide": "(self, approval_id: 'str', tenant_id: 'str', decision: 'ApprovalStatus', modified_parameters: 'dict[str, Any] | None' = None) -> 'ApprovalRequest'",
+   "decide": "(self, approval_id: 'str', tenant_id: 'str', decision: 'ApprovalStatus', modified_parameters: 'dict[str, Any] | None' = None, *, decided_by: 'str | None' = None, comment: 'str | None' = None) -> 'ApprovalRequest'",
    "expire": "(self, approval_id: 'str', tenant_id: 'str', *, reason: 'str') -> 'ApprovalRequest'",
    "get": "(self, approval_id: 'str', tenant_id: 'str') -> 'ApprovalRequest | None'",
    "list": "(self, tenant_id: 'str', *, status: 'ApprovalStatus | None' = None, run_id: 'str | None' = None, agent: 'str | None' = None, limit: 'int' = 50, offset: 'int' = 0) -> 'Sequence[ApprovalRequest]'"
@@ -2980,13 +2991,16 @@
   },
   "algen_agent_runtime.types.interfaces.Runtime": {
    "cancel": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState'",
-   "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
+   "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None, decided_by: 'str | None' = None) -> 'RunState'",
    "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
    "start": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunState'",
    "wait": "(self, run_id: 'str', tenant_id: 'str') -> 'RunResult'"
   },
   "algen_agent_runtime.types.interfaces.SecretProvider": {
    "get": "(self, reference: 'str') -> 'str'"
+  },
+  "algen_agent_runtime.types.interfaces.SessionOwnership": {
+   "claim_session": "(self, tenant_id: 'str', session_id: 'str', user_id: 'str') -> 'bool'"
   },
   "algen_agent_runtime.types.interfaces.VectorStore": {},
   "algen_agent_runtime.types.interfaces.Verifier": {

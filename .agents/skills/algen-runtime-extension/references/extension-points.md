@@ -54,6 +54,10 @@ bound to the call (`ToolApproval.for_call(...)`: tool, version and a digest of t
 a call the approval does not cover raises `ApprovalMismatchError`. Code that calls the executor
 directly proves the decision itself (docs/tool-authoring.md, "Who proves an approval is valid").
 `ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+A custom `ApprovalService` takes `decided_by` and `comment` keywords on `decide` and records them
+with `decided_at` (the HTTP route passes the principal's user id; `Runtime.resume(...,
+decided_by=...)` for hosts). One without them still works but records no approver, and the
+Runtime logs `approval_service_records_no_approver` once.
 A synchronous handler runs in the bounded tool thread pool; `execution="process"` runs a
 top-level, picklable handler in a subprocess that is killed at its timeout.
 To let tools inside a foreign framework stay governed, hand them over with
@@ -95,6 +99,12 @@ built-in handler. Adding a node kind is a Runtime change to `AnalyticalNodeKind`
 Inspect the relevant Protocol and in-memory/PostgreSQL implementations. Preserve tenant-scoped keys,
 atomic state transitions, optimistic concurrency where defined, timestamps, recovery behavior, and
 forward schema migrations.
+
+A session memory store should also implement `SessionOwnership.claim_session(tenant_id,
+session_id, user_id) -> bool` (as the in-memory, Redis and PostgreSQL stores do): it binds a session
+to its first user, renews the claim for that user, and lets the claim last at least as long as the
+session's messages. The Runtime then refuses a run that names another user's session. A store
+without it is trusted to isolate users itself (for example one bound to a single user's thread).
 
 Workflow checkpoint stores additionally require detached reads, tenant isolation, compare-and-set
 versions, manifest fingerprints, recoverable-state filtering, and corruption failure behavior. Run

@@ -6,6 +6,132 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+Fixes from an independent review of 0.2.0b1: four tenant-isolation and privilege issues, run
+output that failed or changed after verification, streams that never ended on a pause, a recovery
+race between two processes, and PII, secrets and injection rules that refused ordinary data. Run
+approvals now record who decided them, the client passes caller credentials, and `core.subagent`
+can be enabled from settings. Migrations 019 and 020 are additive. The public surface only grows (`docs/api/surface.json`). Several fixes
+change behaviour: read the upgrade notes.
+
+### Upgrade notes
+
+1. **Sessions belong to their user.** A run that names another user's `session_id` in the same
+   tenant is refused (`NotFoundError` in process, 404 over HTTP). Give each user their own session
+   id. Generated session ids are claimed at the first memory write and stay with their user for the
+   memory's retention. A memory store without `claim_session` is not checked. (RT-B02)
+2. **Who may act on a run over HTTP.** For a run that was not started from a conversation, only the
+   run's user may decide its approval, cancel, steer or answer it. Approvers working from
+   `/v1/approvals` need the `approvals:decide` scope; operators who cancel other users' runs need
+   `runs:admin`. Reads stay tenant-wide with `runs:read`. (RT-G03)
+3. **`core.subagent` needs an allowlist.** An agent delegates only to the agents in its new
+   `delegates` list (empty allows none, `"*"` allows any), and not to an agent whose
+   `tool_permissions` exceed its own. The nesting depth is counted on the server from
+   `parent_run_id`; the model's `depth` argument is ignored, and the limit raises
+   `PolicyDeniedError`. Delegations are never cached or retried. (RT-B03, RT-B04, RT-B18, RT-G14)
+4. **`serve --host` is validated.** With development-header auth, `serve --host` on a non-loopback
+   address now refuses to start (unless `allow_insecure_development_auth`), and `create_app`
+   re-validates API settings built with `model_copy`. (RT-B01)
+5. **A failed run has no output.** `RunResult.output` is `None` unless the run completed, and the
+   run view's `output_text` is null for failed, timed-out and cancelled runs. A verification
+   failure keeps the rejected answer in `RunResult.rejected_output` (left out of JSON) and the run
+   view's `rejected_output`. (RT-B05)
+6. **Structured output and guardrails.** With a `response_schema`, `after_model` and
+   `final_response` policies receive the parsed `dict` or `list` (context
+   `structured_output: True`) instead of a string; custom policies there must handle it. The
+   built-in redactions change string values only. A `final_response` change to verified structured
+   output is verified again, and the run fails if it no longer passes. (RT-B06)
+7. **Streams end on a pause.** `client.stream()` and `GET /v1/runs/{id}/events` end after
+   `approval.required`, `clarification.required` or `tool.reconciliation_required`. Follow a resumed
+   run with `client.stream_events(run_id, after=...)` or reconnect with `Last-Event-ID`. (RT-B08)
+8. **Fewer false redactions and refusals.** A 12-digit number is an Aadhaar number only when it
+   passes the Verhoeff check; a 10-digit number is a phone number only with `+91`, `91` or `0`, 5-5
+   grouping, or a phone word nearby or in its field name. Prose such as "the secret: consistency"
+   is no longer masked, and injection screening needs an instruction addressed to the assistant
+   ("ignore previous instructions" is still refused anywhere). Deployments that relied on bare
+   10-digit numbers being masked should name the field, add phone context or use their own DLP
+   policy. (RT-B12 to RT-B15)
+9. **Working-state updates no longer pause for approval.** `core.working_state_update` declares no
+   side effect; `context.write`, the memory-write policies and the revision check still apply.
+   (RT-G45)
+10. **Recovery is single-node.** Enable `recover_incomplete_runs` on exactly one process per
+    database until the 0.3 leases. A second process no longer fails to start or fails the run when
+    both recover the same database. (RT-B07)
+11. **Approvals record who decided.** Migration `020_approval_decided_by.sql` adds nullable
+    `decided_by`, `decided_at` and `comment` columns to the approvals table; requests decided
+    earlier have none. A custom `ApprovalService` whose `decide` lacks the new `decided_by` and
+    `comment` keywords keeps working but records no approver, and the Runtime logs
+    `approval_service_records_no_approver` once; add
+    `*, decided_by: str | None = None, comment: str | None = None` to record it. A custom `Runtime`
+    used with `RuntimeConversationHandler` receives `decided_by` only if its `resume` accepts it.
+    (RT-G01)
+12. **`core.subagent` from settings.** A host that registers `subagent_tool(runtime)` itself on a
+    `build_container` container must not also set `runtime.subagent.enabled: true`; doing both
+    raises `ConflictError`. (G62)
+
+### Security
+
+- Session memory was shared by users of a tenant who named the same `session_id`; sessions are now
+  bound to their first user, in memory, Redis and PostgreSQL stores (migration
+  `019_session_owners.sql`, swept with the memory). (RT-B02)
+- `serve --host` could publish development-header auth on a public interface. (RT-B01)
+- `core.subagent` could return another user's cached delegation, let the model choose its nesting
+  depth, and run any agent of the tenant. (RT-B03, RT-B04, RT-G14)
+- Any tenant user with `runs:write` could approve, cancel or steer another user's run that was not
+  started from a conversation. (RT-G03)
+
+### Fixed
+
+- A run that failed verification returned the rejected answer as its output. (RT-B05)
+- Redaction rewrote verified JSON into text that no longer parsed, or changed it after
+  verification while the run reported `completed`. (RT-B06)
+- `AlgenAgentRuntimeClient.stream()` and the SSE run stream never ended when the run paused.
+  (RT-B08)
+- `build_container(additional_tools=...)` accepts `Toolkit` instances and registers them as a plugin
+  does: the toolkit becomes a container resource, opens with the container's `env://` secrets and
+  closes with it. Before, a Toolkit's tools passed there never got `register(context)`. (RT-B20)
+- Two processes recovering one PostgreSQL database could fail a start with `RunConflictError` or
+  mark the interrupted run failed on an event-sequence collision. (RT-B07)
+- Tools marked `volatile` were stored in and served from the tool-result cache. (RT-B09)
+- A delegated child run did not set `RunRequest.parent_run_id`. (RT-B18)
+- The `pii`, `secrets` and `prompt_injection` rules refused or redacted tracking and order numbers,
+  Telegram chat ids, prose mentioning a secret, and trust-and-safety questions. (RT-B12 to RT-B15)
+
+### Added
+
+- `AgentDefinition.delegates` and `agents[].delegates`. (RT-G14)
+- Tool schema fields declaring `"format": "identifier"` or `"x-pii": false` keep a one-token value
+  at `plan_tool`, `before_tool`, `after_tool` and in history; `guardrail_policy.pii.exempt_entities`
+  turns kinds off per agent. Both markers are removed from the tool schemas sent to model providers,
+  some of which refuse unknown keywords and formats. (RT-G08)
+- `RunResult.rejected_output`, `AlgenAgentRuntimeClient.stream_events()` and
+  `STREAM_END_EVENT_TYPES`.
+- The `SessionOwnership` protocol (`claim_session`) on the memory stores, the `approvals:decide`
+  and `runs:admin` scopes, and a `session_owners` retention sweep.
+- A run's approval request records who decided it: `ApprovalRequest.decided_by`, `decided_at` and
+  `comment`, returned by `GET /v1/approvals`. `POST /v1/runs/{id}/approval` fills `decided_by` from
+  the authenticated principal (the body cannot name it) and takes an optional `comment` (at most
+  4,000 characters); conversation turns record the conversation's owner. New keywords:
+  `ApprovalService.decide(..., decided_by=, comment=)` and `Runtime.resume(..., decided_by=)`.
+  (RT-G01)
+- `AlgenAgentRuntimeClient.run`, `run_sync` and `stream` take `credentials=`, passed to the run like
+  `Runtime.run(..., credentials=)`. (RT-B17)
+- `runtime.subagent.enabled` (default `false`) registers `core.subagent` in `build_container`, and
+  `runtime.subagent.max_depth` (default 3, 1 to 10) bounds a delegation chain. An agent still opts
+  in with `core.subagent` in `enabled_tools`, `agents.delegate` in `tool_permissions` and the agents
+  it may call in `delegates`; `describe` and `check` list the tool when it is enabled. (G62)
+
+### Documentation
+
+- 0.1-only claims are shown only for 0.1 on the docs page: substring-only recall, deprecated
+  document extractors, the 0.1.0a14 meter `reserve` form, an approval that "covers the step, not its
+  arguments", and pinned 0.1 install banners. Strict approval binding and similarity recall are
+  described for 0.2. (D2 to D7)
+- Approval attribution is claimed for workflow approvals, and for run approvals from 0.2.0b2;
+  citations are described as markers
+  checked against sources; `assert_tool_contract` lets free-form maps pass; Toolkits can be passed
+  to `additional_tools`; a failed child agent run surfaces as `RuntimeError` in workflows;
+  recovery is documented as single-node. (D8, D9, D11 to D14)
+
 ## [0.2.0b1] - 2026-11-11
 
 The first `0.2` beta. Everything deprecated during `0.1` is removed, the server and OTLP

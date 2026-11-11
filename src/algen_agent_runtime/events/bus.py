@@ -6,6 +6,15 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
+from algen_agent_runtime.exceptions.errors import RunConflictError
+
+
+def _is_sequence_conflict(exc: BaseException) -> bool:
+    """Whether a unique violation is on the events' ``(run_id, sequence)`` key, not their id."""
+    constraint = getattr(exc, "constraint_name", None)
+    if isinstance(constraint, str):
+        return "pkey" not in constraint
+    return "sequence" in str(exc)
 
 
 class InMemoryEventBus:
@@ -92,17 +101,27 @@ class PostgresEventBus:
         return int(row["sequence"])
 
     async def publish(self, event: RunEvent) -> None:
-        await self._database.execute(
-            "INSERT INTO algen_agent_runtime_events "
-            "(id, run_id, tenant_id, sequence, event, created_at) "
-            "VALUES ($1,$2,$3,$4,$5::jsonb,$6)",
-            event.id,
-            event.run_id,
-            event.tenant_id,
-            event.sequence,
-            event.model_dump_json(),
-            event.timestamp,
-        )
+        """Record ``event``; ``RunConflictError`` when another writer already took its
+        sequence number (another process driving the same run)."""
+        try:
+            await self._database.execute(
+                "INSERT INTO algen_agent_runtime_events "
+                "(id, run_id, tenant_id, sequence, event, created_at) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb,$6)",
+                event.id,
+                event.run_id,
+                event.tenant_id,
+                event.sequence,
+                event.model_dump_json(),
+                event.timestamp,
+            )
+        except Exception as exc:
+            if "UniqueViolationError" in type(exc).__name__ and _is_sequence_conflict(exc):
+                raise RunConflictError(
+                    f"event {event.sequence} of run {event.run_id!r} was already written by "
+                    "another writer"
+                ) from exc
+            raise
         async with self._lock:
             subscribers = tuple(self._subscribers[event.run_id])
         for queue in subscribers:

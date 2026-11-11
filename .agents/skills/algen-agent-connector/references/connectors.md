@@ -29,6 +29,12 @@ enforces `requires_approval` on every call, not only when planning: a call witho
 reference is refused, so a workflow `tool:` step or host code that calls an approval-gated tool
 needs an approval node in front of it.
 
+Mark identifier fields the `pii` guardrail would otherwise redact, since a redacted argument
+refuses the call: chat, message and thread ids, order and tracking numbers that are digit
+strings take `Field(json_schema_extra={"format": "identifier"})` (or `{"x-pii": False}` when the
+field already has a `format`), and address fields take `{"format": "email"}`. Runtimes before
+0.2.0b2 ignore the annotations. See docs/agent-tooling.md, "What the pii guardrail redacts".
+
 Tell the ledger what happened when a call fails. Raise `ToolNotAttemptedError` (or a
 `PolicyDeniedError`) when the tool refused before sending anything, or when the provider
 definitely rejected the call (a 4xx other than 408): it is recorded `failed` and can be retried.

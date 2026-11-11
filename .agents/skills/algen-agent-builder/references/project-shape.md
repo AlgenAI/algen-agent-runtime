@@ -130,10 +130,20 @@ agents:
 - Give a write tool a `precheck` (`@tool(write(approval=True), precheck=...)`) when it can say why a
   change would fail before anyone is asked to approve it.
 - Mark reads of state that changes on its own (a job status, a clock) `volatile=True` (or
-  `http_tools[].volatile: true`) so the repeat guard never holds them back.
+  `http_tools[].volatile: true`) so the repeat guard never holds them back and the tool-result
+  cache never serves a stale result.
+- An agent that delegates with `core.subagent` lists it in `enabled_tools`, `agents.delegate` in
+  `tool_permissions`, and the agents it may call in `delegates` (`"*"` for any; empty, the
+  default, allows none). The deployment registers the tool with `runtime.subagent.enabled: true`
+  (`max_depth`, default 3, bounds a chain); it is off by default. A delegate's
+  `tool_permissions` must be within the caller's, and the Runtime counts the nesting depth itself
+  (docs/agent-tooling.md, "Delegating to another agent").
+- A `session_id` belongs to the user who first used it: a run naming another user's session is
+  refused as not found. Do not share one session id between users; give each user their own.
 - A tool that acts as the signed-in user reads `context.credentials` (for example
   `context.credentials["authorization"]`). The host passes them with
-  `runtime.run(request, credentials=...)` and again on every `resume`; they are kept in memory only.
+  `runtime.run(request, credentials=...)` (or `AlgenAgentRuntimeClient.run`/`stream` with the same
+  keyword) and again on every `resume`; they are kept in memory only.
   Never put credentials in `RunRequest.metadata`, tool arguments or the agent's instructions:
   metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
   tools an empty mapping, so return an "authentication required" tool error then.

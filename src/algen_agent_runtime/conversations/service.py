@@ -213,7 +213,16 @@ class RuntimeConversationHandler:
                 raise ConflictError(f"turn {pending.turn_id!r} awaits an answer, not a decision")
             payload = {"clarification": response.text}
         cursor = await self._event_cursor(run_id)
-        await self._runtime.resume(run_id, conversation.tenant_id, payload, credentials=credentials)
+        # Only the conversation's owner may answer its turns, so they decided the approval. A
+        # Runtime written before 0.2, without decided_by, is called as before.
+        attribution = (
+            {"decided_by": conversation.user_id}
+            if pending.kind == "approval" and _accepts(self._runtime.resume, "decided_by")
+            else {}
+        )
+        await self._runtime.resume(
+            run_id, conversation.tenant_id, payload, credentials=credentials, **attribution
+        )
         self._resume_cursors[run_id] = cursor
 
     async def follow(
@@ -464,13 +473,14 @@ def _output_text(result: ConversationTurnResult) -> str:
     )
 
 
-def _accepts_credentials(handle: Any) -> bool:
+def _accepts(function: Any, keyword: str) -> bool:
+    """Whether ``function`` takes the keyword argument ``keyword`` (or any keyword)."""
     try:
-        parameters = inspect.signature(handle).parameters.values()
+        parameters = inspect.signature(function).parameters.values()
     except (TypeError, ValueError):
         return False
     return any(
-        parameter.name == "credentials" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        parameter.name == keyword or parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters
     )
 
@@ -695,7 +705,7 @@ class ConversationService:
             raise ValueError("message cannot be empty")
         conversation = await self._owned(conversation_id, tenant_id, user_id)
         handler = self.handlers.get(conversation.handler)
-        if credentials and not _accepts_credentials(handler.handle):
+        if credentials and not _accepts(handler.handle, "credentials"):
             raise ConfigurationError(
                 f"conversation handler {handler.name!r} does not accept credentials"
             )

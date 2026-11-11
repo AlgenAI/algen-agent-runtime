@@ -20,10 +20,12 @@ all three settings: the feature flag, enabled tool, and write permission. The de
 builders support this feature; other builders are rejected when the flag is enabled. No artifact
 store, additional model call, or optional dependency is needed.
 
-Updates are classified as writes. The default `approval_policy.require_for_side_effects: true`
-therefore requires approval before an update. Applications may use their existing approval policy
-to allow these writes; setting that flag to false affects all non-destructive side-effecting tools
-for the agent, not just working state. Permission and policy checks still apply.
+An update changes only the run's own checkpoint, so from 0.2.0b2 the tool declares no side effect
+(`side_effect: none`) and `approval_policy.require_for_side_effects` does not pause the run for it.
+Up to 0.2.0b1 updates were classified as writes, and the default
+`require_for_side_effects: true` asked for an approval before each one unless the agent turned
+that flag off for all its tools. The `context.write` permission, the `before_memory_write` and
+`after_tool` policies and the revision check still apply to every update.
 
 ## Updating the record
 

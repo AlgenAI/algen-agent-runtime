@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import time
@@ -106,7 +107,11 @@ from algen_agent_runtime.policies.contracts import (
     PolicyAction,
     PolicyDecision,
 )
-from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
+from algen_agent_runtime.policies.engine import (
+    PIIRedactionPolicy,
+    looks_like_instruction_override,
+    without_policy_hints,
+)
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.runtime import attachments as run_attachments
@@ -183,6 +188,7 @@ from algen_agent_runtime.types.interfaces import (
     EventPublisher,
     MemoryStore,
     RunStore,
+    SessionOwnership,
 )
 from algen_agent_runtime.verification.verifiers import VerificationService
 
@@ -285,6 +291,33 @@ def _usage_attributes(usage: TokenUsage) -> dict[str, Any]:
         attributes["llm.cost.usd"] = usage.estimated_cost_usd
         attributes["llm.cost.source"] = "configured_provider_rates"
     return attributes
+
+
+def _decide_keywords(decide: Any) -> frozenset[str]:
+    """Which of ``decided_by`` and ``comment`` an approval service's ``decide`` accepts."""
+    try:
+        parameters = inspect.signature(decide).parameters.values()
+    except (TypeError, ValueError):
+        # Nothing to inspect (a C callable, an exotic proxy): assume the current protocol.
+        return frozenset({"decided_by", "comment"})
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return frozenset({"decided_by", "comment"})
+    return frozenset(
+        parameter.name
+        for parameter in parameters
+        if parameter.name in {"decided_by", "comment"}
+        and parameter.kind
+        in {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    )
+
+
+def _decision_comment(payload: Mapping[str, Any]) -> str | None:
+    """The approver's note on a decision: the payload's ``comment``, or its rejection ``reason``."""
+    for key in ("comment", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _current_trace_parent() -> dict[str, str] | None:
@@ -457,6 +490,8 @@ class AgentRuntime:
             self.observability.tracer("algen_agent_runtime.runtime"), telemetry_trace_level
         )
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
+        # Custom approval services whose decide() takes no decided_by or comment (warned once).
+        self._unattributed_approval_services: set[str] = set()
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
         memory_tools = agent.enabled_tools.intersection(MEMORY_PERMISSIONS)
@@ -527,6 +562,11 @@ class AgentRuntime:
             raise ConflictError("runtime is draining and is not accepting new runs")
         agent = self.agents.get(request.agent, request.agent_version)
         self._validate_context_policy(agent)
+        if request.session_id and not await self._claim_session(
+            request.tenant_id, request.session_id, request.user_id
+        ):
+            # The same answer as for a session that does not exist: it is another user's.
+            raise NotFoundError(f"session {request.session_id!r} not found")
         timeout = request.timeout_seconds or agent.budget.max_latency_seconds
         state_values: dict[str, Any] = {
             "request": request,
@@ -541,6 +581,17 @@ class AgentRuntime:
         await self._emit(state, "run.started", {"agent": agent.key})
         await self._schedule(state.id, request.tenant_id, credentials)
         return state
+
+    async def _claim_session(self, tenant_id: str, session_id: str, user_id: str) -> bool:
+        """Whether the session is ``user_id``'s, claiming it on first use.
+
+        Session memory (and anything else keyed by the session, such as a ``session``-scoped
+        tool-result cache) belongs to the user who first used the session. A memory store
+        without ``claim_session`` is trusted to isolate users itself.
+        """
+        if not isinstance(self.memory, SessionOwnership):
+            return True
+        return await self.memory.claim_session(tenant_id, session_id, user_id)
 
     async def run(
         self, request: RunRequest, *, credentials: Mapping[str, str] | None = None
@@ -656,10 +707,14 @@ class AgentRuntime:
         payload: Mapping[str, Any],
         *,
         credentials: Mapping[str, str] | None = None,
+        decided_by: str | None = None,
     ) -> RunState:
         """Answer a paused run's approval or clarification and continue it.
 
         The resumed run sees only the ``credentials`` passed here; none from before the pause.
+        An approval decision records ``decided_by`` (the approver's user id; the HTTP route passes
+        the authenticated principal's) and the payload's ``comment``, or its rejection
+        ``reason`` when it has no comment. This method does not check who may decide.
         """
         credentials = read_only_credentials(credentials)
         await self._await_paused_drive(run_id)
@@ -680,8 +735,13 @@ class AgentRuntime:
                 decision = ApprovalStatus(raw_decision)
             except ValueError as exc:
                 raise ValueError("decision must be approved, rejected, or modified") from exc
-            approval = await self.approvals.decide(
-                approval_id, tenant_id, decision, payload.get("modified_parameters")
+            approval = await self._decide_approval(
+                approval_id,
+                tenant_id,
+                decision,
+                payload.get("modified_parameters"),
+                decided_by=decided_by,
+                comment=_decision_comment(payload),
             )
             call_id = str((state.pause_payload or {}).get("tool_call_id", ""))
             if approval.status == ApprovalStatus.REJECTED:
@@ -773,6 +833,38 @@ class AgentRuntime:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
         await self._schedule(run_id, tenant_id, credentials)
         return state
+
+    async def _decide_approval(
+        self,
+        approval_id: str,
+        tenant_id: str,
+        decision: ApprovalStatus,
+        modified_parameters: dict[str, Any] | None,
+        *,
+        decided_by: str | None,
+        comment: str | None,
+    ) -> ApprovalRequest:
+        """Decide through the approval service, passing ``decided_by`` and ``comment`` only to a
+        ``decide`` that accepts them: a custom service written against the 0.1 protocol keeps
+        working, and records no approver (logged once per service class)."""
+        accepted = _decide_keywords(self.approvals.decide)
+        keywords = {
+            name: value
+            for name, value in (("decided_by", decided_by), ("comment", comment))
+            if name in accepted
+        }
+        if (decided_by is not None or comment is not None) and len(keywords) < 2:
+            service = type(self.approvals).__qualname__
+            if service not in self._unattributed_approval_services:
+                self._unattributed_approval_services.add(service)
+                self._logger.warning(
+                    "approval_service_records_no_approver",
+                    approval_service=service,
+                    missing=sorted({"decided_by", "comment"} - accepted),
+                )
+        return await self.approvals.decide(
+            approval_id, tenant_id, decision, modified_parameters, **keywords
+        )
 
     def _bind_approval(self, approval: ApprovalRequest, call: ToolCall) -> ToolApproval:
         """The decided ``approval`` bound to the call it approved: the tool, version and
@@ -1084,7 +1176,13 @@ class AgentRuntime:
         return read_only_credentials(self._credentials.get(run_id))
 
     async def recover(self, limit: int = 1000) -> int:
-        """Resume non-paused checkpoints after a single-node process restart."""
+        """Resume non-paused checkpoints after a single-node process restart.
+
+        Recovery is single-node: run it (``recover_incomplete_runs``) on one process only.
+        A run another process changed meanwhile (its own recovery, a cancel) is skipped
+        rather than failing the start; a drive that loses such a race stands down without
+        failing the run. Recovery leases for several replicas are planned for 0.3.
+        """
         recovered = 0
         for state in await self.runs.list_active(limit):
             existing = self._tasks.get(state.id)
@@ -1096,20 +1194,31 @@ class AgentRuntime:
                 RunStatus.AWAITING_RECONCILIATION,
             }:
                 continue
-            if state.deadline and state.deadline <= utc_now():
-                expected = state.version
-                state.status = RunStatus.TIMED_OUT
-                state.error = "Run deadline elapsed before recovery."
-                state.updated_at = utc_now()
-                await self.runs.save(state, expected)
-                await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
+            try:
+                if state.deadline and state.deadline <= utc_now():
+                    expected = state.version
+                    state.status = RunStatus.TIMED_OUT
+                    state.error = "Run deadline elapsed before recovery."
+                    state.output_text = None
+                    state.updated_at = utc_now()
+                    await self.runs.save(state, expected)
+                    await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
+                    continue
+                if self._recovery_status(state.status) != state.status:
+                    expected = state.version
+                    self._rewind_for_recovery(state)
+                    state.updated_at = utc_now()
+                    await self.runs.save(state, expected)
+                await self._schedule(state.id, state.request.tenant_id)
+            except RunConflictError:
+                # Another process (its own recovery, a cancel) changed the run since it was
+                # listed: that process has it now.
+                self._logger.warning(
+                    "agent_run_recovery_skipped",
+                    run_id=state.id,
+                    tenant_id=state.request.tenant_id,
+                )
                 continue
-            if self._recovery_status(state.status) != state.status:
-                expected = state.version
-                self._rewind_for_recovery(state)
-                state.updated_at = utc_now()
-                await self.runs.save(state, expected)
-            await self._schedule(state.id, state.request.tenant_id)
             recovered += 1
         return recovered
 
@@ -1710,7 +1819,8 @@ class AgentRuntime:
             ToolSpec(
                 name=tool.definition.name,
                 description=tool.definition.description,
-                input_schema=tool.definition.input_schema,
+                # The policy hints stay on the definition, where the guardrails read them.
+                input_schema=without_policy_hints(tool.definition.input_schema),
             )
             for tool in self.tools.list()
             if tool.definition.name in agent.enabled_tools
@@ -1810,7 +1920,7 @@ class AgentRuntime:
                     "gen_ai.output.message",
                     self._telemetry_content(response.message.model_dump(mode="json")),
                 )
-        checked_output = await self._policy_value(
+        checked_output = await self._guard_answer(
             "after_model",
             response.message.text_content,
             state,
@@ -3480,24 +3590,7 @@ class AgentRuntime:
             "agent.verification",
             attributes={**self._span_attributes(state, step_id), "span.type": "verification"},
         ) as span:
-            verifier_names = list(agent.verification_policy.verifiers)
-            if state.request.overrides.response_schema and "json_schema" not in verifier_names:
-                verifier_names.append("json_schema")
-            if agent.guardrail_policy.require_citations and "citations" not in verifier_names:
-                verifier_names.append("citations")
-            results = await self.verifiers.verify(
-                verifier_names,
-                state.output_text,
-                {
-                    "state": state,
-                    "agent": agent,
-                    "schema": state.request.overrides.response_schema,
-                },
-            )
-            passed = all(
-                item.passed and item.confidence >= agent.verification_policy.minimum_confidence
-                for item in results
-            )
+            results, passed = await self._run_verifiers(state, agent, state.output_text)
             span.set_attribute("verification.passed", passed)
             span.set_attribute("verification.validator_count", len(results))
             span.set_attribute(
@@ -3539,12 +3632,39 @@ class AgentRuntime:
                 await self._transition(state, RunStatus.RETRYING)
                 await self._transition(state, RunStatus.PLANNING)
                 return
-            raise VerificationError("final output failed verification")
-        state.output_text = str(
-            await self._policy_value(
-                "final_response", state.output_text or "", state, {"agent": agent}
+            await self._reject_output(state, "final output failed verification")
+        verified = state.output_text or ""
+        delivered = await self._guard_answer("final_response", verified, state, {"agent": agent})
+        if delivered != verified and self._structured_answer(state, verified) is not None:
+            # A guardrail changed verified structured output: verify what is delivered, and
+            # fail rather than deliver an answer that no longer matches its contract.
+            results, passed = await self._run_verifiers(state, agent, delivered)
+            await self._emit(
+                state,
+                "verification.completed",
+                {
+                    "passed": passed,
+                    "checks": [
+                        {
+                            "passed": item.passed,
+                            "confidence": item.confidence,
+                            "reason_code": item.reason_code,
+                        }
+                        for item in results
+                    ],
+                    "repair_attempt": state.attempt_count,
+                    "stage": "final_response",
+                },
+                step_id,
             )
-        )
+            if not passed:
+                state.output_text = delivered
+                await self._reject_output(
+                    state,
+                    "the final_response guardrails changed the structured output, and it no "
+                    "longer passes verification",
+                )
+        state.output_text = delivered
         await self._transition(state, RunStatus.COMPOSING)
         if agent.memory_policy.enabled:
             if agent.memory_policy.store_tool_payloads:
@@ -3582,11 +3702,24 @@ class AgentRuntime:
                     "memory.retention_seconds", agent.memory_policy.retention_seconds
                 )
                 quota_error: QuotaExceededError | None = None
+                skip_reason: str | None = None
                 try:
-                    await self.memory.append(state.request.tenant_id, state.session_id, persisted)
+                    # A session the run generated is claimed when its memory is first written,
+                    # so its id, returned to the caller, cannot be reused by another user.
+                    if await self._claim_session(
+                        state.request.tenant_id, state.session_id, state.request.user_id
+                    ):
+                        await self.memory.append(
+                            state.request.tenant_id, state.session_id, persisted
+                        )
+                    else:
+                        # Another user claimed the session after this run started.
+                        skip_reason = "session_owned_by_another_user"
+                        span.set_attribute("memory.session_refused", True)
                 except QuotaExceededError as exc:
                     # The answer stands; only the turn's memory is not kept.
                     quota_error = exc
+                    skip_reason = "quota_exceeded"
                     span.set_attribute("memory.quota_exceeded", True)
             if quota_error is not None:
                 await self._audit(
@@ -3600,12 +3733,12 @@ class AgentRuntime:
                     "item_count": len(persisted),
                     "retention_seconds": agent.memory_policy.retention_seconds,
                 }
-                if quota_error is None
+                if skip_reason is None
                 else {
                     "operation": "skipped",
                     "item_count": 0,
                     "retention_seconds": agent.memory_policy.retention_seconds,
-                    "reason": "quota_exceeded",
+                    "reason": skip_reason,
                 },
                 step_id,
             )
@@ -3615,8 +3748,78 @@ class AgentRuntime:
         await self._transition(state, RunStatus.COMPLETED)
         await self._emit(state, "run.completed", {"outcome": "completed"}, step_id)
 
+    async def _run_verifiers(
+        self, state: RunState, agent: AgentDefinition, output: str | None
+    ) -> tuple[Sequence[Any], bool]:
+        verifier_names = list(agent.verification_policy.verifiers)
+        if state.request.overrides.response_schema and "json_schema" not in verifier_names:
+            verifier_names.append("json_schema")
+        if agent.guardrail_policy.require_citations and "citations" not in verifier_names:
+            verifier_names.append("citations")
+        results = await self.verifiers.verify(
+            verifier_names,
+            output,
+            {
+                "state": state,
+                "agent": agent,
+                "schema": state.request.overrides.response_schema,
+            },
+        )
+        passed = all(
+            item.passed and item.confidence >= agent.verification_policy.minimum_confidence
+            for item in results
+        )
+        return results, passed
+
+    async def _reject_output(self, state: RunState, message: str) -> None:
+        """Keep the rejected answer for diagnostics only, then fail the run with ``message``."""
+        expected = state.version
+        state.rejected_output = state.output_text
+        state.output_text = None
+        state.updated_at = utc_now()
+        await self.runs.save(state, expected)
+        raise VerificationError(message)
+
+    @staticmethod
+    def _structured_answer(state: RunState, text: str | None) -> dict[str, Any] | list[Any] | None:
+        """``text`` parsed, when the request asks for structured output and it is a JSON
+        object or array; otherwise ``None``."""
+        if not state.request.overrides.response_schema or not text:
+            return None
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return None
+        return value if isinstance(value, (dict, list)) else None
+
+    async def _guard_answer(
+        self, point: str, text: str, state: RunState, context: Mapping[str, Any]
+    ) -> str:
+        """Run the ``point`` policies on the model's answer.
+
+        With a ``response_schema`` and an answer that is a JSON object or array, the policies
+        see the parsed value, so a redaction changes string values only and leaves keys,
+        numbers and the JSON itself intact.
+        """
+        structured = self._structured_answer(state, text)
+        if structured is None:
+            checked = await self._policy_value(point, text, state, context)
+            return checked if isinstance(checked, str) else str(checked)
+        checked = await self._policy_value(
+            point, structured, state, {**context, "structured_output": True}
+        )
+        if checked == structured:
+            # Unchanged: keep the model's own text, byte for byte.
+            return text
+        if isinstance(checked, str):
+            return checked
+        return json.dumps(checked, ensure_ascii=False, default=str)
+
     async def _transition(self, state: RunState, target: RunStatus) -> None:
         validate_transition(state.status, target)
+        if target in TERMINAL_STATUSES and target != RunStatus.COMPLETED:
+            # A run that did not complete delivers no answer.
+            state.output_text = None
         expected = state.version
         state.status = target
         state.updated_at = utc_now()

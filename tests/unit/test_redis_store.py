@@ -247,3 +247,24 @@ async def test_redis_memory_store_append_get_delete_and_expiry() -> None:
     # Delete
     await store.delete("tenant-a", "session-1")
     assert await store.get("tenant-a", "session-1", limit=10) == ()
+
+
+@pytest.mark.asyncio
+async def test_redis_memory_store_claims_a_session_for_its_first_user() -> None:
+    redis = FakeRedis()
+    store = RedisMemoryStore(redis, prefix="test-algen", retention_seconds=3600)
+    key = "test-algen:tenant:tenant-a:session:session-1:owner"
+
+    assert await store.claim_session("tenant-a", "session-1", "alice")
+    assert redis.data[key] == "alice"
+    assert redis.ttls[key] == 3600
+    redis.ttls[key] = 5
+    assert await store.claim_session("tenant-a", "session-1", "alice")
+    assert redis.ttls[key] == 3600  # the owner's claim renews it
+    assert not await store.claim_session("tenant-a", "session-1", "bob")
+    assert redis.data[key] == "alice"
+    assert await store.claim_session("tenant-b", "session-1", "bob")
+
+    # An expired claim is free again: by then the session's messages have expired too.
+    del redis.data[key]
+    assert await store.claim_session("tenant-a", "session-1", "bob")

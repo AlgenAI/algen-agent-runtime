@@ -379,6 +379,44 @@ async def test_a_required_toolkit_that_cannot_start_stops_the_service(
     await container.aclose()
 
 
+async def test_a_toolkit_passed_as_additional_tools_registers_like_a_plugin(
+    crm_settings: AppSettings,
+) -> None:
+    """RT-B20: the toolkit becomes a container resource, opens its client at start with the
+    container's secrets and closes with the container."""
+    settings = crm_settings.model_copy(
+        update={
+            "agents": [
+                crm_settings.agents[0].model_copy(update={"domain_plugins": ()}),
+            ]
+        }
+    )
+    kit = Toolkit("ledger", env=("CRM_TOKEN",), client=_open_client)
+
+    @kit.tool(read())
+    async def balance(account: str) -> dict[str, str]:
+        """Read one account's balance."""
+        client = await kit.client()
+        return {"account": account, "token": client.token}
+
+    container = build_container(
+        settings,
+        environment={"CRM_TOKEN": "container-token"},
+        additional_tools=(kit, find_account, set_owner),
+    )
+    assert kit in container.resources
+    await container.astart()
+    [client] = FakeClient.instances
+    executor = ToolExecutor(container.tools, CompositePolicyEngine())
+    result = await executor.execute(
+        "ledger.balance", {"account": "a-1"}, fake_tool_context(balance)
+    )
+    assert result.value == {"account": "a-1", "token": "container-token"}
+    await container.aclose()
+
+    assert client.closed is True
+
+
 async def test_a_toolkit_configuration_error_keeps_its_type_and_message() -> None:
     """The toolkit's own message says what to set or install, and callers catching
     ConfigurationError still catch it; the call is still recorded as not attempted."""

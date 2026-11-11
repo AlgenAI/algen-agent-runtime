@@ -179,6 +179,15 @@ _DELETE_EXPIRED_MEMORY = (
     "ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)"
 )
 
+# A session's owner expires with its memory (claims are renewed before each append).
+_DELETE_EXPIRED_SESSION_OWNERS = (
+    "DELETE FROM algen_agent_runtime_session_owners o USING "
+    "(SELECT tenant_id, session_id FROM algen_agent_runtime_session_owners "
+    "WHERE expires_at IS NOT NULL AND expires_at <= now() "
+    "ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED) doomed "
+    "WHERE o.tenant_id = doomed.tenant_id AND o.session_id = doomed.session_id"
+)
+
 _DELETE_AUDIT_EVENTS = (
     "DELETE FROM algen_agent_runtime_audit_events WHERE id IN "
     "(SELECT id FROM algen_agent_runtime_audit_events "
@@ -190,9 +199,9 @@ _DELETE_AUDIT_EVENTS = (
 class PostgresRetentionSweeper:
     """Batched deletion of expired PostgreSQL runtime records.
 
-    Expired memory rows are always removed because readers already ignore them. Terminal
-    runs, audit events, conversations, workflow checkpoints, analytical graphs and work items are
-    removed only when the policy sets an age limit for them.
+    Expired memory rows and expired session owners are always removed because readers already
+    ignore them. Terminal runs, audit events, conversations, workflow checkpoints, analytical
+    graphs and work items are removed only when the policy sets an age limit for them.
     """
 
     def __init__(self, database: Any) -> None:
@@ -205,6 +214,12 @@ class PostgresRetentionSweeper:
             lambda: self._delete_count(_DELETE_EXPIRED_MEMORY, policy.batch_size),
             report,
             "memory",
+        )
+        await self._batched(
+            policy,
+            lambda: self._delete_count(_DELETE_EXPIRED_SESSION_OWNERS, policy.batch_size),
+            report,
+            "session_owners",
         )
         if policy.terminal_runs is not None:
             seconds = int(policy.terminal_runs.total_seconds())

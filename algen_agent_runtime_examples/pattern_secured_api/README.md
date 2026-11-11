@@ -53,7 +53,7 @@ step 4) go to stderr.
 == 1. Tokens and scopes from claims ==
 alice: user=alice scopes=['conversations:read', 'conversations:write', 'runs:read', 'runs:write']
 bob: user=bob scopes=['conversations:read', 'conversations:write', 'runs:read', 'runs:write']
-carol: user=carol scopes=['approvals:read', 'auth:revoke', 'runs:read', 'runs:write']
+carol: user=carol scopes=['approvals:decide', 'approvals:read', 'auth:revoke', 'runs:read', 'runs:write']
 no token -> 401
 token signed by another key -> 401
 

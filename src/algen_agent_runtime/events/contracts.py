@@ -48,6 +48,19 @@ EventType = Literal[
 ]
 
 
+#: Events that end a run.
+RUN_END_EVENT_TYPES: frozenset[str] = frozenset({"run.completed", "run.failed", "run.cancelled"})
+#: Events that pause a run until someone answers: an approval, a clarification or a tool
+#: call an operator must reconcile.
+RUN_PAUSE_EVENT_TYPES: frozenset[str] = frozenset(
+    {"approval.required", "clarification.required", "tool.reconciliation_required"}
+)
+#: Events after which a run's event stream (``AlgenAgentRuntimeClient.stream`` and
+#: ``GET /v1/runs/{run_id}/events``) ends: the run ended or paused. After a pause, follow the
+#: resumed run from the last event's ``sequence``.
+STREAM_END_EVENT_TYPES: frozenset[str] = RUN_END_EVENT_TYPES | RUN_PAUSE_EVENT_TYPES
+
+
 class RunEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1.0"] = "1.0"

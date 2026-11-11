@@ -43,10 +43,20 @@ async def update_owner(account_id: str, owner: str, context: ToolContext) -> Rec
   input; otherwise each parameter is one property, and a default makes it optional.
 - The output schema comes from the return hint; a returned model is sent as JSON. With no return
   hint the output is unconstrained.
-- Every object is closed (`additionalProperties: false`), model references are inlined and titles
-  dropped. A recursive model is refused.
+- Every object with properties (the input, Pydantic models) is closed
+  (`additionalProperties: false`), model references are inlined and titles dropped. A `dict`
+  parameter stays a free-form map (`{"type": "object", "additionalProperties": ...}`). A recursive model is refused.
 - The description is the docstring; the model reads it, so say what the tool does and when to
   use it. A function with no docstring is refused.
+- Mark fields the `pii` guardrail should leave alone. An id that looks like a phone, Aadhaar or
+  card number (a chat id, message id, order or tracking number) takes
+  `Field(json_schema_extra={"format": "identifier"})`, or `{"x-pii": False}` when the field already
+  has a `format`. A recipient or sender address takes `{"format": "email"}`. Either way the field
+  keeps its value at `plan_tool`, `before_tool` and `after_tool`, and when the model reads the
+  result again later, as long as the value is one token with no whitespace. Every other field
+  is still screened, and a redacted argument refuses the call. Both are ordinary JSON Schema
+  annotations: validators, model providers and Runtimes before 0.2.0b2 ignore them. See
+  [What the pii guardrail redacts](agent-tooling.md#what-the-pii-guardrail-redacts).
 - A parameter typed `ToolContext` receives the call's context (tenant, user, permissions,
   idempotency key, the caller's credentials) and is not part of the schema.
 - Sync and async functions both work. A sync function runs in a worker thread, so it does not
@@ -181,11 +191,11 @@ the parameters, not instead of them.
 
 ## Caching results
 
-With `cache.policies.tool_results` enabled, the result of an idempotent `none` or `read` call is
-cached, keyed on the tool's name, version and arguments within the policy's `scope` (`tenant` by
-default; see [Scoped caching](operations.md#scoped-caching)). A tool whose result also depends on
-the call's `ToolContext`, beyond that scope, must say so with `cache_context`, or one user can be
-served another's cached result:
+With `cache.policies.tool_results` enabled, the result of an idempotent `none` or `read` call
+of a tool that is not `volatile` is cached, keyed on the tool's name, version and arguments within
+the policy's `scope` (`tenant` by default; see [Scoped caching](operations.md#scoped-caching)). A
+tool whose result also depends on the call's `ToolContext`, beyond that scope, must say so with
+`cache_context`, or one user can be served another's cached result:
 
 ```python
 @orders.tool(read(), cache_context={"user_id"})
@@ -225,6 +235,9 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
     return await client.tickets(assignee="me", headers={"Authorization": authorization})
 ```
 
+- `AlgenAgentRuntimeClient.run`, `run_sync` and `stream` take the same keyword-only
+  `credentials=` and pass it to `Runtime.run` or `start`. `stream_events` only follows a run that
+  already exists, so it takes none: after a pause, pass fresh credentials to `resume`.
 - `context.credentials` is a read-only `Mapping[str, str]`, a private copy of what the host passed
   to `Runtime.start`, `run` or `resume`: changing the host's dict afterwards changes nothing.
 - They are held in memory only, for the run's current execution. They are never written to the
@@ -237,8 +250,9 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   "authentication required" error rather than acting without the user's authority.
 - All tool calls of a run, including those running in parallel from one model reply, see the same
   credentials; concurrent runs never see each other's. `core.subagent` passes the parent's
-  credentials to the child run it starts. A host's own delegation tool should do the same with
-  `runtime.run(child_request, credentials=context.credentials)`.
+  credentials to the child run it starts (see [Delegating to another
+  agent](agent-tooling.md#delegating-to-another-agent)). A host's own delegation tool should do
+  the same with `runtime.run(child_request, credentials=context.credentials)`.
 - Workflow tool steps and the agent runs a workflow starts get none: the workflow API takes no
   credentials. The HTTP API's run endpoints pass none either; a host that needs them calls the
   Runtime itself.
@@ -578,6 +592,12 @@ using the container's secrets, and closes with the container. Nothing connects i
   output schema, and, for a tool that writes, sends or deletes, a missing permission, a missing
   idempotency key or more than one attempt. `longest_wait_seconds` checks that the timeout is
   longer. `tool_contract_problems(tool)` returns the same list without raising.
+
+  "Open" means an object that declares `properties` without `additionalProperties: false`. A
+  free-form map, an object with no `properties` such as `{"type": "object"}` or
+  `{"type": "object", "additionalProperties": {"type": "string"}}`, passes the check: the model
+  can put any key in it, so review such fields yourself and keep them out of arguments that
+  decide what a write does.
 
 ```python
 def test_tools_meet_the_contract():

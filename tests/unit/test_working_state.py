@@ -10,7 +10,11 @@ from algen_agent_runtime.context.artifacts import ContextArtifactService
 from algen_agent_runtime.context.budget import prepare_model_request
 from algen_agent_runtime.context.builder import DefaultContextBuilder, RetrievalContextBuilder
 from algen_agent_runtime.context.packing import WORKING_STATE_NAME, pack_messages
-from algen_agent_runtime.context.working_state import WORKING_STATE_TOOL, working_state_message
+from algen_agent_runtime.context.working_state import (
+    WORKING_STATE_TOOL,
+    working_state_message,
+    working_state_tool,
+)
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
@@ -20,7 +24,7 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_ca
 from algen_agent_runtime.persistence.memory import InMemoryArtifactStore, InMemoryMemoryStore
 from algen_agent_runtime.planning.contracts import ActionType, PlannedAction
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
-from algen_agent_runtime.tools.contracts import ToolContext
+from algen_agent_runtime.tools.contracts import SideEffect, ToolContext
 from algen_agent_runtime.types.contracts import (
     ApprovalPolicy,
     ContextPolicy,
@@ -443,16 +447,23 @@ async def test_working_state_receipt_is_not_offloaded():
     assert (await runtime.status(result.run_id, "tenant")).working_state.revision == 1
 
 
-async def test_write_approval_is_required_before_state_mutation():
+def test_update_is_not_a_side_effect():
+    definition = working_state_tool().definition
+    assert definition.side_effect == SideEffect.NONE
+    assert definition.required_permissions == frozenset({"context.write"})
+    assert not definition.requires_approval
+
+
+async def test_update_does_not_pause_for_approval_under_the_default_policy():
+    # The update changes only the run's own checkpoint, so the default
+    # require_for_side_effects does not ask for an approval.
     provider = MockModelProvider([tool_call_response(WORKING_STATE_TOOL, proposal()), "Done"])
     runtime = make_runtime(provider, agent(approval_policy=ApprovalPolicy()))
-    paused = await runtime.run(request())
-    assert paused.status == RunStatus.AWAITING_APPROVAL
-    assert (await runtime.status(paused.run_id, "tenant")).working_state is None
-    await runtime.resume(paused.run_id, "tenant", {"decision": "approved"})
-    result = await runtime.wait(paused.run_id, "tenant")
+    result = await runtime.run(request())
     assert result.status == RunStatus.COMPLETED, result.error
-    assert (await runtime.status(paused.run_id, "tenant")).working_state.revision == 1
+    assert (await runtime.status(result.run_id, "tenant")).working_state.revision == 1
+    events = await runtime.events.history(result.run_id)
+    assert not [event for event in events if event.type == "approval.required"]
 
 
 async def test_output_policy_cannot_change_revision_precondition():

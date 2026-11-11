@@ -15,6 +15,9 @@ from algen_agent_runtime.types.contracts import utc_now
 
 # The longest rationale an approval request shows the approver.
 MAX_RATIONALE_CHARS = 500
+# The longest approver identity and comment a decision records, as for workflow approvals.
+MAX_DECIDED_BY_CHARS = 256
+MAX_COMMENT_CHARS = 4000
 
 
 class ApprovalStatus(StrEnum):
@@ -55,6 +58,13 @@ class ApprovalRequest(BaseModel):
     # Why the request reached its status, when the status alone does not say: "tool_changed"
     # for an approval expired because its tool changed before the approved call ran.
     status_reason: str | None = Field(default=None, max_length=64)
+    # Who decided the request, when, and the note they gave (0.2). None while it is pending, on
+    # approvals decided by earlier releases, and when the caller of ``decide`` named no one. Like
+    # ``WorkflowApprovalDecision.decided_by``, the Runtime fills ``decided_by`` from the
+    # authenticated principal's user id; an expiry leaves all three as they were.
+    decided_by: str | None = Field(default=None, min_length=1, max_length=MAX_DECIDED_BY_CHARS)
+    decided_at: datetime | None = None
+    comment: str | None = Field(default=None, max_length=MAX_COMMENT_CHARS)
 
     def effective(self, now: datetime) -> ApprovalRequest:
         """This request as a reader should see it: a pending request past ``expires_at`` is
@@ -80,12 +90,26 @@ STORED_JSON_EXCLUDE = frozenset(
         "arguments_sha256",
         "rationale",
         "status_reason",
+        "decided_by",
+        "decided_at",
+        "comment",
     }
 )
 # The columns that hold them, besides created_at (set by the database).
 _COLUMNS = ("agent", "tool", "tool_version", "tool_fingerprint", "arguments_sha256", "rationale")
+# The columns a decision writes (migration 020).
+_DECISION_COLUMNS = ("decided_by", "decided_at", "comment")
 # Why an approval was expired before its call ran: its tool changed after it was asked for.
 TOOL_CHANGED = "tool_changed"
+
+
+def _decision(decided_by: str | None, comment: str | None) -> dict[str, Any]:
+    """The fields a decision records: who, when and their note, checked like the model's."""
+    if decided_by is not None and not 1 <= len(decided_by) <= MAX_DECIDED_BY_CHARS:
+        raise ValueError(f"decided_by must be 1 to {MAX_DECIDED_BY_CHARS} characters")
+    if comment is not None and len(comment) > MAX_COMMENT_CHARS:
+        raise ValueError(f"comment must be at most {MAX_COMMENT_CHARS} characters")
+    return {"decided_by": decided_by, "decided_at": utc_now(), "comment": comment}
 
 
 def _check_page(limit: int, offset: int) -> None:
@@ -124,7 +148,19 @@ class ApprovalService(Protocol):
         tenant_id: str,
         decision: ApprovalStatus,
         modified_parameters: dict[str, Any] | None = None,
-    ) -> ApprovalRequest: ...
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
+    ) -> ApprovalRequest:
+        """Decide a pending request, recording ``decided_by`` (the approver's user id),
+        ``comment`` and the time as ``decided_at``. ``NotFoundError`` for an unknown request,
+        ``ConflictError`` for one that is not pending or has expired.
+
+        An implementation written before 0.2, without the two keywords, keeps working: the
+        Runtime passes them only to a ``decide`` that accepts them, and such an implementation
+        records no approver.
+        """
+        ...
 
     async def expire(self, approval_id: str, tenant_id: str, *, reason: str) -> ApprovalRequest:
         """Expire a request that is pending, or approved or modified but not acted on, recording
@@ -208,7 +244,11 @@ class InMemoryApprovalService:
         tenant_id: str,
         decision: ApprovalStatus,
         modified_parameters: dict[str, Any] | None = None,
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
     ) -> ApprovalRequest:
+        recorded = _decision(decided_by, comment)
         async with self._lock:
             item = self._items.get(approval_id)
             if item is None or item.tenant_id != tenant_id:
@@ -222,6 +262,9 @@ class InMemoryApprovalService:
                 raise ValueError("modified decision requires modified_parameters")
             item.status = decision
             item.modified_parameters = modified_parameters
+            item.decided_by = recorded["decided_by"]
+            item.decided_at = recorded["decided_at"]
+            item.comment = recorded["comment"]
             return item.model_copy(deep=True)
 
     async def expire(self, approval_id: str, tenant_id: str, *, reason: str) -> ApprovalRequest:
@@ -336,7 +379,11 @@ class PostgresApprovalService:
         tenant_id: str,
         decision: ApprovalStatus,
         modified_parameters: dict[str, Any] | None = None,
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
     ) -> ApprovalRequest:
+        recorded = _decision(decided_by, comment)
         item = await self.get(approval_id, tenant_id)
         if item is None:
             raise NotFoundError("approval request not found")
@@ -349,7 +396,7 @@ class PostgresApprovalService:
         if decision == ApprovalStatus.MODIFIED and modified_parameters is None:
             raise ValueError("modified decision requires modified_parameters")
         updated = item.model_copy(
-            update={"status": decision, "modified_parameters": modified_parameters}
+            update={"status": decision, "modified_parameters": modified_parameters, **recorded}
         )
         if not await self._save(updated, expected=ApprovalStatus.PENDING):
             raise ConflictError("approval request was concurrently decided")
@@ -421,18 +468,22 @@ class PostgresApprovalService:
     async def _save(self, item: ApprovalRequest, expected: ApprovalStatus) -> bool:
         result = await self._database.execute(
             "UPDATE algen_agent_runtime_approvals SET approval=$1::jsonb, status_reason=$5, "
-            "updated_at=now() WHERE id=$2 AND tenant_id=$3 AND approval->>'status'=$4",
+            "decided_by=$6, decided_at=$7, comment=$8, updated_at=now() "
+            "WHERE id=$2 AND tenant_id=$3 AND approval->>'status'=$4",
             item.model_dump_json(exclude=set(STORED_JSON_EXCLUDE)),
             item.id,
             item.tenant_id,
             expected.value,
             item.status_reason,
+            item.decided_by,
+            item.decided_at,
+            item.comment,
         )
         return str(result) == "UPDATE 1"
 
 
 _EXPIRABLE = frozenset({ApprovalStatus.PENDING, ApprovalStatus.APPROVED, ApprovalStatus.MODIFIED})
-_SELECTED = ", ".join(("approval", "created_at", "status_reason", *_COLUMNS))
+_SELECTED = ", ".join(("approval", "created_at", "status_reason", *_COLUMNS, *_DECISION_COLUMNS))
 
 
 def _from_row(row: Any) -> ApprovalRequest:
@@ -441,7 +492,7 @@ def _from_row(row: Any) -> ApprovalRequest:
     stored = row["approval"]
     # asyncpg returns jsonb as text.
     values = json.loads(stored) if isinstance(stored, (str, bytes)) else dict(stored)
-    for column in ("created_at", "status_reason", *_COLUMNS):
+    for column in ("created_at", "status_reason", *_COLUMNS, *_DECISION_COLUMNS):
         try:
             values[column] = row[column]
         except KeyError:

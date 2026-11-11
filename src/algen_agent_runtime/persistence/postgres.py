@@ -376,6 +376,31 @@ class PostgresMemoryStore:
 
         await postgres_quota_write(self._database, self._quotas, tenant_id, "memory", write)
 
+    async def claim_session(self, tenant_id: str, session_id: str, user_id: str) -> bool:
+        """Bind the session to ``user_id`` on first use; False when another user owns it.
+
+        The claim expires with the memory's retention and each claim of its owner renews it; the
+        Runtime claims before it appends, so the claim outlives the session's messages. An
+        expired claim may be taken by another user: by then the messages have expired too.
+        """
+        row = await self._database.fetchrow(
+            "INSERT INTO algen_agent_runtime_session_owners "
+            "(tenant_id, session_id, user_id, expires_at) "
+            "VALUES ($1, $2, $3, now() + ($4 * interval '1 second')) "
+            "ON CONFLICT (tenant_id, session_id) DO UPDATE "
+            "SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at, "
+            "claimed_at = CASE WHEN algen_agent_runtime_session_owners.user_id = EXCLUDED.user_id "
+            "THEN algen_agent_runtime_session_owners.claimed_at ELSE now() END "
+            "WHERE algen_agent_runtime_session_owners.user_id = EXCLUDED.user_id "
+            "OR algen_agent_runtime_session_owners.expires_at <= now() "
+            "RETURNING user_id",
+            tenant_id,
+            session_id,
+            user_id,
+            self._retention_seconds,
+        )
+        return row is not None
+
     async def tenant_usage(self, tenant_id: str) -> ResourceUsage:
         return await read_usage(self._database, tenant_id, "memory")
 

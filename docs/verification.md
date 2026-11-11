@@ -5,6 +5,28 @@ check sends the model a repair turn that says what failed, up to `max_repairs` t
 the run fails with `VerificationError`. Every check is reported on the `verification.completed`
 event (`passed`, `confidence`, `reason_code`).
 
+A run that failed verification delivers no answer: `RunResult.output` (and the run's
+`output_text`, which `GET /v1/runs/{id}` shows) is empty, as on every run that did not complete.
+The last rejected answer is kept for diagnostics in `RunResult.rejected_output` (an attribute
+left out of `model_dump()` and JSON, so a result passed on whole, such as a sub-agent's tool
+result, never carries it) and in the run view's `rejected_output`. Do not show it to users as
+the answer.
+
+### Structured output and guardrails
+
+With a `response_schema`, the guardrails at `after_model` and `final_response` see the parsed
+JSON answer (a `dict` or `list`, with `structured_output: True` in the policy context) instead of
+its text. The built-in redactions then change string values only: keys, numbers and booleans keep
+their types, and the answer stays valid JSON. An answer no guardrail changed is delivered exactly
+as the model wrote it.
+
+`after_model` runs before verification, so the verifiers check the redacted answer. When a
+`final_response` guardrail changes an answer that already passed verification, the changed answer
+is verified again (a second `verification.completed` event, with `stage: "final_response"`). If it
+no longer passes, the run fails with `VerificationError` instead of delivering output that breaks
+its schema; there is no repair turn, since the model's answer was valid. Plain-text answers are
+unchanged: `final_response` guardrails rewrite their text after verification.
+
 ```yaml
 verification_policy:
   verifiers: [non_empty, result_coverage] # default: [non_empty]

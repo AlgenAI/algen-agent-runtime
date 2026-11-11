@@ -65,8 +65,15 @@ def _message_bytes(message: Message) -> int:
 class InMemoryMemoryStore:
     def __init__(self, quotas: StorageQuotas | None = None) -> None:
         self._messages: dict[tuple[str, str], list[Message]] = defaultdict(list)
+        # Each session's owner (the user who first used it), by tenant and session.
+        self._owners: dict[tuple[str, str], str] = {}
         self._quotas = quotas
         self._lock = asyncio.Lock()
+
+    async def claim_session(self, tenant_id: str, session_id: str, user_id: str) -> bool:
+        """Bind the session to ``user_id`` on first use; False when another user owns it."""
+        async with self._lock:
+            return self._owners.setdefault((tenant_id, session_id), user_id) == user_id
 
     async def append(self, tenant_id: str, session_id: str, messages: Sequence[Message]) -> None:
         async with self._lock:

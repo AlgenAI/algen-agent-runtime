@@ -30,14 +30,14 @@ def _agent() -> AgentDefinition:
 async def test_pii_policy_redacts_email_phone_and_aadhaar() -> None:
     decision = await PIIRedactionPolicy().evaluate(
         "input",
-        "Contact learner@example.com, +91 98765 43210, Aadhaar 2345-6789-1234",
+        "Contact learner@example.com, +91 98765 43210, Aadhaar 2345-6789-0124",
         {},
     )
 
     assert decision.action == PolicyAction.REDACT
     assert "learner@example.com" not in decision.value
     assert "98765" not in decision.value
-    assert "2345-6789-1234" not in decision.value
+    assert "2345-6789-0124" not in decision.value
     assert decision.audit_metadata["categories"] == ["aadhaar", "email", "phone"]
 
 

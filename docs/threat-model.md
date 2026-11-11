@@ -9,11 +9,12 @@ Assets include tenant data, prompts, memories, credentials, tool authority, arti
 | Threat | Primary controls |
 |---|---|
 | Cross-tenant access | tenant IDs on every store lookup, authenticated principal, scoped API hooks, tool context set by the Runtime (never by tool arguments); adversarial tests drive a model at another tenant's runs, approvals, conversations, memory, retrieval, context artifacts and cache |
+| Cross-user access within a tenant | sessions bound to the user who first used them (another user's `session_id` is refused as not found), conversation turns and their runs owned by the conversation's user, approvals decided, runs cancelled, steered or answered only by their user unless the caller holds `approvals:decide` or `runs:admin`, delegation never served from the tool-result cache |
 | Forged, stolen or replayed caller tokens | verified JWT/OIDC only outside loopback development, JWKS from allowlisted issuer hosts, asymmetric algorithms bound to key type, bounded clock skew, audience/issuer checks, fail-closed tenant mapping, short-lived tokens plus optional tenant-scoped revocation, content-minimal authentication audits |
 | Spoofed remote service | per-host CA bundles, pinned server certificate fingerprints and client certificates (mTLS) in `network.remotes`, applied to every outbound client including through the egress proxy |
 | Spoofed service identity | trusted-proxy identity off by default, honoured only from configured proxy CIDRs for exactly mapped identities, spoof attempts refused and audited, proxy-header peer rewriting disabled |
 | Prompt injection | pre/post policy points (input and steering included), tool-result injection flag/block, document inspection, tool/model allowlists, centrally signed deny rules no agent can opt out of, approvals keyed to declared side effects (not arguments), model output never executes directly |
-| Secret/PII leakage | secret references, redaction of key=value credentials, bearer tokens, emails, phone and card numbers at policy boundaries, in approval parameters, audit metadata, logs, runtime error text and opt-in telemetry content; content telemetry off, memory policy |
+| Secret/PII leakage | secret references, redaction of key=value credentials, bearer tokens, emails, phone, Aadhaar (Verhoeff-checked) and card (Luhn-checked) numbers at policy boundaries, with declared identifier fields (`format: identifier`, `x-pii: false`) and per-agent `guardrail_policy.pii.exempt_entities` left alone, in approval parameters, audit metadata, logs, runtime error text and opt-in telemetry content; content telemetry off, memory policy |
 | SSRF & DNS rebinding | scheme/host allowlist, single-resolution DNS check, direct socket IP pinning, cloud metadata & private/link-local denial, fail-closed multi-IP validation, TLS SNI preservation, no redirects |
 | Command execution | subprocess disabled by default, explicit permission and approval, empty environment |
 | Replay/double side effect | durable call IDs (a reused id from the model is replaced), idempotency keys, completed-call checkpoints, approvals |
@@ -114,12 +115,33 @@ External MCP servers integrate into Runtime under explicit security boundaries:
 
 Credentials a host passes to `Runtime.start`, `run` or `resume` (for example the signed-in user's bearer token, for tools that act as that user) are kept only in the process's memory, keyed by run, and only while the run executes. They are never written to `RunState`, checkpoints, the run, approval, event or audit stores, events, audits, spans, logs, caches or the model's context, and `ToolContext` leaves them out of its `repr`, serialization, equality and hashing, so a store, exporter, log line or traceback cannot hold them. They are dropped when the run pauses for approval or clarification and when it ends, however it ends. A pause can last longer than a token lives, and a persisted token would outlive the request that carried it and become readable to anyone with access to the stores, so the host must supply fresh credentials on `resume`; a run resumed without them, or recovered after a restart, gives its tools an empty mapping and they should refuse to act. Concurrent runs never share credentials; a child run started by `core.subagent` holds its own copy of its parent's until it ends. Tools receive a read-only copy and must not echo it in results or errors, which do reach the model, events and stores.
 
+### Sessions, runs and users of one tenant
+
+A tenant's users share its agents, not each other's data:
+
+- **Session memory.** A session belongs to the user who first used it. The built-in memory stores
+  record the owner (`SessionOwnership.claim_session`), and a run that names another user's
+  `session_id` is refused with `NotFoundError` (404 over HTTP), so neither the session's history
+  nor anything else keyed by the session (a `session`-scoped tool-result cache) is reachable.
+  A custom `MemoryStore` without `claim_session` must isolate users itself.
+- **Acting on a run.** Over HTTP only the run's user decides its approval, cancels, steers or
+  answers it; `approvals:decide` (approval) and `runs:admin` (cancel) let an operator act on
+  another user's run, and nothing lets another user steer or answer one. The approval request
+  records who decided it (`decided_by`, from the authenticated principal, never the request
+  body), when and their comment.
+- **Delegation.** `core.subagent` is registered only when the deployment sets
+  `runtime.subagent.enabled`, and offered only to agents that list it in `enabled_tools`. It
+  delegates only to the agents the calling agent lists in `delegates`, only to an agent whose
+  `tool_permissions` are within the caller's, for the same tenant and user. The nesting depth is counted from the run's lineage (`parent_run_id`), never
+  from the model's arguments, and a delegation is never cached, retried or held back as a repeat.
+
 ### API authentication
 
 Callers authenticate with one of three modes (docs/operations.md#api-authentication).
 `development_headers` trusts identity headers and binds only to a loopback host unless an
-operator explicitly opts out for an isolated development network. `jwt` verifies bearer tokens
-with one static `env://` key. `oidc` verifies bearer tokens against each configured issuer's
+operator explicitly opts out for an isolated development network. The check applies to the host
+the server binds, including `serve --host`, and `create_app` re-validates API settings that were
+changed without validation. `jwt` verifies bearer tokens with one static `env://` key. `oidc` verifies bearer tokens against each configured issuer's
 JWKS:
 
 - **Key retrieval is an egress path.** Discovery and JWKS fetches go through the SSRF-safe client,

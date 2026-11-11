@@ -76,7 +76,8 @@ class ToolDefinition(BaseModel):
     volatile: bool = Field(
         default=False,
         description="Reads state that changes on its own (a job's status, the time), so the "
-        "repeat guard never holds an identical call back.",
+        "repeat guard never holds an identical call back and the tool-result cache never "
+        "stores or serves its result.",
     )
     cache_context: frozenset[CacheContextValue] = Field(
         default=frozenset(),
