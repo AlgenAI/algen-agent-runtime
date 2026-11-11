@@ -129,7 +129,7 @@ exclude = [
 include = [
   "/.agents/skills",
   "/src/algen_agent_runtime",
-  "/examples",
+  "/algen_agent_runtime_examples",
   "/CHANGELOG.md",
   "/CHANGELOG-0.1.md",
   "/LICENSE",

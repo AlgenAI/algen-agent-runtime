@@ -29,3 +29,15 @@ def test_domain_case_studies_stay_out_of_the_wheel() -> None:
     for name in DOMAIN_EXAMPLES:
         assert (ROOT / "algen_agent_runtime_examples" / name).is_dir(), name
         assert f"algen_agent_runtime_examples/{name}" in excluded, name
+
+
+def test_the_sdist_includes_every_wheel_package() -> None:
+    # CI builds the wheel from the sdist, so a package the sdist leaves out is missing from the
+    # wheel too, although a wheel built from the checkout has it.
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    included = {
+        path.strip("/") for path in config["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+    }
+
+    for package in _wheel_target()["packages"]:  # type: ignore[attr-defined]
+        assert package in included, package
