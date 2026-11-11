@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 from conftest import make_agent, make_runtime
 from pydantic import ValidationError
 
-from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_model_request
+from algen_agent_runtime.context.budget import (
+    estimate_request_tokens,
+    message_token_budget,
+    prepare_model_request,
+)
+from algen_agent_runtime.context.packing import estimate_message
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
     ConfigurationError,
@@ -15,14 +22,17 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.types.contracts import (
     Budget,
     ErrorKind,
+    FileBlock,
     FinishReason,
     ImageBlock,
     Message,
     ModelProfile,
     ModelRequest,
     ModelResponse,
+    ModelStreamEvent,
     Role,
     RunRequest,
+    TextBlock,
     TokenUsage,
     ToolCall,
     ToolSpec,
@@ -210,8 +220,30 @@ def test_multimodal_input_is_not_silently_counted_as_a_short_url() -> None:
             )
         }
     )
-    with pytest.raises(ConfigurationError, match="image/file token costs"):
+    with pytest.raises(ConfigurationError, match="inline image token costs"):
         prepare_model_request(original, profile("small"))
+
+
+def test_attached_files_count_at_their_rough_cost_within_a_context_window() -> None:
+    original = request().model_copy(
+        update={
+            "messages": (
+                Message(
+                    role=Role.USER,
+                    content=(
+                        TextBlock(text="What is this?"),
+                        FileBlock(artifact_id="a", media_type="image/png"),
+                    ),
+                ),
+            )
+        }
+    )
+    selected = profile("small")
+
+    budget = message_token_budget(original, selected)
+
+    assert budget is not None
+    assert estimate_message(original.messages[0]) > 1_600
 
 
 @pytest.mark.parametrize(
@@ -250,20 +282,61 @@ async def test_output_limit_recovery_rechecks_context_before_retry_dispatch() ->
     assert result.execution_summary.usage.total_tokens == 120
 
 
-async def test_stream_does_not_fall_back_after_provider_dispatch() -> None:
+async def test_stream_falls_back_when_the_provider_fails_before_its_first_event() -> None:
     router = ModelRouter()
     primary = MockModelProvider(handler=fail_provider)
+    fallback = MockModelProvider(["from the fallback"])
+    router.register_provider(primary, registration_id="primary")
+    router.register_provider(fallback, registration_id="fallback")
+    events = [
+        event
+        async for event in router.stream(
+            request(), [profile("primary", 600, 2), profile("fallback")]
+        )
+    ]
+    assert "".join(e.delta or "" for e in events).strip() == "from the fallback"
+    assert len(primary.requests) == 1
+    assert len(fallback.requests) == 1
+    assert router._health["primary"].consecutive_failures == 1
+
+
+async def test_stream_does_not_fall_back_after_the_first_event() -> None:
+    class BreaksMidStream(MockModelProvider):
+        async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
+            self.requests.append(request)
+            yield ModelStreamEvent(type="delta", delta="half ")
+            raise ProviderError("connection reset", ErrorKind.UNAVAILABLE, retryable=True)
+
+    router = ModelRouter()
+    primary = BreaksMidStream()
     fallback = MockModelProvider(["must not run"])
     router.register_provider(primary, registration_id="primary")
     router.register_provider(fallback, registration_id="fallback")
-    with pytest.raises(ProviderError):
+    seen: list[str] = []
+    with pytest.raises(ProviderError, match="connection reset"):
+        async for event in router.stream(
+            request(), [profile("primary", 600, 2), profile("fallback")]
+        ):
+            seen.append(event.delta or "")
+    assert seen == ["half "]
+    assert not fallback.requests
+
+
+async def test_stream_reports_every_candidate_when_all_fail_before_streaming() -> None:
+    router = ModelRouter()
+    first = MockModelProvider(handler=fail_provider)
+    second = MockModelProvider(handler=fail_provider)
+    router.register_provider(first, registration_id="first")
+    router.register_provider(second, registration_id="second")
+    with pytest.raises(ProviderError, match="all model candidates failed") as error:
         _ = [
             event
             async for event in router.stream(
-                request(), [profile("primary", 600, 2), profile("fallback")]
+                request(), [profile("first", 600, 2), profile("second")]
             )
         ]
-    assert not fallback.requests
+    assert error.value.retryable
+    assert len(first.requests) == 1 and len(second.requests) == 1
 
 
 async def test_provider_failure_is_preserved_when_another_candidate_exceeds_budget() -> None:

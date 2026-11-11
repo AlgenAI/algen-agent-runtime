@@ -13,6 +13,7 @@ from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.tools.contracts import (
     SideEffect,
     Tool,
+    ToolApproval,
     ToolContext,
     ToolDefinition,
     ToolExecutionStatus,
@@ -62,7 +63,8 @@ async def test_an_approval_required_tool_is_refused_without_an_approval() -> Non
     assert sent == []
     # Refused before the ledger: nothing to reconcile, and nothing blocks a later approved call.
     assert await store.get("k1", "tenant-a") is None
-    result = await executor.execute("mail.send", {}, _context("k1"), approval="tool_call:c1")
+    approval = ToolApproval.for_call("tool_call:c1", "approved", "mail.send", "1", {})
+    result = await executor.execute("mail.send", {}, _context("k1"), approval=approval)
     assert result.value == {} and len(sent) == 1
 
 

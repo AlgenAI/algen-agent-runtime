@@ -7,12 +7,13 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import aclosing
 from contextvars import Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import cached_property
 from typing import Any
 from uuid import uuid4
 
+import jsonschema
 import structlog
 from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
@@ -20,7 +21,13 @@ from opentelemetry.context import Context
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
 
-from algen_agent_runtime.approvals.service import ApprovalService, ApprovalStatus
+from algen_agent_runtime.approvals.service import (
+    MAX_RATIONALE_CHARS,
+    TOOL_CHANGED,
+    ApprovalRequest,
+    ApprovalService,
+    ApprovalStatus,
+)
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
 from algen_agent_runtime.context.artifacts import (
@@ -94,7 +101,11 @@ from algen_agent_runtime.observability.traccia_adapter import (
 from algen_agent_runtime.observability.trace_levels import TraceLevel, TraceLevelTracer
 from algen_agent_runtime.planning.contracts import ActionType, Plan, PlannedAction
 from algen_agent_runtime.planning.planners import PlannerRegistry
-from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision
+from algen_agent_runtime.policies.contracts import (
+    PAYLOAD_CHANGE_KEY,
+    PolicyAction,
+    PolicyDecision,
+)
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy, looks_like_instruction_override
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
@@ -120,13 +131,16 @@ from algen_agent_runtime.tools.contracts import (
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
+    ToolApproval,
     ToolContext,
     ToolDefinition,
     ToolExecutionRecord,
     ToolExecutionStatus,
     ToolNote,
     ToolResult,
+    canonical_digest,
     read_only_credentials,
+    tool_fingerprint,
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -194,6 +208,56 @@ _OUTAGE_RETRY_SECONDS = (0.5, 30.0)
 # How long resume waits for the drive that paused a run to finish its tail (events, trace).
 _PAUSED_DRIVE_WAIT_SECONDS = 10.0
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
+# plan_tool answers a parallel reply leaves to the single path: it refuses the call, or runs it
+# with its rewritten arguments.
+_SINGLE_PATH_PLAN_ACTIONS = frozenset(
+    {
+        PolicyAction.DENY,
+        PolicyAction.REDACT,
+        PolicyAction.TRANSFORM,
+        PolicyAction.REQUIRE_CLARIFICATION,
+    }
+)
+
+
+def _planned_call(
+    action: PlannedAction, definition: ToolDefinition, decision: PolicyDecision
+) -> PlannedAction:
+    """The call as it goes on after the ``plan_tool`` decision (``deny`` is handled before).
+
+    ``allow`` and ``require_approval`` keep it. ``transform`` rewrites its arguments, which must
+    still fit the input schema, so the guards, the approval request and the executor all see
+    the rewritten call. ``redact`` refuses it, as ``before_tool`` would: the tool is never sent
+    masked arguments. ``require_clarification`` is not supported here and refuses it. A
+    ``require_approval`` decision whose other policies changed the arguments carries that change
+    (``PAYLOAD_CHANGE_KEY``) and is treated the same way.
+    """
+    change = decision.action
+    if change == PolicyAction.REQUIRE_APPROVAL:
+        change = PolicyAction(decision.audit_metadata.get(PAYLOAD_CHANGE_KEY, change))
+    if change == PolicyAction.REDACT:
+        # Name the redaction, not the approval a require_approval decision carried it in.
+        raise PolicyDeniedError(
+            f"policy.redacted: a redaction refuses the call to {definition.name}; "
+            "it is not run with masked arguments"
+        )
+    if change == PolicyAction.REQUIRE_CLARIFICATION:
+        raise PolicyDeniedError(
+            f"{decision.reason_code}: policy action require_clarification is unsupported at "
+            "boundary plan_tool"
+        )
+    if change != PolicyAction.TRANSFORM:
+        return action
+    rewritten = decision.value
+    if not isinstance(rewritten, dict):
+        raise ToolExecutionError(f"policy-transformed input for {definition.name} is not an object")
+    try:
+        jsonschema.validate(rewritten, definition.input_schema)
+    except jsonschema.ValidationError as exc:
+        raise ToolExecutionError(
+            f"policy-transformed input for {definition.name} is invalid: {exc.message}"
+        ) from exc
+    return action.model_copy(update={"arguments": rewritten})
 
 
 def _usage_attributes(usage: TokenUsage) -> dict[str, Any]:
@@ -264,6 +328,7 @@ class _ToolCallOutcome:
     working_update: WorkingState | None = None
     skill_update: LoadedSkills | None = None
     memory_receipt: MemoryReceipt | None = None
+    files: run_attachments.ToolFiles = field(default_factory=run_attachments.ToolFiles)
 
 
 @dataclass(frozen=True)
@@ -356,7 +421,7 @@ class AgentRuntime:
         self.artifacts = artifacts
         self.attachment_limits = attachment_limits or run_attachments.AttachmentLimits()
         self.learned_memory = (
-            LearnedMemoryService(learned_memory_store, self._memory_context)
+            LearnedMemoryService(learned_memory_store, self._memory_context, self.router.provider)
             if learned_memory_store is not None
             else None
         )
@@ -402,6 +467,7 @@ class AgentRuntime:
                 )
             if any(MEMORY_PERMISSIONS[name] not in agent.tool_permissions for name in memory_tools):
                 raise ConfigurationError("learned memory tools require their memory permissions")
+            self.learned_memory.check_policy(agent.learned_memory_policy)
         elif memory_tools:
             raise ConfigurationError("memory tools require learned_memory_policy.enabled")
         if agent.context_policy.skills_enabled and (
@@ -695,6 +761,11 @@ class AgentRuntime:
                         state.pending_tool_calls[index] = call.model_copy(
                             update={"arguments": approval.modified_parameters or {}}
                         )
+            approved_call = next(
+                (call for call in state.pending_tool_calls if call.id == call_id), None
+            )
+            if approved_call is not None:
+                state.tool_approvals[call_id] = self._bind_approval(approval, approved_call)
             self._restore_deadline_after_pause(state)
             state.pause_payload = None
             await self._transition(state, RunStatus.PLANNING)
@@ -702,6 +773,127 @@ class AgentRuntime:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
         await self._schedule(run_id, tenant_id, credentials)
         return state
+
+    def _bind_approval(self, approval: ApprovalRequest, call: ToolCall) -> ToolApproval:
+        """The decided ``approval`` bound to the call it approved: the tool, version and
+        fingerprint it was asked for, and the arguments it proposed, or the approver's modified
+        ones. An approval stored before 0.2 records none of them: it is bound to the call's
+        current tool version and arguments, with no fingerprint."""
+        version = approval.tool_version
+        if version is None:
+            try:
+                version = self.tools.get(call.name).definition.version
+            except NotFoundError:
+                version = ""
+        modified = approval.status == ApprovalStatus.MODIFIED
+        return ToolApproval(
+            approval_id=approval.id,
+            decision="modified" if modified else "approved",
+            tool=approval.tool or call.name,
+            tool_version=version,
+            arguments_sha256=(
+                approval.arguments_sha256
+                if approval.arguments_sha256 is not None and not modified
+                else canonical_digest(call.arguments)
+            ),
+            tool_fingerprint=approval.tool_fingerprint,
+        )
+
+    @staticmethod
+    def _call_rationale(state: RunState, call_id: str) -> str | None:
+        """Why the agent wants to make a call, for its approval request: the text of the model
+        reply that made it, redacted like the parameters and at most ``MAX_RATIONALE_CHARS``.
+        None when the reply had no text."""
+        reply = next(
+            (
+                message
+                for message in reversed(state.messages)
+                if message.role == Role.ASSISTANT
+                and any(call.id == call_id for call in message.tool_calls)
+            ),
+            None,
+        )
+        text = " ".join(redact_text(reply.text_content).split()) if reply is not None else ""
+        if not text:
+            return None
+        if len(text) > MAX_RATIONALE_CHARS:
+            text = text[: MAX_RATIONALE_CHARS - 1].rstrip() + "\u2026"
+        return text
+
+    @staticmethod
+    def _stale_approval(state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
+        """The approval of an approved call whose tool changed since the approval was asked
+        for (another version or fingerprint), or None when it is current or has no
+        fingerprint."""
+        bound = state.tool_approvals.get(call_id)
+        if (
+            call_id not in state.approved_tool_call_ids
+            or bound is None
+            or bound.tool_fingerprint is None
+        ):
+            return None
+        definition = tool.definition
+        if (bound.tool, bound.tool_version) == (definition.name, definition.version) and (
+            bound.tool_fingerprint == tool_fingerprint(tool)
+        ):
+            return None
+        return bound
+
+    async def _ask_again_for_changed_tool(
+        self, state: RunState, call_id: str, tool: Tool, stale: ToolApproval
+    ) -> str:
+        """Withdraw an approval whose tool changed before the approved call ran: expire it
+        (``status_reason`` ``tool_changed``), record the audit event ``approval.tool_changed``
+        with both fingerprints, and forget the decision, so the call is asked for again with
+        the tool's current definition. Returns the expired approval's id."""
+        try:
+            await self.approvals.expire(
+                stale.approval_id, state.request.tenant_id, reason=TOOL_CHANGED
+            )
+        except (NotFoundError, ConflictError) as exc:
+            self._logger.warning(
+                "approval_expire_failed",
+                run_id=state.id,
+                approval_id=stale.approval_id,
+                error_type=type(exc).__name__,
+            )
+        await self._audit(
+            state,
+            "approval.tool_changed",
+            "expired",
+            stale.approval_id,
+            {
+                "tool": tool.definition.name,
+                "tool_call_id": call_id,
+                "previous_version": stale.tool_version,
+                "current_version": tool.definition.version,
+                "previous_fingerprint": stale.tool_fingerprint,
+                "current_fingerprint": tool_fingerprint(tool),
+            },
+        )
+        state.approved_tool_call_ids.discard(call_id)
+        state.tool_approvals.pop(call_id, None)
+        return stale.approval_id
+
+    def _call_approval(self, state: RunState, call_id: str, tool: Tool) -> ToolApproval | None:
+        """The approval that covers a call, or None when it was not approved.
+
+        A call approved before 0.2 has no recorded binding: it is bound to the arguments it
+        runs with, as it was then.
+        """
+        if call_id not in state.approved_tool_call_ids:
+            return None
+        bound = state.tool_approvals.get(call_id)
+        if bound is not None:
+            return bound
+        call = next((call for call in state.pending_tool_calls if call.id == call_id), None)
+        return ToolApproval.for_call(
+            f"tool_call:{call_id}",
+            "approved",
+            tool.definition.name,
+            tool.definition.version,
+            call.arguments if call is not None else {},
+        )
 
     async def _await_paused_drive(self, run_id: str) -> None:
         """Let the drive that paused a run finish before the run is resumed.
@@ -2188,7 +2380,7 @@ class AgentRuntime:
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
         try:
-            tool = await self._admit_tool_call(state, agent, action)
+            admitted = await self._admit_tool_call(state, agent, action)
         except _UnknownToolError as exc:
             # A name no tool has is the model's slip, not a policy breach: it hears which
             # tools it has and carries on, whatever the agent's on_error.
@@ -2203,8 +2395,10 @@ class AgentRuntime:
         except Exception as exc:
             await self._tool_call_failed(state, agent, action, exc)
             return
-        if tool is None:
+        if admitted is None:
             return
+        # A plan_tool transform may have rewritten the arguments: those are the ones that run.
+        tool, action = admitted
         await self._transition(state, RunStatus.INVOKING_TOOL)
         try:
             outcome = await self._run_tool_call(state, agent, action, tool)
@@ -2294,9 +2488,10 @@ class AgentRuntime:
 
     async def _admit_tool_call(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
-    ) -> Tool | None:
-        """The tool to run, or None when the run paused for approval first or a guard answered
-        the call without running it."""
+    ) -> tuple[Tool, PlannedAction] | None:
+        """The tool to run and the call as it runs (a ``plan_tool`` transform may rewrite its
+        arguments), or None when the run paused for approval first or a guard answered the call
+        without running it."""
         call_id = action.id.removeprefix("tool-")
         if action.tool_name not in agent.enabled_tools:
             if not self._registered(action.tool_name or ""):
@@ -2312,7 +2507,7 @@ class AgentRuntime:
             "plan_tool",
             action.arguments,
             state,
-            {"tool": tool.definition, "approval_policy": agent.approval_policy},
+            {"agent": agent, "tool": tool.definition, "approval_policy": agent.approval_policy},
         )
         if decision.action == PolicyAction.DENY:
             # A denial at planning refuses the call before any approval is asked for, the same
@@ -2326,13 +2521,27 @@ class AgentRuntime:
             )
             raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
         approved = call_id in state.approved_tool_call_ids
+        replaced: str | None = None
+        stale = self._stale_approval(state, call_id, tool)
+        if stale is not None:
+            replaced = await self._ask_again_for_changed_tool(state, call_id, tool, stale)
+            approved = False
         if not approved:
+            # The guards, the approval request and the executor all see the rewritten arguments.
+            # An approved call is not rewritten again: it runs with what its approver approved,
+            # the arguments as rewritten before they were shown, or the approver's modified ones.
+            action = _planned_call(action, tool.definition, decision)
             # Checked before anyone is asked; an approved call passed them when it was planned.
             held = await self._guard_tool_call(state, agent, action, tool)
             if held is not None:
                 await self._hold_tool_call(state, agent, action, held)
                 return None
         if decision.action == PolicyAction.REQUIRE_APPROVAL and not approved:
+            rationale = self._call_rationale(state, call_id)
+            if rationale is not None and self.telemetry_include_content:
+                trace.get_current_span().set_attribute(
+                    "approval.rationale", self._telemetry_content(rationale)
+                )
             approval = await self.approvals.create(
                 state.id,
                 action.id,
@@ -2342,24 +2551,45 @@ class AgentRuntime:
                 decision.audit_metadata.get("risk", tool.definition.side_effect.value),
                 agent.approval_policy.expires_seconds,
                 agent=state.request.agent,
+                tool=tool.definition.name,
+                tool_version=tool.definition.version,
+                tool_fingerprint=tool_fingerprint(tool),
+                arguments_sha256=canonical_digest(action.arguments),
+                rationale=rationale,
             )
             state.pause_payload = {
                 "kind": "tool_approval",
                 "approval_id": approval.id,
                 "tool_call_id": call_id,
+                "tool": approval.tool,
+                "tool_version": approval.tool_version,
+                "tool_fingerprint": approval.tool_fingerprint,
                 "proposed_action": approval.proposed_action,
                 "side_effect_summary": approval.side_effect_summary,
                 "redacted_parameters": approval.redacted_parameters,
+                "rationale": approval.rationale,
                 "risk": approval.risk,
                 "expires_at": approval.expires_at.isoformat(),
                 "options": ["approved", "rejected", "modified"],
                 "paused_at": utc_now().isoformat(),
             }
+            # The call waits with the arguments the approver is shown (after any rewrite), so the
+            # approved call runs with exactly them.
+            state.pending_tool_calls = [
+                call.model_copy(update={"arguments": action.arguments})
+                if call.id == call_id
+                else call
+                for call in state.pending_tool_calls
+            ]
+            if replaced is not None:
+                # Asked again because the tool changed after the earlier approval.
+                state.pause_payload["replaces_approval_id"] = replaced
+                state.pause_payload["replaced_reason"] = TOOL_CHANGED
             await self._transition(state, RunStatus.AWAITING_APPROVAL)
             await self._emit(state, "approval.required", state.pause_payload, action.id)
             return None
         self._count_tool_call(state, agent, tool.definition)
-        return tool
+        return tool, action
 
     async def _guard_tool_call(
         self,
@@ -2631,9 +2861,7 @@ class AgentRuntime:
                     on_reconciled=lambda record: self._announce_replay_reconciled(state, record),
                     # Planning asked for this call's approval (side_effects is mandatory), so an
                     # approval-required tool reaches here only once its call was approved.
-                    approval=(
-                        f"tool_call:{call_id}" if call_id in state.approved_tool_call_ids else None
-                    ),
+                    approval=self._call_approval(state, call_id, tool),
                 )
                 tool_text = json.dumps(result.value, default=str)
                 if tool.definition.name in MEMORY_PERMISSIONS:
@@ -2714,13 +2942,63 @@ class AgentRuntime:
             span.set_attribute("tool.artifact_count", len(result.artifact_ids))
             if self.telemetry_include_content:
                 span.set_attribute("tool.output", self._telemetry_content(result.value))
+            files = (
+                await self._tool_files(state, agent, tool.definition, result)
+                if result.files
+                else run_attachments.ToolFiles()
+            )
+            span.set_attribute("tool.file_count", files.shown)
         return _ToolCallOutcome(
             result=result,
             text=tool_text,
             working_update=working_update,
             skill_update=skill_update,
             memory_receipt=memory_receipt,
+            files=files,
         )
+
+    async def _tool_files(
+        self,
+        state: RunState,
+        agent: AgentDefinition,
+        definition: ToolDefinition,
+        result: ToolResult,
+    ) -> run_attachments.ToolFiles:
+        """The blocks a tool result's files add to its message: checked like run attachments,
+        tenant included, and shown as files only when one of the agent's models reads them."""
+        profiles = (agent.default_model, *agent.fallback_models)
+        # The run's earlier files already narrow the models it can use.
+        earlier = run_attachments.required_capabilities(
+            block.media_type or ""
+            for message in state.messages
+            for block in message.content
+            if isinstance(block, FileBlock)
+        )
+
+        async def readable(needed: frozenset[str]) -> bool:
+            narrowed = run_attachments.with_capabilities(profiles, earlier | needed)
+            return bool(await self.router.candidates(narrowed, agent.model_allowlist))
+
+        files = await run_attachments.tool_files(
+            result.files,
+            declared=definition.returns_files,
+            tenant_id=state.request.tenant_id,
+            artifacts=self.artifacts,
+            limits=self.attachment_limits,
+            remaining_tokens=max(
+                0, self._token_limit(state, agent) - state.summary.usage.total_tokens
+            ),
+            readable=readable,
+        )
+        if files.refused:
+            await self._audit(
+                state,
+                "tool.files",
+                "refused",
+                definition.name,
+                {"refused": files.refused, "shown": files.shown},
+            )
+        return files
 
     async def _record_tool_call(
         self,
@@ -2750,6 +3028,8 @@ class AgentRuntime:
                 tool_call_id=call_id,
                 content=(
                     TextBlock(text=tool_text),
+                    # Files by reference only: the bytes are loaded for each provider call.
+                    *outcome.files.blocks,
                     *await self._wrap_up_blocks(state, agent, action),
                 ),
             )
@@ -2769,6 +3049,11 @@ class AgentRuntime:
                 "result_chars": len(tool_text),
                 "artifact_count": len(result.artifact_ids),
                 "artifact_ids": list(result.artifact_ids) if self.telemetry_include_content else [],
+                **(
+                    {"file_count": outcome.files.shown, "files_refused": outcome.files.refused}
+                    if result.files
+                    else {}
+                ),
             },
             action.id,
         )
@@ -2862,13 +3147,18 @@ class AgentRuntime:
                 "plan_tool",
                 action.arguments,
                 state,
-                {"tool": tool.definition, "approval_policy": agent.approval_policy},
+                {"agent": agent, "tool": tool.definition, "approval_policy": agent.approval_policy},
             )
-            if decision.action == PolicyAction.DENY or (
+            call_id = action.id.removeprefix("tool-")
+            if decision.action in _SINGLE_PATH_PLAN_ACTIONS or (
                 decision.action == PolicyAction.REQUIRE_APPROVAL
-                and action.id.removeprefix("tool-") not in state.approved_tool_call_ids
+                and (
+                    call_id not in state.approved_tool_call_ids
+                    or self._stale_approval(state, call_id, tool) is not None
+                )
             ):
-                # One at a time: the single path pauses for the approval or refuses the call.
+                # One at a time: the single path pauses for the approval, refuses the call or
+                # runs it with its rewritten arguments.
                 return False
             tools.append(tool)
         # Guards judge each call after the ones the model sent before it that will run.
@@ -3269,8 +3559,9 @@ class AgentRuntime:
                 persisted = [run_attachments.user_message(state.request)]
                 if state.output_text:
                     persisted.append(Message.text(Role.ASSISTANT, state.output_text))
-            if state.request.attachments and agent.attachments.retention == "turn":
-                # Later turns see a note, not the file: it is not re-sent and billed again.
+            if run_attachments.has_files(persisted) and agent.attachments.retention == "turn":
+                # Later turns see a note, not the file: it is not re-sent and billed again. That
+                # holds for files a tool returned as well as the run's own attachments.
                 persisted = await run_attachments.retire(
                     persisted, state.request.tenant_id, self.artifacts
                 )

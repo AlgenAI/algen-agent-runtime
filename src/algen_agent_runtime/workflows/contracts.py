@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
@@ -102,6 +102,22 @@ class WorkflowApprovalRule(BaseModel):
     allow_modification: bool = False
     rejection_policy: Literal["skip_dependents", "continue"] = "skip_dependents"
     expires_seconds: int = Field(default=3600, ge=1, le=604_800)
+    binding: Literal["call", "step"] = Field(
+        default="call",
+        description="What an approving decision covers for the approval-required tool steps it "
+        "gates. 'call' (the default): exactly the call the approver was shown, resolved when "
+        "they decided; a step whose arguments then differ is refused. 'step' (discouraged): "
+        "any call the step makes, whatever its arguments, as before 0.2.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_binding(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # The default stays out of the dump, so a manifest's fingerprint is what it was before
+        # binding existed and runs paused across the upgrade still resume.
+        data = handler(self)
+        if isinstance(data, dict) and self.binding == "call":
+            data.pop("binding", None)
+        return data
 
     @model_validator(mode="after")
     def validate_parameters(self) -> WorkflowApprovalRule:
@@ -128,8 +144,45 @@ class WorkflowApprovalDecision(BaseModel):
     decided_at: datetime = Field(default_factory=utc_now)
 
 
+class WorkflowApprovedCall(BaseModel):
+    """The call of one approval-required tool step that an approval node's decision covers.
+
+    Resolved when the approver decided, from the workflow's values and the decision itself; the
+    step runs only when its arguments are still exactly these (``binding: call``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tool: str
+    tool_version: str
+    tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    """The tool's fingerprint when the approval was asked for."""
+    arguments_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    """The canonical digest of the resolved arguments; None when they read values the workflow
+    did not have yet when the approver decided, which no approver saw."""
+    modification_ignored: bool = False
+    """The approver modified the parameters and the step does not read them."""
+
+
 # A handler that names a registered tool rather than a workflow hook.
 TOOL_HANDLER_PREFIX = "tool:"
+
+
+def template_paths(value: Any) -> Iterator[str]:
+    """The workflow values a tool step's ``arguments`` templates read (``{{path}}``)."""
+    if isinstance(value, Mapping):
+        for item in value.values():
+            yield from template_paths(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from template_paths(item)
+    elif isinstance(value, str):
+        for token in re.findall(r"\{\{\s*([^{}]+?)\s*\}\}", value):
+            yield token.removesuffix(".output")
+
+
+def path_within(path: str, prefix: str) -> bool:
+    """Whether a dotted value path is ``prefix`` or inside it."""
+    return path == prefix or path.startswith(f"{prefix}.")
 
 
 class WorkflowNode(BaseModel):
@@ -249,6 +302,19 @@ def upstream_approval_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> 
             found.append(current)
         pending.extend(nodes[current].depends_on)
     return tuple(found)
+
+
+def upstream_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> set[str]:
+    """Every node a node depends on, directly or through other nodes."""
+    found: set[str] = set()
+    pending = list(nodes[node_id].depends_on)
+    while pending:
+        current = pending.pop()
+        if current in found or current not in nodes:
+            continue
+        found.add(current)
+        pending.extend(nodes[current].depends_on)
+    return found
 
 
 def covering_approval_nodes(nodes: Mapping[str, WorkflowNode], node_id: str) -> tuple[str, ...]:
@@ -437,6 +503,20 @@ class WorkflowNodeExecution(BaseModel):
     error: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    approved_calls: dict[str, WorkflowApprovedCall] | None = Field(
+        default=None,
+        description="On an approval node decided approved or modified: the call of each "
+        "approval-required tool step it gates, by step id. None on other nodes, and on approvals "
+        "decided before 0.2, whose steps run as they did then.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_approved_calls(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # Earlier releases load checkpoints with extra="forbid": leave the field out while unset.
+        data = handler(self)
+        if isinstance(data, dict) and self.approved_calls is None:
+            data.pop("approved_calls", None)
+        return data
 
 
 class WorkflowExecutionState(BaseModel):

@@ -15,30 +15,36 @@ from algen_agent_runtime.workflows import (
     WorkflowRegistry,
     WorkflowStatus,
 )
-from examples.pattern_mcp_governance.app import run_mcp_governance_demonstration
-from examples.pattern_openai_agents_integration.app import run_openai_agents_demonstration
-from examples.pattern_provider_fallback.app import deterministic_fallback
+from algen_agent_runtime_examples.pattern_mcp_governance.app import run_mcp_governance_demonstration
+from algen_agent_runtime_examples.pattern_openai_agents_integration.app import (
+    run_openai_agents_demonstration,
+)
+from algen_agent_runtime_examples.pattern_provider_fallback.app import deterministic_fallback
+from algen_agent_runtime_examples.quickstart_attachments.app import demonstrate
 
 ROOT = Path(__file__).parents[2]
 PORTABLE_EXAMPLES = (
-    "examples/quickstart_tool/agent.yaml",
-    "examples/quickstart_approval/agent.yaml",
-    "examples/pattern_approval_workflow/agent.yaml",
-    "examples/pattern_governed_research/agent.yaml",
-    "examples/pattern_langgraph_governance/agent.yaml",
-    "examples/pattern_multi_agent_fanout/agent.yaml",
-    "examples/pattern_child_workflow/agent.yaml",
-    "examples/pattern_evaluation_gate/agent.yaml",
-    "examples/reference_customer_support/config/agent.yaml",
-    "examples/reference_incident_response/config/agent.yaml",
-    "examples/reference_invoice_exceptions/config/agent.yaml",
+    "algen_agent_runtime_examples/quickstart_tool/agent.yaml",
+    "algen_agent_runtime_examples/quickstart_approval/agent.yaml",
+    "algen_agent_runtime_examples/pattern_approval_workflow/agent.yaml",
+    "algen_agent_runtime_examples/pattern_governed_research/agent.yaml",
+    "algen_agent_runtime_examples/pattern_langgraph_governance/agent.yaml",
+    "algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",
+    "algen_agent_runtime_examples/pattern_child_workflow/agent.yaml",
+    "algen_agent_runtime_examples/pattern_evaluation_gate/agent.yaml",
+    "algen_agent_runtime_examples/reference_customer_support/config/agent.yaml",
+    "algen_agent_runtime_examples/reference_incident_response/config/agent.yaml",
+    "algen_agent_runtime_examples/reference_invoice_exceptions/config/agent.yaml",
 )
 ALL_AGENT_CONFIGS = tuple(
-    sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "examples").glob("**/agent.yaml"))
+    sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "algen_agent_runtime_examples").glob("**/agent.yaml")
+    )
 )
 
 
-LOADER = WorkflowHookLoader(allowed_modules=("examples",))
+LOADER = WorkflowHookLoader(allowed_modules=("algen_agent_runtime_examples",))
 
 
 def _hooks(reference: str) -> WorkflowHookRegistry:
@@ -48,8 +54,8 @@ def _hooks(reference: str) -> WorkflowHookRegistry:
 
 def test_all_agent_configs_discovered() -> None:
     assert len(ALL_AGENT_CONFIGS) >= 19
-    assert "examples/pattern_provider_fallback/agent.yaml" in ALL_AGENT_CONFIGS
-    assert "examples/quickstart_local_chat/agent.yaml" in ALL_AGENT_CONFIGS
+    assert "algen_agent_runtime_examples/pattern_provider_fallback/agent.yaml" in ALL_AGENT_CONFIGS
+    assert "algen_agent_runtime_examples/quickstart_local_chat/agent.yaml" in ALL_AGENT_CONFIGS
 
 
 @pytest.mark.asyncio
@@ -57,6 +63,23 @@ async def test_provider_fallback_example_has_a_deterministic_failure_path() -> N
     route, output = await deterministic_fallback("test")
     assert route == "mock/deterministic"
     assert output == "deterministic fallback response"
+
+
+@pytest.mark.asyncio
+async def test_attachments_quickstart_passes_files_by_reference() -> None:
+    shown = await demonstrate("What are these files?")
+
+    assert [item["scan"] for item in shown["staged"]] == ["available", "available"]
+    assert all(len(item["sha256"]) == 64 for item in shown["staged"])
+    received = shown["model_received"]
+    assert any(line.startswith("file image/png:") for line in received)
+    assert any(line.startswith("[attachment: leave.csv, text/csv, id=") for line in received)
+    # The run keeps references only: no bytes, no base64.
+    assert [set(block) for block in shown["run_stored"]] == [
+        {"type", "artifact_id", "media_type"}
+    ] * 2
+    assert '"rows": 2' in shown["tool_read"]
+    assert shown["answer"]
 
 
 @pytest.mark.asyncio
@@ -83,6 +106,10 @@ async def test_openai_agents_integration_example_executes_offline() -> None:
     assert "Log analysis completed" in result["output"]
     assert "started" in result["stream_events"]
     assert "completed" in result["stream_events"]
+    # Runtime tools handed to the SDK run through the executor; the approval-required one is
+    # refused there, and the SDK's own tool is not governed.
+    assert result["governed_calls"] == ["incidents.lookup INC-1024 for security-ops"]
+    assert result["native_calls"] == ["read_runbook INC-1024"]
 
 
 @pytest.mark.parametrize("relative_path", ALL_AGENT_CONFIGS)
@@ -159,9 +186,15 @@ async def test_portable_example_workflow_runs_without_paid_services(relative_pat
 @pytest.mark.parametrize(
     ("relative_path", "workflow_name"),
     (
-        ("examples/quickstart_approval/agent.yaml", "approval-quickstart"),
-        ("examples/reference_incident_response/config/agent.yaml", "incident-response"),
-        ("examples/reference_invoice_exceptions/config/agent.yaml", "invoice-exception-review"),
+        ("algen_agent_runtime_examples/quickstart_approval/agent.yaml", "approval-quickstart"),
+        (
+            "algen_agent_runtime_examples/reference_incident_response/config/agent.yaml",
+            "incident-response",
+        ),
+        (
+            "algen_agent_runtime_examples/reference_invoice_exceptions/config/agent.yaml",
+            "invoice-exception-review",
+        ),
     ),
 )
 @pytest.mark.asyncio

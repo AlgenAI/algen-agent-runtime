@@ -350,8 +350,10 @@ async def test_a_tool_reads_the_run_attachments_and_nothing_else() -> None:
         (PNG, "image/png", ArtifactStatus.AVAILABLE, "clean"),
         (PNG, "application/octet-stream", ArtifactStatus.AVAILABLE, "clean"),
         (PNG, "image/jpeg", ArtifactStatus.QUARANTINED, "type_mismatch"),
-        (b"plain text", "image/png", ArtifactStatus.QUARANTINED, "type_unrecognised"),
-        (b"a,b\n1,2\n", "text/csv", ArtifactStatus.AVAILABLE, "not_inspected"),
+        (b"plain text", "image/png", ArtifactStatus.QUARANTINED, "type_mismatch"),
+        (b"\x01\x02\x03\x04", "image/png", ArtifactStatus.QUARANTINED, "type_unrecognised"),
+        (b"a,b\n1,2\n", "text/csv", ArtifactStatus.AVAILABLE, "clean"),
+        (b"a,b\n1,2\n", "application/msword", ArtifactStatus.AVAILABLE, "not_inspected"),
         (
             b"%PDF-1.4\nno end",
             "application/pdf",

@@ -166,8 +166,30 @@ before it cannot start. Tool steps work the same in process
 and under `algen-agent-runtime serve`.
 
 The approval node's own recorded status decides: no workflow value, another node's output or an
-answer to a later question can approve a call. An approval covers a step, not its arguments, so
-build the call from what the approver saw, and from the decision when it can be modified:
+answer to a later question can approve a call.
+
+### Approvals bind the exact call
+
+From 0.2 an approval covers the exact call it approved, not just the step. When an approval node
+pauses, it shows the approver the call of each approval-required tool step it gates, in the pause's
+`calls`: `node_id`, `tool`, `tool_version`, `tool_fingerprint`, the resolved `arguments` (literals
+included, redacted like approval parameters) and their `arguments_sha256`. `arguments` is `null`
+when the call reads a value the workflow does not have yet, such as `{{approval.decided_by}}`.
+
+When the approver decides, the decision is bound to that call (`approved_calls` on the approval
+node's execution): an `approved` decision to the call shown, a `modified` one to the call resolved
+with the approver's parameters. The tool step then runs only with exactly those arguments. It is
+refused with an `ApprovalMismatchError`, and a `workflow.tool.refused` event carrying
+`reason_code`, the call's `arguments_sha256` and the bound `approved_arguments_sha256`, when:
+
+| `reason_code` | Refused because |
+| --- | --- |
+| `approval.arguments_mismatch` | The arguments differ from the bound call: a step between the approval and the tool changed a value the call reads. |
+| `approval.arguments_unbound` | The call reads values that did not exist when the approver decided, such as the output of a step after the approval, so no approver saw them. |
+| `approval.modification_ignored` | The approver modified the parameters and the step does not read `<output_key>.parameters`. |
+
+Build the call from what the approver saw, and from the decision when it can be modified, and put
+the approval after every node that produces the call's values:
 
 ```yaml
 - id: approve
@@ -186,11 +208,25 @@ build the call from what the approver saw, and from the decision when it can be 
   output_key: paid
 ```
 
-`algen-agent-runtime check` warns (`APPROVAL_ARGUMENTS_NOT_REVIEWED`,
-`APPROVAL_MODIFICATION_IGNORED`) when a step reads anything else. Each covered call emits
-`workflow.tool.authorized` with SHA-256 digests of its arguments and of the approved parameters
-(`arguments_sha256`, `parameters_sha256`), so an audit can tell whether they match without storing
-either.
+`algen-agent-runtime check` reports `APPROVAL_ARGUMENTS_UNBOUND` (an error: the call would
+always be refused) when a step reads a value produced after its approval, and warns
+(`APPROVAL_ARGUMENTS_NOT_REVIEWED`, `APPROVAL_MODIFICATION_IGNORED`) when it reads anything else
+the approver was not shown, or ignores a modification. Each covered call emits
+`workflow.tool.authorized` with `binding` (`call`, `step`, `legacy` for an approval decided
+before 0.2, or `not_required` for a tool that does not require approval) and SHA-256 digests of its
+arguments and of the approved parameters (`arguments_sha256`, `parameters_sha256`).
+
+`binding: step` on an approval (`approval: {prompt: ..., binding: step}`) is the explicit opt-out:
+the decision approves any call the gated steps make, whatever their arguments, as before 0.2. It is
+discouraged; `check` warns `APPROVAL_BINDING_STEP` wherever it is used. Approvals decided before the
+upgrade run their step as before.
+
+If a gated tool changes (another version, schema, side effect or handler code) between the
+approval request and the call, the step does not run: each approval that recorded the old
+fingerprint expires (`workflow.approval.expired` with `reason: tool_changed`), emits
+`workflow.approval.tool_changed` with `previous_fingerprint` and `current_fingerprint`, and pauses
+again showing the current definition. See
+[Approvals and tool changes](tool-authoring.md#approvals-and-tool-changes).
 
 An agent node's invalid JSON output (with `output_schema`) is repaired like a validation failure,
 up to `max_repairs`. Nodes with `pass_attachments: true` hand the run's files to their agent; see
@@ -385,7 +421,8 @@ runnable. See "Running workflows over HTTP" below for the routes.
 The executor emits `workflow.started`, node started/repairing/completed/skipped/failed/rejected
 events, `workflow.input.required`, `workflow.approval.required`,
 `workflow.approval.decided` (with `parameters_sha256`, a digest of the approved parameters),
-`workflow.tool.authorized`, `workflow.approval.expired`, `workflow.input.expired`, and one
+`workflow.tool.authorized`, `workflow.tool.refused`, `workflow.approval.tool_changed`,
+`workflow.approval.expired`, `workflow.input.expired`, and one
 terminal workflow event. Payloads contain workflow and node
 identity rather than prompts, model reasoning, credentials, or unrestricted outputs. The returned
 `WorkflowExecutionState` contains node attempts, child Runtime run IDs, timestamps, outputs, pause

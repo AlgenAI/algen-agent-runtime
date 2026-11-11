@@ -14,7 +14,7 @@ from algen_agent_runtime.ui.spec import extract_agent_manifest_spec
 
 
 def test_extract_manifest_spec_single_agent() -> None:
-    settings = load_settings(("examples/quickstart_local_chat/agent.yaml",))
+    settings = load_settings(("algen_agent_runtime_examples/quickstart_local_chat/agent.yaml",))
     spec = extract_agent_manifest_spec(settings)
 
     assert spec["title"]
@@ -35,7 +35,9 @@ def test_extract_manifest_spec_single_agent() -> None:
 
 
 def test_extract_manifest_spec_multi_agent_workflow() -> None:
-    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    settings = load_settings(
+        ("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",)
+    )
     spec = extract_agent_manifest_spec(settings)
 
     assert spec["stats"]["agent_count"] == 3
@@ -62,7 +64,9 @@ def test_extract_manifest_spec_multi_agent_workflow() -> None:
 
 
 def test_extract_manifest_spec_approval_workflow() -> None:
-    settings = load_settings(("examples/reference_customer_support/config/agent.yaml",))
+    settings = load_settings(
+        ("algen_agent_runtime_examples/reference_customer_support/config/agent.yaml",)
+    )
     spec = extract_agent_manifest_spec(settings)
 
     wf = spec["workflows"]["customer-support-resolution"]
@@ -75,7 +79,9 @@ def test_extract_manifest_spec_approval_workflow() -> None:
 def test_generate_agent_ui_html() -> None:
     import re
 
-    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    settings = load_settings(
+        ("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",)
+    )
     html = generate_agent_ui_html(settings=settings, title="Custom Multi-Agent Explorer")
 
     assert "<!DOCTYPE html>" in html
@@ -107,7 +113,7 @@ def test_generate_agent_ui_html() -> None:
 def test_export_agent_ui_html(tmp_path: Path) -> None:
     target = tmp_path / "exported-ui.html"
     result_path = export_agent_ui_html(
-        config_files=("examples/quickstart_local_chat/agent.yaml",),
+        config_files=("algen_agent_runtime_examples/quickstart_local_chat/agent.yaml",),
         output_path=target,
         title="Quickstart Chat Spec",
     )
@@ -125,7 +131,7 @@ def test_cli_ui_command(tmp_path: Path) -> None:
         [
             "ui",
             "--config",
-            "examples/quickstart_local_chat/agent.yaml",
+            "algen_agent_runtime_examples/quickstart_local_chat/agent.yaml",
             "--output",
             str(target),
             "--title",
@@ -145,7 +151,7 @@ def test_cli_export_ui_alias(tmp_path: Path) -> None:
         [
             "export-ui",
             "--config",
-            "examples/quickstart_local_chat/agent.yaml",
+            "algen_agent_runtime_examples/quickstart_local_chat/agent.yaml",
             "--output",
             str(target),
         ]
@@ -164,7 +170,7 @@ def test_cli_ui_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
         [
             "ui",
             "--config",
-            "examples/quickstart_local_chat/agent.yaml",
+            "algen_agent_runtime_examples/quickstart_local_chat/agent.yaml",
             "--output",
             "-",
         ]
@@ -202,7 +208,9 @@ async def test_fastapi_agent_ui_disabled_by_default() -> None:
 
 @pytest.mark.asyncio
 async def test_fastapi_agent_ui_enabled() -> None:
-    settings = load_settings(("examples/pattern_multi_agent_fanout/agent.yaml",))
+    settings = load_settings(
+        ("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",)
+    )
     settings = settings.model_copy(
         update={"api": settings.api.model_copy(update={"agent_ui_enabled": True})}
     )

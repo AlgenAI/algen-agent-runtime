@@ -8,10 +8,9 @@ the warnings about code Studio cannot run, which such a host runs as written.
 from __future__ import annotations
 
 import ast
-import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -31,8 +30,13 @@ from algen_agent_runtime.orchestration.validation import (
 from algen_agent_runtime.workflows.contracts import (
     TOOL_HANDLER_PREFIX,
     WorkflowManifest,
+    WorkflowNode,
     covering_approval_nodes,
+    path_within,
+    template_paths,
+    upstream_nodes,
 )
+from algen_agent_runtime.workflows.loader import WorkflowHookLoader
 
 Severity = Literal["error", "warning"]
 Profile = Literal["studio", "standalone"]
@@ -164,21 +168,65 @@ def check_project(
                 )
             )
     found.extend(workflow_approval_issues(settings.workflows, inventory.tools))
+    found.extend(
+        hook_provider_issues(
+            settings.workflows, settings.security.trusted_plugin_prefixes, profile=profile
+        )
+    )
     return report([*found, *issues], inventory)
+
+
+def hook_provider_issues(
+    workflows: Mapping[str, WorkflowManifest],
+    trusted_prefixes: Sequence[str],
+    *,
+    profile: Profile = "studio",
+) -> Iterator[CheckIssue]:
+    """Workflows whose hook provider the workflow service would refuse to load.
+
+    The service (``algen-agent-runtime serve``) imports a hook provider only from a module
+    ``security.trusted_plugin_prefixes`` allows, and lists any other workflow as unavailable. A
+    host that loads the hooks itself, as a generated ``app.py`` does, still runs, so the problem
+    shows only once the project is served. Studio authorizes hook modules by its own operator
+    review, so for the studio profile this is a warning.
+    """
+    loader = WorkflowHookLoader(allowed_modules=tuple(trusted_prefixes))
+    for name, manifest in sorted(workflows.items()):
+        if manifest.hook_provider is None:
+            continue
+        module = manifest.hook_provider.split(":", 1)[0]
+        if loader.is_module_allowed(module):
+            continue
+        yield CheckIssue(
+            severity="error" if profile == "standalone" else "warning",
+            code="HOOK_PROVIDER_UNTRUSTED",
+            message=(
+                f"workflow {name!r} loads hooks from {module!r}, which "
+                "security.trusted_plugin_prefixes does not allow; the workflow service lists it "
+                "as unavailable and refuses to start it"
+            ),
+            field=f"workflows.{name}.hook_provider",
+            name=module,
+            suggestion=module,
+        )
 
 
 def workflow_approval_issues(
     workflows: Mapping[str, WorkflowManifest], tools: Iterable[ToolDescription]
 ) -> Iterator[CheckIssue]:
-    """Warnings for approval-required tool steps whose call the approver did not see.
+    """Issues with approval-required tool steps whose call the approver did not see.
 
     A step is covered by the approvals that gate it (:func:`covering_approval_nodes`), the same
     ones the engine requires. Its arguments should read what those approvals showed
     (``review_from``, ``parameters_from``) or decided (their ``output_key``); anything else may
     differ from what the approver saw. A modifiable approval's decision is read only through its
     ``parameters``, where a modified decision's values are. Literal arguments are part of the
-    workflow's definition and are not checked. Tools the inventory cannot describe, such as MCP
-    tools, are skipped.
+    workflow's definition, and the approver is shown them with the resolved call.
+
+    With strict binding (an approval's ``binding: call``, the default), a step that reads a
+    value produced by a node after its approval can never run: the error
+    ``APPROVAL_ARGUMENTS_UNBOUND``. ``binding: step`` is reported as a warning. Tools the
+    inventory cannot describe, such as MCP tools, are skipped.
     """
     approval_tools = {tool.name for tool in tools if tool.requires_approval}
     for workflow in workflows.values():
@@ -201,10 +249,10 @@ def workflow_approval_issues(
                     *filter(None, [approval.approval.parameters_from]),
                 )
             ]
-            read = sorted(set(_argument_paths(node.arguments)))
+            read = sorted(set(template_paths(node.arguments)))
             location = f"workflows.{workflow.name}.nodes.{node.id}"
             names = ", ".join(repr(approval.id) for approval in approvals)
-            unreviewed = [path for path in read if not any(_within(path, s) for s in shown)]
+            unreviewed = [path for path in read if not any(path_within(path, s) for s in shown)]
             if unreviewed:
                 yield CheckIssue(
                     severity="warning",
@@ -217,38 +265,65 @@ def workflow_approval_issues(
                     f"{{{{{approvals[0].output_key}.parameters.<field>}}}}, or show them with "
                     "review_from or parameters_from",
                 )
+            producers = {item.output_key: item.id for item in workflow.nodes}
             for approval in approvals:
-                if approval.approval is None or not approval.approval.allow_modification:
+                if approval.approval is None:
+                    continue
+                if approval.approval.binding == "step":
+                    yield CheckIssue(
+                        severity="warning",
+                        code="APPROVAL_BINDING_STEP",
+                        message=f"approval {approval.id!r} declares binding: step, so it "
+                        f"approves any call step {node.id!r} makes to {tool!r}, whatever its "
+                        "arguments",
+                        location=location,
+                        name=tool,
+                        suggestion="remove binding: step to bind the decision to the call the "
+                        "approver is shown",
+                    )
+                else:
+                    later = _read_after(read, approval, producers, nodes)
+                    if later:
+                        yield CheckIssue(
+                            severity="error",
+                            code="APPROVAL_ARGUMENTS_UNBOUND",
+                            message=f"step {node.id!r} calls approval-required tool {tool!r} "
+                            f"with {later}, which nodes after approval {approval.id!r} "
+                            "produce, so no approver sees them and the call is always refused",
+                            location=location,
+                            name=tool,
+                            suggestion=f"move approval {approval.id!r} after the nodes that "
+                            "produce the call's values",
+                        )
+                if not approval.approval.allow_modification:
                     continue
                 parameters = f"{approval.output_key}.parameters"
-                if not any(_within(path, parameters) for path in read):
+                if not any(path_within(path, parameters) for path in read):
                     yield CheckIssue(
                         severity="warning",
                         code="APPROVAL_MODIFICATION_IGNORED",
                         message=f"approval {approval.id!r} allows modification, but step "
                         f"{node.id!r} does not read its parameters, so a modified decision "
-                        f"would not change the call to {tool!r}",
+                        f"would not change the call to {tool!r} and the call is refused",
                         location=location,
                         name=tool,
                         suggestion=f"read {{{{{parameters}.<field>}}}}",
                     )
 
 
-def _argument_paths(value: Any) -> Iterator[str]:
-    """The workflow values a tool step's arguments read."""
-    if isinstance(value, Mapping):
-        for item in value.values():
-            yield from _argument_paths(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _argument_paths(item)
-    elif isinstance(value, str):
-        for token in re.findall(r"\{\{\s*([^{}]+?)\s*\}\}", value):
-            yield token.removesuffix(".output")
-
-
-def _within(path: str, shown: str) -> bool:
-    return path == shown or path.startswith(f"{shown}.")
+def _read_after(
+    read: Iterable[str],
+    approval: WorkflowNode,
+    producers: Mapping[str, str],
+    nodes: Mapping[str, WorkflowNode],
+) -> list[str]:
+    """The paths a step reads from nodes that do not run before ``approval``."""
+    before = upstream_nodes(nodes, approval.id) | {approval.id}
+    return [
+        path
+        for path in read
+        if (producer := producers.get(path.split(".", 1)[0])) is not None and producer not in before
+    ]
 
 
 def _error(code: str, message: str) -> CheckIssue:
@@ -315,8 +390,22 @@ class _CodeScanner(ast.NodeVisitor):
         self._functions: list[str] = []
         self._env_reads: list[int] = []
         self._issues: list[CheckIssue] = []
+        # Names bound to a WorkflowHookRegistry: what a declared hook provider returns. Their
+        # register_handler calls are the workflow's own hooks, not container registration.
+        self._hook_registries: set[str] = set()
 
     def scan(self, tree: ast.AST) -> list[CheckIssue]:
+        for node in ast.walk(tree):
+            value = getattr(node, "value", None)
+            if (
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and isinstance(value, ast.Call)
+                and _call_name(value) == "WorkflowHookRegistry"
+            ):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                self._hook_registries.update(
+                    target.id for target in targets if isinstance(target, ast.Name)
+                )
         self.visit(tree)
         if self._env_reads:
             lines = ", ".join(str(line) for line in self._env_reads[:10])
@@ -411,16 +500,21 @@ class _CodeScanner(ast.NodeVisitor):
         elif not in_plugin and name in {"register", "register_provider", "register_handler"}:
             target = node.func.value if isinstance(node.func, ast.Attribute) else None
             registry = target.attr if isinstance(target, ast.Attribute) else None
-            if name in {"register_provider", "register_handler"} or registry in {
-                "tools",
-                "planners",
-                "contexts",
-                "verifiers",
-                "composers",
-                "policies",
-                "retrievers",
-                "semantics",
-            }:
+            hook_registry = isinstance(target, ast.Name) and target.id in self._hook_registries
+            if not hook_registry and (
+                name in {"register_provider", "register_handler"}
+                or registry
+                in {
+                    "tools",
+                    "planners",
+                    "contexts",
+                    "verifiers",
+                    "composers",
+                    "policies",
+                    "retrievers",
+                    "semantics",
+                }
+            ):
                 self._warn(
                     "POST_BUILD_REGISTRATION",
                     "registers a component on a built container or router; Studio cannot see "

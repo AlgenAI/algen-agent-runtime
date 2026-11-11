@@ -1,0 +1,71 @@
+providers:
+  mock: {type: mock, default_model: deterministic}
+
+agents:
+  - name: pattern-approval-workflow
+    version: 1.0.0
+    description: Approval-gated workflow automation agent
+    capabilities: [workflow, approval]
+    system_instructions: Follow the configured workflow and never perform external changes without approval.
+    default_model: {name: deterministic, provider: mock, model: deterministic}
+    planning_strategy: direct
+    approval_policy: {require_for_side_effects: true, require_for_destructive: true, expires_seconds: 1800}
+    max_steps: 16
+
+workflows:
+  approval-gated-crm:
+    name: approval-gated-crm
+    version: 1.0.0
+    description: Lookup, proposal, first-class human approval, and idempotent synthetic CRM update
+    hook_provider: algen_agent_runtime_examples.pattern_approval_workflow.hooks:create_hooks
+    nodes:
+      - id: lookup
+        kind: handler
+        handler: crm.lookup
+        output_key: customer
+        resources:
+          - {kind: service, name: synthetic-crm, access: read, description: Synthetic customer record}
+      - id: propose
+        kind: agent
+        depends_on: [lookup]
+        agent: pattern-approval-workflow
+        input_builder: crm.propose
+        output_schema_hook: crm.proposal_schema
+        output_key: proposal
+      - id: approve
+        kind: approval
+        depends_on: [propose]
+        output_key: approval
+        approval:
+          prompt: Review the proposed synthetic CRM update.
+          review_from: [customer, proposal.requested_change]
+          parameters_from: proposal.parameters
+          parameters_schema:
+            type: object
+            required: [customer_id, credit_enabled]
+            properties:
+              customer_id: {type: string}
+              credit_enabled: {type: boolean}
+            additionalProperties: false
+          allow_modification: true
+          rejection_policy: skip_dependents
+          expires_seconds: 1800
+      - id: update
+        kind: handler
+        depends_on: [approve]
+        handler: crm.update
+        output_key: result
+        resources:
+          - {kind: service, name: synthetic-crm, access: write, description: Idempotent synthetic update}
+
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+  workflow_store: memory
+telemetry: {enabled: false}

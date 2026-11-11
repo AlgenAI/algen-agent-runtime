@@ -8,7 +8,7 @@ my_agent/
 ├── agent.yaml          # providers, agents, workflows, retrieval, stores, telemetry
 ├── app.py              # small local entry point using Runtime APIs
 ├── hooks.py            # only when a workflow needs domain hooks
-├── manifest.yaml       # catalogue metadata for examples/marketplace tooling
+├── manifest.yaml       # catalogue metadata for algen_agent_runtime_examples/marketplace tooling
 ├── README.md
 └── tests/
     └── test_smoke.py
@@ -37,13 +37,20 @@ Use `--dir <path>` to target a custom folder and `--force` to overwrite existing
 
 ## Non-Interactive Workflow Execution
 
-For automated testing, CI pipelines, and headless benchmarks, use workflow decision flags:
+By default a generated or example app asks a person at every approval checkpoint, and without an
+answer (no TTY, closed input, EOF) it fails closed: nothing is applied and it exits non-zero. For
+automated tests, CI pipelines and headless benchmarks only, choose the decision explicitly:
 
-- `--approve-all`: Automatically approve human checkpoints with default values.
-- `--reject-all`: Reject all pending review checkpoints.
-- `--answers-file <path.json>`: Provide explicit answers keyed by step ID or prompt substring.
+- `--approve-all`: approve every checkpoint without asking.
+- `--reject-all`: reject every pending checkpoint.
+- `--answers-file <path.json>` (examples): explicit answers keyed by step ID or prompt substring.
 
-Interactive prompts fail closed with non-zero exit when run without a TTY or on EOF.
+Never make approval the default of an app: a human-gated starter must not approve by itself.
+Tests pass the decision explicitly too.
+
+A generated workflow project names its hook module after the project (`<project>_hooks`) and lists
+it in `security.trusted_plugin_prefixes`; the workflow service (`algen-agent-runtime serve`) loads
+hook providers only from trusted modules, and `check` reports `HOOK_PROVIDER_UNTRUSTED` otherwise.
 
 ## Safe Starter Tools
 
@@ -79,7 +86,7 @@ The plugin's `register(context)` only constructs and registers components; clien
 handed to `context.add_resource` and connect on first use or in `start()`.
 `algen-agent-runtime describe --path src` lists every component and its source without calling any
 of them, and `algen-agent-runtime check agent.yaml --path src` validates the project as Studio will.
-`examples/quickstart_agent_tool` is the reference: a `Toolkit` with a read tool and an
+`algen_agent_runtime_examples/quickstart_agent_tool` is the reference: a `Toolkit` with a read tool and an
 approval-gated write tool, registered by its plugin. `algen-agent-runtime new <name>` scaffolds the
 same shape (`<name>_plugin.py` plus its `domain_plugins` entry). A project still on constructor
 arguments moves with the steps in `docs/plugins.md` ("Moving from constructor arguments").
@@ -93,7 +100,7 @@ arguments moves with the steps in `docs/plugins.md` ("Moving from constructor ar
 - Choose guardrails, verification, approvals, and model allowlists based on actual risk.
 - Use in-memory stores for examples; document PostgreSQL/Redis settings for durable deployments.
 
-Use `examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
+Use `algen_agent_runtime_examples/quickstart_cloud_chat`, `quickstart_local_chat`, `quickstart_rag`,
 `quickstart_conversation`, `pattern_guarded_tools` and `pattern_text_to_sql` as current working
 references. Copy concepts, not stale versions of internal classes.
 
@@ -131,7 +138,12 @@ agents:
   metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
   tools an empty mapping, so return an "authentication required" tool error then.
 - `requires_approval` is enforced when the tool runs, not only when the model plans the call. A
-  workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it.
+  workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it, and
+  runs only with the exact arguments that approval showed (see references/workflows.md).
+  The approver sees the model's own rationale for the call, and is asked again if the tool's
+  definition or code changed before the call runs.
+- A policy that rewrites a call answers `transform` (at `plan_tool`, so the approver sees the
+  rewritten call); `redact` refuses the call rather than running it on masked data.
 - A tool that refuses before sending anything raises `ToolNotAttemptedError` (or
   `PolicyDeniedError`), so the ledger records `failed` rather than `indeterminate`.
 - Usage metering is a deployment setting, not an agent field: the host passes a `UsageMeter` to
@@ -140,12 +152,18 @@ agents:
 
 ## File attachments
 
-An agent that reads images or PDFs the caller attaches (an ID document, a scanned invoice) opts in:
+An agent that reads images or PDFs the caller attaches (an ID document, a scanned invoice) opts in.
+Documents a tool reads instead (Office files, e-mail, CSV) go in `tool_read_types`; they never
+reach the model provider, and the model passes their id to a reader tool:
 
 ```yaml
 agents:
   - name: kyc-reader
-    attachments: {enabled: true, max_count: 2, retention: turn}
+    attachments:
+      enabled: true
+      max_count: 2
+      retention: turn
+      tool_read_types: [text/csv, "application/vnd.openxmlformats-officedocument.*"]
 security:
   upload_scanner: basic          # uploads stay pending_scan until something scans them
 ```

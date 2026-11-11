@@ -44,7 +44,11 @@ and map fan-out.
 
 Use a first-class `approval` node—not a clarification predicate—before consequential work. A
 `tool:` step that calls a tool with `requires_approval` must depend on an approval node, or the
-executor refuses the call otherwise. Declare a
+executor refuses the call otherwise. The approval is bound to the exact call it shows: template the
+step's arguments only from what the approval shows (`<output_key>.parameters`, its `review_from`
+values, literals), and put the approval after the nodes that produce them. A step whose arguments
+differ, or that ignores a modification, is refused (`workflow.tool.refused`); `check` reports
+`APPROVAL_ARGUMENTS_UNBOUND`. Do not use `binding: step` to silence it. Declare a
 clear prompt, only deliberately reviewable `review_from` paths, optional secret-free parameters and
 their JSON Schema, a bounded expiry, and whether modification is permitted. Keep the defaults
 `allow_modification: false` and `rejection_policy: skip_dependents`; use `continue` only for a branch
@@ -66,7 +70,7 @@ canonical output validation. Parent concurrency bounds whole child executions. R
 the child ID and input before dispatch so recovery either reconciles that child or creates the same
 recorded identity after a pre-creation crash. Resume or decide through the parent checkpoint. Do not
 invoke the child directly or copy its nodes into the parent. Child inputs and outputs must be
-JSON-compatible and secret-free. See `examples/pattern_child_workflow`.
+JSON-compatible and secret-free. See `algen_agent_runtime_examples/pattern_child_workflow`.
 
 Declare tools, query sources, retrieval, memory, storage, cache, telemetry, and services in each
 node's `resources`. These references are secret-free operational topology and allow Studio to draw
@@ -92,7 +96,7 @@ from `algen_agent_runtime.workflows`:
   `LoadedHookProvider` containing verified hooks and sanitized audit metadata without serializing
   code or secrets.
 
-Use `examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
+Use `algen_agent_runtime_examples/pattern_multi_agent_fanout`, `pattern_approval_workflow`,
 `pattern_child_workflow`, `pattern_governed_research`, and the reference applications as current
 examples.
 

@@ -1,0 +1,29 @@
+id: pattern_provider_fallback
+display_name: "Provider Fallback and Budget Routing"
+tier: pattern
+description: >
+  Shows provider-neutral multi-provider fallback (Anthropic → OpenAI → Ollama).
+  Includes a credential-free planned primary failure and visible selected route.
+
+extras: []
+external_services: []
+
+secrets:
+  - name: ANTHROPIC_API_KEY
+    description: Anthropic API key (primary provider)
+    required: false
+  - name: OPENAI_API_KEY
+    description: OpenAI API key (cloud fallback)
+    required: false
+
+entry_points:
+  cli: algen_agent_runtime_examples.pattern_provider_fallback.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.pattern_provider_fallback.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 15
+deterministic_mock_support: true

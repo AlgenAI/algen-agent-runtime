@@ -245,6 +245,10 @@ providers:
     type: mock
     default_model: deterministic
 
+# The workflow service loads hook providers only from trusted modules.
+security:
+  trusted_plugin_prefixes: [{ident}_hooks]
+
 agents:
   - name: {slug}-proposer
     version: 1.0.0
@@ -262,7 +266,10 @@ workflows:
     name: {workflow_name}
     version: 1.0.0
     description: Proposal, human approval checkpoint, and idempotent apply
-    hook_provider: hooks:create_hooks
+    hook_provider: {ident}_hooks:create_hooks
+    # The run's output over HTTP. A rejected change is never applied, so it has no result and
+    # no output_schema is declared (a declared schema would fail every rejected run).
+    output_key: result
     nodes:
       - id: propose
         kind: agent
@@ -318,7 +325,8 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     hooks.register_schema("proposal.schema", PROPOSAL_SCHEMA)
 
     def propose(context: Any) -> dict[str, Any]:
-        change = str(context.state.values.get("question", "Default action"))
+        # The run's text: what `python app.py` passes and what the HTTP service stores.
+        change = str(context.state.values.get("input", "")).strip()
         return {"change": change, "parameters": {"change": change}}
 
     def apply(context: Any) -> dict[str, Any]:
@@ -334,11 +342,21 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     return hooks
 """
 
-    app_py = f'''from __future__ import annotations
+    app_py = f'''"""Run {workflow_name}: an agent proposes a change, a person approves or rejects it, and
+only an approved change is applied.
+
+By default the decision is asked for in the terminal. Without an answer (closed input, Ctrl-D)
+nothing is applied and the command exits with status 2. For CI, choose explicitly with
+--approve-all or --reject-all.
+"""
+
+from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -350,11 +368,35 @@ from algen_agent_runtime.workflows import (
     WorkflowRegistry,
     WorkflowStatus,
 )
-from hooks import create_hooks
+from {ident}_hooks import create_hooks
+
+# Decides one approval from its pause payload: "approved" or "rejected".
+Decide = Callable[[dict[str, Any]], str]
 
 
-async def run(question: str, decision: str = "approved") -> dict[str, Any]:
-    """Execute the {workflow_name} workflow with the given approval decision."""
+class NoDecision(Exception):
+    """Nobody answered, so nothing is approved."""
+
+
+def ask(payload: dict[str, Any]) -> str:
+    """Show the person what they are approving and read their decision."""
+    print(f"\\nApproval required: {{payload.get('prompt', '')}}")
+    shown = {{key: payload[key] for key in ("review", "redacted_parameters", "calls") if payload.get(key)}}
+    print(json.dumps(shown, indent=2, default=str))
+    while True:
+        try:
+            answer = input("Approve or reject? [approve/reject]: ").strip().lower()
+        except EOFError:
+            raise NoDecision from None
+        if answer in {{"approve", "approved", "a", "y", "yes"}}:
+            return "approved"
+        if answer in {{"reject", "rejected", "r", "n", "no"}}:
+            return "rejected"
+        print("Type approve or reject.")
+
+
+async def run(question: str, decide: Decide) -> dict[str, Any]:
+    """Run {workflow_name}; ``decide`` makes each approval decision."""
     config_path = Path(__file__).with_name("agent.yaml")
     settings = load_settings((config_path,))
     manifest = settings.workflows["{workflow_name}"]
@@ -372,24 +414,18 @@ async def run(question: str, decision: str = "approved") -> dict[str, Any]:
         )
         state = await executor.run(
             manifest,
-            {{"question": question, "input": question}},
+            {{"input": question}},
             tenant_id="default-tenant",
             user_id="default-user",
         )
-        while state.status in {{
-            WorkflowStatus.AWAITING_INPUT,
-            WorkflowStatus.AWAITING_APPROVAL,
-        }}:
-            if state.status is WorkflowStatus.AWAITING_APPROVAL:
-                state = await executor.decide_approval(
-                    manifest,
-                    state.id,
-                    tenant_id="default-tenant",
-                    user_id="default-user",
-                    decision=decision,
-                )
-            else:
-                break
+        while state.status is WorkflowStatus.AWAITING_APPROVAL:
+            state = await executor.decide_approval(
+                manifest,
+                state.id,
+                tenant_id="default-tenant",
+                user_id="default-user",
+                decision=decide(dict(state.pause or {{}})),
+            )
         return state.values
     finally:
         container.close()
@@ -398,15 +434,29 @@ async def run(question: str, decision: str = "approved") -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run {workflow_name}")
     parser.add_argument("change", nargs="?", default="Apply synthetic modification")
-    parser.add_argument(
-        "--decision",
-        choices=["approved", "rejected"],
-        default="approved",
-        help="Approval decision (default: approved)",
+    headless = parser.add_mutually_exclusive_group()
+    headless.add_argument(
+        "--approve-all", action="store_true", help="approve without asking (CI only)"
+    )
+    headless.add_argument(
+        "--reject-all", action="store_true", help="reject without asking (CI only)"
     )
     args = parser.parse_args(argv)
 
-    values = asyncio.run(run(args.change, decision=args.decision))
+    if args.approve_all:
+        decide: Decide = lambda _payload: "approved"  # noqa: E731
+    elif args.reject_all:
+        decide = lambda _payload: "rejected"  # noqa: E731
+    else:
+        decide = ask
+    try:
+        values = asyncio.run(run(args.change, decide))
+    except NoDecision:
+        print("No decision: nothing was applied.", file=sys.stderr)
+        raise SystemExit(2) from None
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        raise SystemExit(130) from None
     print(json.dumps(values, indent=2, default=str))
 
 
@@ -417,36 +467,58 @@ if __name__ == "__main__":
     test_py = """from __future__ import annotations
 
 import pytest
-from app import run
+from app import NoDecision, run
 
 
 @pytest.mark.asyncio
-async def test_approval_workflow_approve() -> None:
-    values = await run("Test change", decision="approved")
+async def test_an_approved_change_is_applied() -> None:
+    values = await run("Test change", lambda payload: "approved")
     assert values["approval"]["decision"] == "approved"
     assert values["result"]["status"] == "applied"
 
 
 @pytest.mark.asyncio
-async def test_approval_workflow_reject() -> None:
-    values = await run("Test change", decision="rejected")
+async def test_a_rejected_change_is_not_applied() -> None:
+    values = await run("Test change", lambda payload: "rejected")
     assert values["approval"]["decision"] == "rejected"
     assert "result" not in values
+
+
+@pytest.mark.asyncio
+async def test_without_a_decision_nothing_is_applied() -> None:
+    def nobody(payload: object) -> str:
+        raise NoDecision
+
+    with pytest.raises(NoDecision):
+        await run("Test change", nobody)
 """
 
     readme_md = f"""# {slug} (Approval Workflow)
 
 A human-gated workflow built with [Algen Agent Runtime](https://github.com/AlgenAI/algen-agent-runtime).
 
-## Running Interactively / Headless
+## Running
 
 ```bash
-# Run with approval (default)
+# Asks you to approve or reject the proposed change
 python app.py "Apply synthetic modification"
 
-# Run with rejection
-python app.py "Apply synthetic modification" --decision rejected
+# CI only: decide without asking
+python app.py "Apply synthetic modification" --approve-all
+python app.py "Apply synthetic modification" --reject-all
 ```
+
+Without an answer (closed input, Ctrl-D) nothing is applied and the command exits with status 2.
+
+## Serving the workflow over HTTP
+
+```bash
+pip install "algen-agent-runtime[service]"
+PYTHONPATH=. ALGEN_AGENT_RUNTIME_CONFIG=agent.yaml algen-agent-runtime serve
+```
+
+The workflow service loads `{ident}_hooks` because `security.trusted_plugin_prefixes` in
+`agent.yaml` trusts it; keep the hook module importable (`PYTHONPATH=.`).
 
 ## Running Tests
 
@@ -456,7 +528,7 @@ pytest
 """
     return {
         "agent.yaml": agent_yaml,
-        "hooks.py": hooks_py,
+        f"{ident}_hooks.py": hooks_py,
         "app.py": app_py,
         "test_agent.py": test_py,
         "README.md": readme_md,
@@ -476,6 +548,10 @@ providers:
     type: mock
     default_model: deterministic
 
+# The workflow service loads hook providers only from trusted modules.
+security:
+  trusted_plugin_prefixes: [{ident}_hooks]
+
 agents:
   - name: {slug}-worker
     version: 1.0.0
@@ -493,7 +569,16 @@ workflows:
     name: {workflow_name}
     version: 1.0.0
     description: Deterministic multi-stage DAG workflow
-    hook_provider: hooks:create_hooks
+    hook_provider: {ident}_hooks:create_hooks
+    # The run's output over HTTP, checked against this schema when the run completes.
+    output_key: final_summary
+    output_schema:
+      type: object
+      required: [status, summary, analysis]
+      properties:
+        status: {{type: string}}
+        summary: {{type: string}}
+        analysis: {{type: string}}
     nodes:
       - id: step-one
         kind: handler
@@ -522,8 +607,8 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     hooks = WorkflowHookRegistry()
 
     def step_one(context: Any) -> str:
-        question = context.state.values.get("question", "")
-        return f"Prepared input: {question}"
+        # The run's text: what `python app.py` passes and what the HTTP service stores.
+        return f"Prepared input: {context.state.values.get('input', '')}"
 
     def step_three(context: Any) -> dict[str, Any]:
         return {
@@ -552,7 +637,7 @@ from algen_agent_runtime.workflows import (
     MultiAgentWorkflowExecutor,
     WorkflowRegistry,
 )
-from hooks import create_hooks
+from {ident}_hooks import create_hooks
 
 
 async def run(question: str) -> dict[str, Any]:
@@ -574,7 +659,7 @@ async def run(question: str) -> dict[str, Any]:
         )
         state = await executor.run(
             manifest,
-            {{"question": question, "input": question}},
+            {{"input": question}},
             tenant_id="default-tenant",
             user_id="default-user",
         )
@@ -620,6 +705,16 @@ A multi-stage DAG workflow built with [Algen Agent Runtime](https://github.com/A
 python app.py "Analyze quarterly trends"
 ```
 
+## Serving the workflow over HTTP
+
+```bash
+pip install "algen-agent-runtime[service]"
+PYTHONPATH=. ALGEN_AGENT_RUNTIME_CONFIG=agent.yaml algen-agent-runtime serve
+```
+
+The workflow service loads `{ident}_hooks` because `security.trusted_plugin_prefixes` in
+`agent.yaml` trusts it; keep the hook module importable (`PYTHONPATH=.`).
+
 ## Running Tests
 
 ```bash
@@ -628,7 +723,7 @@ pytest
 """
     return {
         "agent.yaml": agent_yaml,
-        "hooks.py": hooks_py,
+        f"{ident}_hooks.py": hooks_py,
         "app.py": app_py,
         "test_agent.py": test_py,
         "README.md": readme_md,

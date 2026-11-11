@@ -2,8 +2,8 @@
 
 A tool is a typed function with a docstring and one decorator. `@tool` builds the strict schemas
 and the governance fields, and returns an ordinary `Tool`, so the executor, policies and ledger
-treat it like any other. `examples/quickstart_agent_tool` is a complete project;
-`examples/pattern_guarded_tools` runs a precheck, a failure returned as data, `cache_context` and a
+treat it like any other. `algen_agent_runtime_examples/quickstart_agent_tool` is a complete project;
+`algen_agent_runtime_examples/pattern_guarded_tools` runs a precheck, a failure returned as data, `cache_context` and a
 wrapped handler through the guards below.
 
 ```python
@@ -84,8 +84,8 @@ The permission prefix is the toolkit's `permission_prefix` (its name by default)
 - `approval=True` sets `requires_approval` on the definition: the Runtime asks for approval before
   every call, whatever the agent's policy. It can add approval, never waive it. The tool executor
   enforces it too: `ToolExecutor.execute(..., approval=...)` refuses such a call without a
-  reference to the approval that covers it, so a workflow `tool:` step or code calling the
-  executor directly cannot skip it by leaving the reference out. See
+  `ToolApproval` that covers it, so a workflow `tool:` step or code calling the executor
+  directly cannot skip it by leaving the approval out. See
   [Who proves an approval is valid](#who-proves-an-approval-is-valid).
 - `approval=<handler>` runs the deployment's own flow. The handler implements `ApprovalHandler`:
 
@@ -104,19 +104,80 @@ class ChangeRequests:
 
 ### Who proves an approval is valid
 
-The executor checks that an approval reference is present; it does not look the approval up. The
-layer that calls it proves the approval is real and covers this call:
+`ToolExecutor.execute(..., approval=...)` takes a `ToolApproval`, a decided approval bound to one
+call:
+
+```python
+from algen_agent_runtime.tools.contracts import ToolApproval
+
+approval = ToolApproval.for_call(
+    approval_id="change-4711",  # your record of the decision
+    decision="approved",        # or "modified"; nothing else covers a call
+    tool="crm.reassign",
+    tool_version="1",
+    arguments=arguments,        # exactly what the approver approved
+    tool_fingerprint=None,      # or tool_fingerprint(tool) when the approval was asked for
+)
+await executor.execute("crm.reassign", arguments, context, approval=approval)
+```
+
+The executor refuses the call, before anything is recorded or run, with an
+`ApprovalMismatchError` (a `PolicyDeniedError`) whose `code` says why:
+
+| `code` | Refused because |
+| --- | --- |
+| `approval.tool_mismatch` | The approval is for another tool, or another version of it. |
+| `approval.arguments_mismatch` | The call's arguments differ from the approved ones (`arguments_sha256`, the SHA-256 of their canonical JSON: sorted keys, no whitespace). |
+| `approval.tool_changed` | The approval recorded a `tool_fingerprint` and the tool's fingerprint is different now. |
+
+The executor does not look the decision up: the layer that calls it proves the approval is real,
+and builds the `ToolApproval` only from a decided approval:
 
 | Caller | What proves the approval | Bound to |
 | --- | --- | --- |
-| An agent run | The run's approval record: the call's id is in the run's approved calls only after `resume()` recorded an approved or modified decision for it. A call id the model repeats from earlier in the run is replaced with a new one, so an approval never carries over to another call. | The call and its arguments: the call runs with the stored arguments, or with the approver's modified ones. |
-| A workflow `tool:` step | The engine: every approval that gates the step (the nearest approval on each path to it) must have the recorded status `completed`, which only an approved or modified decision sets. No workflow value or input can change it. | The step, not its arguments. Build the arguments from what the approver saw; `check` warns when they read anything else, and `workflow.tool.authorized` records digests of both. |
-| Your own code calling `ToolExecutor.execute` | You. Pass `approval=` only after your own approval flow decided this call. | Whatever your flow binds it to. |
+| An agent run | The run's approval record: `resume()` binds an approved or modified decision to the call it was asked for (`RunState.tool_approvals`). A call id the model repeats from earlier in the run is replaced with a new one, so an approval never carries over to another call. | The tool, its version and fingerprint, and the call's arguments: the stored ones, or the approver's modified ones. |
+| A workflow `tool:` step | The engine: every approval that gates the step (the nearest approval on each path to it) must have the recorded status `completed`, which only an approved or modified decision sets, and must have approved this exact call. No workflow value or input can change it. | The tool, its version and fingerprint, and the step's resolved arguments (see [strict binding](multi-agent-workflows.md#approvals-bind-the-exact-call)). |
+| Your own code calling `ToolExecutor.execute` | You. Build a `ToolApproval` only after your own approval flow decided this call, with the arguments your approver saw. | The tool and arguments in the `ToolApproval`. |
 
-Treat code that calls the executor directly as part of your trust boundary. Binding a workflow
-approval to the exact arguments it covers, and passing the executor a validated approval instead of a
-reference, are planned ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109),
-[#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117)).
+Treat code that calls the executor directly as part of your trust boundary. A call approved
+before 0.2 and still waiting after the upgrade is bound to the arguments it runs with.
+
+### Approvals and tool changes
+
+An approval covers a tool name and arguments, so a deploy that lands between the request and the
+decision would otherwise run new code under an approval given for the old. When an approval is
+asked for, the Runtime records the tool's fingerprint (`tool_fingerprint(tool)`): the SHA-256 of the
+canonical name, `version`, input and output schema, side-effect class and `requires_approval`, plus
+the source of `tool.source` when it has one. `@tool` functions use the author's function, a
+`Tool(definition, handler)` its handler; pass `source=` to name other code, or `source=None` for
+the definition only. The approval record and the run's pause carry `tool`, `tool_version`,
+`tool_fingerprint` and `arguments_sha256`.
+
+Before the approved call runs, a different version or fingerprint does not run it: the old
+approval is expired with `status_reason: tool_changed`, the audit event `approval.tool_changed`
+records `previous_fingerprint` and `current_fingerprint`, and the run pauses for a new approval
+showing the current definition (its pause has `replaces_approval_id` and `replaced_reason:
+tool_changed`). Workflow approvals do the same (see
+[multi-agent workflows](multi-agent-workflows.md#approvals-bind-the-exact-call)). Approvals
+recorded before 0.2 have no fingerprint and run as before.
+
+Limits:
+
+- MCP, HTTP API and remote tools run elsewhere, so only their declared definition is hashed: a
+  server that changes behaviour behind the same schema is not detected.
+- Lambdas and C-backed handlers have no stable source and are fingerprinted by definition only.
+- During a rolling deploy, a run resumed on the other build may be asked again.
+
+### Why the agent wants the call
+
+A tool call's approval request carries a `rationale`: the text of the model reply that made the
+call, with whitespace collapsed, redacted like the parameters (bearer tokens and `key=value`
+credentials) and capped at 500 characters (`MAX_RATIONALE_CHARS`). It is `null` when the reply had
+no text. The approval API (`GET /v1/approvals`, `GET /v1/approvals/{id}`), the run's pause, the
+`approval.required` event and a conversation turn's pending action include it. It is never logged
+and stays out of spans unless content telemetry is on (`telemetry_include_content`), when the span
+gets `approval.rationale`. It is the model's own account, not a verified reason: show it next to
+the parameters, not instead of them.
 
 ## Caching results
 
@@ -242,6 +303,76 @@ async def handler(arguments, context):
 - Raise instead when the run should fail (with `on_error: fail_run`), or for an error the model
   cannot act on.
 
+## Saying what a result covered
+
+A search or listing that reads a derived store (an index, cache, replica or extract), or returns
+only the first page, can say so, so that an empty or short result is not read as "nothing
+exists". Return a `ResultCoverage` under `"coverage"` in the result object:
+
+```python
+from algen_agent_runtime.tools.contracts import ResultCoverage
+
+
+@mail.tool(read())
+async def list_attachments(message_id: str) -> dict:
+    """List an email's attachments from the search index."""
+    rows = await index.attachments(message_id, limit=50)
+    coverage = ResultCoverage(
+        searched="mail.attachments_index",
+        filters={"message_id": message_id},
+        returned=len(rows),
+        capped=len(rows) == 50,
+        source="derived",
+    )
+    return coverage.attach({"items": rows})
+```
+
+A tool that returns a Pydantic model can declare the field instead:
+`coverage: ResultCoverage | None = None`.
+
+| Field | Meaning |
+| --- | --- |
+| `searched` | The collection or index searched (1 to 256 characters). A name, not user data. |
+| `filters` | The constraints applied, as JSON values (at most 2 KiB). Optional. |
+| `total` | How many items matched, when the tool knows. Optional. |
+| `returned` | How many items the result holds. |
+| `capped` | A limit or page cut the result, so more may exist. Default `false`. |
+| `source` | `system_of_record`, or `derived` for a store that may lag or miss items. |
+
+- `coverage.complete` is true only for an uncapped search of the system of record that returned
+  every match. `ResultCoverage.of(result)` reads coverage back from a result value or its JSON
+  text, and returns `None` when there is none or it is malformed.
+- The coverage is part of the result, so the model reads it too; an output schema must allow the
+  `coverage` property. Unknown coverage keys are ignored, and an offloaded result keeps its
+  coverage in the reference.
+- The `result_coverage` verifier uses it to stop an answer stating absence on a partial search;
+  see [answer verification](verification.md#absence-claims-and-result-coverage). Reporting
+  coverage is optional: a tool without it behaves as before.
+
+## Reading attachments and returning files
+
+A tool reads the run's attached files with `await context.read_attachment(artifact_id)`; a model
+that reads text only finds the id in the file's `[attachment: name, type, id=...]` placeholder.
+Documents attached for a tool to read (`attachments.tool_read_types`) reach tools only this way.
+
+A tool can show the model files it produced, such as page images of a poor scan, by returning
+them by reference. It must declare `returns_files` (off by default, since every file costs
+tokens):
+
+```python
+@tool(read(), returns_files=True)
+async def render_pages(document_id: str) -> ToolResult:
+    """Render a document's pages as images."""
+    stored = await artifacts.put(Artifact(tenant_id=..., name="page-1.png",
+                                          media_type="image/png", data=png))
+    return ToolResult(value={"pages": 1},
+                      files=(ToolFile(artifact_id=stored.id, media_type="image/png"),))
+```
+
+A function annotated `-> ToolResult` gets an open output schema, and its `ToolResult` (value,
+`files`, `failed`) reaches the Runtime whole. Each file is checked like a run attachment, tenant
+included; see [attachments](attachments.md#11-files-a-tool-returns).
+
 ## Notes for the user interface
 
 A tool can tell the user interface what a call did (a title, the files it touched, follow-ups to
@@ -271,6 +402,62 @@ async def apply_patch(path: str, patch: str, context: ToolContext) -> Receipt:
   not put secrets or credentials in them.
 - Outside a run (a unit test, `fake_tool_context`, a reconcile or compensation hook) the note is
   checked and returned, and nothing is emitted.
+
+## Timeouts: what stops and what does not
+
+An `async` handler is cancelled when its `timeout_seconds` passes: it stops at its next `await`.
+A synchronous handler (a plain `def`, including a synchronous `@tool` function) runs in a worker
+thread, and Python cannot stop a thread. The guarantee is exactly this: **the caller stops waiting
+on schedule; the work may continue.** The call fails with `tool <name> timed out` on time, while
+the thread runs to its end and its side effect may still happen (a call that writes is recorded
+`indeterminate`).
+
+What bounds that leftover work:
+
+- The call keeps its `max_concurrency` slot until its thread ends, so a tool never has more than
+  `max_concurrency` handlers actually running, and a timed-out call is never retried over its own
+  still-running thread.
+- Every synchronous tool in the process shares one pool of worker threads,
+  `runtime.tool_threads.max_workers` (default `min(32, CPUs + 4)`), apart from asyncio's default
+  executor. When all are busy, up to `runtime.tool_threads.max_queued` calls (default 128) wait;
+  past that a call is refused at once with `ToolCapacityError` ("tool thread pool is full",
+  `details()["code"] == "tool_capacity_exceeded"`). A queued call whose caller times out is
+  withdrawn before it starts and fails with "timed out waiting for a worker thread; it did not
+  start". Both are recorded `failed`, not `indeterminate`: nothing ran.
+
+When a tool needs a hard deadline, set `execution="process"` on its `ToolDefinition`. Each call
+then runs in a new subprocess (the `spawn` start method), which is killed when the deadline
+passes: the work really stops. Its cost and requirements:
+
+- The handler must be a function defined at the top level of an importable module, because the
+  subprocess imports it by name. A lambda, a closure, a `@tool` function or a handler wrapped with
+  `wrap()` cannot be sent; `ToolRegistry.register` refuses such a tool.
+- The arguments, the `ToolContext` and the result must pickle. The caller's credentials are passed
+  to the subprocess explicitly; `emit_note` and `read_attachment` do not work there.
+- Starting an interpreter and importing the handler's module takes time (often a few hundred
+  milliseconds) and counts against `timeout_seconds`.
+- A side effect sent before the kill still happened: a timed-out call that writes is still
+  recorded `indeterminate`, and the tool's `reconcile` hook still applies.
+
+```python
+# billing/tools.py
+def export_ledger(arguments: dict, context: ToolContext) -> dict:
+    ...
+
+export = Tool(
+    ToolDefinition(
+        name="billing.export",
+        version="1",
+        description="Export the ledger.",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        side_effect=SideEffect.READ,
+        timeout_seconds=20,
+        execution="process",
+    ),
+    export_ledger,
+)
+```
 
 ## Unknown outcomes: reconcile and compensation
 
@@ -327,7 +514,7 @@ hooks.
   the idempotency key) without caller credentials, since an operator, not the user, starts them.
 - `describe` shows `reconcile: true` and `compensation: true` for tools that have them.
 
-[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+[`algen_agent_runtime_examples/pattern_side_effect_reconciliation`](../algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
 is a runnable tool with both hooks, over a fake external system.
 
 ## Decorating a handler

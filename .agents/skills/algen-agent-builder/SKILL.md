@@ -19,7 +19,9 @@ Studio-specific workflow dialect. For automated CI and headless evaluation, use 
 options (`--approve-all`, `--reject-all`, `--answers-file PATH`).
 
 Produce an importable project with secret references, bounded execution, deterministic offline
-tests, documented optional dependencies, and a small runnable entry point. A project intended for
+tests, documented optional dependencies, and a small runnable entry point. Depend on
+`algen-agent-runtime[service]` only when the project serves the HTTP API or exports OTLP
+telemetry; an embedded library use needs no extra. A project intended for
 Studio must keep its Runtime configuration and `WorkflowManifest` authoritative. Studio sees only
 what the settings declare, never constructor arguments, so:
 

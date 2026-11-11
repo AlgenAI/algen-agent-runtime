@@ -10,10 +10,15 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from algen_agent_runtime.extras import MissingExtraError
+
+try:
+    import uvicorn
+    from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+except ModuleNotFoundError as exc:
+    raise MissingExtraError("The HTTP API", "server", missing=exc.name) from exc
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime import __version__

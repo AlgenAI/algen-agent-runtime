@@ -156,7 +156,7 @@ async def test_failing_open_skips_only_the_failed_policy() -> None:
     fake = "".join(("abcd", "efgh", "12345"))  # not a literal secret scanners flag
     decision = await engine.evaluate("after_tool", f"api_key={fake}", {})
 
-    assert decision.action == PolicyAction.TRANSFORM
+    assert decision.action == PolicyAction.REDACT
     assert "abcdefgh12345" not in decision.value
     assert decision.audit_metadata["policy_errors"][0]["policy"] == "flaky"
 

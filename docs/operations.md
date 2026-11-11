@@ -44,6 +44,9 @@ runtime:
   recovery_limit: 1000
   shutdown_grace_seconds: 10
   recover_service_workflows: true
+  tool_threads:                 # the process's pool for synchronous tools; see docs/tool-authoring.md
+    max_workers: null           # null: min(32, CPUs + 4)
+    max_queued: 128             # waiting calls; past it a call is refused unstarted
   readiness:
     model_providers: any        # any | all | none
     require_durable_stores: true
@@ -271,7 +274,9 @@ once with the executor, or let a decision or answer through the API continue the
 
 | Event | When |
 | --- | --- |
-| `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. |
+| `workflow.approval.expired` | An approval wait passed its `expires_at` (by a late decision, recovery or the maintenance sweep); the approval node fails. With `reason: tool_changed`, the gated tool changed after the approval was asked for, and the approval node pauses again instead. |
+| `workflow.approval.tool_changed` | A gated tool's fingerprint changed between the approval request and the call; carries `previous_fingerprint` and `current_fingerprint`. |
+| `workflow.tool.refused` | An approval-required tool step was refused because its arguments are not the call its approval bound (`reason_code` `approval.arguments_mismatch`, `approval.arguments_unbound` or `approval.modification_ignored`). |
 | `workflow.input.expired` | An input (clarification) wait was older than `maintenance.clarification_timeout_seconds` when the sweep ran; the asking node fails with `workflow input expired`. |
 | `workflow.recovered` | A recovered run continues after a restart. |
 
@@ -416,17 +421,19 @@ results, approval requests) is written so the previous release can read it, so:
 
 - **Upgrade:** start the new release. It applies the missing migrations under an advisory lock
   (concurrent starts wait for one another) and carries on what the previous release left; the drill
-  starts `0.1.0a17` on an empty database, pauses a run, then starts the current code, which applies
-  `015` and resumes the run.
+  starts the previous release (`0.1.0a23`, migrated through `016`) on an empty database, pauses a
+  run, then starts the current code, which applies `017` and `018` and resumes the run.
 - **Rollback:** stop the new release and start the previous one on the same database. Leave the
   newer migrations in place: the previous release ignores migration rows it does not know and does
-  not read the new columns or tables. The drill rolls back to `0.1.0a17` after the current code has
+  not read the new columns or tables. The drill rolls back to `0.1.0a23` after the current code has
   migrated and written, and reads, lists and resumes the current code's runs there.
 
 | Migration | Since | Change | Safe to leave on rollback |
 | --- | --- | --- | --- |
 | `015_approval_agent.sql` | `0.1.0a18` | Nullable `agent` column and an index on approvals. | Yes; `0.1.0a17` does not read it. Approvals created by the previous release have no `agent`. |
 | `016_resource_bounds.sql` | `0.1.0a18` | Per-tenant storage usage table, triggers that keep it current on artifact, memory and learned-memory writes, and retention indexes. | Yes; `0.1.0a17` does not read the usage table, and its writes still fire the triggers, so usage stays current. |
+| `017_approval_tool_fingerprint.sql` | `0.2.0b1` | Nullable approval columns `tool`, `tool_version`, `tool_fingerprint`, `arguments_sha256`, `rationale` and `status_reason`. | Yes; the previous release does not read them, and the approval JSON keeps its earlier shape. Approvals created by the previous release have none and run without a fingerprint check. |
+| `018_learned_memory_vectors.sql` | `0.2.0b1` | Learned-memory vector table for semantic and hybrid recall (`real[]`, no extension needed). | Yes; the previous release does not read it. Vectors of records it corrects or deletes are not ranked, and the next maintenance sweep of the new release removes them. |
 
 Restore from backup instead of rolling back only when a release's notes say a migration is not
 backward compatible; none is so far. Take a backup before every upgrade.
@@ -501,7 +508,7 @@ names it. Development headers are accepted only when the API binds to a loopback
 
 `jwt` and `oidc` need the `auth` extra (`PyJWT[crypto]`).
 
-[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md) runs the API in-process
+[`algen_agent_runtime_examples/pattern_secured_api`](../algen_agent_runtime_examples/pattern_secured_api/README.md) runs the API in-process
 behind `oidc` with a local JWKS stub: scopes from claims, the approval inbox, conversation
 ownership, token revocation and an HTTP tool that forwards the signed-in user's credential.
 
@@ -711,7 +718,7 @@ decided or recovered; schedule deployment-owned recovery/maintenance if expiry m
 there is no operator or startup traffic. Alert on approval age and never place secrets or expiring
 download URLs in approval state.
 
-For outbound email, use the contract and SMTP setup in [Email](email.md). Resolve SMTP credentials
+For outbound email, use the SMTP or Gmail toolkit from algen-agent-tools ([Email](email.md)). Resolve SMTP credentials
 from the deployment secret manager, require TLS outside explicitly permitted loopback development,
 and persist the tool-execution ledger. A transport failure after submission is indeterminate; do not
 retry automatically. Reconcile with the provider using the stable Message-ID/idempotency key before
@@ -832,6 +839,54 @@ Each handled policy error leaves:
 At the run's own boundaries the `policy.evaluated` event also carries `fail_mode` and
 `error_count`. Alert on any `fail_open` record: a boundary let a value through without one of its
 policies.
+
+### Actions per boundary
+
+A policy answers `allow`, `deny`, `redact`, `transform`, `require_approval` or
+`require_clarification`. What the Runtime does with each answer depends on the boundary. The table
+is the contract; `tests/unit/test_policy_boundary_contract.py` pins every cell.
+
+| Boundary | `allow` | `deny` | `redact` | `transform` | `require_approval` | `require_clarification` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `input` | continues | run fails | the run uses the policy's text (a non-text value is ignored) | as `redact` | run fails (unsupported) | run fails (unsupported) |
+| `before_retrieval` | continues | run fails | the request text becomes the policy's text (a non-text value is ignored) | as `redact` | run fails | run fails |
+| `after_retrieval` | continues | run fails | the history, and the context messages, become the policy's messages (history must stay a list of messages) | as `redact` | run fails | run fails |
+| `before_model` | continues | run fails | the model gets the policy's `ModelRequest` (another value is ignored; compaction requires a request without tools) | as `redact` | run fails | run fails |
+| `after_model` | continues | run fails | the reply text becomes the policy's text | as `redact` | run fails | run fails |
+| `plan_tool` | continues | the call is refused | **the call is refused** before guards or approval | the call's arguments become the policy's value, checked against the input schema; the guards, the approval request and the executor see the rewritten call | the run pauses for approval | the call is refused (unsupported) |
+| `before_tool` | the call runs | the call is refused | **the call is refused**: it is never run with masked arguments | the call runs with the policy's value, checked against the input schema; refused for an approved call when it changes the arguments | the call is refused | the call is refused |
+| `after_tool` | the result stands | the call fails | the result becomes the policy's value, checked against the output schema | as `redact` | the call fails | the call fails |
+| `final_response` | continues | run fails | the answer becomes the policy's text | as `redact` | run fails | run fails |
+| `before_memory_write` | continues | run fails (or the memory tool call) | what is written becomes the policy's value (conversation memory keeps the original unless it is a list of messages; other writes must keep their structure) | as `redact` | run fails | run fails |
+| `after_memory_write` | continues | run fails (the memory is already written) | no effect: the payload is only the count written | no effect | run fails | run fails |
+| `attachments` | continues | run fails before any model call | the run keeps the files the policy's list names (it can drop files, never add one) | as `redact` | run fails | run fails |
+
+A refused tool call follows the agent's `tool_policy.on_error`: it fails the run (`fail`) or goes
+back to the model as an error (`return_to_model`). `require_approval` is honoured only at
+`plan_tool`; elsewhere it, and `require_clarification` everywhere, refuse rather than let the
+value through.
+
+Several policies at one boundary: the first `deny` ends the evaluation; a `require_approval` or
+`require_clarification` stands only when no later policy denies; `redact` and `transform` chain,
+each policy seeing the previous one's value. The combined answer is `redact` when any policy
+redacted, otherwise `transform` (`reason_code: policy.redacted` or `policy.transformed`). When an
+approval requirement and a change meet at `plan_tool`, the decision carries the changed value
+and `audit_metadata.payload_change` (`redact` or `transform`): a redaction refuses the call
+before anyone is asked, and a rewrite is what the approval request shows.
+
+**Rewriting tool arguments.** `transform` is a policy's deliberate rewrite (pin a tenant id, clamp
+a limit, drop a field the tool must not receive), so the call runs with it. `redact` removes
+content the model meant to send, so a tool call would act on masked data (an email whose body says
+`[REDACTED_EMAIL]`); at the two tool-argument boundaries it refuses the call and the model hears
+why. The built-in `secrets` and `pii` policies, and a bundle's `redact_patterns`, answer `redact`.
+Put an argument rewrite at `plan_tool` (a policy can apply to both `plan_tool` and
+`before_tool`): approval binds the arguments the approval request showed, so a `before_tool`
+rewrite that changes an approved call's arguments refuses it. Workflow tool steps have no
+`plan_tool`; their `before_tool` rewrite runs unless the step carries an approval.
+
+`guardrail_policy.tool_policies`, when set, selects the policies at `plan_tool`, `before_tool`
+and `after_tool`; `guardrail_policy.policies` selects them at the other boundaries. Mandatory
+policies (authorization, side effects, bundles) run everywhere they apply.
 
 Fail modes apply to the built-in `CompositePolicyEngine`, which the container builds. An engine
 you pass to `AgentRuntime` yourself keeps its own error behaviour. Other checks are deterministic
@@ -995,7 +1050,7 @@ a dropped connection after the request left), the ledger records it `indetermina
 process stops mid-call, the reservation stays `started`. Neither is ever retried automatically:
 someone has to find out whether the effect happened.
 
-[`examples/pattern_side_effect_reconciliation`](../examples/pattern_side_effect_reconciliation/README.md)
+[`algen_agent_runtime_examples/pattern_side_effect_reconciliation`](../algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
 walks through this section offline: a paused run, the `reconcile` hook, resolution over
 `/v1/tool-executions`, compensation, and a `ToolNotAttemptedError` refusal recorded `failed`.
 
@@ -1137,7 +1192,7 @@ and an index on `(tenant_id, status, updated_at)`.
 A run that needs a human decision pauses with `status: awaiting_approval` and the approval's id in
 `pause_payload.approval_id`. To show everything waiting for a decision, list the tenant's approval
 requests instead of polling runs (shown end to end in
-[`examples/pattern_secured_api`](../examples/pattern_secured_api/README.md)):
+[`algen_agent_runtime_examples/pattern_secured_api`](../algen_agent_runtime_examples/pattern_secured_api/README.md)):
 
 | Route | Scope | Returns |
 | --- | --- | --- |
@@ -1216,7 +1271,7 @@ tenant gets `404`, as on the approval and clarification routes.
 - **Not yet:** conversation turns do not expose steering; a host steers the turn's run by its id
   (`pending.run_id`).
 
-`examples/quickstart_conversation` steers a conversation turn's run while its tool runs, and prints
+`algen_agent_runtime_examples/quickstart_conversation` steers a conversation turn's run while its tool runs, and prints
 the `steer.delivered` event and the tool's `tool.note` beside the turn's streamed deltas.
 
 ## Maintenance and data retention
@@ -1383,7 +1438,7 @@ for input. The awaiting, completed, failed and expired events carry the assistan
 `turn_id` on awaiting events. A resumed turn opens a new `conversation.turn` span with
 `conversation.turn.resumed=true`; its agent run continues the run's original trace.
 
-`examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
+`algen_agent_runtime_examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
 for approval and resumes, driven from Python with `ConversationService.submit` and `respond`.
 
 Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.

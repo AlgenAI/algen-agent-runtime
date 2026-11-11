@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from algen_agent_runtime.api.app import create_app
 from algen_agent_runtime.approvals.service import (
+    STORED_JSON_EXCLUDE,
     ApprovalRequest,
     ApprovalStatus,
     InMemoryApprovalService,
@@ -108,7 +109,7 @@ class _RecordingDatabase:
 
 def _row_json(item: ApprovalRequest) -> str:
     """The approval column as the PostgreSQL store writes it, and asyncpg returns it."""
-    return item.model_dump_json(exclude={"agent", "created_at"})
+    return item.model_dump_json(exclude=set(STORED_JSON_EXCLUDE))
 
 
 def _stored(**updates: Any) -> ApprovalRequest:
@@ -153,7 +154,7 @@ async def test_postgres_list_binds_every_filter_and_decodes_json_rows() -> None:
     assert query.endswith("ORDER BY created_at DESC, id DESC LIMIT $5 OFFSET $6")
     assert args[:3] == ("tenant-a", "run-1", "a")
     assert args[4:] == (10, 20)
-    assert "SELECT approval, agent, created_at FROM" in query
+    assert "SELECT approval, created_at, status_reason, agent, tool, tool_version, " in query
     assert [(item.agent, item.created_at) for item in items] == [
         (None, created_at),
         ("a", created_at),
@@ -179,7 +180,7 @@ async def test_postgres_list_status_clauses(status: ApprovalStatus | None, claus
 
     query, args = database.queries[0]
     if clause is None:
-        assert "status" not in query
+        assert "status" not in query.split(" WHERE ", 1)[1]
         assert args == ("tenant-a", 50, 0)
     else:
         assert clause in query
@@ -332,7 +333,7 @@ class _ApprovalTable:
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         if query.startswith("INSERT"):
             self.inserted.append(args)
-            approval_id, _run_id, _tenant_id, agent, approval = args
+            approval_id, _run_id, _tenant_id, agent, approval, *_columns = args
             created_at = utc_now()
             self.rows[approval_id] = {
                 "approval": approval,
@@ -373,7 +374,7 @@ async def test_postgres_store_writes_json_that_0_1_0a17_can_read() -> None:
     legacy = _stored()
     table.rows[legacy.id] = {
         "approval": _A17ApprovalRequest.model_validate(
-            legacy.model_dump(exclude={"agent", "created_at"})
+            legacy.model_dump(exclude=set(STORED_JSON_EXCLUDE))
         ).model_dump_json(),
         "agent": None,
         "created_at": utc_now(),

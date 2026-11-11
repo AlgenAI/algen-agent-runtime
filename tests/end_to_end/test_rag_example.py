@@ -6,7 +6,12 @@ import pytest
 
 from algen_agent_runtime.config.settings import load_settings
 from algen_agent_runtime.orchestration.container import build_container
-from examples.quickstart_rag.app import AGENT_BY_PROVIDER, EXAMPLE_DIR, ask, parse_args
+from algen_agent_runtime_examples.quickstart_rag.app import (
+    AGENT_BY_PROVIDER,
+    EXAMPLE_DIR,
+    ask,
+    parse_args,
+)
 
 
 def test_rag_example_configuration_wires_both_model_providers() -> None:
@@ -40,7 +45,7 @@ async def test_rag_example_offline_answer_is_grounded_and_cited(provider: str) -
     assert result.citations[0].title == "Annual leave policy"
 
 
-# Formerly examples/quickstart_rag/tests/test_smoke.py, which pytest never collected.
+# Formerly algen_agent_runtime_examples/quickstart_rag/tests/test_smoke.py, which pytest never collected.
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="Requires OPENAI_API_KEY")
 async def test_rag_example_live_openai_answer_cites_the_leave_policy() -> None:
     result = await ask("How much annual leave do full-time employees receive?")

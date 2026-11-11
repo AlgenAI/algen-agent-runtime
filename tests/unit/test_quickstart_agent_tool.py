@@ -6,8 +6,8 @@ import pytest
 
 from algen_agent_runtime.orchestration.check import check_project
 from algen_agent_runtime.tools.testing import assert_tool_contract, fake_tool_context
-from examples.quickstart_agent_tool.app import CONFIG_PATH, run
-from examples.quickstart_agent_tool.tools import crm, find_account, update_owner
+from algen_agent_runtime_examples.quickstart_agent_tool.app import CONFIG_PATH, run
+from algen_agent_runtime_examples.quickstart_agent_tool.tools import crm, find_account, update_owner
 
 
 @pytest.mark.parametrize("tool", crm.tools, ids=lambda tool: tool.definition.name)
@@ -22,7 +22,10 @@ def test_the_project_passes_check() -> None:
     assert [issue.code for issue in report.warnings] == ["OWN_CONTAINER"]
     tools = {tool.name: tool for tool in report.inventory.tools}  # type: ignore[union-attr]
     assert tools["crm.update_owner"].requires_approval is True
-    assert tools["crm.update_owner"].source == "examples.quickstart_agent_tool.plugin:CrmPlugin"
+    assert (
+        tools["crm.update_owner"].source
+        == "algen_agent_runtime_examples.quickstart_agent_tool.plugin:CrmPlugin"
+    )
 
 
 async def test_an_approved_change_completes_and_a_rejected_one_fails() -> None:

@@ -24,8 +24,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
-      - run: ruff format --check src tests examples
-      - run: ruff check src tests examples
+      - run: ruff format --check src tests algen_agent_runtime_examples
+      - run: ruff check src tests algen_agent_runtime_examples
       - run: mypy src/algen_agent_runtime
       - run: pytest -q -p no:cacheprovider
 
@@ -78,36 +78,7 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
       - name: Inspect artifact contents
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import tarfile
-          import zipfile
-
-          wheel = next(Path("dist").glob("*.whl"))
-          sdist = next(Path("dist").glob("*.tar.gz"))
-          with zipfile.ZipFile(wheel) as archive:
-              names = set(archive.namelist())
-              required = {
-                  "algen_agent_runtime/py.typed",
-                  "algen_agent_runtime/persistence/migrations/001_initial.sql",
-                  "algen_agent_runtime/tools/starter/__init__.py",
-                  "algen_agent_runtime/mcp/__init__.py",
-                  "examples/quickstart_approval/__init__.py",
-              }
-              missing = required - names
-              if missing:
-                  raise SystemExit(f"wheel missing required files: {sorted(missing)}")
-              domain = ("examples/case_study_responsible_hiring/", "examples/pattern_text_to_sql/")
-              if any(name.startswith(domain) for name in names):
-                  raise SystemExit("wheel contains domain case studies (see tests/unit/test_wheel_contents.py)")
-              if any("__pycache__" in name or name.endswith(".pyc") for name in names):
-                  raise SystemExit("wheel contains Python cache files")
-          with tarfile.open(sdist) as archive:
-              names = archive.getnames()
-              if not any(name.endswith("/LICENSE") for name in names):
-                  raise SystemExit("sdist missing LICENSE")
-          PY
+        run: python scripts/check_dist.py dist
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
@@ -123,6 +94,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -135,32 +107,7 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
       - name: Install wheel and verify CLI and scaffolding outside checkout
-        run: |
-          python -m venv /tmp/algen-wheel-smoke-${{ matrix.python-version }}
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install --upgrade pip
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install dist/*.whl
-
-          # Verify import, version, and server app outside repository
-          cd /tmp
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
-          test -x /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime --help
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime serve --help
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from importlib.resources import files; assert files('algen_agent_runtime').joinpath('persistence/migrations/001_initial.sql').is_file()"
-
-          # Verify starter tools are importable from installed package
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
-
-          # Scaffold, test, and run offline project
-          rm -rf /tmp/smoke-scaffold-${{ matrix.python-version }}
-          mkdir -p /tmp/smoke-scaffold-${{ matrix.python-version }}
-          cd /tmp/smoke-scaffold-${{ matrix.python-version }}
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/algen-agent-runtime new smoke_agent --template agent
-          cd smoke_agent
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pip install pytest pytest-asyncio
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/pytest test_agent.py
-          /tmp/algen-wheel-smoke-${{ matrix.python-version }}/bin/python app.py
+        run: scripts/smoke-install.sh dist python
 
   container-integration:
     name: Container Integration (PostgreSQL & Redis)

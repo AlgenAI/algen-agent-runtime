@@ -2,7 +2,9 @@ from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.tools.contracts import ToolContext
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
-from examples.case_study_teaching_assistant.application.tools import register_teaching_tools
+from algen_agent_runtime_examples.case_study_teaching_assistant.application.tools import (
+    register_teaching_tools,
+)
 
 
 def _context(permission: str) -> ToolContext:

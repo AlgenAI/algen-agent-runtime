@@ -64,7 +64,7 @@ moves them into one plugin; nothing else changes:
 4. Run `algen-agent-runtime check agent.yaml --path src`: no `UNKNOWN_COMPONENT`, and no
    `CONSTRUCTOR_COMPONENTS` or `POST_BUILD_REGISTRATION` warnings.
 
-`examples/pattern_text_to_sql` and `examples/case_study_teaching_assistant` were moved this way.
+`algen_agent_runtime_examples/pattern_text_to_sql` and `algen_agent_runtime_examples/case_study_teaching_assistant` were moved this way.
 New tools are easier to write with `@tool` and `Toolkit` ([writing agent tools](tool-authoring.md)).
 
 ## What a plugin can register
@@ -229,7 +229,7 @@ runs that code as written. Every error stays. A name that nothing declared regis
 `UNKNOWN_COMPONENT`, unless the project's code registers components itself: `check` cannot see
 those, so the name becomes an `UNVERIFIED_COMPONENT` warning, and `build_container`'s startup
 check verifies it when the host starts. The report's `profile` field says which profile ran. The
-default profile, `studio`, is unchanged. Every project under `examples/` passes `check` in the test suite.
+default profile, `studio`, is unchanged. Every project under `algen_agent_runtime_examples/` passes `check` in the test suite.
 
 `AvailableComponents.from_inventory(inventory)` and `unknown_agent_components(agents, available)`
 (`algen_agent_runtime.orchestration.validation`) run the startup check against an inventory, so a

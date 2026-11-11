@@ -27,8 +27,8 @@ python -m pip install -e '.[dev]'
 Run the same core checks used by CI:
 
 ```bash
-ruff format --check src tests examples
-ruff check src tests examples
+ruff format --check src tests algen_agent_runtime_examples
+ruff check src tests algen_agent_runtime_examples
 mypy src/algen_agent_runtime
 pytest -q -p no:cacheprovider
 ```

@@ -44,6 +44,28 @@ class PolicyDeniedError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.AUTHORIZATION
 
 
+class ApprovalMismatchError(PolicyDeniedError):
+    """A call was refused because its approval does not cover it.
+
+    ``code`` says why:
+
+    - ``approval.tool_mismatch``: the approval is for another tool, or another version of it.
+    - ``approval.arguments_mismatch``: the call's arguments differ from the approved ones.
+    - ``approval.arguments_unbound``: a workflow tool step reads values that did not exist yet
+      when its approval was decided, so no approver saw them.
+    - ``approval.modification_ignored``: an approver modified the parameters, and the workflow
+      tool step does not read them.
+    - ``approval.tool_changed``: the tool's definition or code changed after the approval was
+      asked for (its fingerprint differs).
+
+    Nothing was recorded or run: the call is refused before the execution ledger.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
 class CapabilityError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_REQUEST
 
@@ -105,6 +127,28 @@ class ToolNotAttemptedError(ToolExecutionError):
     The call had no effect, so the executor records it ``failed``, never ``indeterminate``, even
     for a tool that writes: there is nothing for an operator to reconcile.
     """
+
+
+class ToolCapacityError(ToolNotAttemptedError):
+    """Every tool worker thread is busy and the queue is full: the call was refused unstarted.
+
+    Nothing ran, so the call is recorded ``failed``, never ``indeterminate``.
+    """
+
+    def __init__(self, max_workers: int, max_queued: int) -> None:
+        self.max_workers = max_workers
+        self.max_queued = max_queued
+        super().__init__(
+            f"tool thread pool is full ({max_workers} running, {max_queued} queued); "
+            "the call was not started, try again later"
+        )
+
+    def details(self) -> dict[str, object]:
+        return {
+            "code": "tool_capacity_exceeded",
+            "max_workers": self.max_workers,
+            "max_queued": self.max_queued,
+        }
 
 
 class ToolkitConfigurationError(ToolNotAttemptedError, ConfigurationError):

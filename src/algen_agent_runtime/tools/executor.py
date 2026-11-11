@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -13,18 +14,21 @@ from opentelemetry import trace
 
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import (
+    ApprovalMismatchError,
     PolicyDeniedError,
     ToolExecutionError,
     ToolNotAttemptedError,
 )
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
+from algen_agent_runtime.policies.contracts import PolicyAction
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
-from algen_agent_runtime.tools.blocking import run_blocking, track_threads
+from algen_agent_runtime.tools.blocking import run_blocking, track_threads, when_finished
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     ReconcilableToolExecutionStore,
     SideEffect,
     Tool,
+    ToolApproval,
     ToolContext,
     ToolDefinition,
     ToolExecutionRecord,
@@ -33,7 +37,10 @@ from algen_agent_runtime.tools.contracts import (
     ToolExecutionStore,
     ToolHandler,
     ToolResult,
+    canonical_digest,
+    tool_fingerprint,
 )
+from algen_agent_runtime.tools.process import run_in_process
 from algen_agent_runtime.tools.registry import ToolRegistry
 
 _logger = structlog.get_logger("algen_agent_runtime.tools")
@@ -50,25 +57,94 @@ _COMPENSATION_STATUSES = frozenset(
 )
 
 
+def _is_async(handler: ToolHandler) -> bool:
+    # A callable object with an ``async def __call__`` is asynchronous too.
+    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+        type(handler).__call__
+    )
+
+
 async def _call_handler(
-    handler: ToolHandler, arguments: dict[str, Any], context: ToolContext
+    definition: ToolDefinition,
+    handler: ToolHandler,
+    arguments: dict[str, Any],
+    context: ToolContext,
 ) -> Any:
-    """Await an async handler; run a synchronous one in a worker thread.
+    """Await an async handler; run a synchronous one in a worker thread, or any handler in a
+    subprocess when the tool's ``execution`` is ``process``.
 
     A synchronous handler on the event loop would block every other run and outlive its
-    timeout. In a thread the caller stops waiting on schedule, but the thread cannot be stopped:
-    its side effect may still finish, which is why a timed-out call that changes things is
-    recorded indeterminate, and why the call keeps its capacity until the thread ends.
+    timeout. In a thread the caller stops waiting on schedule, but the work may continue: the
+    thread cannot be stopped and its side effect may still finish, which is why a timed-out call
+    that changes things is recorded indeterminate, and why the call keeps its capacity until the
+    thread ends. A subprocess is killed on timeout, so its work really stops.
     """
-    # A callable object with an ``async def __call__`` is asynchronous too.
-    if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(type(handler).__call__):
+    if definition.execution == "process":
+        return await run_in_process(definition.name, handler, arguments, context)
+    if _is_async(handler):
         return await handler(arguments, context)
     result = await run_blocking(handler, arguments, context)
     return await result if inspect.isawaitable(result) else result
 
 
+def _never_started(definition: ToolDefinition, handler: ToolHandler, attempt: list[Any]) -> bool:
+    """Whether a timed-out synchronous handler's call was withdrawn from the thread queue before
+    it started: then nothing of it ran."""
+    return (
+        definition.execution == "thread"
+        and not _is_async(handler)
+        and bool(attempt)
+        and all(thread.cancelled() for thread in attempt)
+    )
+
+
+def _checked_arguments(
+    name: str,
+    definition: ToolDefinition,
+    arguments: dict[str, Any],
+    decision: Any,
+    *,
+    approved: bool,
+) -> dict[str, Any]:
+    """The arguments the call runs with after the ``before_tool`` decision.
+
+    ``allow`` keeps them. ``transform`` replaces them with the policy's value, which must still
+    fit the input schema; an approved call is refused instead when the rewrite changes them, since
+    its approval covers the arguments that were shown (rewrites belong at ``plan_tool``, before the
+    approval is asked for). ``redact`` refuses the call: the tool would act on masked data the
+    model never meant to send. Every other action refuses it too.
+    """
+    action = decision.action
+    if action == PolicyAction.ALLOW:
+        return arguments
+    if action == PolicyAction.REDACT:
+        raise PolicyDeniedError(
+            f"{decision.reason} A redaction refuses the call to {name}; it is not run with "
+            "masked arguments."
+        )
+    if action != PolicyAction.TRANSFORM:
+        raise PolicyDeniedError(decision.reason)
+    rewritten = decision.value
+    if not isinstance(rewritten, dict):
+        raise ToolExecutionError(f"policy-transformed input for {name} is not an object")
+    try:
+        jsonschema.validate(rewritten, definition.input_schema)
+    except jsonschema.ValidationError as exc:
+        raise ToolExecutionError(
+            f"policy-transformed input for {name} is invalid: {exc.message}"
+        ) from exc
+    if approved and rewritten != arguments:
+        raise PolicyDeniedError(
+            f"a before_tool policy rewrote the arguments of an approved call to {name}; "
+            "the approval does not cover them"
+        )
+    return rewritten
+
+
 @asynccontextmanager
-async def _capacity(semaphore: asyncio.Semaphore) -> AsyncIterator[list[asyncio.Future[Any]]]:
+async def _capacity(
+    semaphore: asyncio.Semaphore,
+) -> AsyncIterator[list[concurrent.futures.Future[Any]]]:
     """One of the tool's ``max_concurrency`` slots, held until the call and every worker thread
     it started have finished, even when the caller stopped waiting for a thread first."""
     await semaphore.acquire()
@@ -76,13 +152,11 @@ async def _capacity(semaphore: asyncio.Semaphore) -> AsyncIterator[list[asyncio.
         try:
             yield threads
         finally:
-            running = [thread for thread in threads if not thread.done()]
-            if running:
-                asyncio.gather(*running, return_exceptions=True).add_done_callback(
-                    lambda _: semaphore.release()
-                )
-            else:
+            finished = when_finished(threads)
+            if finished is None:
                 semaphore.release()
+            else:
+                finished.add_done_callback(lambda _: semaphore.release())
 
 
 class ToolExecutor:
@@ -142,7 +216,7 @@ class ToolExecutor:
         *,
         agent: Any = None,
         on_reconciled: ReconciledCallback | None = None,
-        approval: str | None = None,
+        approval: ToolApproval | None = None,
     ) -> ToolResult:
         """Run a call, or replay its recorded outcome.
 
@@ -150,14 +224,21 @@ class ToolExecutor:
         to the tool's ``reconcile`` hook, when it has one and allows it on replay; a settled
         outcome is recorded and ``on_reconciled`` is told about it.
 
-        ``approval`` names the approval that covers this call (an approved tool call in a run,
-        or an approved workflow approval node). A tool that ``requires_approval`` is refused
-        without one, before anything is recorded or run.
+        ``approval`` is the decided approval that covers this call (an approved tool call in a
+        run, or an approved workflow approval node), bound to the tool and the arguments it
+        approved. A tool that ``requires_approval`` is refused without one, and any call is
+        refused with an ``ApprovalMismatchError`` when its approval is for another tool or
+        version, other arguments, or a tool whose fingerprint has changed since. Both refusals
+        come before anything is recorded or run. The executor does not look the decision up:
+        its caller proves it (see "Who proves an approval is valid" in the tool docs).
         """
         tool = self._registry.get(name)
         definition = tool.definition
-        if definition.requires_approval and not approval:
-            raise PolicyDeniedError(f"tool {name} requires an approval for this call")
+        if approval is None:
+            if definition.requires_approval:
+                raise PolicyDeniedError(f"tool {name} requires an approval for this call")
+        else:
+            self._check_approval(tool, arguments, approval)
         missing = definition.required_permissions - context.permissions
         if missing:
             raise PolicyDeniedError(f"missing permissions for {name}: {sorted(missing)}")
@@ -166,8 +247,9 @@ class ToolExecutor:
         except jsonschema.ValidationError as exc:
             raise ToolExecutionError(f"invalid input for {name}: {exc.message}") from exc
         decision = await self._evaluate_policy("before_tool", arguments, definition, context, agent)
-        if decision.action != "allow":
-            raise PolicyDeniedError(decision.reason)
+        arguments = _checked_arguments(
+            name, definition, arguments, decision, approved=approval is not None
+        )
         execution, reserved = await self._executions.begin(context, name)
         if not reserved:
             if execution.status == ToolExecutionStatus.COMPLETED and execution.result:
@@ -246,9 +328,10 @@ class ToolExecutor:
             result: Any = None
             try:
                 for attempt in range(attempts):
+                    started = len(threads)
                     try:
                         result = await asyncio.wait_for(
-                            _call_handler(tool.handler, arguments, context),
+                            _call_handler(definition, tool.handler, arguments, context),
                             definition.timeout_seconds,
                         )
                         break
@@ -256,6 +339,11 @@ class ToolExecutor:
                         # A timed-out thread still running would overlap a retry.
                         still_running = any(not thread.done() for thread in threads)
                         if attempt + 1 >= attempts or still_running:
+                            if _never_started(definition, tool.handler, threads[started:]):
+                                raise ToolNotAttemptedError(
+                                    f"tool {name} timed out waiting for a worker thread; "
+                                    "it did not start"
+                                ) from exc
                             raise ToolExecutionError(f"tool {name} timed out") from exc
                     except (PolicyDeniedError, ToolExecutionError):
                         raise
@@ -314,6 +402,32 @@ class ToolExecutor:
                     indeterminate=indeterminate,
                 )
                 raise
+
+    @staticmethod
+    def _check_approval(tool: Tool, arguments: dict[str, Any], approval: ToolApproval) -> None:
+        """Refuse a call its approval does not cover."""
+        definition = tool.definition
+        if (approval.tool, approval.tool_version) != (definition.name, definition.version):
+            raise ApprovalMismatchError(
+                "approval.tool_mismatch",
+                f"approval {approval.approval_id} covers {approval.tool} "
+                f"version {approval.tool_version}, not {definition.name} "
+                f"version {definition.version}",
+            )
+        if canonical_digest(arguments) != approval.arguments_sha256:
+            raise ApprovalMismatchError(
+                "approval.arguments_mismatch",
+                f"the arguments of this call to {definition.name} differ from the ones "
+                f"approval {approval.approval_id} approved",
+            )
+        if approval.tool_fingerprint is not None and approval.tool_fingerprint != (
+            tool_fingerprint(tool)
+        ):
+            raise ApprovalMismatchError(
+                "approval.tool_changed",
+                f"tool {definition.name} changed after approval {approval.approval_id} "
+                "was asked for; ask for it again",
+            )
 
     async def _checked_output(
         self,

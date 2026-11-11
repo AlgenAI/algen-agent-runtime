@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import warnings
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 import httpx
@@ -12,8 +11,6 @@ from algen_agent_runtime.security.network import (
     validate_outbound_url,
 )
 from algen_agent_runtime.tools.contracts import (
-    Idempotency,
-    SideEffect,
     Tool,
     ToolContext,
     ToolDefinition,
@@ -28,7 +25,8 @@ def mcp_tool(definition: ToolDefinition, remote_name: str, client: MCPClient) ->
     async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:
         return await client.call_tool(remote_name, arguments)
 
-    return Tool(definition, execute)
+    # It runs elsewhere: its approval fingerprint covers the definition only.
+    return Tool(definition, execute, source=None)
 
 
 def remote_tool(
@@ -66,53 +64,5 @@ def remote_tool(
         response.raise_for_status()
         return response.json()
 
-    return Tool(definition, execute)
-
-
-DatabaseHandler = Callable[[str, Mapping[str, Any], ToolContext], Awaitable[Any]]
-
-
-def database_tool(
-    name: str,
-    handler: DatabaseHandler,
-    *,
-    read_only: bool = True,
-    timeout_seconds: float = 30,
-) -> Tool:
-    """Deprecated: a tool that takes a raw statement from the model.
-
-    Use ``algen_agent_tools.postgres.PostgresToolkit.query`` from the ``algen-agent-tools``
-    package, which declares each query as a typed tool. Removed in 0.2.
-    """
-    warnings.warn(
-        "database_tool is deprecated and will be removed in 0.2: declare typed queries with "
-        "algen_agent_tools.postgres.PostgresToolkit.query from the algen-agent-tools package",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    async def execute(arguments: dict[str, Any], context: ToolContext) -> Any:
-        return await handler(arguments["statement"], arguments.get("parameters", {}), context)
-
-    return Tool(
-        ToolDefinition(
-            name=name,
-            version="1.0.0",
-            description="Execute a parameterized statement through a deployment-owned database adapter.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "statement": {"type": "string", "minLength": 1},
-                    "parameters": {"type": "object"},
-                },
-                "required": ["statement"],
-                "additionalProperties": False,
-            },
-            output_schema={},
-            required_permissions=frozenset({"database.read" if read_only else "database.write"}),
-            side_effect=SideEffect.READ if read_only else SideEffect.WRITE,
-            idempotency=Idempotency.IDEMPOTENT if read_only else Idempotency.KEYED,
-            timeout_seconds=timeout_seconds,
-        ),
-        execute,
-    )
+    # It runs elsewhere: its approval fingerprint covers the definition only.
+    return Tool(definition, execute, source=None)

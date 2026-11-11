@@ -677,4 +677,5 @@ class MCPClientManager:
 
             return response_dict
 
-        return Tool(tool_def, execute)
+        # The server runs it: its approval fingerprint covers the declared definition only.
+        return Tool(tool_def, execute, source=None)

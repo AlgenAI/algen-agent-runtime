@@ -113,7 +113,7 @@ selection even when they share a session. This feature does not provide cross-ru
 Run the offline example:
 
 ```bash
-python -m examples.progressive_skills
+python -m algen_agent_runtime_examples.progressive_skills
 ```
 
 See also [structured working state](context-management.md),

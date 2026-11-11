@@ -76,8 +76,9 @@ independently verified citation. Runtime records the source run, tool step, and 
 {"query": "comparison", "limit": 5}
 ```
 
-An empty query lists recent active records. Search matches keys and content, with no embedding or
-semantic ranking. Results are ordered by the source-run timestamp and key. The default limit is 5,
+An empty query lists recent active records. By default (`recall: substring`) search matches keys and
+content literally, and results are ordered by the source-run timestamp and key. An agent can rank
+by meaning instead; see [Similarity-ranked recall](#similarity-ranked-recall). The default limit is 5,
 maximum 20. Recall also has a serialized-message token estimate (`max_recall_tokens`, default 2,048,
 range 128–8,192). Search considers at most `limit + 1` records; oversized candidates can be omitted,
 and `truncated: true` signals a count or context-budget limit. Exact-key recall fails explicitly if
@@ -95,6 +96,81 @@ excludes deleted and expired records. Exact-key recall returns their content-fre
 the revision needed for an explicit recreation or further deletion. Revision 0 means a key that has
 never existed, not a key whose content was deleted or expired. A stale revision raises `ConflictError`
 and does not change memory; the run fails explicitly so a new attempt can recall the current value.
+
+## Similarity-ranked recall
+
+A literal match finds a record only when the agent guesses its wording: a query for "invoice
+layout" misses a procedure stored as "billing statement format". `learned_memory_policy.recall`
+chooses how a non-empty `query` is answered:
+
+| `recall` | Ranking |
+| --- | --- |
+| `substring` (default) | Literal, case-insensitive match of key and content, newest first. Unchanged behaviour. |
+| `semantic` | Cosine similarity between the query's embedding and each record's content embedding. |
+| `hybrid` | `(1 - hybrid_keyword_weight) × similarity + hybrid_keyword_weight` when the key or content also contains the query literally. |
+
+```yaml
+providers:
+  embeddings:
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    api_key: env://OPENAI_API_KEY
+    default_model: text-embedding-3-small
+agents:
+  - name: analyst
+    learned_memory_policy:
+      enabled: true
+      recall: hybrid               # substring | semantic | hybrid
+      min_score: 0.35              # drop weaker matches (0-1, default 0)
+      hybrid_keyword_weight: 0.3   # hybrid only (0-1, default 0.3)
+      embedding_provider: embeddings  # a configured provider that implements embed()
+      embedding_model: text-embedding-3-small
+      embedding_version: "1"       # optional; change it to re-embed every record
+```
+
+`semantic` and `hybrid` need `embedding_provider`, which must name a configured provider (settings
+validation and run start both check it). Embeddings go through the provider contract's
+`embed(texts, model)`, so no new dependency is needed. Exact-key lookups and an empty query behave as
+in `substring` mode and call no embedding model.
+
+- **On write**, `core.memory_write` embeds the new content and stores the vector with the record
+  revision, in the same transaction. A correction replaces the vector; a deletion removes it. If the
+  embedding call fails, the write fails and memory is unchanged.
+- **On recall**, Runtime embeds the query and ranks the scope's active records by similarity, then
+  applies `min_score` and `limit`. A weak match returns nothing rather than noise. Records keep the
+  same shape; the ranking is their order. The `max_recall_tokens` budget, `truncated`, replay
+  validation and the tool's governance are unchanged: lower-ranked records are the ones cut.
+- **Model identity.** Each vector records the embedding identity (provider, `embedding_model` and
+  `embedding_version`). Vectors of another identity are never compared with the query. Records
+  without a current vector (written in `substring` mode, before an upgrade, or under another model)
+  are embedded during recall, up to 16 per call, in the same provider call as the query; so after
+  changing the model, recall re-embeds the most recent records first and ranks the rest once they
+  are reached. `hybrid` still finds those by literal match meanwhile.
+- **Privacy.** The query and content go only to the configured embedding provider. They are not
+  logged, put in spans or used in cache keys by this feature; an embedding failure reports the
+  provider error type only. Recall arguments and results follow the normal tool telemetry settings.
+
+Similarity recall needs a store that keeps vectors: both built-in stores do
+(`algen_agent_runtime.memory.contracts.SimilarityMemoryStore`). A custom `LearnedMemoryStore` that
+does not implement it keeps working in `substring` mode and is rejected at run start for the others.
+
+**In memory**, vectors live in the store's process with the records.
+
+**PostgreSQL**, migration `018_learned_memory_vectors.sql` adds
+`algen_agent_runtime_learned_memory_vectors`: one row per record with the revision, embedding
+identity, dimensions and the unit vector as `real[]`, with a foreign key to the record (`ON DELETE
+CASCADE`). The migration needs no extension, so every deployment can apply it, with or without
+pgvector and without the privileges `CREATE EXTENSION` requires. When the `vector` extension is
+installed in the database and visible on the search path (with `postgres_schema`, install it in that
+schema), ranking uses pgvector's inner-product operator; otherwise it is computed in SQL. Both are
+exact: ranking reads only the caller's tenant, user and agent rows through the primary key. No
+approximate (HNSW) index is created, because its dimensions depend on the embedding model and a
+global approximate search filtered to one scope could miss that scope's records. Learned memory per
+scope is small and bounded by the `learned_memory` storage quota; vectors are not counted in it.
+
+Expiry hides a record from ranking immediately, and the maintenance sweep removes its vector with
+its content. The sweep also removes vectors a previous release left behind after a rollback (of
+records it deleted or corrected).
 
 ## Isolation, policy, and recovery
 
@@ -151,14 +227,14 @@ foreign key to the run table: deleting a source run does not erase long-term mem
 and receipt growth and apply the deployment's data-retention requirements deliberately. Deleting a
 learned record is not a promise to erase prior transcripts, logs, database backups, or tool results.
 
-This feature adds versioned storage and explicit recall, not automatic consolidation, deduplication,
-semantic retrieval, or factual validation. It requires no new core dependencies. PostgreSQL remains
+This feature adds versioned storage and explicit recall, optionally ranked by similarity, not
+automatic consolidation, deduplication, or factual validation. It requires no new core dependencies. PostgreSQL remains
 optional; migration and concurrency tests run in the container-integration job.
 
 Run an offline example using the ephemeral adapter:
 
 ```bash
-python -m examples.learned_memory
+python -m algen_agent_runtime_examples.learned_memory
 ```
 
 See [structured working state](context-management.md), [progressive skills](skills.md), and

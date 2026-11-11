@@ -12,7 +12,7 @@ Use the applicable sections; do not force irrelevant work into a small change.
   are `RuntimePluginContext`, `describe_components` and its container-parity test
   (`tests/unit/test_describe.py`), the startup check (`orchestration/validation.py`),
   `docs/plugins.md`, the agent-builder skill, and the changelog updated together?
-- Does every project under `examples/` still pass `algen-agent-runtime check`
+- Does every project under `algen_agent_runtime_examples/` still pass `algen-agent-runtime check`
   (`tests/unit/test_check.py`)? A new example registers its code components from a declared plugin.
 - Does every new or changed tool pass `assert_tool_contract`, and does a change to a preset in
   `tools/authoring.py` keep the rule that writes are keyed and single-attempt?
@@ -81,8 +81,8 @@ Use the applicable sections; do not force irrelevant work into a small change.
 ## Quality gates and completion
 
 ```bash
-ruff format --check src tests examples
-ruff check src tests examples
+ruff format --check src tests algen_agent_runtime_examples
+ruff check src tests algen_agent_runtime_examples
 mypy src/algen_agent_runtime
 pytest -q -p no:cacheprovider
 scripts/integration-tests.sh     # real PostgreSQL and Redis, throwaway containers

@@ -93,10 +93,23 @@ tenant, or user argument on the update tool. A new run starts empty, including r
 session. Disabling session memory does not disable this explicitly enabled run-local record.
 This feature does not add cross-run learning or automatic handoff between agents.
 
+## Packing a long run
+
+Context packing, not working state, decides which earlier messages reach the model. It always
+keeps system messages, the Runtime's summary, working-state and skill messages, the newest message
+group and the user request that started the run, and never separates a tool call from its results.
+A tool result whose call is missing from the history (for example after a host edited or imported
+it) is dropped with a warning log instead of failing the run.
+
+For runs that look up many records, turn on `context_policy.shorten_older_tool_results`. When the
+history does not fit, a share of the budget is held back so older tool results stay in shortened
+form, each ending with a note that it was already retrieved, instead of being dropped. See
+[shortened older tool results](artifacts.md#shortened-older-tool-results) for the settings.
+
 Run the deterministic offline example:
 
 ```bash
-python -m examples.working_state
+python -m algen_agent_runtime_examples.working_state
 ```
 
 For related capabilities, see [learned memory](learned-memory.md), [progressive skills](skills.md), [history compaction and offloading](artifacts.md),

@@ -11,6 +11,7 @@ from pydantic import Field
 from algen_agent_runtime.context.packing import estimate_message
 from algen_agent_runtime.exceptions.errors import (
     BudgetExceededError,
+    ConfigurationError,
     PolicyDeniedError,
     ToolExecutionError,
 )
@@ -18,11 +19,13 @@ from algen_agent_runtime.memory.contracts import (
     LearnedMemory,
     LearnedMemoryStore,
     MemoryDelete,
+    MemoryEmbedding,
     MemoryMutation,
     MemoryRecall,
     MemoryReceipt,
     MemoryScope,
     MemoryWrite,
+    SimilarityMemoryStore,
 )
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
@@ -34,6 +37,7 @@ from algen_agent_runtime.tools.contracts import (
 )
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
+    LearnedMemoryPolicy,
     Message,
     Role,
     RunState,
@@ -45,6 +49,11 @@ from algen_agent_runtime.types.contracts import (
 MEMORY_RECALL = "core.memory_recall"
 MEMORY_WRITE = "core.memory_write"
 MEMORY_DELETE = "core.memory_delete"
+# Records written before similarity recall was enabled, or embedded by another model, are
+# embedded during recall, at most this many per call.
+EMBED_BACKFILL_PER_RECALL = 16
+# Candidates each ranking considers: the most a recall returns (20) plus one to detect truncation.
+_CANDIDATES = 21
 MEMORY_PERMISSIONS = {
     MEMORY_RECALL: "memory.read",
     MEMORY_WRITE: "memory.write",
@@ -64,9 +73,92 @@ class LearnedMemoryService:
         self,
         store: LearnedMemoryStore,
         resolve: Callable[[ToolContext], Awaitable[tuple[RunState, AgentDefinition]]],
+        embedding_provider: Callable[[str], Any] | None = None,
     ) -> None:
+        """``embedding_provider`` returns the registered model provider of a name, whose
+        ``embed(texts, model)`` serves semantic and hybrid recall."""
         self.store = store
         self._resolve = resolve
+        self._embedding_provider = embedding_provider
+
+    def check_policy(self, policy: LearnedMemoryPolicy) -> None:
+        """Raise ConfigurationError when similarity recall cannot be served as configured."""
+        if policy.recall == "substring":
+            return
+        if not isinstance(self.store, SimilarityMemoryStore):
+            raise ConfigurationError(
+                f"learned_memory_policy.recall {policy.recall!r} needs a learned-memory store "
+                "that keeps vectors (the memory and postgres stores do)"
+            )
+        if self._embedding_provider is None:
+            raise ConfigurationError("similarity recall needs a model provider for embeddings")
+        try:
+            self._embedding_provider(str(policy.embedding_provider))
+        except Exception as exc:
+            raise ConfigurationError(
+                f"learned_memory_policy.embedding_provider {policy.embedding_provider!r} "
+                "is not a registered model provider"
+            ) from exc
+
+    def _similarity_store(self, policy: LearnedMemoryPolicy) -> SimilarityMemoryStore:
+        self.check_policy(policy)
+        assert isinstance(self.store, SimilarityMemoryStore)
+        return self.store
+
+    async def _embed(self, policy: LearnedMemoryPolicy, texts: list[str]) -> list[MemoryEmbedding]:
+        identity = policy.embedding_identity
+        assert identity is not None and self._embedding_provider is not None
+        provider = self._embedding_provider(str(policy.embedding_provider))
+        # The texts never enter the error: a provider failure is reported by its type only.
+        try:
+            vectors = await provider.embed(texts, policy.embedding_model)
+        except Exception as exc:
+            raise ToolExecutionError(
+                f"learned memory embedding failed ({type(exc).__name__})"
+            ) from None
+        if len(vectors) != len(texts):
+            raise ToolExecutionError("embedding provider returned a different number of vectors")
+        try:
+            embeddings = [MemoryEmbedding.normalized(identity, vector) for vector in vectors]
+        except ValueError as exc:
+            raise ToolExecutionError(
+                f"embedding provider returned an invalid vector: {exc}"
+            ) from None
+        if len({len(embedding.vector) for embedding in embeddings}) > 1:
+            raise ToolExecutionError("embedding provider returned vectors of different sizes")
+        return embeddings
+
+    async def _similar(
+        self, policy: LearnedMemoryPolicy, scope: MemoryScope, query: MemoryRecall
+    ) -> tuple[LearnedMemory, ...]:
+        store = self._similarity_store(policy)
+        identity = policy.embedding_identity
+        assert identity is not None
+        # Records without a vector of the configured identity (written in substring mode, or
+        # embedded by a previous model) are embedded now, in the same call as the query.
+        stale = [
+            record
+            for record in await store.unembedded(scope, identity, EMBED_BACKFILL_PER_RECALL)
+            if record.content
+        ]
+        embeddings = await self._embed(
+            policy, [query.query, *(str(record.content) for record in stale)]
+        )
+        for record, embedding in zip(stale, embeddings[1:], strict=True):
+            await store.put_embedding(scope, record.key, record.revision, embedding)
+        ranked = await store.rank(scope, embeddings[0], _CANDIDATES)
+        scored: dict[str, tuple[LearnedMemory, float]]
+        if policy.recall == "semantic":
+            scored = {record.key: (record, score) for record, score in ranked}
+        else:
+            weight = policy.hybrid_keyword_weight
+            scored = {record.key: (record, (1 - weight) * score) for record, score in ranked}
+            for record in await store.search(scope, query.query, _CANDIDATES):
+                similarity = scored.get(record.key, (record, 0.0))[1]
+                scored[record.key] = (record, similarity + weight)
+        selected = [item for item in scored.values() if item[1] >= policy.min_score]
+        selected.sort(key=lambda item: (item[1], item[0].updated_at, item[0].key), reverse=True)
+        return tuple(record for record, _ in selected[: query.limit + 1])
 
     @staticmethod
     def scope(state: RunState, agent: AgentDefinition) -> MemoryScope:
@@ -121,9 +213,12 @@ class LearnedMemoryService:
         query = MemoryRecall.model_validate(arguments)
         scope = self.scope(state, agent)
         rows: tuple[LearnedMemory, ...]
+        policy = agent.learned_memory_policy
         if query.key is not None:
             record = await self.store.get(scope, query.key)
             rows = (self._visible(record),) if record else ()
+        elif query.query and policy.recall != "substring":
+            rows = await self._similar(policy, scope, query)
         else:
             rows = await self.store.search(scope, query.query, query.limit + 1)
         result = RecallResult(
@@ -210,14 +305,20 @@ class LearnedMemoryService:
                 source_agent_version=agent.version,
                 updated_at=state.started_at,
             )
-        return await self.store.apply(
-            MemoryMutation(
-                scope=self.scope(state, agent),
-                operation_id=context.idempotency_key,
-                expected_revision=proposal.expected_revision,
-                record=record,
-            )
+        mutation = MemoryMutation(
+            scope=self.scope(state, agent),
+            operation_id=context.idempotency_key,
+            expected_revision=proposal.expected_revision,
+            record=record,
         )
+        policy = agent.learned_memory_policy
+        if policy.recall == "substring":
+            return await self.store.apply(mutation)
+        store = self._similarity_store(policy)
+        embedding = (
+            (await self._embed(policy, [record.content]))[0] if record.content is not None else None
+        )
+        return await store.apply_embedded(mutation, embedding)
 
     def tools(self) -> tuple[Tool, ...]:
         result = [
@@ -225,7 +326,7 @@ class LearnedMemoryService:
                 ToolDefinition(
                     name=MEMORY_RECALL,
                     version="1.0.0",
-                    description="Recall learned facts, preferences, or procedures for this user and agent. Use key for an exact record including its current revision (expired/deleted records have no content), or query for literal substring search of active keys and content. An empty query lists recent active records. Results are bounded and may be truncated.",
+                    description="Recall learned facts, preferences, or procedures for this user and agent. Use key for an exact record including its current revision (expired/deleted records have no content), or query to search active keys and content (literal substring match, or ranked by meaning when the agent enables semantic or hybrid recall). An empty query lists recent active records. Results are bounded and may be truncated.",
                     input_schema=MemoryRecall.model_json_schema(),
                     output_schema=RecallResult.model_json_schema(),
                     required_permissions=frozenset({"memory.read"}),

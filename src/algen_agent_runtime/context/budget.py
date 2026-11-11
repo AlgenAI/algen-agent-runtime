@@ -4,7 +4,7 @@ import json
 
 from algen_agent_runtime.context.packing import estimate_message, pack_messages
 from algen_agent_runtime.exceptions.errors import BudgetExceededError, ConfigurationError
-from algen_agent_runtime.types.contracts import ModelProfile, ModelRequest, TextBlock
+from algen_agent_runtime.types.contracts import FileBlock, ModelProfile, ModelRequest, TextBlock
 
 
 def estimate_request_overhead(request: ModelRequest) -> int:
@@ -68,14 +68,16 @@ def message_token_budget(request: ModelRequest, profile: ModelProfile) -> int | 
             "context budgeting does not allow extensions to override model, input, tools, "
             "response format, or output limits; use normalized request fields"
         )
+    # Attached files (FileBlock) count at a rough fixed cost in estimate_message; inline image
+    # blocks have no estimate.
     if any(
-        not isinstance(block, TextBlock)
+        not isinstance(block, TextBlock | FileBlock)
         for message in candidate.messages
         for block in message.content
     ):
         raise ConfigurationError(
-            "context budgeting currently supports text content only; image/file token costs "
-            "require provider-specific estimation"
+            "context budgeting currently supports text and attached files only; inline image "
+            "token costs require provider-specific estimation"
         )
     available = (
         profile.context_window_tokens

@@ -7,6 +7,7 @@ from algen_agent_runtime.context.budget import estimate_request_tokens
 from algen_agent_runtime.context.diagnostics import CompactionDiagnostic, CompactionReason
 from algen_agent_runtime.context.history import project_history
 from algen_agent_runtime.context.packing import estimate_message, message_groups
+from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.types.contracts import ContextPolicy, Message, ModelRequest, Role, RunState
 
 
@@ -70,7 +71,12 @@ def assess_compaction(
     previous = state.context_compaction
     start = previous.through if previous is not None else 0
     offset = state.context_history_offset
-    groups = message_groups(history[start - offset :])
+    try:
+        # Strict: the plan indexes history by group length, so a stray tool result must not be
+        # skipped here. Compaction waits; packing drops the stray result from the request.
+        groups = message_groups(history[start - offset :], strict=True)
+    except ConflictError:
+        return result("incomplete_tool_group")
     eligible = groups[: -policy.compaction_keep_recent_groups]
     if not eligible:
         return result("recent_groups_only")

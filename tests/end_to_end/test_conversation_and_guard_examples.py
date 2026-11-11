@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from examples.pattern_guarded_tools.app import demonstrate
-from examples.quickstart_conversation.app import NEW_ADDRESS, run
+from algen_agent_runtime_examples.pattern_guarded_tools.app import demonstrate
+from algen_agent_runtime_examples.quickstart_conversation.app import NEW_ADDRESS, run
 
 
 async def test_conversation_example_streams_steers_and_resumes_after_approval(

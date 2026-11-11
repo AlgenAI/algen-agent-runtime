@@ -5,9 +5,9 @@ from algen_agent_runtime.policies.engine import CompositePolicyEngine, PIIRedact
 from algen_agent_runtime.types.contracts import Message, Role
 
 
-async def test_secret_is_transformed() -> None:
+async def test_secret_is_redacted() -> None:
     decision = await CompositePolicyEngine().evaluate("input", "api_key=supersecretvalue", {})
-    assert decision.action == PolicyAction.TRANSFORM
+    assert decision.action == PolicyAction.REDACT
     assert "supersecretvalue" not in decision.value
 
 
@@ -18,7 +18,7 @@ async def test_secret_is_redacted_inside_retrieved_context_messages() -> None:
         {},
     )
 
-    assert decision.action == PolicyAction.TRANSFORM
+    assert decision.action == PolicyAction.REDACT
     assert decision.value[0].role == Role.SYSTEM
     assert "supersecretvalue" not in decision.value[0].text_content
 
@@ -245,7 +245,7 @@ async def test_card_numbers_that_pass_luhn_are_redacted_and_others_are_kept() ->
         {},
     )
 
-    assert decision.action == PolicyAction.TRANSFORM
+    assert decision.action == PolicyAction.REDACT
     assert decision.value == ("visa [REDACTED_CARD], amex [REDACTED_CARD], order 1234567890123456")
 
 

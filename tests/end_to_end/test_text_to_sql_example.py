@@ -12,7 +12,7 @@ from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.tools.contracts import ToolContext
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
-from examples.pattern_text_to_sql.app import (
+from algen_agent_runtime_examples.pattern_text_to_sql.app import (
     AGENT_BY_PROVIDER,
     EXAMPLE_DIR,
     ReadOnlyAnalyticsDatabase,
@@ -98,9 +98,12 @@ async def test_text_to_sql_closes_the_container(monkeypatch: pytest.MonkeyPatch)
             return SimpleNamespace(error=None, output="answer")
 
     monkeypatch.setattr(
-        "examples.pattern_text_to_sql.app.build_container", lambda settings: FakeContainer()
+        "algen_agent_runtime_examples.pattern_text_to_sql.app.build_container",
+        lambda settings: FakeContainer(),
     )
-    monkeypatch.setattr("examples.pattern_text_to_sql.app.AlgenAgentRuntimeClient", FakeClient)
+    monkeypatch.setattr(
+        "algen_agent_runtime_examples.pattern_text_to_sql.app.AlgenAgentRuntimeClient", FakeClient
+    )
 
     assert await ask("question", "mistral") == "answer"
     assert closed == ["container"]
@@ -110,7 +113,7 @@ async def test_the_declared_plugin_registers_the_query_tool_and_closes_its_datab
     container = build_container(load_settings((EXAMPLE_DIR / "agent.yaml",)))
 
     assert container.component_sources["tools"] == {
-        "analytics.query": "examples.pattern_text_to_sql.plugin:AnalyticsPlugin"
+        "analytics.query": "algen_agent_runtime_examples.pattern_text_to_sql.plugin:AnalyticsPlugin"
     }
     database = next(
         resource

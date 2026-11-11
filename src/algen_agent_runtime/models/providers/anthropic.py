@@ -189,11 +189,20 @@ class AnthropicProvider(OpenAICompatibleProvider):
             if message.role == Role.SYSTEM:
                 continue
             if message.role == Role.TOOL:
-                result = {
+                result: dict[str, Any] = {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
                     "content": message.text_content,
                 }
+                if any(block.type == "file" for block in message.content):
+                    # Files a tool returned: images and PDFs go inside the tool_result block.
+                    result["content"] = [
+                        _file_block(block)
+                        if block.type == "file"
+                        else {"type": "text", "text": block.text}
+                        for block in message.content
+                        if block.type == "file" or (block.type == "text" and block.text)
+                    ]
                 previous = messages[-1] if messages else None
                 # Results of parallel calls belong in one user turn, not one turn each.
                 if (

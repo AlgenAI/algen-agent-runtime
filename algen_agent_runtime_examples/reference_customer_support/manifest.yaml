@@ -1,0 +1,31 @@
+id: reference_customer_support
+display_name: "Customer Support Case Resolution"
+tier: reference
+status: runnable
+description: >
+  First enterprise reference application: grounded answers and safe account changes across
+  CRM, billing, and ticketing systems. Demonstrates tenant-scoped RAG, PII redaction,
+  tool permissions, approval before writes, idempotent actions, and evaluation.
+
+extras: []
+external_services:
+  - name: CRM system (synthetic)
+    required: false
+  - name: Billing system (synthetic)
+    required: false
+  - name: Ticketing system (synthetic)
+    required: false
+
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.reference_customer_support.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.reference_customer_support.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'See README.md for reset instructions once implemented.'"
+
+expected_duration_seconds: 120
+deterministic_mock_support: true

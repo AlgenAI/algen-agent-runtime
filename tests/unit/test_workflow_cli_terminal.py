@@ -44,7 +44,7 @@ def _default_sigint() -> None:
 def _run_to_prompt() -> tuple[subprocess.Popen[bytes], int, bytes]:
     master, slave = pty.openpty()
     process = subprocess.Popen(
-        [sys.executable, "-m", "examples.quickstart_approval.app"],
+        [sys.executable, "-m", "algen_agent_runtime_examples.quickstart_approval.app"],
         cwd=ROOT,
         stdin=slave,
         stdout=slave,

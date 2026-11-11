@@ -29,7 +29,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from algen_agent_runtime.exceptions.errors import ToolExecutionError
 from algen_agent_runtime.observability.setup import configure_logging
 from algen_agent_runtime.tools.contracts import SideEffect, ToolContext
-from algen_agent_runtime.types.contracts import MemoryPolicy, RunStatus, ToolPolicy
+from algen_agent_runtime.types.contracts import (
+    GuardrailPolicy,
+    MemoryPolicy,
+    RunStatus,
+    ToolPolicy,
+)
 
 pytestmark = pytest.mark.adversarial
 
@@ -97,13 +102,35 @@ async def test_secrets_and_pii_in_a_tool_result_are_redacted_everywhere() -> Non
     assert_absent(_span_text(exporter), *SENSITIVE, where="telemetry")
 
 
-async def test_secrets_in_tool_arguments_stay_out_of_the_approval_request() -> None:
-    """Threat: the model puts credentials and personal data into a side-effecting call, so the
-    approval request shown to a person (and stored, and announced) would carry them.
-    Control: the approval's parameters, the pause payload and the approval event are redacted."""
+async def test_secrets_in_tool_arguments_refuse_the_call_before_any_approval() -> None:
+    """Threat: the model puts credentials and personal data into a side-effecting call.
+    Control: the plan_tool redaction refuses the call before a person is asked to approve it,
+    and nothing recorded carries the values."""
     send, sent = tool("email.send", SideEffect.EXTERNAL)
     runtime, _ = build(
         [calls(("email.send", {"to": "ops", "body": LEAKY, "api_key": API_KEY}))], [send]
+    )
+
+    result = await runtime.run(request("Email ops the details"))
+
+    assert result.status == RunStatus.FAILED
+    assert sent.calls == []
+    assert list(await runtime.approvals.list(TENANT, run_id=result.run_id)) == []
+    assert_absent(
+        await everything_recorded(runtime, result.run_id), API_KEY, BEARER, where="the records"
+    )
+
+
+async def test_secrets_in_tool_arguments_stay_out_of_the_approval_request() -> None:
+    """Threat: an agent that does not redact tool arguments (its ``tool_policies`` leave the
+    redaction policies out) puts credentials into a side-effecting call, so the approval request
+    shown to a person (and stored, and announced) would carry them.
+    Control: the approval's parameters, the pause payload and the approval event are redacted."""
+    send, sent = tool("email.send", SideEffect.EXTERNAL)
+    runtime, _ = build(
+        [calls(("email.send", {"to": "ops", "body": LEAKY, "api_key": API_KEY}))],
+        [send],
+        guardrail_policy=GuardrailPolicy(tool_policies=("authorization",)),
     )
 
     result = await runtime.run(request("Email ops the details"))

@@ -410,6 +410,7 @@ class RuntimeConversationHandler:
             expires_at=_parse_time(payload.get("expires_at")),
             options=tuple(str(item) for item in payload.get("options") or ()),
             redacted_parameters=dict(redacted) if isinstance(redacted, Mapping) else {},
+            rationale=_optional_text(payload.get("rationale")),
             parameters_schema=schema,
             paused_at=paused_at,
         )

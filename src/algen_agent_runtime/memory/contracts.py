@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import math
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from pydantic import Field, model_validator
 
@@ -100,6 +102,27 @@ class MemoryMutation(StrictModel):
         return self
 
 
+class MemoryEmbedding(StrictModel):
+    """A unit-length vector of one record revision's content, and the model that produced it.
+
+    ``model`` is the policy's embedding identity (provider, model and version): similarity is
+    only ever computed between vectors of the same identity.
+    """
+
+    model: str = Field(min_length=1, max_length=512)
+    vector: tuple[float, ...] = Field(min_length=1, max_length=16384)
+
+    @classmethod
+    def normalized(cls, model: str, values: Sequence[float]) -> MemoryEmbedding:
+        vector = tuple(float(value) for value in values)
+        if not vector or not all(math.isfinite(value) for value in vector):
+            raise ValueError("embedding must be a non-empty vector of finite numbers")
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            raise ValueError("embedding must not be the zero vector")
+        return cls(model=model, vector=tuple(value / norm for value in vector))
+
+
 class LearnedMemoryStore(Protocol):
     async def get(self, scope: MemoryScope, key: str) -> LearnedMemory | None: ...
     async def search(
@@ -107,3 +130,26 @@ class LearnedMemoryStore(Protocol):
     ) -> tuple[LearnedMemory, ...]: ...
     async def apply(self, mutation: MemoryMutation) -> MemoryReceipt: ...
     async def purge_expired(self, limit: int = 1000) -> int: ...
+
+
+@runtime_checkable
+class SimilarityMemoryStore(LearnedMemoryStore, Protocol):
+    """A learned-memory store that also keeps record vectors, for semantic and hybrid recall.
+
+    A vector belongs to one record revision: a correction replaces it, and deletion or expiry
+    removes it with the content. Only active records whose vector has ``embedding.model`` and
+    the record's current revision are ranked.
+    """
+
+    async def apply_embedded(
+        self, mutation: MemoryMutation, embedding: MemoryEmbedding | None
+    ) -> MemoryReceipt: ...
+    async def rank(
+        self, scope: MemoryScope, embedding: MemoryEmbedding, limit: int
+    ) -> tuple[tuple[LearnedMemory, float], ...]: ...
+    async def unembedded(
+        self, scope: MemoryScope, model: str, limit: int
+    ) -> tuple[LearnedMemory, ...]: ...
+    async def put_embedding(
+        self, scope: MemoryScope, key: str, revision: int, embedding: MemoryEmbedding
+    ) -> bool: ...

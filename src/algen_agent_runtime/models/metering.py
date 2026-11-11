@@ -18,14 +18,12 @@ try another candidate and the runtime does not retry; the run fails with the ref
 from __future__ import annotations
 
 import inspect
-import sys
-import warnings
-import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
+from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.types.contracts import TokenUsage
 
 # Reserved output for a request without ``max_output_tokens``. The runtime always sets one for
@@ -91,8 +89,8 @@ class UsageMeter(Protocol):
         ``call`` says whose call it is and which model is being tried. Raise
         ``MeterRefusedError`` to refuse the call.
 
-        A meter written for 0.1.0a14, whose ``reserve`` has no ``call`` parameter, still works:
-        the router calls it without ``call`` and warns once. That form is removed in 0.2.
+        A meter whose ``reserve`` has no ``call`` parameter (the 0.1.0a14 form) is refused with
+        ``ConfigurationError`` when the router is built.
         """
         ...
 
@@ -105,13 +103,8 @@ class UsageMeter(Protocol):
         ...
 
 
-# Legacy meters already warned about, so a meter shared by several routers warns once.
-_warned_meters: weakref.WeakSet[object] = weakref.WeakSet()
-_warned_meter_ids: set[int] = set()
-
-
-def reserve_accepts_call(meter: UsageMeter) -> bool:
-    """Whether ``meter.reserve`` takes ``call``; warn once per meter for the a14 form.
+def require_call_parameter(meter: UsageMeter) -> None:
+    """Refuse a meter whose ``reserve`` has no ``call`` parameter (the 0.1.0a14 form).
 
     The router asks once, when it is built, never per call.
     """
@@ -119,7 +112,7 @@ def reserve_accepts_call(meter: UsageMeter) -> bool:
         parameters = inspect.signature(meter.reserve).parameters.values()
     except (TypeError, ValueError):
         # Nothing to inspect (a C callable, an exotic proxy): assume the current protocol.
-        return True
+        return
     if any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         or (
@@ -129,40 +122,8 @@ def reserve_accepts_call(meter: UsageMeter) -> bool:
         )
         for parameter in parameters
     ):
-        return True
-    _warn_legacy_meter(meter)
-    return False
-
-
-def _warn_legacy_meter(meter: object) -> None:
-    try:
-        if meter in _warned_meters:
-            return
-        _warned_meters.add(meter)
-    except TypeError:
-        # Not weak-referenceable or not hashable: fall back to its identity.
-        if id(meter) in _warned_meter_ids:
-            return
-        _warned_meter_ids.add(id(meter))
-    meter_type = type(meter)
-    module_name = meter_type.__module__
-    reserve = getattr(meter_type, "reserve", None)
-    function = getattr(reserve, "__func__", reserve)
-    code = getattr(inspect.unwrap(function), "__code__", None) if function is not None else None
-    module = sys.modules.get(module_name)
-    if code is not None:
-        filename, lineno = code.co_filename, code.co_firstlineno
-    else:
-        filename, lineno = getattr(module, "__file__", None) or module_name, 1
-    # Attribute the warning to the meter's own module, where the fix belongs, rather than to
-    # whichever code built the router (often the runtime's own build_container).
-    warnings.warn_explicit(
-        f"{meter_type.__qualname__}.reserve() has no 'call' parameter; add "
-        "'call: MeterCall' to it. The 0.1.0a14 reserve form is deprecated and will be removed "
-        "in 0.2.",
-        DeprecationWarning,
-        filename=filename,
-        lineno=lineno,
-        module=module_name,
-        module_globals=vars(module) if module is not None else None,
+        return
+    raise ConfigurationError(
+        f"{type(meter).__qualname__}.reserve() has no 'call' parameter; add 'call: MeterCall' "
+        "to it. The 0.1.0a14 reserve form was removed in 0.2."
     )

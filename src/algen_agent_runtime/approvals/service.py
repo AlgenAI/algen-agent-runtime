@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from algen_agent_runtime.exceptions.errors import ConflictError, NotFoundError
 from algen_agent_runtime.types.contracts import utc_now
 
+# The longest rationale an approval request shows the approver.
+MAX_RATIONALE_CHARS = 500
+
 
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
@@ -39,6 +42,19 @@ class ApprovalRequest(BaseModel):
     # PostgreSQL store keeps both in columns, not in the stored JSON (see STORED_JSON_EXCLUDE).
     agent: str | None = None
     created_at: datetime | None = None
+    # What a tool call's approval covers (0.2): the tool, its version and fingerprint when the
+    # approval was asked for, and the digest of the arguments it proposes. None on approvals
+    # stored by earlier releases and on approvals that are not for a tool call.
+    tool: str | None = None
+    tool_version: str | None = None
+    tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    arguments_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Why the agent wants to make the call: the model's text that accompanied it, redacted like
+    # the parameters and at most MAX_RATIONALE_CHARS. None when the model wrote none.
+    rationale: str | None = Field(default=None, max_length=MAX_RATIONALE_CHARS)
+    # Why the request reached its status, when the status alone does not say: "tool_changed"
+    # for an approval expired because its tool changed before the approved call ran.
+    status_reason: str | None = Field(default=None, max_length=64)
 
     def effective(self, now: datetime) -> ApprovalRequest:
         """This request as a reader should see it: a pending request past ``expires_at`` is
@@ -54,7 +70,22 @@ MAX_APPROVAL_OFFSET = 1_000_000
 # Fields the PostgreSQL store keeps in columns instead of the stored JSON. 0.1.0a17 validates the
 # JSON with extra="forbid", so leaving them out keeps rows readable by it during a rolling deploy
 # or after a rollback.
-STORED_JSON_EXCLUDE = frozenset({"agent", "created_at"})
+STORED_JSON_EXCLUDE = frozenset(
+    {
+        "agent",
+        "created_at",
+        "tool",
+        "tool_version",
+        "tool_fingerprint",
+        "arguments_sha256",
+        "rationale",
+        "status_reason",
+    }
+)
+# The columns that hold them, besides created_at (set by the database).
+_COLUMNS = ("agent", "tool", "tool_version", "tool_fingerprint", "arguments_sha256", "rationale")
+# Why an approval was expired before its call ran: its tool changed after it was asked for.
+TOOL_CHANGED = "tool_changed"
 
 
 def _check_page(limit: int, offset: int) -> None:
@@ -76,7 +107,16 @@ class ApprovalService(Protocol):
         expires_seconds: int,
         *,
         agent: str | None = None,
-    ) -> ApprovalRequest: ...
+        tool: str | None = None,
+        tool_version: str | None = None,
+        tool_fingerprint: str | None = None,
+        arguments_sha256: str | None = None,
+        rationale: str | None = None,
+    ) -> ApprovalRequest:
+        """A pending request. For a tool call, ``tool``, ``tool_version``, ``tool_fingerprint``
+        and ``arguments_sha256`` record what it covers, and ``rationale`` why the agent wants to
+        make it (already redacted and at most ``MAX_RATIONALE_CHARS``)."""
+        ...
 
     async def decide(
         self,
@@ -85,6 +125,12 @@ class ApprovalService(Protocol):
         decision: ApprovalStatus,
         modified_parameters: dict[str, Any] | None = None,
     ) -> ApprovalRequest: ...
+
+    async def expire(self, approval_id: str, tenant_id: str, *, reason: str) -> ApprovalRequest:
+        """Expire a request that is pending, or approved or modified but not acted on, recording
+        ``reason`` as its ``status_reason`` (``tool_changed``). ``NotFoundError`` for an unknown
+        request, ``ConflictError`` for one that was rejected or has expired already."""
+        ...
 
     async def get(self, approval_id: str, tenant_id: str) -> ApprovalRequest | None: ...
 
@@ -128,6 +174,11 @@ class InMemoryApprovalService:
         expires_seconds: int,
         *,
         agent: str | None = None,
+        tool: str | None = None,
+        tool_version: str | None = None,
+        tool_fingerprint: str | None = None,
+        arguments_sha256: str | None = None,
+        rationale: str | None = None,
     ) -> ApprovalRequest:
         now = utc_now()
         request = ApprovalRequest(
@@ -141,6 +192,11 @@ class InMemoryApprovalService:
             expires_at=now + timedelta(seconds=expires_seconds),
             agent=agent,
             created_at=now,
+            tool=tool,
+            tool_version=tool_version,
+            tool_fingerprint=tool_fingerprint,
+            arguments_sha256=arguments_sha256,
+            rationale=rationale,
         )
         async with self._lock:
             self._items[request.id] = request
@@ -166,6 +222,17 @@ class InMemoryApprovalService:
                 raise ValueError("modified decision requires modified_parameters")
             item.status = decision
             item.modified_parameters = modified_parameters
+            return item.model_copy(deep=True)
+
+    async def expire(self, approval_id: str, tenant_id: str, *, reason: str) -> ApprovalRequest:
+        async with self._lock:
+            item = self._items.get(approval_id)
+            if item is None or item.tenant_id != tenant_id:
+                raise NotFoundError("approval request not found")
+            if item.status not in _EXPIRABLE:
+                raise ConflictError(f"approval request is {item.status.value}")
+            item.status = ApprovalStatus.EXPIRED
+            item.status_reason = reason
             return item.model_copy(deep=True)
 
     async def get(self, approval_id: str, tenant_id: str) -> ApprovalRequest | None:
@@ -221,6 +288,11 @@ class PostgresApprovalService:
         expires_seconds: int,
         *,
         agent: str | None = None,
+        tool: str | None = None,
+        tool_version: str | None = None,
+        tool_fingerprint: str | None = None,
+        arguments_sha256: str | None = None,
+        rationale: str | None = None,
     ) -> ApprovalRequest:
         now = utc_now()
         request = ApprovalRequest(
@@ -233,16 +305,27 @@ class PostgresApprovalService:
             risk=risk,
             expires_at=now + timedelta(seconds=expires_seconds),
             agent=agent,
+            tool=tool,
+            tool_version=tool_version,
+            tool_fingerprint=tool_fingerprint,
+            arguments_sha256=arguments_sha256,
+            rationale=rationale,
         )
         row = await self._database.fetchrow(
             "INSERT INTO algen_agent_runtime_approvals "
-            "(id, run_id, tenant_id, agent, approval) VALUES ($1,$2,$3,$4,$5::jsonb) "
+            "(id, run_id, tenant_id, agent, approval, tool, tool_version, tool_fingerprint, "
+            "arguments_sha256, rationale) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10) "
             "RETURNING created_at",
             request.id,
             run_id,
             tenant_id,
             agent,
             request.model_dump_json(exclude=set(STORED_JSON_EXCLUDE)),
+            tool,
+            tool_version,
+            tool_fingerprint,
+            arguments_sha256,
+            rationale,
         )
         # The row's time (the database clock), as get and list report it.
         return request.model_copy(update={"created_at": row["created_at"]})
@@ -272,10 +355,22 @@ class PostgresApprovalService:
             raise ConflictError("approval request was concurrently decided")
         return updated
 
+    async def expire(self, approval_id: str, tenant_id: str, *, reason: str) -> ApprovalRequest:
+        item = await self.get(approval_id, tenant_id)
+        if item is None:
+            raise NotFoundError("approval request not found")
+        if item.status not in _EXPIRABLE:
+            raise ConflictError(f"approval request is {item.status.value}")
+        updated = item.model_copy(
+            update={"status": ApprovalStatus.EXPIRED, "status_reason": reason}
+        )
+        if not await self._save(updated, expected=item.status):
+            raise ConflictError("approval request was concurrently changed")
+        return updated
+
     async def get(self, approval_id: str, tenant_id: str) -> ApprovalRequest | None:
         row = await self._database.fetchrow(
-            "SELECT approval, agent, created_at FROM algen_agent_runtime_approvals "
-            "WHERE id=$1 AND tenant_id=$2",
+            f"SELECT {_SELECTED} FROM algen_agent_runtime_approvals WHERE id=$1 AND tenant_id=$2",
             approval_id,
             tenant_id,
         )
@@ -316,7 +411,7 @@ class PostgresApprovalService:
             else:
                 clauses.append(f"{stored}={bind(status.value)}")
         rows = await self._database.fetch(
-            "SELECT approval, agent, created_at FROM algen_agent_runtime_approvals "
+            f"SELECT {_SELECTED} FROM algen_agent_runtime_approvals "
             f"WHERE {' AND '.join(clauses)} "
             f"ORDER BY created_at DESC, id DESC LIMIT {bind(limit)} OFFSET {bind(offset)}",
             *arguments,
@@ -325,21 +420,30 @@ class PostgresApprovalService:
 
     async def _save(self, item: ApprovalRequest, expected: ApprovalStatus) -> bool:
         result = await self._database.execute(
-            "UPDATE algen_agent_runtime_approvals SET approval=$1::jsonb, updated_at=now() "
-            "WHERE id=$2 AND tenant_id=$3 AND approval->>'status'=$4",
+            "UPDATE algen_agent_runtime_approvals SET approval=$1::jsonb, status_reason=$5, "
+            "updated_at=now() WHERE id=$2 AND tenant_id=$3 AND approval->>'status'=$4",
             item.model_dump_json(exclude=set(STORED_JSON_EXCLUDE)),
             item.id,
             item.tenant_id,
             expected.value,
+            item.status_reason,
         )
         return str(result) == "UPDATE 1"
 
 
+_EXPIRABLE = frozenset({ApprovalStatus.PENDING, ApprovalStatus.APPROVED, ApprovalStatus.MODIFIED})
+_SELECTED = ", ".join(("approval", "created_at", "status_reason", *_COLUMNS))
+
+
 def _from_row(row: Any) -> ApprovalRequest:
-    """An approval row as a request: the stored JSON, with ``agent`` and ``created_at`` from
-    their columns."""
+    """An approval row as a request: the stored JSON, with the fields kept in columns
+    (``STORED_JSON_EXCLUDE``) from their columns."""
     stored = row["approval"]
     # asyncpg returns jsonb as text.
     values = json.loads(stored) if isinstance(stored, (str, bytes)) else dict(stored)
-    values.update(agent=row["agent"], created_at=row["created_at"])
+    for column in ("created_at", "status_reason", *_COLUMNS):
+        try:
+            values[column] = row[column]
+        except KeyError:
+            values[column] = None
     return ApprovalRequest.model_validate(values)

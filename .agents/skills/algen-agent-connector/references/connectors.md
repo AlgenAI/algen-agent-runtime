@@ -40,7 +40,7 @@ A client factory that fails on configuration raises `ConfigurationError`; the to
 Register the toolkit from a declared plugin (`toolkit.register(context)`, the plugin named in
 `domain_plugins`; see `docs/plugins.md`) so Studio and `algen-agent-runtime describe` can see it.
 Test every tool with `assert_tool_contract` and call it with `fake_tool_context`
-(`algen_agent_runtime.tools.testing`). `examples/quickstart_agent_tool` is the reference. A
+(`algen_agent_runtime.tools.testing`). `algen_agent_runtime_examples/quickstart_agent_tool` is the reference. A
 hand-built `ToolDefinition` remains valid when a tool needs something the presets cannot express.
 
 A write tool that can tell in advance why a change would fail takes a `precheck`
@@ -107,9 +107,8 @@ in `domain_plugins` (trusted prefix `algen_agent_tools`), or build `smtp_toolkit
 `gmail_toolkit(...)` in the project's plugin. Their `send_email` tools are external, keyed and
 single-attempt, take the sender from deployment configuration rather than the model, refuse custom
 headers, accept attachments only as tenant-authorized Runtime artifact references, and can bound
-recipients with `allowed_domains`. Microsoft 365 mail uses `algen_agent_tools.outlook`. `algen_agent_runtime.communications` (`email_tool`,
-`SmtpEmailSender`) is deprecated and removed in 0.2, and its Gmail adapter is already gone; do not
-use it in new projects.
+recipients with `allowed_domains`. Microsoft 365 mail uses `algen_agent_tools.outlook`. The Runtime has no email connector of its own:
+`algen_agent_runtime.communications` was removed in 0.2.
 
 Email is an external keyed side effect. Keep Runtime's durable tool-execution ledger enabled in
 production. A provider timeout after submission is indeterminate and must be reconciled rather than
@@ -122,7 +121,7 @@ Declare each query the agent needs as a typed tool with
 `algen_agent_tools.postgres.PostgresToolkit.query` from the `algen-agent-tools` package: the model
 fills typed parameters and never writes SQL, reads run read-only under a statement timeout and row
 limit, and writes can bind the idempotency key. Use a database credential restricted at the server.
-`database_tool`, which took a raw statement, is deprecated and removed in 0.2. For analytical workflows, declare a secret-safe
+The Runtime's `database_tool`, which took a raw statement, was removed in 0.2. For analytical workflows, declare a secret-safe
 `query_source` and a node resource with `kind: query_source`. SQL generation, validation, execution,
 repair, and verification remain separate bounded stages.
 
@@ -151,11 +150,17 @@ and audited; do not update status directly in application domain code.
 
 ## File attachments
 
-A caller can attach images and PDFs to a run, a conversation message or a workflow run, by
-reference to an uploaded artifact (`attachments: [{artifact_id, media_type}]`). The agent opts in
-with `attachments: {enabled: true}`; the deployment's `security.allowed_attachment_types`,
-`max_attachments_per_run` and `max_attachment_bytes_total` are the outer limits. The model sees
-the file natively; tools read it with `await context.read_attachment(artifact_id)`. Turn on
+A caller can attach files to a run, a conversation message or a workflow run, by reference to an
+uploaded artifact (`attachments: [{artifact_id, media_type}]`). The agent opts in with
+`attachments: {enabled: true}`; `attachments.types` lists what the model reads itself (images,
+PDF), and `attachments.tool_read_types` lists documents a tool reads instead (Office files, e-mail,
+CSV and other text), which never reach a provider. The deployment's
+`security.allowed_attachment_types`, `max_attachments_per_run` and `max_attachment_bytes_total`
+are the outer limits. Tools read any attachment with `await context.read_attachment(artifact_id)`;
+a text-only model finds the id in the `[attachment: name, type, id=...]` placeholder. A tool that
+produces images or PDFs for the model to see declares `returns_files=True` and returns
+`ToolResult(value=..., files=(ToolFile(artifact_id=...),))`; the files are checked like
+attachments. Turn on
 `security.upload_scanner: basic` or supply an `ArtifactScanner`, since uploads stay `pending_scan`
 until scanned. See docs/attachments.md.
 
@@ -163,13 +168,15 @@ until scanned. See docs/attachments.md.
 
 Read uploaded or fetched documents through `algen-agent-tools`: the `documents.extract_text` tool
 (`documents_toolkit(artifact_loader=runtime_attachment_loader)` for the run's attachments) or
-`algen_agent_tools.documents.extractor_for`. Never use a parser of your own. The extractors in
-`algen_agent_runtime.security` are deprecated since 0.1.0a19 and will be removed. They cover PDF
+`algen_agent_tools.documents.inspection.extractor_for`. Never use a parser of your own. The
+Runtime's own extractors in `algen_agent_runtime.security` were removed in 0.2. They cover PDF
 (the tools `documents` extra), DOCX, XLSX, PPTX, HTML, CSV, TSV, text and Markdown, keep hidden
 sheets, rows, slides, shapes and styled-hidden HTML out of `sanitized_text`, and report them and
 model-directed text as findings with a `pass`/`review`/`quarantine` disposition. Give the model
-only `sanitized_text`, and route `quarantine` to a person. See docs/document-security.md and its
-known limitations.
+only `sanitized_text`, and route `quarantine` to a person. A search or listing tool that reads a
+derived store or returns one page can say so with `ResultCoverage` under `"coverage"`, and the
+opt-in `result_coverage` verifier stops an answer that claims something does not exist on the
+strength of a partial result (docs/tool-authoring.md, "Saying what a result covered").
 
 ## Telemetry
 

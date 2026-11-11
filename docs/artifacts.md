@@ -130,7 +130,7 @@ redaction of digit sequences. Existing UUID references remain authorized and reu
 Run a credential-free paging example with:
 
 ```bash
-python -m examples.context_offloading
+python -m algen_agent_runtime_examples.context_offloading
 ```
 
 ## Shortened older tool results
@@ -143,17 +143,26 @@ tools again. Opt in to keep those exchanges in shortened form instead:
 context_policy:
   shorten_older_tool_results: true
   shortened_tool_result_chars: 1200 # 64 to 16384
+  shortened_tool_results_share: 0.25 # above 0, below 1
+  shortened_tool_result_note: "\n[earlier tool result shortened to fit the context; it was already retrieved in this run]"
 ```
 
-When an older tool exchange no longer fits, each text result longer than
-`shortened_tool_result_chars` is cut to that length and ends with a note that it was shortened
-and already retrieved. The tool call stays with its results, so the exchange stays valid for every
-provider. Packing continues with older exchanges while the shortened versions fit and stops at the
-first that does not. Recent results, required messages and non-text blocks are never changed,
-and nothing is stored or rewritten in the run history: shortening happens only in the request
-sent to the model. The default and retrieval builders honour the policy; it is off by default.
-It works alongside `offload_tool_results` (an offloaded reference is already short) and
-`compact_history` (which summarises before packing).
+When the whole history fits, nothing changes. When it does not, packing holds back
+`shortened_tool_results_share` of the budget left after the required messages (a quarter by
+default) for older tool exchanges. Whole groups fill the rest, newest first. Every older tool
+exchange is then kept in shortened form: each text result longer than
+`shortened_tool_result_chars` is cut to that length and ends with `shortened_tool_result_note`,
+so the model knows it already has that result and does not look it up again. Set the note to
+`""` to leave it out. An exchange is dropped only when even its shortened form does not fit, and
+packing goes on with older exchanges after it. Older messages that are not tool exchanges are kept
+whole when they fit.
+
+The tool call always stays with its results, so the exchange stays valid for every provider.
+Required messages, including the user request that started the run, non-text blocks and tool
+arguments are never changed, and nothing is stored or rewritten in the run history: shortening
+happens only in the request sent to the model. The default and retrieval builders honour the
+policy; it is off by default. It works alongside `offload_tool_results` (an offloaded reference
+is already short) and `compact_history` (which summarises before packing).
 
 The policy applies to the context builder's budget (`max_estimated_tokens`). When a model profile
 sets `context_window_tokens`, the request is packed once more against that window just before the
@@ -253,7 +262,7 @@ execution messages should use `RunState.append_message()`; direct edits to the a
 list do not append to initialized canonical history. Fresh retrieval evidence is rebuilt from the
 retriever, rather than repeatedly copied into canonical execution history.
 
-Run an offline example with `python -m examples.context_compaction`.
+Run an offline example with `python -m algen_agent_runtime_examples.context_compaction`.
 
 Use [context evaluations and diagnostics](context-evaluation.md) to check retention and archive
 recovery, measure checkpoint size, and inspect compaction decisions without logging message content.

@@ -49,8 +49,15 @@ must validate destinations and propagate the idempotency key.
 `tools/authoring.py` builds those fields from typed functions (`@tool`, the presets, `Toolkit`);
 a change to a preset's rules changes every tool built with it, so update `docs/tool-authoring.md`
 and `tests/unit/test_tool_authoring.py` together. `ToolDefinition.requires_approval` may only add
-approval, and `ToolExecutor.execute` refuses such a tool unless it is given an `approval`
-reference; `ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+approval, and `ToolExecutor.execute` refuses such a tool unless it is given a `ToolApproval`
+bound to the call (`ToolApproval.for_call(...)`: tool, version and a digest of the arguments);
+a call the approval does not cover raises `ApprovalMismatchError`. Code that calls the executor
+directly proves the decision itself (docs/tool-authoring.md, "Who proves an approval is valid").
+`ApprovalHandler` is a protocol only, and the Runtime ships no approval flow behind it.
+A synchronous handler runs in the bounded tool thread pool; `execution="process"` runs a
+top-level, picklable handler in a subprocess that is killed at its timeout.
+To let tools inside a foreign framework stay governed, hand them over with
+`frameworks.GovernedToolBridge`; the framework's own tools and model calls are not governed.
 A tool that refuses before sending anything raises `ToolNotAttemptedError`, so the ledger records
 `failed`, not `indeterminate`; a toolkit's client factory raises `ConfigurationError` for a
 missing setting.
@@ -58,7 +65,7 @@ missing setting.
 tested against.
 
 Email provider adapters live in `algen-agent-tools` (`algen_agent_tools.mail.EmailSender`;
-`algen_agent_runtime.communications` is deprecated). They return the normalized,
+the Runtime's `communications` package was removed in 0.2). They return the normalized,
 content-minimal `EmailDeliveryReceipt`. Preserve the supplied idempotency key as the provider's
 deduplication key or stable message identifier. Validate provider recipient refusals explicitly,
 resolve attachments only through a tenant-authorized artifact loader, do not leak message bodies or
@@ -113,8 +120,8 @@ A deployment's billing or quota system plugs in as a `UsageMeter` (`models/meter
 Implement `reserve(*, max_input_tokens, max_output_tokens, call: MeterCall)`, `settle(ticket,
 usage)` and `release(ticket)`; charge the account named by `call` (tenant, or an id the host put in
 `RunRequest.metadata`), keep `call` in the ticket when settling depends on the model, and refuse
-only by raising `MeterRefusedError`. The a14 `reserve` without `call` still works with a
-deprecation warning and is removed in 0.2.
+only by raising `MeterRefusedError`. A meter whose `reserve` has no `call` parameter is refused with
+`ConfigurationError` when the router is built.
 
 ## MCP OAuth token storage
 

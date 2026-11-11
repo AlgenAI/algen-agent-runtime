@@ -1,0 +1,22 @@
+id: quickstart_approval
+display_name: "Approval Quickstart"
+tier: quickstart
+status: runnable
+description: >
+  Shows one first-class Runtime approval checkpoint and an idempotent apply-or-abort path.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.quickstart_approval.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.quickstart_approval.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: true

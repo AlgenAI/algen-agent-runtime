@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from algen_agent_runtime.exceptions.errors import ConflictError, NotFoundError
 from algen_agent_runtime.tools.contracts import Tool
+from algen_agent_runtime.tools.process import check_process_handler
 
 
 class ToolRegistry:
@@ -12,6 +13,8 @@ class ToolRegistry:
         name = tool.definition.name
         if name in self._tools:
             raise ConflictError(f"tool {name!r} already registered")
+        if tool.definition.execution == "process":
+            check_process_handler(name, tool.handler)
         self._tools[name] = tool
 
     def get(self, name: str) -> Tool:

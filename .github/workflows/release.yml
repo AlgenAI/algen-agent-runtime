@@ -32,8 +32,8 @@ jobs:
           ref_name="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           test "v${version}" = "${ref_name}"
       - run: python -m pip install -e '.[dev]'
-      - run: ruff format --check src tests examples
-      - run: ruff check src tests examples
+      - run: ruff format --check src tests algen_agent_runtime_examples
+      - run: ruff check src tests algen_agent_runtime_examples
       - run: mypy src/algen_agent_runtime
       - run: pytest -q -p no:cacheprovider
       - run: python -m build
@@ -54,78 +54,9 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
       - name: Inspect release artifacts
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import tarfile
-          import zipfile
-
-          wheel = next(Path("dist").glob("*.whl"))
-          sdist = next(Path("dist").glob("*.tar.gz"))
-          with zipfile.ZipFile(wheel) as archive:
-              names = set(archive.namelist())
-              required = {
-                  "algen_agent_runtime/py.typed",
-                  "algen_agent_runtime/persistence/migrations/001_initial.sql",
-                  "algen_agent_runtime/persistence/migrations/011_learned_memory.sql",
-                  "algen_agent_runtime/persistence/migrations/012_mcp_oauth.sql",
-                  "algen_agent_runtime/persistence/migrations/013_token_revocation.sql",
-                  "algen_agent_runtime/persistence/migrations/014_tool_execution_reconciliation.sql",
-                  "algen_agent_runtime/persistence/migrations/015_approval_agent.sql",
-                  "algen_agent_runtime/persistence/migrations/016_resource_bounds.sql",
-                  "algen_agent_runtime/context/compaction.py",
-                  "algen_agent_runtime/context/working_state.py",
-                  "algen_agent_runtime/context/skills.py",
-                  "algen_agent_runtime/memory/service.py",
-                  "algen_agent_runtime/evaluation/context.py",
-                  "examples/context_evaluation.py",
-                  "algen_agent_runtime/tools/starter/__init__.py",
-                  "algen_agent_runtime/mcp/__init__.py",
-                  "examples/quickstart_approval/__init__.py",
-                  "examples/quickstart_conversation/agent.yaml",
-                  "examples/pattern_guarded_tools/agent.yaml",
-                  "examples/pattern_side_effect_reconciliation/agent.yaml",
-                  "examples/pattern_secured_api/agent.yaml",
-              }
-              missing = required - names
-              if missing:
-                  raise SystemExit(f"wheel missing required files: {sorted(missing)}")
-              if any("studio" in name.lower() for name in names):
-                  raise SystemExit("Runtime artifact unexpectedly contains Studio files")
-              domain = ("examples/case_study_responsible_hiring/", "examples/pattern_text_to_sql/")
-              if any(name.startswith(domain) for name in names):
-                  raise SystemExit("wheel contains domain case studies (see tests/unit/test_wheel_contents.py)")
-              if any("__pycache__" in name or name.endswith(".pyc") for name in names):
-                  raise SystemExit("wheel contains Python cache files")
-          with tarfile.open(sdist) as archive:
-              names = archive.getnames()
-              for required in ("LICENSE", "NOTICE", "README.md"):
-                  if not any(name.endswith(f"/{required}") for name in names):
-                      raise SystemExit(f"sdist missing {required}")
-          PY
+        run: python scripts/check_dist.py dist
       - name: Install wheel and verify CLI and scaffolding outside checkout
-        run: |
-          python -m venv /tmp/algen-release-smoke
-          /tmp/algen-release-smoke/bin/pip install --upgrade pip
-          /tmp/algen-release-smoke/bin/pip install dist/*.whl
-          cd /tmp
-          /tmp/algen-release-smoke/bin/python -c "import algen_agent_runtime; print(algen_agent_runtime.__version__)"
-          test -x /tmp/algen-release-smoke/bin/algen-agent-runtime
-          /tmp/algen-release-smoke/bin/algen-agent-runtime --help
-          /tmp/algen-release-smoke/bin/algen-agent-runtime serve --help
-          /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"
-          /tmp/algen-release-smoke/bin/python -c "from algen_agent_runtime.tools.starter import get_starter_tools; assert len([t.definition.name for t in get_starter_tools()]) >= 5"
-          for example in context_evaluation context_compaction context_offloading working_state progressive_skills learned_memory quickstart_conversation.app pattern_guarded_tools.app pattern_side_effect_reconciliation.app pattern_secured_api.app; do
-            /tmp/algen-release-smoke/bin/python -m "examples.${example}"
-          done
-          rm -rf /tmp/smoke-scaffold-release
-          mkdir -p /tmp/smoke-scaffold-release
-          cd /tmp/smoke-scaffold-release
-          /tmp/algen-release-smoke/bin/algen-agent-runtime new smoke_agent --template agent
-          cd smoke_agent
-          /tmp/algen-release-smoke/bin/pip install pytest pytest-asyncio
-          /tmp/algen-release-smoke/bin/pytest test_agent.py
-          /tmp/algen-release-smoke/bin/python app.py
+        run: scripts/smoke-install.sh dist python
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions

@@ -1,6 +1,8 @@
-"""Schema upgrade and rollback drills against the previous release (``0.1.0a17``).
+"""Schema upgrade and rollback drills against the previous release (``PREVIOUS_RELEASE`` in
+drill_support, ``0.1.0a23`` today; ``ALGEN_DRILL_PREVIOUS_RELEASE`` overrides it).
 
-Upgrade: a database the previous release migrated (through ``014``) and wrote to is started by
+Upgrade: a database the previous release migrated (through ``PREVIOUS_LAST_MIGRATION``, ``016``
+for 0.1.0a23) and wrote to is started by
 the current code, which applies the new migrations and carries on the previous release's paused
 run. Rollback: after the current code has migrated and written to a database, the previous
 release starts on it again (the migrations are additive and stay in place) and reads and
@@ -15,12 +17,14 @@ from __future__ import annotations
 import pytest
 from drill_support import (
     MIGRATIONS,
+    PREVIOUS_LAST_MIGRATION,
     TENANT,
     TOOL,
     applied_migrations,
     apply_migrations,
     fresh_database,
     ledger,
+    previous_release_migrations,
     previous_release_source,
     release_child,
     requires_postgres,
@@ -33,8 +37,15 @@ from algen_agent_runtime.types.contracts import RunStatus
 pytestmark = [pytest.mark.drill, pytest.mark.integration, pytest.mark.postgres, requires_postgres]
 
 ALL_MIGRATIONS = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
-# The last migration of the previous release.
-PREVIOUS_LAST = "014"
+PREVIOUS_LAST = PREVIOUS_LAST_MIGRATION
+
+
+def test_the_previous_release_matches_its_tag() -> None:
+    """PREVIOUS_LAST_MIGRATION is the last migration the PREVIOUS_RELEASE tag ships, so the
+    schema drill migrates exactly as that release did."""
+    shipped = previous_release_migrations()
+    assert shipped[-1].split("_")[0] == PREVIOUS_LAST
+    assert shipped == [name for name in ALL_MIGRATIONS if name.split("_")[0] <= PREVIOUS_LAST]
 
 
 async def test_schema_upgrade_from_the_previous_release_migration_set() -> None:
@@ -61,7 +72,12 @@ async def test_upgrade_carries_on_what_the_previous_release_wrote() -> None:
             completed = await runtime.status(written["completed"], TENANT)
             assert completed.status is RunStatus.COMPLETED
             approval = await runtime.approvals.get(written["approval_id"], TENANT)
-            assert approval is not None and approval.agent is None  # written before 015
+            assert approval is not None
+            # Columns added after the previous release are empty on what it wrote.
+            if PREVIOUS_LAST < "015":
+                assert approval.agent is None
+            if PREVIOUS_LAST < "017":
+                assert approval.tool_fingerprint is None and approval.rationale is None
             # The previous release's approvals are listed in the inbox too.
             listed = await runtime.approvals.list(TENANT, run_id=written["paused"])
             assert [item.id for item in listed] == [written["approval_id"]]

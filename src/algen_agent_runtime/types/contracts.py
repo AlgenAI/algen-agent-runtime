@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -250,6 +251,43 @@ class LearnedMemoryPolicy(StrictModel):
     enabled: bool = False
     max_recall_tokens: int = Field(default=2048, ge=128, le=8192)
     max_retention_seconds: int = Field(default=2592000, ge=60, le=31536000)
+    # How core.memory_recall ranks a non-empty query: ``substring`` matches keys and content
+    # literally; ``semantic`` ranks by embedding similarity; ``hybrid`` combines both.
+    recall: Literal["substring", "semantic", "hybrid"] = "substring"
+    # Semantic and hybrid recall drop records scoring below this (0-1; cosine similarity for
+    # ``semantic``, the weighted score for ``hybrid``).
+    min_score: float = Field(default=0.0, ge=0, le=1)
+    # The weight of a key or substring match in a ``hybrid`` score; similarity gets the rest.
+    hybrid_keyword_weight: float = Field(default=0.3, ge=0, le=1)
+    # A registered model provider (its registration id) and model that embed record content and
+    # recall queries. ``embedding_version`` names the vectors' generation: change it to re-embed
+    # when the provider serves a different model under the same name.
+    embedding_provider: str | None = Field(default=None, min_length=1, max_length=128)
+    embedding_model: str | None = Field(default=None, min_length=1, max_length=256)
+    embedding_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def similarity_needs_embeddings(self) -> LearnedMemoryPolicy:
+        if self.recall != "substring" and self.embedding_provider is None:
+            raise ValueError(
+                f"learned_memory_policy.recall {self.recall!r} needs embedding_provider"
+            )
+        return self
+
+    @property
+    def embedding_identity(self) -> str | None:
+        """The identity recorded with each vector: vectors of another identity are not compared."""
+        if self.recall == "substring" or self.embedding_provider is None:
+            return None
+        return json.dumps(
+            [self.embedding_provider, self.embedding_model, self.embedding_version],
+            separators=(",", ":"),
+        )
+
+
+DEFAULT_SHORTENED_TOOL_RESULT_NOTE = (
+    "\n[earlier tool result shortened to fit the context; it was already retrieved in this run]"
+)
 
 
 class ContextPolicy(StrictModel):
@@ -273,6 +311,13 @@ class ContextPolicy(StrictModel):
     # long run still knows what it already retrieved and does not look it up again.
     shorten_older_tool_results: bool = False
     shortened_tool_result_chars: int = Field(default=1_200, ge=64, le=16_384)
+    # Share of the free budget held back for the shortened older results; whole results fill the
+    # rest, newest first. Used only when the history does not fit whole.
+    shortened_tool_results_share: float = Field(default=0.25, gt=0, lt=1)
+    # Appended to each shortened result so the model knows it already has it. Empty: no note.
+    shortened_tool_result_note: str = Field(
+        default=DEFAULT_SHORTENED_TOOL_RESULT_NOTE, max_length=512
+    )
 
     @model_validator(mode="after")
     def archive_requires_compaction(self) -> ContextPolicy:
@@ -454,6 +499,41 @@ class WrapUpPolicy(StrictModel):
 DEFAULT_ATTACHMENT_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
 )
+# The types a model reads natively (vision or PDF input): what ``AttachmentPolicy.types`` lists.
+MODEL_ATTACHMENT_TYPES = DEFAULT_ATTACHMENT_TYPES
+# Text types. The bytes only say "text", so the declared type tells them apart.
+TEXT_ATTACHMENT_TYPES = frozenset(
+    {
+        "text/plain",
+        "text/csv",
+        "text/tab-separated-values",
+        "text/markdown",
+        "text/html",
+        "text/xml",
+        "application/xml",
+        "application/json",
+    }
+)
+# The types a run may carry for a tool to read (``AttachmentPolicy.tool_read_types``). They never
+# reach a model, which sees ``[attachment: name, type, id=...]`` instead, and each is recognised
+# from its bytes.
+TOOL_READ_ATTACHMENT_TYPES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.ms-outlook",
+        "message/rfc822",
+        "image/heic",
+        *TEXT_ATTACHMENT_TYPES,
+    }
+)
+# Every type a run may carry: the deployment's default ceiling (security.allowed_attachment_types).
+# Agents still opt in to each type.
+KNOWN_ATTACHMENT_TYPES = MODEL_ATTACHMENT_TYPES | TOOL_READ_ATTACHMENT_TYPES
 
 
 class RunAttachment(StrictModel):
@@ -469,12 +549,70 @@ class AttachmentPolicy(StrictModel):
     Off by default. ``retention`` says how long a file stays in what the model reads: ``turn``
     replaces it with a short note once the turn ends, so it is not billed on every later turn;
     ``session`` keeps it for the session's later turns.
+
+    ``types`` are read by the model; ``tool_read_types`` (Office documents, CSV, text, e-mail)
+    never reach a model: it sees ``[attachment: name, type, id=...]`` and hands the id to a
+    reader tool, which calls ``ToolContext.read_attachment``.
     """
 
     enabled: bool = False
     types: frozenset[str] = DEFAULT_ATTACHMENT_TYPES
+    tool_read_types: frozenset[str] = Field(
+        default=frozenset(),
+        description="Types a run may carry for a tool to read; they never reach a model. A "
+        "trailing '*' (application/vnd.openxmlformats-officedocument.*) matches every known "
+        "type with that prefix. None by default.",
+    )
     max_count: int = Field(default=5, ge=1, le=32)
     retention: Literal["turn", "session"] = "turn"
+
+    @field_validator("tool_read_types", mode="before")
+    @classmethod
+    def _expand_patterns(cls, value: Any) -> Any:
+        if isinstance(value, str) or not isinstance(value, list | tuple | set | frozenset):
+            return value
+        expanded: set[Any] = set()
+        for item in value:
+            if isinstance(item, str) and item.endswith("*"):
+                matched = {
+                    known for known in TOOL_READ_ATTACHMENT_TYPES if known.startswith(item[:-1])
+                }
+                if not matched:
+                    raise ValueError(f"tool_read_types: {item!r} matches no type a tool can read")
+                expanded |= matched
+            else:
+                expanded.add(item)
+        return frozenset(expanded)
+
+    @model_validator(mode="after")
+    def _types_known_and_apart(self) -> AttachmentPolicy:
+        both = self.types & self.tool_read_types
+        if both:
+            raise ValueError(
+                f"{', '.join(sorted(both))} is listed in both types (read by the model) and "
+                "tool_read_types (read by a tool); list each type once"
+            )
+        unreadable = self.types & TOOL_READ_ATTACHMENT_TYPES
+        if unreadable:
+            raise ValueError(
+                f"types: a model cannot read {', '.join(sorted(unreadable))}; list it under "
+                "tool_read_types for a tool to read"
+            )
+        unknown = self.tool_read_types - TOOL_READ_ATTACHMENT_TYPES
+        if unknown:
+            raise ValueError(
+                f"tool_read_types: {', '.join(sorted(unknown))} cannot be recognised from a "
+                f"file's bytes; known: {', '.join(sorted(TOOL_READ_ATTACHMENT_TYPES))}"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_tool_read_types(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A manifest that does not use tool_read_types keeps its earlier fingerprint.
+        data = handler(self)
+        if isinstance(data, dict) and not self.tool_read_types:
+            data.pop("tool_read_types", None)
+        return data
 
 
 class AgentDefinition(StrictModel):
@@ -701,6 +839,63 @@ class WorkingStateUpdate(StrictModel):
     state: WorkingStateContent
 
 
+def canonical_digest(value: Any) -> str:
+    """SHA-256 (hex) of a value's canonical JSON: sorted keys, no whitespace.
+
+    Approvals bind a call to this digest of its arguments, and audit events carry it in place of
+    the arguments themselves.
+    """
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_SHA256_HEX = r"^[0-9a-f]{64}$"
+
+
+class ToolApproval(StrictModel):
+    """A decided approval, bound to the one call it covers.
+
+    ``ToolExecutor.execute`` takes it as ``approval=`` and refuses the call unless ``tool``,
+    ``tool_version`` and ``arguments_sha256`` match the call it is asked to run, and, when the
+    approval recorded one, ``tool_fingerprint`` matches the tool's current definition and code.
+    The caller that builds it (an agent run, the workflow engine, or your own approval flow)
+    proves the decision itself: see ``docs/tool-authoring.md``, "Who proves an approval is valid".
+    """
+
+    approval_id: str = Field(min_length=1)
+    """The decided approval: an approval request id, or the workflow approval node."""
+    decision: Literal["approved", "modified"]
+    """Only an approving decision covers a call."""
+    tool: str = Field(min_length=1)
+    tool_version: str
+    arguments_sha256: str = Field(pattern=_SHA256_HEX)
+    """:func:`canonical_digest` of the arguments the approver approved (or modified to)."""
+    tool_fingerprint: str | None = Field(default=None, pattern=_SHA256_HEX)
+    """The tool's fingerprint when the approval was asked for; None on approvals recorded
+    before fingerprints, which are not checked against the tool's definition."""
+
+    @classmethod
+    def for_call(
+        cls,
+        approval_id: str,
+        decision: Literal["approved", "modified"],
+        tool: str,
+        tool_version: str,
+        arguments: Any,
+        *,
+        tool_fingerprint: str | None = None,
+    ) -> ToolApproval:
+        """The approval of a call with exactly these ``arguments``."""
+        return cls(
+            approval_id=approval_id,
+            decision=decision,
+            tool=tool,
+            tool_version=tool_version,
+            arguments_sha256=canonical_digest(arguments),
+            tool_fingerprint=tool_fingerprint,
+        )
+
+
 # Bounds on steering (``AgentRuntime.steer``): messages queued for one run, and characters each.
 MAX_PENDING_STEERING = 16
 MAX_STEERING_CHARS = 8_000
@@ -742,6 +937,11 @@ class RunState(BaseModel):
     pending_tool_calls: list[ToolCall] = Field(default_factory=list)
     completed_tool_call_ids: set[str] = Field(default_factory=set)
     approved_tool_call_ids: set[str] = Field(default_factory=set)
+    tool_approvals: dict[str, ToolApproval] = Field(
+        default_factory=dict,
+        description="The decided approval of each approved call, by call id, bound to the "
+        "tool and the arguments the approver approved. A call approved before 0.2 has none.",
+    )
     # Tool guards, checkpointed so they survive an approval pause and a restart.
     tool_refusals: dict[str, int] = Field(
         default_factory=dict,
@@ -777,9 +977,12 @@ class RunState(BaseModel):
         # 0.1.0a17 validates stored run state with extra="forbid" and has no pending_steering:
         # leave it out while it is empty, so a17 replicas can still load what a18 checkpoints
         # during a rolling deploy or after a rollback.
+        # tool_approvals (0.2) is left out while empty for the same reason.
         data = handler(self)
         if isinstance(data, dict) and not self.pending_steering:
             data.pop("pending_steering", None)
+        if isinstance(data, dict) and not self.tool_approvals:
+            data.pop("tool_approvals", None)
         return data
 
     @model_validator(mode="after")

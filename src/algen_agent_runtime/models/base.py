@@ -4,9 +4,8 @@ import asyncio
 import math
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
 
 import structlog
 
@@ -23,7 +22,7 @@ from algen_agent_runtime.models.metering import (
     DEFAULT_RESERVED_OUTPUT_TOKENS,
     MeterCall,
     UsageMeter,
-    reserve_accepts_call,
+    require_call_parameter,
 )
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
@@ -145,8 +144,8 @@ class ModelRouter:
         # Reserves before and settles after every provider dispatch; see models/metering.py.
         self._usage_meter = usage_meter
         self._reserve_input_margin = reserve_input_margin
-        # Inspected once here, never per call: a 0.1.0a14 meter is called without ``call``.
-        self._meter_takes_call = usage_meter is None or reserve_accepts_call(usage_meter)
+        if usage_meter is not None:
+            require_call_parameter(usage_meter)
 
     async def _capabilities(
         self,
@@ -417,60 +416,99 @@ class ModelRouter:
         *,
         meter_call: MeterCall | None = None,
     ) -> AsyncGenerator[ModelStreamEvent, None]:
-        """Stream from the first candidate that fits; see ``generate`` for ``meter_call``."""
+        """Stream from the first candidate that fits; see ``generate`` for ``meter_call``.
+
+        A candidate that fails before it delivers its first event (rate limited, overloaded,
+        unreachable) counts against its health like a failed ``generate`` and the next candidate
+        is tried. Once an event has reached the caller the stream is never replayed: a later
+        failure is raised as is.
+        """
         candidates = await self.candidates(profiles, allowlist)
         if not candidates:
             raise CapabilityError("no healthy allowed streaming model is available")
-        # Only preflight selection can fall back. Never replay a stream once the
-        # provider has started delivering events to the caller.
-        for candidate_provider, profile in candidates:
+        errors: list[str] = []
+        failures: list[ProviderError] = []
+        fitted = False
+        for provider, profile in candidates:
             try:
                 candidate_request = prepare_model_request(request, profile)
             except BudgetExceededError:
                 continue
-            provider = candidate_provider
-            break
-        else:
+            fitted = True
+            rid = profile.provider or self._registration_id_for(provider)
+            capabilities = await self._capabilities(rid, provider, profile.model or "")
+            if not capabilities.streaming:
+                if failures:
+                    continue
+                raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
+            await self._limits[rid].acquire()
+            ticket = await self._reserve(
+                candidate_request, meter_call, rid, profile, streaming=True
+            )
+            settled = False
+            delivered = False
+            started = time.monotonic()
+            try:
+                async for event in provider.stream(
+                    candidate_request.model_copy(update={"stream": True})
+                ):
+                    if event.response:
+                        input_cost, output_cost = self._costs[rid]
+                        usage = event.response.usage
+                        estimated_cost = (
+                            usage.input_tokens * input_cost + usage.output_tokens * output_cost
+                        ) / 1000
+                        event = event.model_copy(
+                            update={
+                                "response": event.response.model_copy(
+                                    update={
+                                        "usage": usage.model_copy(
+                                            update={"estimated_cost_usd": estimated_cost}
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        if self._usage_meter is not None and not settled:
+                            assert event.response is not None
+                            await self._usage_meter.settle(ticket, event.response.usage)
+                            settled = True
+                    delivered = True
+                    yield event
+                health = self._health[rid]
+                health.consecutive_failures = 0
+                health.opened_at = None
+                health.latency_ms = (time.monotonic() - started) * 1000
+                return
+            except ProviderError as exc:
+                if _rejects_request(exc):
+                    # Every provider would reject this request the same way (see ``generate``).
+                    raise
+                if not isinstance(exc, InvalidToolCallError):
+                    # A bad tool call is the model's, not the provider's: health is untouched.
+                    health = self._health[rid]
+                    health.consecutive_failures += 1
+                    if health.consecutive_failures >= self._threshold:
+                        health.opened_at = time.monotonic()
+                if delivered:
+                    raise
+                errors.append(f"{rid}: {exc}")
+                failures.append(exc)
+            finally:
+                # An error, cancellation or a consumer that stops early ends the stream unsettled.
+                if self._usage_meter is not None and not settled:
+                    await self._usage_meter.release(ticket)
+        if not fitted:
             raise BudgetExceededError(
                 "no streaming model candidate fits the configured context budget"
             )
-        rid = profile.provider or self._registration_id_for(provider)
-        capabilities = await self._capabilities(rid, provider, profile.model or "")
-        if not capabilities.streaming:
-            raise CapabilityError(f"{rid}/{profile.model} does not support streaming")
-        await self._limits[rid].acquire()
-        ticket = await self._reserve(candidate_request, meter_call, rid, profile, streaming=True)
-        settled = False
-        try:
-            async for event in provider.stream(
-                candidate_request.model_copy(update={"stream": True})
-            ):
-                if event.response:
-                    input_cost, output_cost = self._costs[rid]
-                    usage = event.response.usage
-                    estimated_cost = (
-                        usage.input_tokens * input_cost + usage.output_tokens * output_cost
-                    ) / 1000
-                    event = event.model_copy(
-                        update={
-                            "response": event.response.model_copy(
-                                update={
-                                    "usage": usage.model_copy(
-                                        update={"estimated_cost_usd": estimated_cost}
-                                    )
-                                }
-                            )
-                        }
-                    )
-                    if self._usage_meter is not None and not settled:
-                        assert event.response is not None
-                        await self._usage_meter.settle(ticket, event.response.usage)
-                        settled = True
-                yield event
-        finally:
-            # An error, cancellation or a consumer that stops early ends the stream unsettled.
-            if self._usage_meter is not None and not settled:
-                await self._usage_meter.release(ticket)
+        if len(failures) == 1 or all(isinstance(f, InvalidToolCallError) for f in failures):
+            # Kept as is, so the runtime classifies (and, for a bad tool call, retries) it as before.
+            raise failures[-1]
+        kinds = {failure.error_kind for failure in failures}
+        kind = failures[-1].error_kind if len(kinds) == 1 else ErrorKind.UNKNOWN
+        retryable = bool(failures) and all(failure.retryable for failure in failures)
+        raise ProviderError("all model candidates failed: " + "; ".join(errors), kind, retryable)
 
     async def _reserve(
         self,
@@ -488,12 +526,6 @@ class ModelRouter:
         max_input_tokens = math.ceil(estimate_request_tokens(request) * self._reserve_input_margin)
         max_output_tokens = request.max_output_tokens or DEFAULT_RESERVED_OUTPUT_TOKENS
         try:
-            if not self._meter_takes_call:
-                # The 0.1.0a14 form, warned about when this router was built; removed in 0.2.
-                legacy = cast(Callable[..., Awaitable[object]], self._usage_meter.reserve)
-                return await legacy(
-                    max_input_tokens=max_input_tokens, max_output_tokens=max_output_tokens
-                )
             call = replace(
                 meter_call if meter_call is not None else MeterCall(purpose="other"),
                 provider=registration_id,

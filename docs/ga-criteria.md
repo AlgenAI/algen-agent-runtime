@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — pre-release (`0.1.0a23`)  
-Last reviewed: 2026-10-31
+Status: Active tracking — beta (`0.2.0b1`)  
+Last reviewed: 2026-11-11
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -25,19 +25,24 @@ production evidence rather than for the feature list.
 | `0.1.0a21` | Recoverable malformed tool calls ([#89](https://github.com/AlgenAI/algen-agent-runtime/issues/89)) and output repair on models that refuse prefill ([#90](https://github.com/AlgenAI/algen-agent-runtime/issues/90)); startup banner; `check --profile standalone` | Released; no new deprecations |
 | `0.1.0a22` | Workflow approvals decided by the approval node's status (security fix); synchronous tools off the event loop ([#108](https://github.com/AlgenAI/algen-agent-runtime/issues/108)); approval-argument warnings and digests ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)); adapter scope in the README ([#110](https://github.com/AlgenAI/algen-agent-runtime/issues/110)) | Released; no new deprecations |
 | `0.1.0a23` | A workflow tool step needs every approval that gates it (security fix); timed-out synchronous tools keep their concurrency slot ([#114](https://github.com/AlgenAI/algen-agent-runtime/issues/114)); `check` reads a modifiable decision only through its parameters ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)) | Released; no new deprecations |
-| `0.2.0b1` … `0.2.0bN` | Beta: deprecated APIs removed, public API candidate frozen | Every section below except "Stability evidence" is checked |
+| `0.2.0b1` | Beta: deprecated APIs removed; optional `server`/`otlp` extras and the namespaced examples package ([#115](https://github.com/AlgenAI/algen-agent-runtime/issues/115)); strict approval binding ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109), [#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117), [#127](https://github.com/AlgenAI/algen-agent-runtime/issues/127)) and the other open issues | Entry criteria below met or waived |
+| `0.2.0b2` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
 | `1.0.0` | General availability | Every box below is checked |
 
 Entry criteria for `0.2.0b1`:
 
-- [ ] Every P0 item in [production readiness](production-readiness.md) is complete.
-- [ ] Algen Agent Studio, the HRMS agents and the Traccia azAI service have run the latest `0.1` alpha
-      in production for about two weeks.
-- [ ] The last two or three alphas introduced no new deprecations.
-- [ ] No internal user still depends on an interface scheduled for removal in `0.2` (Studio's usage
-      meter uses `reserve(..., call=...)`; nothing imports `communications` or `database_tool`).
+- [x] Every P0 item in [production readiness](production-readiness.md) is complete.
+- [x] ~~Algen Agent Studio, the HRMS agents and the Traccia azAI service have run the latest `0.1`
+      alpha in production for about two weeks.~~ **Waived on 2026-11-11** by the maintainers:
+      `0.1.0a23` was tested extensively and runs in Studio production and other agents, one week
+      after release. The beta's stability window below still needs the full production period.
+- [x] The last two or three alphas introduced no new deprecations (`0.1.0a21` to `0.1.0a23`).
+- [x] No internal user still depends on an interface scheduled for removal in `0.2`: Studio's usage
+      meter uses `reserve(..., call=...)`; nothing imports `communications` or `database_tool`.
+      The HRMS agents still import the document extractors; they move to
+      `algen_agent_tools.documents.inspection` before upgrading to `0.2`.
 
 A breaking change after `0.2.0b1` restarts the stability window.
 
@@ -64,32 +69,36 @@ A breaking change after `0.2.0b1` restarts the stability window.
   - [x] 7. Resource bounds and retention (`0.1.0a18`).
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated
-      process failure. Schema upgrade and rollback (against `0.1.0a17`), restart-safe approvals and
+      process failure. Schema upgrade and rollback (against `0.1.0a23`), restart-safe approvals and
       tool execution, and recovery under repeated process failure have evidence in the persistence
       drills (`tests/drills`); the rest of the gate does not yet.
 
 ## Public API
 
-- [ ] The public surface is listed explicitly: exported names, HTTP endpoints, event and error
+- [x] The public surface is listed explicitly: exported names, HTTP endpoints, event and error
       identifiers, configuration fields, extension-point protocols and persisted schemas
-      ([API stability](api-stability.md)).
-- [ ] Everything marked deprecated is removed: `algen_agent_runtime.communications`,
-      `tools.adapters.database_tool`, and the `0.1.0a14` `UsageMeter.reserve` form without `call`.
+      ([API stability](api-stability.md)). The `0.2.0b1` baseline is
+      [`docs/api/surface.json`](api/surface.json), generated by `scripts/api_surface.py`. Event
+      payload shapes are not in it yet.
+- [x] Everything marked deprecated is removed: `algen_agent_runtime.communications`,
+      `tools.adapters.database_tool`, the `0.1.0a14` `UsageMeter.reserve` form without `call`, and
+      the document extractors in `algen_agent_runtime.security` (`0.2.0b1`).
 - [ ] Experimental interfaces that are not ready are moved out of the public surface or marked
       experimental in code and docs.
 - [ ] A long-term support and deprecation policy is published: how long a deprecated interface keeps
       working in `1.x`, which Python versions are supported, and how security fixes are backported.
-- [ ] An API-diff check runs in CI and fails on an unannounced change to the public surface.
+- [x] An API-diff check runs in CI and fails on an unannounced change to the public surface:
+      `tests/unit/test_api_surface.py`, in the base test job, prints what changed.
 
 ## Upgrades and data
 
 - [ ] Every migration has an upgrade test from the previous minor release and a documented rollback
       or restore procedure. The drills test upgrade from and rollback to the previous release's tag
-      (`ALGEN_DRILL_PREVIOUS_RELEASE`, today `v0.1.0a17`); the procedures are in
+      (`ALGEN_DRILL_PREVIOUS_RELEASE`, today `v0.1.0a23`); the procedures are in
       [operations](operations.md#upgrades-and-rollback). Pointing them at the previous minor
       release is left for `0.2`.
 - [ ] Checkpoints written by the previous minor release resume on the new one (tested). A run
-      `0.1.0a17` paused resumes on the current code in the upgrade drill.
+      `0.1.0a23` paused resumes on the current code in the upgrade drill.
 - [ ] An upgrade guide covers each `0.x` minor release up to `1.0`.
 
 ## Release engineering

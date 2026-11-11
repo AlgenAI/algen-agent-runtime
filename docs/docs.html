@@ -245,6 +245,7 @@ td code { white-space: nowrap; }
 .copy-btn:hover { color: var(--console-ink); border-color: #45412f; }
 pre { margin: 0; font: 400 12.5px/1.7 var(--font-mono); tab-size: 4; }
 .ide-code { padding: 12px 0; overflow: auto; max-height: 560px; }
+.ide-code code[hidden] { display: none; }
 .ide-code code { display: block; width: max-content; min-width: 100%; counter-reset: ln; font-size: inherit; }
 .line { position: relative; display: block; padding: 0 24px 0 70px; }
 .line::before { counter-increment: ln; content: counter(ln); position: absolute; left: 0; width: 34px; text-align: right; color: var(--ide-gutter); }
@@ -519,6 +520,41 @@ body.arch-full-open { overflow: hidden; }
   .mui-exec { grid-template-columns: 1fr; }
 }
 
+/* ─── Architecture: request flow ─── */
+.af { position: relative; display: grid; gap: 6px; justify-items: center; padding: 18px 12px; }
+.af-row { display: flex; gap: 10px; justify-content: center; align-items: stretch; flex-wrap: wrap; width: 100%; }
+.af-box { position: relative; display: grid; gap: 2px; min-width: 150px; max-width: 220px; padding: 12px 30px 12px 14px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); text-align: left; cursor: pointer; box-shadow: var(--shadow-xs); color: inherit; font: inherit; transition: opacity .15s, border-color .15s; }
+.af-box:hover:not(:disabled) { border-color: var(--gold-light); }
+.af-box strong { font-size: 14px; }
+.af-box > span:not(.af-count):not(.af-delta) { font-size: 12px; color: var(--muted, #6b6b6b); }
+.af-box:disabled { cursor: default; }
+.af-ghost { border-style: dashed; background: transparent; box-shadow: none; }
+.af-side { opacity: .9; }
+.af-wide { max-width: none; width: 100%; text-align: center; justify-items: center; }
+.af-count { position: absolute; top: 8px; right: 10px; font: 600 11px var(--font-mono, monospace); color: var(--muted, #6b6b6b); }
+.af-delta { justify-self: start; margin-top: 4px; }
+.af-box.is-selected { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold-light); }
+.af-box.is-dim { opacity: .45; }
+.af-arrow { display: block; width: 2px; height: 18px; background: var(--divider); position: relative; }
+.af-arrow::after { content: ''; position: absolute; left: -4px; bottom: -2px; border: 5px solid transparent; border-top-color: var(--divider); }
+.af-arrow.af-right { width: 18px; height: 2px; align-self: center; }
+.af-arrow.af-right::after { left: auto; right: -6px; bottom: -4px; border-top-color: transparent; border-left-color: var(--divider); }
+.af-loop { width: 100%; display: grid; gap: 8px; padding: 12px; border: 1.5px solid var(--gold-light); border-radius: calc(var(--radius) + 4px); background: color-mix(in srgb, var(--gold-light) 12%, transparent); }
+.af-loop-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.af-loop-head svg { width: 18px; height: 18px; }
+.af-loop-head span { color: var(--muted, #6b6b6b); }
+.af-steps .af-box { flex: 1 1 140px; }
+.af-return { text-align: center; font-size: 12px; color: var(--muted, #6b6b6b); }
+.af-planes .af-box { flex: 1 1 150px; }
+.af-caps { display: grid; gap: 6px; margin-top: 10px; }
+.af-cap { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); cursor: pointer; text-align: left; color: inherit; font: inherit; font-size: 13px; }
+.af-cap:hover { border-color: var(--gold-light); }
+.af-cap.is-absent { opacity: .5; }
+.af-all { margin: 10px 14px 14px; }
+.af-all > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.af-all-group { margin-top: 10px; }
+.af-all-group h5 { margin: 0 0 6px; font-size: 12px; }
+@media (max-width: 720px) { .af-arrow.af-right { display: none; } .af-box { max-width: none; flex: 1 1 100%; } }
 /* ─── Skills & prompts ─── */
 button.feature { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform .15s var(--ease); }
 button.feature:hover { border-color: var(--gold-light); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
@@ -549,6 +585,10 @@ button.feature:hover { border-color: var(--gold-light); box-shadow: var(--shadow
 .release-group ul { margin: 0; padding: 12px 18px 14px 34px; }
 .release-group li { font-size: var(--text-sm); }
 .release-history { display: grid; gap: 8px; margin-top: 14px; }
+.release-line { display: grid; gap: 8px; }
+.release-line > summary { cursor: pointer; font-weight: 600; padding: 6px 2px; }
+.release-line[open] > summary { margin-bottom: 4px; }
+.release-line > button { margin-left: 0; }
 .release-history button { display: grid; grid-template-columns: 96px 1fr auto; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); text-align: left; cursor: pointer; box-shadow: var(--shadow-xs); }
 .release-history button:hover { border-color: var(--gold-light); }
 .release-history button[aria-current='true'] { border-color: var(--gold-light); background: var(--brand-pale); }
@@ -685,28 +725,6 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
   <div class="version-select">
     <label class="sr-only" for="versionSelect">Documentation version</label>
     <select id="versionSelect" title="Documentation version">
-      <option value="0.1.0a23">v0.1.0a23</option>
-      <option value="0.1.0a22">v0.1.0a22</option>
-      <option value="0.1.0a21">v0.1.0a21</option>
-      <option value="0.1.0a20">v0.1.0a20</option>
-      <option value="0.1.0a19">v0.1.0a19</option>
-      <option value="0.1.0a18">v0.1.0a18</option>
-      <option value="0.1.0a17">v0.1.0a17</option>
-      <option value="0.1.0a16">v0.1.0a16</option>
-      <option value="0.1.0a15">v0.1.0a15</option>
-      <option value="0.1.0a14">v0.1.0a14</option>
-      <option value="0.1.0a13">v0.1.0a13</option>
-      <option value="0.1.0a12">v0.1.0a12</option>
-      <option value="0.1.0a11">v0.1.0a11</option>
-      <option value="0.1.0a10">v0.1.0a10</option>
-      <option value="0.1.0a9">v0.1.0a9</option>
-      <option value="0.1.0a8">v0.1.0a8</option>
-      <option value="0.1.0a7">v0.1.0a7</option>
-      <option value="0.1.0a6">v0.1.0a6</option>
-      <option value="0.1.0a5">v0.1.0a5</option>
-      <option value="0.1.0a4">v0.1.0a4</option>
-      <option value="0.1.0a3">v0.1.0a3</option>
-      <option value="0.1.0a2">v0.1.0a2</option>
     </select>
   </div>
   <a class="btn-icon github-link" href="https://github.com/AlgenAI/algen-agent-runtime" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub repository"><svg class="i"><use href="#i-github"/></svg></a>
@@ -766,7 +784,8 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
       <a class="nav-link" href="#resources"><svg class="i"><use href="#i-link"/></svg>Deep dives</a>
     </div>
     <p class="nav-empty" id="navEmpty">No sections match.</p>
-    <div class="nav-status"><strong>Pre-alpha release</strong><p>Evaluate and contribute. Review production gaps before deployment.</p></div>
+    <div class="nav-status" data-version-max="0.1.0a23"><strong>Pre-alpha release</strong><p>Evaluate and contribute. Review production gaps before deployment.</p></div>
+    <div class="nav-status" data-version-min="0.2.0b1"><strong>Beta release</strong><p>The public API is a candidate for 1.0. Read the upgrade notes before moving from 0.1.</p></div>
   </nav>
   <div class="scrim" id="scrim"></div>
 
@@ -843,6 +862,7 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
         <div class="table-wrap"><table>
           <thead><tr><th>Extra</th><th>Adds</th></tr></thead>
           <tbody>
+            <tr data-version-min="0.2.0b1"><td><code>service</code> · <code>server</code> · <code>otlp</code></td><td>The HTTP API and <code>algen-agent-runtime serve</code> (<code>server</code>), OTLP trace and metric export (<code>otlp</code>), or both (<code>service</code>). The base package is the library only.</td></tr>
             <tr><td><code>postgres</code> · <code>redis</code></td><td>Durable run, event, audit, approval, checkpoint, and session stores.</td></tr>
             <tr><td><code>object-storage</code></td><td>S3-compatible artifact byte storage.</td></tr>
             <tr><td><code>auth</code></td><td>JWT authentication for the HTTP service.</td></tr>
@@ -945,11 +965,11 @@ Hello</pre></div>
       <section class="doc" id="architecture">
         <div class="section-kicker"><span class="section-icon"><svg class="i"><use href="#i-layers"/></svg></span>Get started</div>
         <h2>Architecture<a class="anchor" href="#architecture" aria-label="Link to this section">#</a></h2>
-        <p>Runtime is <strong>execution as nested authority</strong>. Requests enter through the host boundary, are composed from strict configuration, and run inside a native kernel where policies, tools, approvals, and workflows sit in the path of execution. Integration, state, and evidence planes wrap the kernel without owning it.</p>
+        <p>A request enters through the API and runs in the <strong>agent loop</strong>: plan the next step, check it against policy (and ask a person when it matters), run the tool or model, and verify the answer. The loop reads and writes storage, reaches outside through integrations, and records everything as telemetry. Click a box to see what is inside it.</p>
         <div class="arch" id="arch">
           <div class="arch-toolbar">
             <svg class="i"><use href="#i-layers"/></svg>
-            <div class="arch-title"><strong>Execution as nested authority</strong><span id="archStatus"></span></div>
+            <div class="arch-title"><strong>How a request runs</strong><span id="archStatus"></span></div>
             <span class="pill brand mono" id="archStamp"></span>
             <span class="sp"></span>
             <button class="arch-btn" type="button" id="archCompare" aria-pressed="false"><svg class="i"><use href="#i-compare"/></svg>Compare</button>
@@ -958,8 +978,6 @@ Hello</pre></div>
             <button class="arch-btn" type="button" id="archFull" aria-pressed="false"><svg class="i"><use href="#i-maximize"/></svg><span>Full screen</span></button>
           </div>
           <p class="arch-summary" id="archSummary"></p>
-          <div class="arch-chips" id="archDomains"><span class="arch-chips-label">Domains</span></div>
-          <div class="arch-chips" id="archLayers"><span class="arch-chips-label">Layers</span></div>
           <div class="arch-chips arch-compare-key" id="archCompareKey" hidden><span class="arch-chips-label" id="archCompareText"></span><span class="pill success mono">added</span><span class="pill warning mono">changed</span><span class="pill error mono">removed</span></div>
           <div class="arch-body">
             <div class="arch-canvas"><div class="arch-map" id="archMap"><svg class="arch-lines" id="archLines" aria-hidden="true"></svg></div></div>
@@ -968,11 +986,12 @@ Hello</pre></div>
               <div id="archDetail"></div>
             </aside>
           </div>
+          <details class="af-all"><summary>All capabilities</summary><div id="archAll"></div></details>
         </div>
         <p class="figcaption">Interactive architecture map — follows the documentation version selected in the header</p>
         <ul>
-          <li><strong>Click a capability</strong> to inspect its contracts, source anchor, and direct relationships, then jump to its guide.</li>
-          <li><strong>Domains</strong> focus one concern, such as governance, across every layer.</li>
+          <li><strong>Click a box</strong> to see what it does and the capabilities inside it; click a capability for its contracts, source and guide.</li>
+          <li><strong>All capabilities</strong> under the map lists every capability by box.</li>
           <li><strong>Compare</strong> marks what was added, changed, or removed since an earlier release.</li>
           <li><strong>Full screen</strong> gives the map the whole window; press <span class="kbd">Esc</span> to return.</li>
         </ul>
@@ -995,7 +1014,7 @@ Hello</pre></div>
       <section class="doc" id="releases">
         <div class="section-kicker"><span class="section-icon"><svg class="i"><use href="#i-history"/></svg></span>Get started</div>
         <h2>What's new<a class="anchor" href="#releases" aria-label="Link to this section">#</a></h2>
-        <p>Use the version selector in the header to read the documentation for a specific pre-release. Entries are taken from <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>.</p>
+        <p>The version selector in the header lists the newest release of each line; pick any earlier release from the release history below. Entries are taken from <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>.</p>
         <div class="release-head"><span class="pill" id="releaseBadge"></span><span class="release-meta" id="releaseMeta"></span></div>
         <h3 id="releaseTitle" style="margin-top:8px"></h3>
         <p id="releaseSummary"></p>
@@ -1174,12 +1193,12 @@ agents:
         <p>For durable storage, install the <code>postgres</code> extra and set <code>storage.learned_memory_store: postgres</code> with <code>storage.postgres_dsn: env://ALGEN_POSTGRES_DSN</code>. Migration <code>011_learned_memory.sql</code> adds records and replay receipts independently of source-run retention. Maintenance clears expired payloads; content-free revision tombstones and operation receipts currently have no automatic garbage collection.</p>
         <h3 id="context-quality">Evaluations &amp; diagnostics<a class="anchor" href="#context-quality" aria-label="Link to this section">#</a></h3>
         <p>Use <code>ContextEvaluationCase</code>, <code>ContextEvaluationArtifact</code>, and <code>ContextEvaluationRunner</code> from <code>algen_agent_runtime.evaluation</code> to check exact message retention, required/forbidden text, estimated token and checkpoint-byte limits, complete tool exchanges, and ordered source recovery. Missing measurements and failed cases block promotion; reports omit source text and exception payloads. Lexical checks and scripted fixtures do not establish real-model factual quality.</p>
-        <div class="term"><pre><code>python -m examples.context_evaluation
-python -m examples.context_compaction
-python -m examples.context_offloading
-python -m examples.working_state
-python -m examples.progressive_skills
-python -m examples.learned_memory</code></pre></div>
+        <div class="term"><pre><code>python -m algen_agent_runtime_examples.context_evaluation
+python -m algen_agent_runtime_examples.context_compaction
+python -m algen_agent_runtime_examples.context_offloading
+python -m algen_agent_runtime_examples.working_state
+python -m algen_agent_runtime_examples.progressive_skills
+python -m algen_agent_runtime_examples.learned_memory</code></pre></div>
         <p><code>context.retrieved</code> adds estimates for total, summary, working-state, catalog, and loaded-skill tokens plus retained/archived history counts. <code>context.compaction.assessed</code> explains planning with fixed reasons such as <code>below_trigger</code>, <code>recent_groups_only</code>, <code>pending_tools</code>, <code>input_limit</code>, or <code>ready</code>. Ready is not a commit receipt: <code>context.compacted</code> follows successful persistence and includes before/after history estimates. New diagnostics are content-free and are distinct from optional model-content telemetry.</p>
         <h3 id="context-upgrade">a7 upgrade checklist<a class="anchor" href="#context-upgrade" aria-label="Link to this section">#</a></h3>
         <ul><li>Upgrade strict manifest, checkpoint, and event readers together, including workers. New defaulted fields and event types are incompatible with older strict readers.</li><li>Run the learned-memory migration when using PostgreSQL. Context checkpoint fields themselves require no SQL migration; old checkpoints can recover only their surviving messages.</li><li>Use <code>RunState.append_message()</code> for execution history. Direct edits to packed <code>messages</code> do not append to canonical history.</li><li>Review reduced payload limits and earlier eviction from serialized-message estimates. Required oversized input now fails explicitly.</li><li>Verify the four offline context scenarios, application-specific summary quality, artifact retention, and recovery before enabling optional features.</li></ul>
@@ -1237,9 +1256,9 @@ python -m examples.learned_memory</code></pre></div>
         )</code></pre>
             </div>
           </div>
-          <div class="ide-status"><span>Python 3.12</span><span>examples/plugins.py</span><span class="sp"></span><span>side_effect: none</span></div>
+          <div class="ide-status"><span>Python 3.12</span><span>algen_agent_runtime_examples/plugins.py</span><span class="sp"></span><span>side_effect: none</span></div>
         </div>
-        <p class="figcaption">A read-only tool registered from a plugin (from <code>examples/plugins.py</code>)</p>
+        <p class="figcaption">A read-only tool registered from a plugin (from <code>algen_agent_runtime_examples/plugins.py</code>)</p>
         <ul class="legend">
           <li><b>1</b><span><strong>Identity</strong> — a lowercase, namespaced name plus a version.</span></li>
           <li><b>2</b><span><strong>Schemas</strong> — arguments are validated before execution; results against the output schema.</span></li>
@@ -1466,7 +1485,7 @@ class CrmPlugin:
             <tr><td><code>long_running(base)</code></td><td>the base's</td><td>the base's</td><td>1</td><td>the base's · 180 s timeout</td></tr>
           </tbody>
         </table></div>
-        <p><code>assert_tool_contract</code> and <code>fake_tool_context</code> test a tool offline. <code>algen-agent-runtime new</code> scaffolds a plugin with a toolkit, and <code>examples/quickstart_agent_tool</code> is a complete project.</p>
+        <p><code>assert_tool_contract</code> and <code>fake_tool_context</code> test a tool offline. <code>algen-agent-runtime new</code> scaffolds a plugin with a toolkit, and <code>algen_agent_runtime_examples/quickstart_agent_tool</code> is a complete project.</p>
         <div data-version-min="0.1.0a18">
           <h3 id="tool-results">Failures as data, cache context and notes<a class="anchor" href="#tool-results" aria-label="Link to this section">#</a></h3>
           <div class="term"><div class="term-head"><span class="terminal-title">crm_agent/plugin.py · 0.1.0a18 tool options</span></div><pre><code>@crm.tool(write(), failure_field="ok")
@@ -1487,7 +1506,7 @@ async def my_open_orders(context: ToolContext) -&gt; list[Order]:
             <li><strong>Refusing before contacting anything.</strong> Raise <code>ToolNotAttemptedError</code> (a <code>ToolExecutionError</code>); the ledger records the call <code>failed</code>, not <code>indeterminate</code>, even for a write.</li>
             <li><strong>Middleware.</strong> <code>Tool.with_handler(handler)</code> returns a copy with a new handler, keeping its class, definition and every hook; <code>tools.contracts.wrap(tool, middleware)</code> is shorthand for it.</li>
           </ul>
-          <p>Workflow nodes, declared HTTP tools and MCP tools (<code>isError</code>) do not return a failure as data yet. <code>examples/pattern_guarded_tools</code> shows each option. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/tool-authoring.md#reporting-a-failure-the-model-should-fix" target="_blank" rel="noopener noreferrer">Tool authoring</a>.</p>
+          <p>Workflow nodes, declared HTTP tools and MCP tools (<code>isError</code>) do not return a failure as data yet. <code>algen_agent_runtime_examples/pattern_guarded_tools</code> shows each option. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/tool-authoring.md#reporting-a-failure-the-model-should-fix" target="_blank" rel="noopener noreferrer">Tool authoring</a>.</p>
         </div>
         <div data-version-min="0.1.0a15">
           <h3 id="tool-credentials">Credentials of the caller<a class="anchor" href="#tool-credentials" aria-label="Link to this section">#</a></h3>
@@ -1566,7 +1585,7 @@ algen-agent-runtime check agent.yaml --path src</code></pre></div>
   <span class="t-y">approval-quickstart</span>:
     <span class="t-y">name</span>: <span class="t-s">approval-quickstart</span>
     <span class="t-y">version</span>: <span class="t-n">1.0.0</span>
-    <span class="t-y">hook_provider</span>: <span class="t-s">examples.quickstart_approval.hooks:create_hooks</span><b class="n">1</b>
+    <span class="t-y">hook_provider</span>: <span class="t-s">algen_agent_runtime_examples.quickstart_approval.hooks:create_hooks</span><b class="n">1</b>
     <span class="t-y">nodes</span>:
       - <span class="t-y">id</span>: <span class="t-s">propose</span><b class="n">2</b>
         <span class="t-y">kind</span>: <span class="t-s">agent</span>
@@ -1609,14 +1628,14 @@ algen-agent-runtime check agent.yaml --path src</code></pre></div>
     hooks.register_handler(<span class="t-s">"approval.apply"</span>, apply)
     <span class="t-k">return</span> hooks</code></pre>
               <div class="ide-panel"><div class="ide-panel-head"><span>Problems</span><span>Output</span><span class="on">Terminal</span></div>
-<pre><span class="t-p">$ </span><span class="cmd">python -m examples.quickstart_approval.app --approve-all</span>
+<pre><span class="t-p">$ </span><span class="cmd">python -m algen_agent_runtime_examples.quickstart_approval.app --approve-all</span>
 <span class="t-c"># --approve-all resolves the checkpoint; --reject-all and --answers-file PATH also work</span>
 <span class="t-c"># omit them in a TTY to approve or reject interactively</span></pre></div>
             </div>
           </div>
           <div class="ide-status"><span>YAML</span><span>3 nodes · DAG</span><span class="sp"></span><span>fingerprint pinned</span></div>
         </div>
-        <p class="figcaption">An approval workflow from <code>examples/quickstart_approval</code> (excerpt)</p>
+        <p class="figcaption">An approval workflow from <code>algen_agent_runtime_examples/quickstart_approval</code> (excerpt)</p>
         <ul class="legend">
           <li><b>1</b><span><strong>Hook provider</strong> — trusted Python that supplies named builders, handlers, and schemas.</span></li>
           <li><b>2</b><span><strong>Agent node</strong> — invokes a registered agent; output stored under <code>output_key</code>.</span></li>
@@ -2059,7 +2078,7 @@ security:                   # the deployment's outer limits; an agent can only n
             </div>
             <div class="ide-main">
               <div class="ide-tabs"><button class="on" type="button" data-file="sk-builder">agent-builder</button><button type="button" data-file="sk-connector">agent-connector</button><button type="button" data-file="sk-extension">runtime-extension</button><button type="button" data-file="sk-contributor">runtime-contributor</button><span class="sp"></span><button class="copy-btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy</button></div>
-<pre class="ide-code" data-file="sk-builder" data-hl="2-3"><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-builder" data-hl="2-3"><code data-version-max="0.1.0a23"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-agent-builder
 <span class="t-y">description</span>: Create or update an Algen-compatible single-agent or multi-agent project that uses Runtime manifests, governance, tests, and Studio-importable packaging.
 <span class="t-c">---</span>
@@ -2113,8 +2132,90 @@ agents" in `references/project-shape.md`.
 
 Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
 Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy
+unless the user explicitly requests that external action.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-agent-builder
+<span class="t-y">description</span>: Create or update an Algen-compatible single-agent or multi-agent project that uses Runtime manifests, governance, tests, and Studio-importable packaging.
+<span class="t-c">---</span>
+
+<span class="t-k"># Build an Algen agent project</span>
+
+Start by choosing the smallest topology that fits: one agent for a single governed conversation, or
+a Runtime `WorkflowManifest` for coordination. Scaffolding is available via the CLI:
+`algen-agent-runtime new &lt;name&gt; [--template agent|approval|workflow]`. Read `references/project-shape.md`;
+for a workflow, also read `references/workflows.md`. Use `$algen-agent-connector` when external tools,
+safe starter tools (`algen_agent_runtime.tools.starter`), databases, retrieval, MCP, or remote APIs are part
+of the request.
+
+Prefer configuration for provider routing, policies, memory, retrieval, storage, telemetry, and
+workflow topology. Keep only domain-specific payload builders, validators, schemas, predicates, and
+deterministic handlers in the project's hook provider. Never implement a second scheduler or a
+Studio-specific workflow dialect. For automated CI and headless evaluation, use non-interactive workflow
+options (`--approve-all`, `--reject-all`, `--answers-file PATH`).
+
+Produce an importable project with secret references, bounded execution, deterministic offline
+tests, documented optional dependencies, and a small runnable entry point. Depend on
+`algen-agent-runtime[service]` only when the project serves the HTTP API or exports OTLP
+telemetry; an embedded library use needs no extra. A project intended for
+Studio must keep its Runtime configuration and `WorkflowManifest` authoritative. Studio sees only
+what the settings declare, never constructor arguments, so:
+
+- Every name an agent uses (`enabled_tools`, `planning_strategy`, `response_composer`, `verification_policy.verifiers`,
+  `context_builder`, `guardrail_policy.policies`, provider types) must come from the Runtime,
+  the settings (`http_tools`,
+  `mcp_servers`, `providers`, `retrieval`) or a plugin listed in `domain_plugins`. Register code
+  components from a declared plugin, never through `build_container(additional_tools=...)`; see
+  `docs/plugins.md`.
+- Credentials only through `env://` references; list a plugin's variables in `PluginManifest.env`.
+- If the project runs its own server, workers or approval flow, say plainly that Studio runs only
+  the Runtime contract, not that code.
+- `build_container` fails on any name no source registered and suggests the closest one; fix the
+  name or its registration, never switch `runtime.component_check` to `warn` to hide it.
+- A project that runs its own host (not Studio) checks with
+  `algen-agent-runtime check agent.yaml --path src --profile standalone`, which leaves out the
+  Studio-only warnings but keeps every error.
+- Before calling a project Studio-importable, run `algen-agent-runtime check agent.yaml --path src`.
+  It must report no errors; read every warning to the user, since each names code Studio will not
+  run or cannot see. `algen-agent-runtime describe --path src` shows the full inventory, and
+  `docs/studio-compatibility.md` lists what Studio can and cannot see.
+- Write tools as typed functions with `@tool` or a `Toolkit` and a preset (`docs/tool-authoring.md`),
+  and test each with `assert_tool_contract`.
+
+An agent that makes many tool calls or changes state should use the Runtime's own guards rather than
+rules in its instructions or plugin code: prechecks, refusal limits, the repeat guard and call
+limits, the wrap-up notice and shortened older tool results. A tool that must act as the signed-in
+user reads the caller's credentials from `ToolContext.credentials`. See "Tool-heavy and acting
+agents" in `references/project-shape.md`.
+
+Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
+Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy
 unless the user explicitly requests that external action.</code></pre>
-<pre class="ide-code" data-file="sk-connector" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-connector" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-agent-connector
+<span class="t-y">description</span>: Connect an Algen Runtime agent or workflow to typed tools, MCP, HTTP APIs, databases, retrieval stores, model providers, memory, persistence, or telemetry without bypassing governance.
+<span class="t-c">---</span>
+
+<span class="t-k"># Connect an Algen agent</span>
+
+Identify the requested systems, data direction, side effects, credentials, network boundary,
+tenancy, and expected failure behavior. Read the matching parts of `references/connectors.md` and
+combine connectors only when the use case needs them.
+
+Expose external actions as typed Runtime tools or workflow resources. Do not call a connector
+directly from orchestration code to bypass policy, approvals, idempotency, audit events, budgets, or
+telemetry. Use secret references in configuration and resolve values only at execution time.
+When a tool acts as the signed-in user, forward the caller's credentials from
+`ToolContext.credentials`; the host supplies them on every run and resume, and they are never
+persisted. Remote MCP servers that need per-user sign-in use the Runtime's MCP OAuth, not a token
+in an environment variable.
+
+For each connection, declare least-privilege permissions, read/write behavior, idempotency, strict
+schemas, timeout, retry policy, concurrency, result-size limit, and allowed destinations. Mark it on
+the consuming workflow node with a `WorkflowResourceReference` so Studio can display the actual
+topology.
+
+Test with a deterministic fake or local fixture. Live credentials and paid services belong only in
+explicit live tests. Document the required Runtime extra and environment variable names without
+including secret values.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-agent-connector
 <span class="t-y">description</span>: Connect an Algen Runtime agent or workflow to typed tools, MCP, HTTP APIs, databases, retrieval stores, model providers, memory, persistence, or telemetry without bypassing governance.
 <span class="t-c">---</span>
@@ -2141,7 +2242,29 @@ topology.
 Test with a deterministic fake or local fixture. Live credentials and paid services belong only in
 explicit live tests. Document the required Runtime extra and environment variable names without
 including secret values.</code></pre>
-<pre class="ide-code" data-file="sk-extension" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-extension" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-runtime-extension
+<span class="t-y">description</span>: Add or review an Algen Agent Runtime extension such as a model provider, tool adapter, retrieval backend, persistence store, telemetry integration, or external-framework adapter.
+<span class="t-c">---</span>
+
+<span class="t-k"># Extend Algen Agent Runtime</span>
+
+First identify the extension point and inspect its Protocol, registry, existing adapter, contract
+tests, optional extra, and documentation. Read only the matching section of
+`references/extension-points.md`.
+
+Implement against Runtime contracts rather than leaking a vendor SDK into orchestration or public
+state. Normalize vendor inputs, outputs, usage, errors, streaming behavior, and cancellation at the
+adapter boundary. Keep the dependency optional and fail with an actionable installation message
+when its extra is absent.
+
+Treat all extension inputs as untrusted. Carry tenant and identity context, enforce permissions,
+validate outbound destinations, classify side effects and idempotency, bound time and result size,
+and prevent secrets from entering logs or persisted events.
+
+Add deterministic contract tests without credentials. Put live integration tests behind the `live`
+marker. Update the optional dependency extra, compatibility documentation, an importable example
+when useful, and `CHANGELOG.md` for user-visible support.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-runtime-extension
 <span class="t-y">description</span>: Add or review an Algen Agent Runtime extension such as a model provider, tool adapter, retrieval backend, persistence store, telemetry integration, or external-framework adapter.
 <span class="t-c">---</span>
@@ -2164,7 +2287,35 @@ and prevent secrets from entering logs or persisted events.
 Add deterministic contract tests without credentials. Put live integration tests behind the `live`
 marker. Update the optional dependency extra, compatibility documentation, an importable example
 when useful, and `CHANGELOG.md` for user-visible support.</code></pre>
-<pre class="ide-code" data-file="sk-contributor" data-hl="2-3" hidden><code><span class="t-c">---</span>
+<pre class="ide-code" data-file="sk-contributor" data-hl="2-3" hidden><code data-version-max="0.1.0a23"><span class="t-c">---</span>
+<span class="t-y">name</span>: algen-runtime-contributor
+<span class="t-y">description</span>: Implement or review contributions to Algen Agent Runtime while preserving its public API, provider neutrality, tenant isolation, optional dependencies, and repository boundary.
+<span class="t-c">---</span>
+
+<span class="t-k"># Contribute to Algen Agent Runtime</span>
+
+Work from the Runtime repository root. Read `CONTRIBUTING.md` and the documentation most closely
+related to the change before editing. Use `references/change-checklist.md` when planning or reviewing
+a code change.
+
+Keep reusable execution contracts, orchestration, governance, persistence, and integrations in
+Runtime. Keep Studio UI, project management, marketplace, and product-specific behavior out of this
+repository. Domain behavior belongs in an application hook provider, not in the Runtime executor.
+
+Preserve these invariants:
+
+- provider-neutral public contracts and typed boundaries;
+- explicit tenant, user, permission, secret, and idempotency context;
+- deterministic offline behavior and tests by default;
+- optional provider, database, vector-store, telemetry, and framework dependencies;
+- stable error codes and forward migrations for persisted data;
+- secret-free configuration committed to source control.
+
+Add the narrowest meaningful test and cover the relevant failure path. Update public documentation,
+examples, and `CHANGELOG.md` for user-visible behavior. Run the repository quality gates before
+finishing; report any gate that could not run and why. Provide a concise, well-structured Git commit
+message summarizing the verified changes. Do not commit, push, publish, or open a pull
+request unless the user explicitly requests it.</code><code data-version-min="0.2.0b1"><span class="t-c">---</span>
 <span class="t-y">name</span>: algen-runtime-contributor
 <span class="t-y">description</span>: Implement or review contributions to Algen Agent Runtime while preserving its public API, provider neutrality, tenant isolation, optional dependencies, and repository boundary.
 <span class="t-c">---</span>
@@ -2443,7 +2594,7 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))</code></
           <p>To refuse, raise <code>MeterRefusedError</code>: the call is not retried, not passed to a fallback model and not counted against provider health. The run ends <code>failed</code> with the reason on <code>RunState.error</code>; a <code>budget.refused</code> event and audit record carrying <code>reason</code>, <code>provider</code> (the registration id) and <code>model</code> of the refused candidate, never <code>metadata</code> values; <code>run.failed</code> with <code>reason: budget_refused</code>; and <code>budget.refused</code> on the <code>agent.run</code> span. The router also sets <code>provider</code> and <code>model</code> on the <code>MeterRefusedError</code> before re-raising it. Any other exception from <code>reserve</code> is an internal error, not a refusal. The meter holds its own state, so a run resumed after approval is charged only for the calls it makes after resuming. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/agent-tooling.md#metering-model-calls" target="_blank" rel="noopener noreferrer">Metering model calls</a> and <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#usage-metering" target="_blank" rel="noopener noreferrer">Operations · usage metering</a>.</p>
           </div>
         </div>
-        <div data-version-min="0.1.0a14">
+        <div data-version-min="0.1.0a14" data-version-max="0.1.0a23">
           <h3 id="document-inspection">Untrusted document inspection<a class="anchor" href="#document-inspection" aria-label="Link to this section">#</a></h3>
           <p><code>extractor_for(filename)</code> in <code>algen_agent_runtime.security.documents</code> turns an uploaded document into text a model can safely read: the full <code>text</code>, a <code>sanitized_text</code> with only what a reader would see, security <code>findings</code> and a <code>disposition</code> (<code>pass</code>, <code>review</code> or <code>quarantine</code>). 0.1.0a14 adds Excel, PowerPoint, HTML and CSV/TSV, all on the standard library.</p>
           <div class="table-wrap"><table>
@@ -2459,6 +2610,10 @@ container = build_container(settings, usage_meter=CreditMeter(wallets))</code></
           </table></div>
           <p>Hidden sheets, rows, columns, slides, shapes and HTML elements are kept out of the sanitized text and reported as <code>hidden_text.*</code> findings. XLSX and PPTX get the DOCX package limits (part count, size, compression ratio, no DTD) and the macro and remote-content findings. XLSX text is one line per row under <code>--- Sheet: &lt;name&gt; ---</code>, a formula contributes its last calculated value, date and time cells come out as ISO dates and times, and a sheet longer than <code>max_rows_per_sheet</code> (5,000) is cut and reported as <code>document.truncated</code>. PPTX text is one line per paragraph under <code>--- Slide &lt;n&gt; ---</code>, without speaker notes or comments; HTML text is the visible body only. Any other suffix raises <code>ValueError</code> naming every supported format; legacy <code>.doc</code>, <code>.xls</code> and <code>.ppt</code> are not supported.</p>
           <div class="callout warning"><svg class="i"><use href="#i-alert"/></svg><p><strong>Known limitations.</strong> Not detected yet: in XLSX, the <code>;;;</code> number format and a font colour that matches the cell fill; in HTML, styles from stylesheets, <code>font-size: 0 !important</code>, <code>opacity: .0</code>, <code>color: transparent</code> and off-screen positioning; in PPTX (and DOCX), images linked from outside the file. See <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/document-security.md" target="_blank" rel="noopener noreferrer">Untrusted document inspection</a>.</p></div>
+        </div>
+        <div data-version-min="0.2.0b1">
+          <h3 id="document-inspection-moved">Untrusted document inspection<a class="anchor" href="#document-inspection-moved" aria-label="Link to this section">#</a></h3>
+          <p>The document extractors live in <a href="https://algenai.github.io/algen-agent-tools/" target="_blank" rel="noopener noreferrer">algen-agent-tools</a> and were removed from the Runtime in 0.2. Install <code>algen-agent-tools[documents]</code> and import the same names from <code>algen_agent_tools.documents.inspection</code>; a reader tool reads run attachments through <code>context.read_attachment</code>, and documents attached for tools to read go in <code>attachments.tool_read_types</code>.</p>
         </div>
         <p data-version-min="0.1.0a18">From 0.1.0a18 a deployment can add rules every agent runs, as signed policy bundles, and decide what each boundary does when a policy fails; see <a href="#policy-bundles">Policy bundles &amp; fail modes</a>.</p>
         <div class="callout tip"><svg class="i"><use href="#i-bulb"/></svg><p>Start strict and loosen with evidence: keep default guardrails, set a small <code>budget</code>, and watch <code>policy.evaluated</code> events before raising limits.</p></div>
@@ -2930,7 +3085,7 @@ plugins:
           </div>
           <div class="ide-status"><span>requires [postgres,redis]</span><span class="sp"></span><span>secrets via env://</span></div>
         </div>
-        <p class="figcaption">Durable stores (from <code>examples/case_study_teaching_assistant</code>)</p>
+        <p class="figcaption">Durable stores (from <code>algen_agent_runtime_examples/case_study_teaching_assistant</code>)</p>
         <ul class="legend">
           <li><b>1</b><span><strong>Per-store backends</strong> — mix PostgreSQL, Redis, and memory per concern.</span></li>
           <li><b>2</b><span><strong>Connection secrets</strong> — DSNs are <code>env://</code> references, never literals.</span></li>
@@ -3525,10 +3680,12 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     return lines;
   };
   $$('.ide-code').forEach((pre) => {
-    const code = $('code', pre);
     const highlighted = parseRanges(pre.dataset.hl || '');
-    code.innerHTML = code.innerHTML.replace(/\n$/, '').split('\n')
-      .map((line, i) => `<span class="line${highlighted.has(i + 1) ? ' hl' : ''}">${line || ' '}</span>`).join('');
+    // A file can hold one <code> per release line (the skills); number each.
+    $$('code', pre).forEach((code) => {
+      code.innerHTML = code.innerHTML.replace(/\n$/, '').split('\n')
+        .map((line, i) => `<span class="line${highlighted.has(i + 1) ? ' hl' : ''}">${line || ' '}</span>`).join('');
+    });
   });
   document.addEventListener('click', (event) => {
     const fileButton = event.target.closest('.ide [data-file]:not(pre)');
@@ -3559,7 +3716,8 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       text = $$('.cmd', term).map(plainText).join('\n');
     } else {
       const pre = $$('.ide-code', button.closest('.ide')).find((el) => !el.hidden);
-      text = $$('.line', pre).map(plainText).join('\n');
+      const code = $$('code', pre).find((el) => !el.hidden) || pre;
+      text = $$('.line', code).map(plainText).join('\n');
     }
     try {
       await navigator.clipboard.writeText(text);
@@ -3803,11 +3961,11 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   /* ----- Architecture explorer (data mirrors docs/algen-runtime-architecture-atlas.html) ----- */
   const arch = (() => {
-    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
+    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23', '0.2.0b1'];
     const versions = {
       '0.1.0a1': { status: 'first public alpha · native execution foundation', summary: 'A restart-aware, single-node governed agent kernel with typed workflows, durable checkpoints, policy boundaries, tools, storage, retrieval, artifacts, approvals, telemetry, and analytical execution.', changes: {}, overrides: {} },
-      '0.1.0a2': { status: 'published pre-alpha · usability and boundary hardening', summary: 'Adds provider-instance identity, uniform capability policy, early references, scaffolding, starter tools, MCP client foundations, application-registered framework adapters, safe outbound networking, API admission controls, and service-backed storage tests.', changes: { added: ['scaffold', 'starter-tools', 'mcp', 'framework-registry', 'network', 'api-admission', 'hook-loader', 'provider-instance'], changed: ['model-router', 'container', 'examples', 'release'], removed: [] }, overrides: { 'mcp': { state: 'partial', note: 'Python-wired stdio/SSE tool client; secure defaults, but no YAML or Streamable HTTP.' }, 'framework-registry': { state: 'partial', note: 'Trusted application registration; real LangGraph execution evidence.' }, 'network': { state: 'available' }, 'api-admission': { state: 'available' } } },
-      '0.1.0a3': { status: 'published pre-alpha · stabilization and integration', summary: 'Corrects a2 regressions and completes the integration surface: streamed request-body limits, valid examples and scaffolds, YAML-first MCP over Streamable HTTP, and real OpenAI Agents SDK execution evidence.', changes: { added: ['mcp-config', 'mcp-http', 'body-limit'], changed: ['model-router', 'scaffold', 'mcp', 'framework-registry', 'openai-agents', 'examples', 'api-admission', 'release'], removed: [] }, overrides: { 'mcp': { state: 'available', note: 'YAML-first official-SDK tool client; stdio and DNS-pinned Streamable HTTP.' }, 'mcp-config': { state: 'available' }, 'mcp-http': { state: 'available' }, 'framework-registry': { state: 'available', note: 'Real LangGraph and OpenAI Agents SDK outer-adapter evidence.' }, 'openai-agents': { state: 'available', note: 'Real credential-free ScriptedModel tool-loop, streaming, and cancellation evidence.' }, 'body-limit': { state: 'available' }, 'scaffold': { state: 'available', note: 'Generated workflows reject unresolved placeholders.' } } },
+      '0.1.0a2': { status: 'published pre-alpha · usability and boundary hardening', summary: 'Adds provider-instance identity, uniform capability policy, early references, scaffolding, starter tools, MCP client foundations, application-registered framework adapters, safe outbound networking, API admission controls, and service-backed storage tests.', changes: { added: ['scaffold', 'starter-tools', 'mcp', 'framework-registry', 'network', 'api-admission', 'hook-loader', 'provider-instance'], changed: ['model-router', 'container', 'algen_agent_runtime_examples', 'release'], removed: [] }, overrides: { 'mcp': { state: 'partial', note: 'Python-wired stdio/SSE tool client; secure defaults, but no YAML or Streamable HTTP.' }, 'framework-registry': { state: 'partial', note: 'Trusted application registration; real LangGraph execution evidence.' }, 'network': { state: 'available' }, 'api-admission': { state: 'available' } } },
+      '0.1.0a3': { status: 'published pre-alpha · stabilization and integration', summary: 'Corrects a2 regressions and completes the integration surface: streamed request-body limits, valid examples and scaffolds, YAML-first MCP over Streamable HTTP, and real OpenAI Agents SDK execution evidence.', changes: { added: ['mcp-config', 'mcp-http', 'body-limit'], changed: ['model-router', 'scaffold', 'mcp', 'framework-registry', 'openai-agents', 'algen_agent_runtime_examples', 'api-admission', 'release'], removed: [] }, overrides: { 'mcp': { state: 'available', note: 'YAML-first official-SDK tool client; stdio and DNS-pinned Streamable HTTP.' }, 'mcp-config': { state: 'available' }, 'mcp-http': { state: 'available' }, 'framework-registry': { state: 'available', note: 'Real LangGraph and OpenAI Agents SDK outer-adapter evidence.' }, 'openai-agents': { state: 'available', note: 'Real credential-free ScriptedModel tool-loop, streaming, and cancellation evidence.' }, 'body-limit': { state: 'available' }, 'scaffold': { state: 'available', note: 'Generated workflows reject unresolved placeholders.' } } },
       '0.1.0a4': { status: 'published pre-alpha · manifest UI and lifecycle correctness', summary: 'Adds the Agent Manifest UI and its static export, places framework adapters and workflow hook providers under container lifecycle ownership, tightens manifest placeholder validation, and removes the misleading per-tenant run alias.', changes: { added: ['agent-ui'], changed: ['container', 'framework-registry', 'workflow-hooks', 'workflow-engine', 'api-admission', 'release'], removed: [] }, overrides: { 'agent-ui': { state: 'available' }, 'container': { state: 'available', note: 'Framework adapters and hook providers start and close with the container lifecycle.' }, 'framework-registry': { state: 'available', note: 'Registered adapters are lifecycle-managed resources; governance stays outer.' }, 'workflow-engine': { state: 'available', note: 'Manifest loading rejects unmatched placeholder delimiters.' }, 'api-admission': { state: 'available', note: 'Request-admission quotas only; the misleading run-lifetime alias was removed.' } } },
       '0.1.0a5': { status: 'pre-alpha · persistence correctness and visual alignment', summary: 'Preserves caller-defined object order in PostgreSQL run state, refreshes the Agent Manifest UI and existing brand assets with the Algen palette, and reconciles production-readiness claims with implementation and CI evidence.', changes: { added: [], changed: ['stores', 'agent-ui', 'release'], removed: [] }, overrides: { 'stores': { state: 'available', note: 'PostgreSQL run state uses json rather than jsonb so order-sensitive schema properties and request metadata retain caller-defined order.' }, 'agent-ui': { state: 'available', note: 'The self-contained manifest explorer uses the Runtime documentation palette with responsive navigation and persistent theme preference.' } } },
       '0.1.0a6': { status: 'pre-alpha · retention and execution correctness', summary: 'Opt-in maintenance and retention indexes; approval, conflict, and tool-loop fixes.', changes: { added: [], changed: ['memory', 'stores', 'native-runtime'], removed: [] }, overrides: { memory: { note: 'Opt-in maintenance clears expired session memory.' } } },
@@ -3827,6 +3985,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       '0.1.0a20': { status: 'pre-alpha · toolkit configuration errors', summary: 'A toolkit whose client cannot open because of its configuration raises ToolkitConfigurationError with its own message again.', changes: { added: [], changed: ['tools'], removed: [] }, overrides: {} },
       '0.1.0a21': { status: 'pre-alpha · recoverable model errors', summary: 'A malformed or cut-off tool call is retried instead of failing the run, and output repair works on models that refuse assistant prefill. A startup banner, a check profile for self-hosted projects, and references for hooks, MCP results and scopes.', changes: { added: [], changed: ['model-router', 'native-runtime', 'project-check'], removed: [] }, overrides: { 'model-router': { note: 'Malformed tool calls are retryable InvalidToolCallError; dropped schema limits described for Anthropic and OpenAI.' } } },
       '0.1.0a22': { status: 'pre-alpha · approval and timeout fixes', summary: 'Workflow approvals are decided by the approval node\'s recorded status and their tool steps are audited by digest; synchronous tools run in a worker thread and meet their timeout; the README says what framework adapters govern.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'Approval coverage comes from the approval node\'s status; output keys are unique; input cannot change a decision.' } } },
+      '0.2.0b1': { status: 'beta · public API candidate', summary: 'Deprecated interfaces removed; the server and OTLP exporter are optional extras; approvals bound to the exact call, fingerprinted and explained; documents for tools, files from tools, similarity recall and result coverage.', changes: { added: [], changed: ['approvals', 'workflow-engine', 'tools', 'policies', 'stores', 'api'], removed: [] }, overrides: { approvals: { note: 'Bound to the exact call (ToolApproval); tool fingerprint and model rationale recorded; asked again when the tool changed.' }, 'workflow-engine': { note: 'An approval-required tool step runs only with the call its approval showed or bound.' }, policies: { note: 'transform rewrites a tool call before it runs; redact refuses it; actions per boundary documented.' } } },
       '0.1.0a23': { status: 'pre-alpha · approval gating and tool capacity', summary: 'A workflow tool step needs every approval that gates it, so a rejection never falls back to an earlier approval; a timed-out synchronous tool keeps its concurrency slot until its thread ends.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'A tool step is approved only when every approval that gates it approved.' } } },
     };
     const nodes = {
@@ -3857,8 +4016,8 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       'mcp-http': { name: 'MCP Streamable HTTP', domain: 'integration', kind: 'Remote transport', summary: 'Official SDK v1 Streamable HTTP using Runtime DNS-pinned HTTPX transport and secret references.', state: 'available', since: '0.1.0a3', source: 'src/algen_agent_runtime/mcp/client.py', facts: { status: 'Shipped a3', SSE: 'Legacy compatibility', SDK: 'Official v1 line' }, details: ['Sensitive headers must be env:// references.', 'MCP SDK v2 migration is intentionally separate because it uses httpx2.'], relations: ['mcp', 'network'] },
       'agent-ui': { name: 'Agent Manifest UI', domain: 'product', kind: 'Inspection surface', summary: 'Swagger-style visualizer for agent.yaml: agent catalog, workflow DAG, provider and model matrix, tools and MCP, retrieval, and raw manifest.', state: 'available', since: '0.1.0a4', source: 'src/algen_agent_runtime/ui/', facts: { export: 'Static HTML', served: '/agent-ui', default: 'Disabled' }, details: ['Built from validated settings with no CDN or external assets.', 'Served route is opt-in via api.agent_ui_enabled or serve --ui; disabled routes answer 404 with guidance.', 'Renders configuration detail, so keep the served route on trusted networks.'], relations: ['settings', 'api', 'container', 'workflow-engine'] },
       network: { name: 'Safe outbound network', domain: 'governance', kind: 'Egress boundary', summary: 'Resolves once, validates all addresses, pins connections, preserves TLS SNI, denies metadata/private networks by default.', state: 'available', since: '0.1.0a2', source: 'src/algen_agent_runtime/security/network.py', facts: { DNS: 'Pinned', TLS: 'Verified', redirects: 'Disabled' }, details: ['Used by Runtime HTTP tools and model services.', 'a3 extended it to remote MCP.'], relations: ['tools', 'mcp-http', 'model-services'] },
-      scaffold: { name: 'Project scaffolding', domain: 'product', kind: 'Developer entry point', summary: 'Generates agent, approval, and workflow projects with mock provider, tests, README, and secret-safe examples.', state: 'available', since: '0.1.0a2', source: 'src/algen_agent_runtime/scaffold.py', facts: { templates: '3', offline: 'Yes', guard: 'Placeholder rejection' }, details: ['a2 creates projects; a3 rejects unresolved workflow placeholders.'], relations: ['settings', 'starter-tools', 'examples'] },
-      examples: { name: 'Examples & patterns', domain: 'product', kind: 'Learning portfolio', summary: 'Quickstarts, governed patterns, reference applications, and case studies with manifests and READMEs.', state: 'available', source: 'examples/', facts: { configs: '19 agent YAML', automation: 'Decision providers', data: 'Synthetic' }, details: ['a3 added automatic discovery and validation of every shipped config.'], relations: ['scaffold', 'workflow-engine', 'mcp'] },
+      scaffold: { name: 'Project scaffolding', domain: 'product', kind: 'Developer entry point', summary: 'Generates agent, approval, and workflow projects with mock provider, tests, README, and secret-safe examples.', state: 'available', since: '0.1.0a2', source: 'src/algen_agent_runtime/scaffold.py', facts: { templates: '3', offline: 'Yes', guard: 'Placeholder rejection' }, details: ['a2 creates projects; a3 rejects unresolved workflow placeholders.'], relations: ['settings', 'starter-tools', 'algen_agent_runtime_examples'] },
+      examples: { name: 'Examples & patterns', domain: 'product', kind: 'Learning portfolio', summary: 'Quickstarts, governed patterns, reference applications, and case studies with manifests and READMEs.', state: 'available', source: 'algen_agent_runtime_examples/', facts: { configs: '19 agent YAML', automation: 'Decision providers', data: 'Synthetic' }, details: ['a3 added automatic discovery and validation of every shipped config.'], relations: ['scaffold', 'workflow-engine', 'mcp'] },
       stores: { name: 'Durable stores', domain: 'data', kind: 'Persistence ports', summary: 'Run, event, audit, approval, artifact, workflow, memory, conversation, analytical, queue, and tool-execution persistence.', state: 'available', source: 'src/algen_agent_runtime/persistence/', facts: { default: 'In-memory', durable: 'PostgreSQL', session: 'Redis optional' }, details: ['Optimistic versions and tenant keys protect state transitions.', 'PostgreSQL/Redis have service-backed CI in a2.', 'Migrations are forward tracked.'], relations: ['native-runtime', 'workflow-engine', 'event-bus', 'artifacts', 'work-queue'] },
       'event-bus': { name: 'Events & audit', domain: 'operations', kind: 'Evidence plane', summary: 'Publishes typed lifecycle events, durable history, SSE replay, and separate audit records.', state: 'available', source: 'src/algen_agent_runtime/events/', facts: { events: 'Run + conversation', audit: 'Separate', ordering: 'Single-writer limitation' }, details: ['PostgreSQL polling exposes cross-process history.', 'MAX(sequence)+1 allocation remains unsafe for concurrent stream publishers.', 'Slow local subscribers need durable replay.'], relations: ['api', 'native-runtime', 'workflow-engine', 'stores', 'observability'] },
       artifacts: { name: 'Artifact lifecycle', domain: 'data', kind: 'Governed object boundary', summary: 'Tenant-scoped upload, checksums, pending scan, available/quarantined states, expiry, and bounded storage.', state: 'available', source: 'src/algen_agent_runtime/artifacts/', facts: { stores: 'Memory/Postgres/S3', scanner: 'Deployment-owned', download: 'Lifecycle checked' }, details: ['S3 metadata remains authoritative in PostgreSQL.', 'Presigned URLs are intentionally not exposed.'], relations: ['stores', 'api', 'policies'] },
@@ -3869,7 +4028,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       'model-services': { name: 'Model services', domain: 'integration', kind: 'Non-LLM adapter', summary: 'Discovers versioned analytical model services with health, drift, fallback, and HTTP execution.', state: 'available', source: 'src/algen_agent_runtime/model_services/', facts: { health: 'Tracked', drift: 'Contract', network: 'Safe transport' }, details: ['Supports non-LLM predictive/scoring services without polluting agent model contracts.'], relations: ['analytics', 'network'] },
       'work-queue': { name: 'Distributed work queue', domain: 'operations', kind: 'Experimental scale path', summary: 'Deduplicated work items, leases, renewal, retries, and PostgreSQL SKIP LOCKED claiming.', state: 'available', source: 'src/algen_agent_runtime/distributed/', facts: { status: 'Experimental', ownership: 'Lease owner', fencing: 'Incomplete' }, details: ['Useful primitives exist; hardened worker CLI, fence tokens, leadership, and dead letter operations remain roadmap work.'], relations: ['analytics', 'stores'] },
       observability: { name: 'Observability plane', domain: 'operations', kind: 'Cross-cutting signals', summary: 'OpenTelemetry spans/metrics/logging plus optional Traccia lifecycle and governance integration.', state: 'available', source: 'src/algen_agent_runtime/observability/', facts: { standard: 'OpenTelemetry', content: 'Off by default', Traccia: 'Optional' }, details: ['One agent.run root groups model, tool, policy, retrieval, verification, and memory spans.', 'Traccia adds identity, guardrail posture, evaluation, and platform controls without owning Runtime state.'], relations: ['native-runtime', 'event-bus', 'api', 'policies'] },
-      release: { name: 'Release & package boundary', domain: 'product', kind: 'Distribution', summary: 'PyPI wheel/sdist, Trusted Publishing, checksums, clean-install CI, migrations, examples, and optional extras.', state: 'available', source: 'pyproject.toml + .github/workflows/', facts: { published: 'a1 – a4', Python: '3.12/3.13', maturity: 'Pre-alpha' }, details: ['a3 and a4 are routine pre-release upgrades, not first publications.', 'Core stays usable without heavy optional integrations.'], relations: ['scaffold', 'examples', 'container'] },
+      release: { name: 'Release & package boundary', domain: 'product', kind: 'Distribution', summary: 'PyPI wheel/sdist, Trusted Publishing, checksums, clean-install CI, migrations, examples, and optional extras.', state: 'available', source: 'pyproject.toml + .github/workflows/', facts: { published: 'a1 – a4', Python: '3.12/3.13', maturity: 'Pre-alpha' }, details: ['a3 and a4 are routine pre-release upgrades, not first publications.', 'Core stays usable without heavy optional integrations.'], relations: ['scaffold', 'algen_agent_runtime_examples', 'container'] },
       plugins: { name: 'Declared plugins', domain: 'orchestration', kind: 'Extension boundary', summary: 'Plugins named in domain_plugins register tools, planners, context builders, verifiers, composers, providers, MCP servers, semantic layers, methods and model services.', state: 'available', since: '0.1.0a11', source: 'src/algen_agent_runtime/plugins/', facts: { trust: 'Prefix allowlist', conflicts: 'Refused', status: 'Since a11' }, details: ['Trusted prefixes are checked on module boundaries before any import.', 'Constructor arguments keep working for tests; Studio cannot see them.'], relations: ['container', 'settings', 'tools', 'project-check'] },
       'tool-authoring': { name: 'Tool authoring', domain: 'execution', kind: 'Developer API', summary: '@tool, policy presets and Toolkit build governed tool definitions from typed functions; ApprovalHandler plugs in a deployment approval flow.', state: 'available', since: '0.1.0a11', source: 'src/algen_agent_runtime/tools/authoring.py', facts: { schemas: 'From type hints', writes: 'Keyed · 1 attempt', status: 'Since a11' }, details: ['assert_tool_contract and fake_tool_context test tools offline.'], relations: ['tools', 'plugins', 'approvals'] },
       'project-check': { name: 'describe & check', domain: 'product', kind: 'Developer entry point', summary: 'Lists every component and its source without running it, and validates a project as Studio will, warning about code Studio cannot run.', state: 'available', since: '0.1.0a11', source: 'src/algen_agent_runtime/orchestration/check.py', facts: { executes: 'Plugin register only', exit: 'Non-zero on errors', status: 'Since a11' }, details: ['Every example project passes check in the Runtime test suite.'], relations: ['plugins', 'settings', 'scaffold'] },
@@ -3883,6 +4042,23 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       { id: 'analytical', title: 'Analytical execution plane', code: '06', domain: 'orchestration', children: ['analytics', 'query-governance', 'work-queue'] },
       { id: 'signals', title: 'Evidence & operations plane', code: '07', domain: 'operations', children: ['observability'] }
     ];
+    // The request flow drawn on the map. Each box groups capabilities; its details list them.
+    const FLOW = {
+      caller: { title: 'Caller', sub: 'Your app · Studio · CLI', about: 'Applications, Algen Agent Studio and the command line start runs, conversations and workflows.', ids: [] },
+      build: { title: 'Build & ship', sub: 'Scaffold · examples · release', about: 'How a project is created, explored and packaged before anything runs.', ids: ['scaffold', 'examples', 'agent-ui', 'release'] },
+      api: { title: 'HTTP API', sub: 'Auth · quotas · limits', about: 'The service boundary: who is calling, what they may do, and how much they may send.', ids: ['host', 'api', 'identity', 'api-admission', 'body-limit'] },
+      config: { title: 'Configuration', sub: 'YAML · plugins · check', about: 'Strict configuration and declared plugins are composed into one container when the service starts.', ids: ['settings', 'container', 'plugins', 'project-check'] },
+      plan: { title: 'Plan', sub: 'Agent state machine', about: 'The agent decides its next step from the conversation, its memory and its instructions; every transition is checkpointed.', ids: ['native-runtime', 'memory'] },
+      policy: { title: 'Policy & approval', sub: 'Allow · rewrite · ask a person', about: 'Every planned call passes policy; a consequential one waits for a person, bound to the exact call.', ids: ['policies', 'approvals'] },
+      act: { title: 'Tool or model', sub: 'Run the call', about: 'Tools run through the executor and its ledger; model calls go through the router, its fallbacks and metering.', ids: ['tools', 'tool-authoring', 'starter-tools', 'model-router', 'provider-instance'] },
+      verify: { title: 'Verify', sub: 'Check · repair', about: 'The answer is checked before it is returned, and repaired when a check fails.', ids: ['verification'] },
+      workflows: { title: 'Workflows', sub: 'Many agents, tools and approvals in one typed graph', about: 'A workflow runs agents, tool steps and approval nodes as a typed graph, with trusted application hooks.', ids: ['workflow-engine', 'workflow-hooks', 'hook-loader'] },
+      storage: { title: 'Storage', sub: 'Runs · memory · files', about: 'Durable state the loop reads and writes: checkpoints, caches, retrieval and artifacts.', ids: ['stores', 'cache', 'retrieval', 'artifacts'] },
+      integrations: { title: 'Integrations', sub: 'MCP · frameworks · network', about: 'Everything outside the process: MCP servers, foreign frameworks, model services and the outbound network.', ids: ['mcp', 'mcp-config', 'mcp-http', 'framework-registry', 'langgraph', 'openai-agents', 'model-services', 'network'] },
+      analytics: { title: 'Analytics', sub: 'Governed queries', about: 'Analytical methods and governed queries, optionally on a distributed work queue.', ids: ['analytics', 'query-governance', 'work-queue'] },
+      telemetry: { title: 'Telemetry', sub: 'Events · audit · traces', about: 'What happened, as events, audit records, traces and metrics.', ids: ['event-bus', 'observability'] }
+    };
+    const flowOf = (id) => Object.keys(FLOW).find((key) => FLOW[key].ids.includes(id));
     const DOMAINS = { execution: 'Native execution', governance: 'Governance', orchestration: 'Orchestration', data: 'Data & state', integration: 'Integrations', operations: 'Operations', product: 'Product surface' };
     // Capability → docs section that explains how to use it.
     const GUIDE = { plugins: 'plugins', 'tool-authoring': 'plugins', 'project-check': 'plugins', api: 'http', identity: 'http', 'api-admission': 'http', 'body-limit': 'http', settings: 'configuration', container: 'configuration', 'model-router': 'configuration', 'provider-instance': 'configuration', scaffold: 'cli', 'agent-ui': 'agent-ui', release: 'releases', 'native-runtime': 'execution', policies: 'governance', verification: 'governance', tools: 'tools', 'starter-tools': 'tools', approvals: 'approvals', memory: 'persistence', stores: 'persistence', artifacts: 'persistence', 'workflow-engine': 'workflows', 'workflow-hooks': 'workflows', 'hook-loader': 'workflows', mcp: 'mcp', 'mcp-config': 'mcp', 'mcp-http': 'mcp', 'event-bus': 'observability', observability: 'observability' };
@@ -3909,20 +4085,33 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       if (a.state !== b.state || a.note !== b.note || (versions[current].changes.changed || []).includes(id)) return 'changed';
       return '';
     }
-    const tile = (id) => {
-      const node = nodeAt(id, current), change = delta(id);
-      return `<button type="button" class="cap${change ? ` is-${change}` : ''}${node.state === 'absent' ? ' is-absent' : ''}" data-id="${id}" data-domain="${node.domain}" style="--tone:${tone(node.domain)}"><span class="cap-name">${node.name}</span><span class="cap-note">${node.note || node.summary}</span><span class="cap-state">${node.state}</span></button>`;
+    const box_ = (key, extra = '') => {
+      const step = FLOW[key];
+      const present = step.ids.filter((id) => nodeAt(id, current).state !== 'absent');
+      const changes = step.ids.map(delta).filter(Boolean);
+      const mark = changes.length ? `<span class="af-delta pill mono ${DELTA_PILL[changes.includes('added') ? 'added' : changes.includes('removed') ? 'removed' : 'changed']}">${changes.length} ${changes.length === 1 ? 'change' : 'changes'}</span>` : '';
+      const count = step.ids.length ? `<span class="af-count">${present.length}</span>` : '';
+      return `<button type="button" class="af-box${extra}" data-step="${key}"${step.ids.length ? '' : ' disabled'}><strong>${step.title}</strong><span>${step.sub}</span>${count}${mark}</button>`;
     };
-    const head = (code, title, sub) => `<div class="arch-layer-head"><span class="arch-code">${code}</span><span class="arch-layer-title">${title}</span><span class="arch-layer-sub">${sub}</span></div>`;
+    const arrow = (dir = 'down') => `<span class="af-arrow af-${dir}" aria-hidden="true"></span>`;
 
     function render() {
-      map.querySelector('.arch-root')?.remove();
-      const layers = layout.map((layer) => {
-        const nested = (layer.nested || []).map((zone) => `<div class="arch-nested">${head(zone.code, zone.title, 'inside native execution')}<div class="arch-grid">${zone.children.map(tile).join('')}</div></div>`).join('');
-        const domain = layer.domain || nodes[layer.id]?.domain || 'product';
-        return `<section class="arch-layer" id="arch-layer-${layer.id}" style="--tone:${tone(domain)}">${head(layer.code, layer.title, `${layer.children.length} capabilities`)}<div class="arch-grid">${layer.children.map(tile).join('')}${nested}</div></section>`;
-      }).join('');
-      map.insertAdjacentHTML('beforeend', `<div class="arch-root"><div class="arch-root-head"><svg><use href="#rt-mark"/></svg><strong>Algen Agent Runtime boundary</strong><span>governed by one process contract</span></div>${layers}</div>`);
+      map.querySelector('.af')?.remove();
+      map.insertAdjacentHTML('beforeend', `<div class="af">
+        <div class="af-row af-top">${box_('caller', ' af-ghost')}${box_('build', ' af-side')}</div>
+        ${arrow()}
+        <div class="af-row af-entry">${box_('api')}${box_('config', ' af-side')}</div>
+        ${arrow()}
+        <div class="af-loop" aria-label="The agent loop">
+          <div class="af-loop-head"><svg><use href="#rt-mark"/></svg><strong>Agent loop</strong><span>repeats until the answer passes</span></div>
+          <div class="af-row af-steps">${box_('plan')}${arrow('right')}${box_('policy')}${arrow('right')}${box_('act')}${arrow('right')}${box_('verify')}</div>
+          <div class="af-return" aria-hidden="true">↺ back to Plan with the result</div>
+          ${box_('workflows', ' af-wide')}
+        </div>
+        ${arrow()}
+        <div class="af-row af-planes">${box_('storage')}${box_('integrations')}${box_('analytics')}${box_('telemetry')}</div>
+      </div>`);
+      $('#archAll').innerHTML = Object.keys(FLOW).filter((key) => FLOW[key].ids.length).map((key) => `<div class="af-all-group"><h5>${FLOW[key].title}</h5><div class="arch-rel">${FLOW[key].ids.filter((id) => nodeAt(id, current).state !== 'absent' || delta(id)).map((id) => `<button type="button" data-rel="${id}">${nodes[id].name}</button>`).join('')}</div></div>`).join('');
       $('#archStamp').textContent = `v${current}`;
       $('#archStatus').textContent = versions[current].status;
       $('#archSummary').textContent = versions[current].summary;
@@ -3930,36 +4119,45 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       $('#archCompareText').textContent = compare ? `v${current} compared with v${compare}` : '';
       if (selected && nodeAt(selected, current).state !== 'absent') select(selected); else clear();
     }
-    const syncDomainChips = () => $$('[data-domain-chip]').forEach((chip) => chip.setAttribute('aria-pressed', String(chip.dataset.domainChip === domainFocus)));
-    function applyDomainFocus() {
-      if (!selected) $$('.cap', map).forEach((cap) => cap.classList.toggle('is-dim', Boolean(domainFocus) && cap.dataset.domain !== domainFocus));
-      syncDomainChips();
+    const syncDomainChips = () => {};
+    function applyDomainFocus() {}
+    function highlight(key) {
+      $$('.af-box', map).forEach((el) => {
+        el.classList.toggle('is-selected', el.dataset.step === key);
+        el.classList.toggle('is-dim', Boolean(key) && el.dataset.step !== key && !el.classList.contains('af-ghost'));
+      });
+    }
+    function showStep(key) {
+      const step = FLOW[key];
+      highlight(key);
+      detail.className = 'arch-detail';
+      detail.style.removeProperty('--tone');
+      detail.innerHTML = `
+        <div class="arch-kicker">${step.ids.length} capabilities</div>
+        <h4>${step.title}</h4>
+        <p>${step.about}</p>
+        <div class="af-caps">${step.ids.map((id) => {
+          const node = nodeAt(id, current), change = delta(id);
+          return `<button type="button" data-rel="${id}" class="af-cap${node.state === 'absent' ? ' is-absent' : ''}"><span>${node.name}</span>${change ? `<span class="pill mono ${DELTA_PILL[change]}">${change}</span>` : ''}</button>`;
+        }).join('')}</div>`;
+      inspector.classList.add('is-open');
     }
     function select(id, scroll = false) {
       selected = id;
       related = (nodes[id].relations || []).filter((rel) => nodes[rel]);
-      domainFocus = null;
-      syncDomainChips();
-      $$('.cap', map).forEach((cap) => {
-        const capId = cap.dataset.id;
-        cap.classList.toggle('is-selected', capId === id);
-        cap.classList.toggle('is-related', related.includes(capId));
-        cap.classList.toggle('is-dim', capId !== id && !related.includes(capId));
-      });
+      highlight(flowOf(id));
       showDetails(id);
-      requestAnimationFrame(drawLines);
       inspector.classList.add('is-open');
-      if (scroll) map.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (scroll) inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     function clear() {
       selected = null;
       related = [];
-      $$('.cap', map).forEach((cap) => cap.classList.remove('is-selected', 'is-related', 'is-dim'));
+      highlight(null);
       lines.innerHTML = '';
       inspector.classList.remove('is-open');
       detail.className = 'arch-empty';
-      detail.innerHTML = '<div><div class="target"><svg class="i"><use href="#i-target"/></svg></div><strong>Select a capability</strong>Inspect its responsibility, contracts, source anchor, relationships, and version history.</div>';
-      applyDomainFocus();
+      detail.innerHTML = '<div><div class="target"><svg class="i"><use href="#i-target"/></svg></div><strong>Select a box</strong>See what it does and the capabilities inside it.</div>';
     }
     function showDetails(id) {
       const node = nodeAt(id, current), change = delta(id);
@@ -3982,29 +4180,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
         <div class="arch-rel">${relatedNow.map((rel) => `<button type="button" data-rel="${rel}">${nodes[rel].name}</button>`).join('') || '<span class="arch-muted">None mapped</span>'}</div>
         ${guide ? `<a class="btn" href="#${guide}" data-arch-guide>Read the guide →</a>` : ''}`;
     }
-    function drawLines() {
-      lines.innerHTML = '';
-      if (!selected) return;
-      const host = map.getBoundingClientRect();
-      const from = map.querySelector(`[data-id="${selected}"]`)?.getBoundingClientRect();
-      if (!from) return;
-      const ns = 'http://www.w3.org/2000/svg';
-      const dot = (x, y) => {
-        const circle = document.createElementNS(ns, 'circle');
-        circle.setAttribute('cx', x); circle.setAttribute('cy', y); circle.setAttribute('r', 3);
-        lines.appendChild(circle);
-      };
-      related.forEach((id) => {
-        const to = map.querySelector(`[data-id="${id}"]`)?.getBoundingClientRect();
-        if (!to) return;
-        const x1 = from.left + from.width / 2 - host.left, y1 = from.top + from.height / 2 - host.top;
-        const x2 = to.left + to.width / 2 - host.left, y2 = to.top + to.height / 2 - host.top, mid = (x1 + x2) / 2;
-        const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`);
-        lines.appendChild(path);
-        dot(x1, y1); dot(x2, y2);
-      });
-    }
+    function drawLines() {}
     const setFull = (on) => {
       box.classList.toggle('is-full', on);
       document.body.classList.toggle('arch-full-open', on);
@@ -4013,21 +4189,13 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       requestAnimationFrame(drawLines);
     };
 
-    $('#archDomains').insertAdjacentHTML('beforeend', Object.entries(DOMAINS).map(([key, label]) => `<button type="button" class="arch-chip" data-domain-chip="${key}" aria-pressed="false" style="--tone:${tone(key)}"><i></i>${label}</button>`).join(''));
-    $('#archLayers').insertAdjacentHTML('beforeend', layout.map((layer) => `<button type="button" class="arch-chip" data-layer="${layer.id}"><b>${layer.code}</b>${layer.title}</button>`).join(''));
-    $('#archDomains').addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-domain-chip]');
-      if (!chip) return;
-      domainFocus = domainFocus === chip.dataset.domainChip ? null : chip.dataset.domainChip;
-      if (selected) clear(); else applyDomainFocus();
-    });
-    $('#archLayers').addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-layer]');
-      if (chip) $(`#arch-layer-${chip.dataset.layer}`).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
     map.addEventListener('click', (event) => {
-      const cap = event.target.closest('.cap');
-      if (cap) select(cap.dataset.id);
+      const step = event.target.closest('[data-step]');
+      if (step && !step.disabled) { selected = null; showStep(step.dataset.step); }
+    });
+    $('#archAll').addEventListener('click', (event) => {
+      const rel = event.target.closest('[data-rel]');
+      if (rel) select(rel.dataset.rel, true);
     });
     detail.addEventListener('click', (event) => {
       const rel = event.target.closest('[data-rel]');
@@ -4066,9 +4234,43 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   })();
 
   /* ----- Versioned documentation ----- */
-  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
-  const LATEST_VERSION = '0.1.0a23';
+  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23', '0.2.0b1'];
+  const LATEST_VERSION = '0.2.0b1';
   const RELEASES = {
+    '0.2.0b1': {
+      date: '2026-11-11', pending: true, kind: 'Beta',
+      title: 'The first 0.2 beta: deprecations removed, approvals bound to the exact call',
+      summary: 'Everything deprecated during 0.1 is removed, the HTTP server and OTLP exporter become optional extras, and the examples move to the algen_agent_runtime_examples package. Approvals are bound to the exact call they approve, record the tool&#39;s fingerprint and the model&#39;s rationale, and are asked again when the tool changed. Also: documents attached for tools to read, files returned by tools, similarity-ranked memory recall, result coverage, a bounded tool thread pool and policy rewrites before a tool runs. Read the upgrade notes first.',
+      fields: { tag: 'v0.2.0b1', package: '0.2.0b1 · beta', version: '0.2.0b1', pip: 'python -m pip install --pre "algen-agent-runtime[service]==0.2.0b1"' },
+      groups: [
+        { kind: 'Upgrade notes', items: [
+          'Install the server explicitly: <code>pip install "algen-agent-runtime[service]"</code> (or <code>server</code>, <code>otlp</code>). Without it, <code>serve</code> names the extra to install. (#115)',
+          'The examples package is <code>algen_agent_runtime_examples</code>: <code>python -m algen_agent_runtime_examples.quickstart_approval.app</code>, and hook providers named <code>examples.&lt;name&gt;</code> change the same way. No shim. (#115)',
+          'Removed: <code>communications</code> (use algen-agent-tools mail, SMTP or Gmail), <code>database_tool</code> (use <code>PostgresToolkit.query</code>), the document extractors (import from <code>algen_agent_tools.documents.inspection</code>), the <code>documents</code> extra, and usage meters whose <code>reserve()</code> has no <code>call</code>. (#88)',
+          '<code>ToolExecutor.execute(approval=)</code> takes a <code>ToolApproval</code>; a call its approval does not cover raises <code>ApprovalMismatchError</code>. (#117)',
+          'A workflow tool step that needs approval runs only with the exact arguments its approval showed or bound; <code>binding: step</code> keeps the old behaviour and is discouraged. A resumed run may ask again when the tool changed (<code>replaces_approval_id</code>). (#109, #127)',
+          'Policies: the secrets policy answers <code>redact</code>; <code>plan_tool</code> refuses <code>redact</code> and <code>require_clarification</code> and uses <code>tool_policies</code>; <code>transform</code> rewrites a tool call&#39;s arguments instead of refusing it. (#116)',
+          'Attachments: <code>attachments.types</code> lists only model-readable types; move others to <code>tool_read_types</code>. The text placeholder carries the file id. (#130, #131)',
+          'Migrations 017 and 018 are additive. A checkpoint with bound approvals cannot be read by 0.1.0a23: finish those runs before rolling back.'
+        ]},
+        { kind: 'Added', items: [
+          'Approval rationale, tool fingerprints and re-asking when a tool changed; strict workflow approval binding. (#109, #117, #120, #127)',
+          '<code>attachments.tool_read_types</code> for Office documents, e-mail and text a tool reads; tools can return images and PDFs to the model (<code>returns_files</code>). (#129, #130)',
+          'Similarity-ranked learned-memory recall (<code>recall: semantic | hybrid</code>). (#124)',
+          '<code>ResultCoverage</code> and the opt-in <code>result_coverage</code> verifier. (#135)',
+          '<code>GovernedToolBridge</code>: Runtime tools called from inside OpenAI Agents or LangGraph go through the Runtime&#39;s executor. (#119)',
+          'A bounded thread pool for synchronous tools and <code>execution: process</code>, killed at its timeout. (#114)',
+          'An index of every example and the offline <code>quickstart_attachments</code> example. (#97, #98)'
+        ]},
+        { kind: 'Fixed', items: [
+          'A streamed call falls back to the next model when the provider fails before its first event. (#106)',
+          'Context shortening keeps older tool results shortened, and a stray tool result no longer fails the run. (#133)'
+        ]},
+        { kind: 'Compatibility', items: [
+          'The full upgrade notes are in <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>; the 0.1 history is in CHANGELOG-0.1.md. algen-agent-tools and Algen Agent Studio need releases that allow Runtime 0.2.'
+        ]}
+      ]
+    },
     '0.1.0a23': {
       date: '2026-11-04', pending: false, kind: 'Security and correctness',
       title: 'Tool steps need every gating approval; timed-out tools keep their capacity',
@@ -4413,7 +4615,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
           '<strong><code>describe</code>.</strong> Lists every component the settings register, by kind and source, with each tool&#39;s side effect, permissions, approval and schemas and every environment variable a deploy needs, without calling any component.',
           '<strong><code>check</code>.</strong> Validates a project as Studio will (unknown names with the closest match, plugins, conflicts) and warns about its own container, constructor components, direct <code>os.environ</code> reads and agents defined in code.',
           '<strong>Tool authoring.</strong> <code>@tool</code>, presets <code>read</code>, <code>write</code>, <code>external</code>, <code>destructive</code> and <code>long_running</code>, <code>Toolkit</code> with a shared client and <code>env://</code> secrets, and the <code>ApprovalHandler</code> protocol; <code>assert_tool_contract</code> and <code>fake_tool_context</code> for tests.',
-          '<strong>Scaffold and example.</strong> <code>algen-agent-runtime new</code> scaffolds a plugin; <code>examples/quickstart_agent_tool</code> shows a read tool and an approval-gated write tool.'
+          '<strong>Scaffold and example.</strong> <code>algen-agent-runtime new</code> scaffolds a plugin; <code>algen_agent_runtime_examples/quickstart_agent_tool</code> shows a read tool and an approval-gated write tool.'
         ]},
         { kind: 'Changed', items: [
           '<strong>Startup check.</strong> <code>build_container</code> fails when an agent names a tool, planner, composer, verifier, context builder or provider that nothing registered; <code>runtime.component_check: warn</code> logs instead.',
@@ -4589,6 +4791,24 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   const versionSelect = $('#versionSelect');
   const versionRank = (version) => DOC_ORDER.indexOf(version);
+  // A release line is its minor version: 0.1.0a23 and 0.1.0a2 are both 0.1.
+  const releaseLine = (version) => version.split('.').slice(0, 2).join('.');
+  const ALL_RELEASES = '__all';
+
+  // The selector lists the newest release of each line and the version being read; every other
+  // release is one click away in the release history, so the list grows by line, not by release.
+  function renderVersionOptions(current) {
+    const newest = new Map();
+    DOC_ORDER.forEach((id) => newest.set(releaseLine(id), id));
+    const shown = [...newest.values()];
+    if (!shown.includes(current)) shown.push(current);
+    shown.sort((a, b) => versionRank(b) - versionRank(a));
+    versionSelect.innerHTML = shown.map((id) => {
+      const label = newest.get(releaseLine(id)) === id ? `v${id}` : `v${id} (older ${releaseLine(id)})`;
+      return `<option value="${id}">${label}</option>`;
+    }).join('') + `<option value="${ALL_RELEASES}">All releases…</option>`;
+    versionSelect.value = current;
+  }
 
   function renderRelease(version) {
     const release = RELEASES[version];
@@ -4601,10 +4821,16 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     $('#releaseSummary').textContent = release.summary;
     $('#releaseGroups').innerHTML = release.groups.map((group) => `
       <div class="card release-group"><h4>${group.kind}</h4><ul>${group.items.map((item) => `<li>${item}</li>`).join('')}</ul></div>`).join('');
-    $('#releaseHistory').innerHTML = [...DOC_ORDER].reverse().map((id) => `
-      <button type="button" class="btn btn-secondary" data-version-jump="${id}" aria-current="${id === version}">
-        <code>v${id}</code><span>${RELEASES[id].title}</span><em>${RELEASES[id].pending ? 'pending publication' : RELEASES[id].date}</em>
-      </button>`).join('');
+    const lines = [...new Set([...DOC_ORDER].reverse().map(releaseLine))];
+    $('#releaseHistory').innerHTML = lines.map((line) => {
+      const ids = [...DOC_ORDER].reverse().filter((id) => releaseLine(id) === line);
+      // The line being read is open; older lines are folded.
+      const open = releaseLine(version) === line ? ' open' : '';
+      return `<details class="release-line"${open}><summary>${line}.x <span class="release-meta">${ids.length} release${ids.length === 1 ? '' : 's'}</span></summary>${ids.map((id) => `
+        <button type="button" class="btn btn-secondary" data-version-jump="${id}" aria-current="${id === version}">
+          <code>v${id}</code><span>${RELEASES[id].title}</span><em>${RELEASES[id].pending ? 'pending publication' : RELEASES[id].date}</em>
+        </button>`).join('')}</details>`;
+    }).join('');
     $$('[data-version-jump]').forEach((button) => button.addEventListener('click', () => setVersion(button.dataset.versionJump)));
   }
 
@@ -4620,7 +4846,8 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   function setVersion(version) {
     const target = RELEASES[version] ? version : LATEST_VERSION;
     const release = RELEASES[target];
-    versionSelect.value = target;
+    renderVersionOptions(target);
+    versionSelect.dataset.current = target;
     $$('[data-version-field]').forEach((element) => {
       const value = release.fields[element.dataset.versionField];
       if (value !== undefined) element.textContent = value;
@@ -4645,7 +4872,11 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     if (search.value) runSearch();
   }
 
-  versionSelect.addEventListener('change', (event) => setVersion(event.target.value));
+  versionSelect.addEventListener('change', (event) => {
+    if (event.target.value !== ALL_RELEASES) { setVersion(event.target.value); return; }
+    versionSelect.value = DOC_ORDER.includes(versionSelect.dataset.current) ? versionSelect.dataset.current : LATEST_VERSION;
+    location.hash = 'release-history';
+  });
 
   let requestedVersion = null;
   try { requestedVersion = new URL(location.href).searchParams.get('v'); } catch (error) { requestedVersion = null; }

@@ -14,6 +14,10 @@ from algen_agent_runtime.frameworks.contracts import (
     FrameworkRunStatus,
     FrameworkStreamEvent,
 )
+from algen_agent_runtime.frameworks.governed_tools import (
+    GovernedToolBridge,
+    framework_tool_name,
+)
 
 __all__ = [
     "AutoGenAdapter",
@@ -26,6 +30,8 @@ __all__ = [
     "FrameworkRunResult",
     "FrameworkRunStatus",
     "FrameworkStreamEvent",
+    "GovernedToolBridge",
     "LangGraphAdapter",
     "OpenAIAgentsAdapter",
+    "framework_tool_name",
 ]

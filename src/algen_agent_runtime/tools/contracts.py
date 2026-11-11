@@ -24,7 +24,14 @@ from algen_agent_runtime.exceptions.errors import (
     NotFoundError,
     PolicyDeniedError,
 )
-from algen_agent_runtime.types.contracts import Artifact, RetryPolicy, RunAttachment, utc_now
+from algen_agent_runtime.types.contracts import (
+    Artifact,
+    RetryPolicy,
+    RunAttachment,
+    utc_now,
+)
+from algen_agent_runtime.types.contracts import ToolApproval as ToolApproval
+from algen_agent_runtime.types.contracts import canonical_digest as canonical_digest
 
 
 class SideEffect(StrEnum):
@@ -77,6 +84,21 @@ class ToolDefinition(BaseModel):
         "caller's user_id, say). The tool-result cache keys a result on them too, whatever "
         "the cache policy's scope, so one caller is never served another's result. Empty keeps "
         "the key on the tool, version and arguments within the policy's scope.",
+    )
+
+    execution: Literal["thread", "process"] = Field(
+        default="thread",
+        description="Where a synchronous handler runs. 'thread': a worker thread; on timeout the "
+        "caller stops waiting on schedule but the work may continue until it ends. 'process': a "
+        "new subprocess per call, killed on timeout, so the work really stops; the handler must "
+        "be an importable top-level function and its arguments, context and result must pickle.",
+    )
+
+    returns_files: bool = Field(
+        default=False,
+        description="The tool may hand files to the model (``ToolResult.files``), such as page "
+        "images; the Runtime refuses files from a tool that does not set this. Off by default: "
+        "every file costs tokens.",
     )
 
     failure_field: str | None = Field(
@@ -189,6 +211,79 @@ class ToolNote(BaseModel):
 
 
 NoteSink = Callable[[ToolNote], Awaitable[None]]
+
+
+# The key under which a tool's result object reports what it covered.
+COVERAGE_KEY = "coverage"
+MAX_COVERAGE_FILTERS_BYTES = 2_048
+
+
+class ResultCoverage(BaseModel):
+    """What a search or listing covered, so an empty or short result is not read as absence.
+
+    A tool returns it under ``"coverage"`` in its result object (``ResultCoverage.attach``).
+    ``searched`` names the collection or index searched, ``filters`` the constraints applied
+    (JSON values), ``total`` how many items matched when the tool knows, ``returned`` how many it
+    returned, ``capped`` whether a limit or page cut the result, and ``source`` whether it read the
+    system of record or a derived store (an index, cache, replica or extract) that may lag or miss
+    items. Unknown keys are ignored, so a result from a newer tool still reads.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    searched: str = Field(min_length=1, max_length=256)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    total: int | None = Field(default=None, ge=0)
+    returned: int = Field(ge=0)
+    capped: bool = False
+    source: Literal["system_of_record", "derived"]
+
+    @field_validator("filters")
+    @classmethod
+    def _bounded_filters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            encoded = json.dumps(value, allow_nan=False).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("coverage filters must be JSON values") from exc
+        if len(encoded) > MAX_COVERAGE_FILTERS_BYTES:
+            raise ValueError(f"coverage filters are at most {MAX_COVERAGE_FILTERS_BYTES} bytes")
+        return value
+
+    @property
+    def complete(self) -> bool:
+        """The system of record was searched and everything that matched was returned."""
+        return (
+            self.source == "system_of_record"
+            and not self.capped
+            and (self.total is None or self.returned >= self.total)
+        )
+
+    def attach(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """``result`` with this coverage under ``"coverage"``."""
+        return {**result, COVERAGE_KEY: self.model_dump(mode="json", exclude_none=True)}
+
+    @classmethod
+    def of(cls, result: Any) -> ResultCoverage | None:
+        """The coverage a tool result reports, or ``None`` when it reports none or a malformed one.
+
+        ``result`` is the result value or its JSON text. A result the Runtime wrapped (an
+        offloaded reference, or an untrusted-content warning around ``"result"``) is looked into.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                return None
+        if not isinstance(result, Mapping):
+            return None
+        candidate = result.get(COVERAGE_KEY)
+        if candidate is None and isinstance(result.get("result"), Mapping):
+            candidate = result["result"].get(COVERAGE_KEY)
+        if not isinstance(candidate, Mapping):
+            return None
+        try:
+            return cls.model_validate(candidate)
+        except ValueError:
+            return None
 
 
 class ToolContext(BaseModel):
@@ -304,14 +399,29 @@ class ToolContext(BaseModel):
         )
 
 
+class ToolFile(BaseModel):
+    """A file a tool hands to the model, by reference to an artifact stored for the run's tenant
+    (an image or PDF). ``media_type``, when given, must match the file's bytes; ``name`` labels
+    it for the model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_id: str = Field(min_length=1, max_length=128)
+    media_type: str | None = Field(default=None, max_length=127)
+    name: str | None = Field(default=None, max_length=200)
+
+
 class ToolResult(BaseModel):
     """What a call returned. A handler may return one instead of a bare value, to set
-    ``failed`` or ``metadata``; its ``value`` is checked like any other result."""
+    ``failed``, ``metadata`` or ``files``; its ``value`` is checked like any other result.
+
+    ``files`` are shown to the model with the result, for a tool whose definition sets
+    ``returns_files`` (see docs/attachments.md, "Files a tool returns")."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     value: Any
     metadata: dict[str, Any] = Field(default_factory=dict)
     artifact_ids: tuple[str, ...] = ()
+    files: tuple[ToolFile, ...] = Field(default=(), max_length=32)
     redacted: bool = False
     failed: bool = Field(
         default=False,
@@ -329,6 +439,9 @@ class ToolResult(BaseModel):
         data = handler(self)
         if isinstance(data, dict) and not self.failed:
             data.pop("failed", None)
+        # Likewise for 0.1 replicas, which have no ``files``.
+        if isinstance(data, dict) and not self.files:
+            data.pop("files", None)
         return data
 
 
@@ -512,14 +625,20 @@ class Tool:
         precheck: Precheck | None = None,
         reconcile: Reconciler | None = None,
         reconcile_on_replay: bool = True,
+        source: Callable[..., Any] | Literal["handler"] | None = "handler",
     ) -> None:
         """``compensation`` undoes a call's effect and runs only when an operator asks for it
         (``ToolReconciliation.compensate``). ``reconcile`` asks the external system whether a
         call whose outcome is unknown took effect: an operator's auto-reconcile uses it, and so
         does the executor when it replays such a call, unless ``reconcile_on_replay`` is False.
+
+        ``source`` is the code whose source text joins the tool's approval fingerprint
+        (:func:`tool_fingerprint`): ``"handler"`` (the default) uses the handler, ``None`` hashes
+        the definition only (a tool that runs elsewhere, such as an MCP or HTTP API tool).
         """
         self.definition = definition
         self.handler = handler
+        self.source = handler if source == "handler" else source
         self.compensation = compensation
         self.replay_validator = replay_validator
         self.precheck = precheck
@@ -591,3 +710,47 @@ def wrap(tool: Tool, middleware: ToolMiddleware) -> Tool:
     ``wrap(tool, logged)`` is ``tool.with_handler(logged(tool.handler))``.
     """
     return tool.with_handler(middleware(tool.handler))
+
+
+def _source_text(source: Callable[..., Any] | None) -> str | None:
+    """The source code of ``source``, or None when it has no stable source (a lambda, a builtin
+    or C-backed callable, code without a file)."""
+    if source is None:
+        return None
+    target: Any = inspect.unwrap(source)
+    if not (inspect.isfunction(target) or inspect.ismethod(target) or inspect.isclass(target)):
+        # A callable object: its class holds the code.
+        target = type(target)
+    if getattr(target, "__name__", "") == "<lambda>":
+        return None
+    try:
+        return inspect.getsource(target)
+    except (OSError, TypeError):
+        return None
+
+
+def tool_fingerprint(tool: Tool) -> str:
+    """SHA-256 (hex) identifying what a call of ``tool`` would run.
+
+    It hashes the canonical form of the definition's name, ``version``, input and output schema,
+    side-effect class and ``requires_approval``, and the source of ``tool.source`` when it has
+    one (``@tool`` functions and plain handler functions). An approval records it when it is
+    asked for; before the approved call runs, a different fingerprint means the tool changed
+    and the approval is asked for again.
+
+    Limits: a tool that runs elsewhere (MCP, HTTP API) is fingerprinted by its declared
+    definition only, so a server that changes behaviour behind the same schema is not detected;
+    lambdas and C-backed handlers have no stable source and are fingerprinted by definition.
+    """
+    definition = tool.definition
+    return canonical_digest(
+        {
+            "name": definition.name,
+            "version": definition.version,
+            "input_schema": definition.input_schema,
+            "output_schema": definition.output_schema,
+            "side_effect": definition.side_effect.value,
+            "requires_approval": definition.requires_approval,
+            "source": _source_text(tool.source),
+        }
+    )

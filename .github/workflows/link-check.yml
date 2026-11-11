@@ -7,7 +7,7 @@ on:
       - "CONTRIBUTING.md"
       - "docs/*.md"
       - "docs/docs.html"
-      - "examples/**/README.md"
+      - "algen_agent_runtime_examples/**/README.md"
       - ".github/workflows/link-check.yml"
   push:
     branches: [main]
@@ -16,7 +16,7 @@ on:
       - "CONTRIBUTING.md"
       - "docs/*.md"
       - "docs/docs.html"
-      - "examples/**/README.md"
+      - "algen_agent_runtime_examples/**/README.md"
       - ".github/workflows/link-check.yml"
   workflow_dispatch:
 
@@ -50,4 +50,4 @@ jobs:
         run: >-
           "$RUNNER_TEMP/lychee" --offline --include-fragments --no-progress
           --root-dir "$GITHUB_WORKSPACE"
-          README.md CONTRIBUTING.md 'docs/*.md' docs/docs.html 'examples/**/README.md'
+          README.md CONTRIBUTING.md 'docs/*.md' docs/docs.html 'algen_agent_runtime_examples/**/README.md'

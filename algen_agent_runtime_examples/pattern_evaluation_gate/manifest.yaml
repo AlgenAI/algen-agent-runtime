@@ -1,0 +1,22 @@
+id: pattern_evaluation_gate
+display_name: "Evaluation and Promotion Gate"
+tier: pattern
+status: runnable
+description: >
+  Shows golden fixtures, acceptance thresholds, structured failures, and a promotion decision gate.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.pattern_evaluation_gate.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.pattern_evaluation_gate.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 60
+deterministic_mock_support: true

@@ -9,7 +9,10 @@ from algen_agent_runtime.config.settings import AppSettings, RetrievalSettings
 from algen_agent_runtime.retrieval.contracts import RetrievalMode, RetrievalQuery, SourceDocument
 from algen_agent_runtime.retrieval.memory import HashingEmbedder
 from algen_agent_runtime.retrieval.vector_stores import ChromaRetriever, PgVectorRetriever
-from examples.pattern_text_to_sql.advanced.knowledge import TENANT_ID, schema_documents
+from algen_agent_runtime_examples.pattern_text_to_sql.advanced.knowledge import (
+    TENANT_ID,
+    schema_documents,
+)
 
 
 def test_pgvector_configuration_requires_connection_url() -> None:

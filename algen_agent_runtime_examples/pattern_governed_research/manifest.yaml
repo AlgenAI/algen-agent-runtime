@@ -1,0 +1,23 @@
+id: pattern_governed_research
+display_name: "Governed Research Agent"
+tier: pattern
+status: runnable
+description: >
+  Evidence-oriented research workflow with bounded local retrieval and citation verification.
+
+extras: []
+external_services: []
+
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.pattern_governed_research.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.pattern_governed_research.app"
+  test: "python -m pytest tests/unit/test_example_workflows.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 30
+deterministic_mock_support: true

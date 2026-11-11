@@ -75,11 +75,14 @@ Runtime appends user clarifications, model responses, tool results, and repair i
 disables loading prior session history; the current run still retains its execution transcript.
 Retrieved evidence remains a fresh builder input rather than being appended repeatedly to history.
 
-Packing preserves system messages, the latest user message, and the newest message group. An
-assistant tool-call message and its tool results form one group, including partially executed
-parallel calls. Older groups are retained from newest to oldest until the next group no longer fits.
-Orphan tool results raise `ConflictError`; required context that cannot fit raises
-`BudgetExceededError` rather than silently dropping instructions or exceeding the configured bound.
+Packing preserves system messages, the latest user message, the user request that started the run
+(when a repair turn follows it), and the newest message group. An assistant tool-call message and
+its tool results form one group, including partially executed parallel calls. Older groups are
+retained from newest to oldest until the next group no longer fits, or in shortened form with
+[`shorten_older_tool_results`](artifacts.md#shortened-older-tool-results). A tool result without
+its tool call is dropped from the request with a warning log; required context that cannot fit
+raises `BudgetExceededError` rather than silently dropping instructions or exceeding the
+configured bound.
 
 The default limit is 16,000 estimated tokens. Applications can replace the registered default builder:
 
