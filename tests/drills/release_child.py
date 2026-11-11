@@ -1,5 +1,5 @@
 """A Runtime process of whichever release ``PYTHONPATH`` points at, for the upgrade and rollback
-drills. It uses only interfaces ``0.1.0a17`` already had.
+drills. It uses only interfaces every release since ``0.1.0a17`` has.
 
 It reads its plan from ``DRILL_PLAN`` (JSON), starts a container on the drill database (which
 migrates it as that release would), does one thing, stops gracefully and prints one line,

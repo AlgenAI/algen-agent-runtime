@@ -421,11 +421,11 @@ results, approval requests) is written so the previous release can read it, so:
 
 - **Upgrade:** start the new release. It applies the missing migrations under an advisory lock
   (concurrent starts wait for one another) and carries on what the previous release left; the drill
-  starts `0.1.0a17` on an empty database, pauses a run, then starts the current code, which applies
-  `015` and resumes the run.
+  starts the previous release (`0.1.0a23`, migrated through `016`) on an empty database, pauses a
+  run, then starts the current code, which applies `017` and `018` and resumes the run.
 - **Rollback:** stop the new release and start the previous one on the same database. Leave the
   newer migrations in place: the previous release ignores migration rows it does not know and does
-  not read the new columns or tables. The drill rolls back to `0.1.0a17` after the current code has
+  not read the new columns or tables. The drill rolls back to `0.1.0a23` after the current code has
   migrated and written, and reads, lists and resumes the current code's runs there.
 
 | Migration | Since | Change | Safe to leave on rollback |

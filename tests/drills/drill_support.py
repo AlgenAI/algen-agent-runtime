@@ -188,8 +188,32 @@ async def apply_migrations(dsn: str, through: str) -> list[str]:
 
 # --- The previous release ----------------------------------------------------------------------
 
-PREVIOUS_RELEASE = os.environ.get("ALGEN_DRILL_PREVIOUS_RELEASE", "v0.1.0a17")
+# The release before this one, and the last migration it applies. Move both together when a
+# release ships; test_the_previous_release_matches_its_tag checks them against the tag.
+PREVIOUS_RELEASE = os.environ.get("ALGEN_DRILL_PREVIOUS_RELEASE", "v0.1.0a23")
+PREVIOUS_LAST_MIGRATION = os.environ.get("ALGEN_DRILL_PREVIOUS_LAST_MIGRATION", "016")
 _previous_source: dict[str, Path] = {}
+
+
+def previous_release_migrations() -> list[str]:
+    """The migration files the previous release ships, from its git tag; skips without the tag."""
+    found = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "ls-tree",
+            "--name-only",
+            PREVIOUS_RELEASE,
+            "src/algen_agent_runtime/persistence/migrations/",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if found.returncode != 0:
+        pytest.skip(f"the previous release's tag {PREVIOUS_RELEASE} is not in this checkout")
+    return sorted(Path(line).name for line in found.stdout.splitlines() if line.endswith(".sql"))
 
 
 def previous_release_source() -> Path:
