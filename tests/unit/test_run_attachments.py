@@ -3,6 +3,7 @@ dispatch, and retired from memory after the turn."""
 
 from __future__ import annotations
 
+import re
 import struct
 import zlib
 from typing import Any
@@ -11,24 +12,31 @@ import pytest
 from conftest import make_agent, make_runtime
 
 from algen_agent_runtime.models.base import ModelRouter
-from algen_agent_runtime.models.providers.mock import MockModelProvider
+from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.persistence.memory import InMemoryArtifactStore
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision, PolicyPoint
 from algen_agent_runtime.runtime.attachments import (
     DATA_NOTE,
+    describe_for_text,
+    rendered_text,
     resolve,
     sniff_media_type,
     user_message,
 )
+from algen_agent_runtime.tools.contracts import Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.types.contracts import (
     Artifact,
     ArtifactStatus,
     AttachmentPolicy,
     FileBlock,
+    FinishReason,
     MemoryPolicy,
+    Message,
     ModelCapabilities,
     ModelProfile,
     ModelRequest,
+    ModelResponse,
+    Role,
     RunAttachment,
     RunRequest,
     RunStatus,
@@ -293,4 +301,54 @@ async def test_the_mock_shows_files_it_cannot_read_as_text() -> None:
 
     result = await runtime.run(_request(RunAttachment(artifact_id=image.id)))
 
-    assert "[attachment: passport.png, image/png]" in (result.output or "")
+    assert f"[attachment: passport.png, image/png, id={image.id}]" in (result.output or "")
+
+
+def test_a_file_without_a_name_is_shown_by_its_id() -> None:
+    block = FileBlock(artifact_id="artifact-1")
+
+    assert describe_for_text(block) == "[attachment: artifact-1, unknown, id=artifact-1]"
+
+
+async def test_a_text_only_model_hands_the_file_to_a_reader_tool_by_its_id() -> None:
+    image = _artifact(png())
+    read: list[str] = []
+
+    async def extract(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        read.append((await context.read_attachment(arguments["artifact_id"])).name)
+        return {"text": "PASSPORT"}
+
+    def reply(request: ModelRequest) -> ModelResponse:
+        if read:
+            return ModelResponse(
+                message=Message.text(Role.ASSISTANT, "It is a passport."),
+                finish_reason=FinishReason.STOP,
+                model="deterministic",
+                provider="mock",
+            )
+        found = re.search(r"id=([^\]]+)\]", rendered_text(request.messages[-1]))
+        assert found is not None
+        return tool_call_response("docs.extract", {"artifact_id": found.group(1)})
+
+    runtime, _ = _runtime(
+        await _store(image),
+        provider=MockModelProvider(handler=reply),
+        enabled_tools=frozenset({"docs.extract"}),
+    )
+    runtime.tools.register(
+        Tool(
+            ToolDefinition(
+                name="docs.extract",
+                version="1",
+                description="Extract a file's text",
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            ),
+            extract,
+        )
+    )
+
+    result = await runtime.run(_request(RunAttachment(artifact_id=image.id)))
+
+    assert result.status == RunStatus.COMPLETED
+    assert read == ["passport.png"]

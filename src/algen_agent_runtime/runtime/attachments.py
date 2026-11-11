@@ -305,13 +305,16 @@ async def retire(
 
 
 def describe_for_text(block: FileBlock) -> str:
-    """How a provider that cannot read files shows one: ``[attachment: name, type]``."""
-    return f"[attachment: {block.name or block.artifact_id}, {block.media_type or 'unknown'}]"
+    """How a provider that cannot read files shows one: ``[attachment: name, type, id=...]``.
+    The artifact id lets a text-only model hand the file to a tool that reads attachments."""
+    name = block.name or block.artifact_id
+    media_type = block.media_type or "unknown"
+    return f"[attachment: {name}, {media_type}, id={block.artifact_id}]"
 
 
 def rendered_text(message: Message) -> str:
-    """A message's text with each file shown as ``[attachment: name, type]``, for providers
-    that read text only (the mock and local transformers)."""
+    """A message's text with each file shown as ``[attachment: name, type, id=...]``, for
+    providers that read text only (the mock and local transformers)."""
     parts = [
         block.text if isinstance(block, TextBlock) else describe_for_text(block)
         for block in message.content

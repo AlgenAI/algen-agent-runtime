@@ -111,11 +111,15 @@ image and 8,000 for a PDF).
 | Anthropic | `image` blocks (base64; URL images too) | `document` blocks (`files: true`) |
 | OpenAI | `image_url` data URLs | `file` parts (`files: true`) |
 | Other OpenAI-compatible | `image_url` data URLs where `images: true` | refused (`files: false`) |
-| Mock, local transformers | rendered as `[attachment: name, type]` | same |
+| Mock, local transformers | rendered as `[attachment: name, type, id=artifact_id]` | same |
 
 A model that lacks the capability is skipped for runs with files, fallbacks included; a file is
 never silently dropped. Custom `ModelProvider` implementations report `images: false` by default,
 so they are refused rather than ignoring a file.
+
+A model that reads text only sees each file as `[attachment: passport.png, image/png,
+id=<artifact_id>]`. The id is the one a tool passes to `context.read_attachment` (section 7), so
+the model can hand the file to a reader tool, such as one that extracts a document's text.
 
 ## 7. Tools
 
