@@ -49,8 +49,10 @@ what the settings declare, never constructor arguments, so:
 An agent that makes many tool calls or changes state should use the Runtime's own guards rather than
 rules in its instructions or plugin code: prechecks, refusal limits, the repeat guard and call
 limits, the wrap-up notice and shortened older tool results. A tool that must act as the signed-in
-user reads the caller's credentials from `ToolContext.credentials`. See "Tool-heavy and acting
-agents" in `references/project-shape.md`.
+user reads the caller's credentials from `ToolContext.credentials`. For several users, give each
+user their own `session_id`, grant `approvals:decide` to people who approve other users' runs, and
+let an agent delegate with `core.subagent` only to the agents in its `delegates` list (off unless
+`runtime.subagent.enabled`). See "Tool-heavy and acting agents" in `references/project-shape.md`.
 
 Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
 Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy

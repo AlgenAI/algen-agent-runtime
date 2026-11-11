@@ -18,7 +18,7 @@ persisted. Remote MCP servers that need per-user sign-in use the Runtime's MCP O
 in an environment variable.
 
 For each connection, declare least-privilege permissions, read/write behavior, idempotency, strict
-schemas, timeout, retry policy, concurrency, result-size limit, and allowed destinations. Mark it on
+schemas (mark id fields `"format": "identifier"` so the `pii` guardrail does not mask them), timeout, retry policy, concurrency, result-size limit, and allowed destinations. Mark it on
 the consuming workflow node with a `WorkflowResourceReference` so Studio can display the actual
 topology.
 

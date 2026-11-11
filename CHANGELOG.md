@@ -6,6 +6,8 @@ contracts are explicitly marked experimental during the `0.x` series.
 
 ## [Unreleased]
 
+## [0.2.0b2] - 2026-11-11
+
 Fixes from an independent review of 0.2.0b1: four tenant-isolation and privilege issues, run
 output that failed or changed after verification, streams that never ended on a pause, a recovery
 race between two processes, and PII, secrets and injection rules that refused ordinary data. Run
@@ -268,5 +270,6 @@ only fixes and additive changes. Read the upgrade notes first; migrations 017 an
 
 The `0.1` pre-releases (`0.1.0a1` to `0.1.0a23`) are in [CHANGELOG-0.1.md](CHANGELOG-0.1.md).
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b1...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b2...HEAD
+[0.2.0b2]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b1...v0.2.0b2
 [0.2.0b1]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a23...v0.2.0b1

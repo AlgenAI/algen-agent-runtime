@@ -140,6 +140,24 @@ agents:
   (docs/agent-tooling.md, "Delegating to another agent").
 - A `session_id` belongs to the user who first used it: a run naming another user's session is
   refused as not found. Do not share one session id between users; give each user their own.
+- Over HTTP, only a run's own user decides its approval, cancels, steers or answers it (a
+  conversation's turns belong to the conversation's owner). An approver working from
+  `/v1/approvals` on other users' runs needs the `approvals:decide` scope, an operator who cancels
+  them `runs:admin`; map those scopes to the right roles in `api.auth`. The approval records
+  `decided_by` (the authenticated user), `decided_at` and an optional `comment`.
+- A run that did not complete has no `output` (`RunResult.output` is `None`, `output_text` null);
+  check `status` first. A verification failure keeps the rejected answer in `rejected_output` for
+  review, never for the user.
+- `AlgenAgentRuntimeClient.stream()` and `GET /v1/runs/{id}/events` end when the run pauses
+  (`approval.required`, `clarification.required`, `tool.reconciliation_required`). After the
+  decision, follow the resumed run with `client.stream_events(run_id, after=...)` or reconnect
+  with `Last-Event-ID`.
+- The `pii` guardrail keeps a tool field whose schema declares `"format": "identifier"` (or
+  `"x-pii": false`): use it for order, tracking and chat ids, not for free text. An agent that must
+  see a kind unmasked turns it off with `guardrail_policy.pii.exempt_entities` (for example
+  `[phone]` for a dispatcher); the 12-digit Aadhaar rule already needs a valid checksum.
+- `core.working_state_update` declares no side effect, so it never pauses for approval; it still
+  needs `context.write` and the expected revision.
 - A tool that acts as the signed-in user reads `context.credentials` (for example
   `context.credentials["authorization"]`). The host passes them with
   `runtime.run(request, credentials=...)` (or `AlgenAgentRuntimeClient.run`/`stream` with the same
@@ -189,8 +207,9 @@ turn that keeps it pays for it. See docs/attachments.md.
 Before calling a project production-ready, check the deployment settings, not only the agent:
 `api.auth_mode: oidc` for the HTTP API, PostgreSQL stores, per-run `budget` limits (including
 `max_model_calls`), `storage.quotas` and retention, `network` egress rules, and `policies.on_error`.
-`/health/ready` reports `degraded` for an optional dependency that is down. See
-docs/operations.md and docs/production-readiness.md.
+`/health/ready` reports `degraded` for an optional dependency that is down. Run recovery
+(`runtime.recover_incomplete_runs`) on exactly one process per database: recovery is single-node
+until 0.3. See docs/operations.md and docs/production-readiness.md.
 
 ## Importability
 

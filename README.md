@@ -15,7 +15,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.2.0b1` is the first beta of a single-node foundation; its public API is a candidate for `1.0`. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.2.0b2` is the second beta of a single-node foundation; its public API is a candidate for `1.0`. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 **[Documentation](https://algenai.github.io/algen-agent-runtime/)** · [Why use it](docs/why-algen-agent-runtime.md) · [Examples](#importable-examples) · [Changelog](CHANGELOG.md)
 
@@ -87,7 +87,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Beta (`0.2.0b1`) |
+| Package maturity | Beta (`0.2.0b2`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -129,7 +129,7 @@ python -m pip install --pre 'algen-agent-runtime[langgraph]'
 To install a release from its GitHub tag instead of PyPI:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.2.0b1
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.2.0b2
 ```
 
 For development from a checkout:
