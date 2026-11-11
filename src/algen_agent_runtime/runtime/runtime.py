@@ -410,7 +410,7 @@ class AgentRuntime:
         self.artifacts = artifacts
         self.attachment_limits = attachment_limits or run_attachments.AttachmentLimits()
         self.learned_memory = (
-            LearnedMemoryService(learned_memory_store, self._memory_context)
+            LearnedMemoryService(learned_memory_store, self._memory_context, self.router.provider)
             if learned_memory_store is not None
             else None
         )
@@ -456,6 +456,7 @@ class AgentRuntime:
                 )
             if any(MEMORY_PERMISSIONS[name] not in agent.tool_permissions for name in memory_tools):
                 raise ConfigurationError("learned memory tools require their memory permissions")
+            self.learned_memory.check_policy(agent.learned_memory_policy)
         elif memory_tools:
             raise ConfigurationError("memory tools require learned_memory_policy.enabled")
         if agent.context_policy.skills_enabled and (

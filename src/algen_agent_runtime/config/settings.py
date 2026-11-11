@@ -945,6 +945,12 @@ class AppSettings(StrictSettings):
                     invalid_references.append(
                         f"agents[{agent.name}].fallback_models[{idx}].provider ({fallback.provider!r})"
                     )
+            memory_embeddings = agent.learned_memory_policy.embedding_provider
+            if memory_embeddings is not None and unknown(memory_embeddings):
+                invalid_references.append(
+                    f"agents[{agent.name}].learned_memory_policy.embedding_provider "
+                    f"({memory_embeddings!r})"
+                )
             preferences = [
                 profile.routing_preference
                 for profile in (agent.default_model, *agent.fallback_models)

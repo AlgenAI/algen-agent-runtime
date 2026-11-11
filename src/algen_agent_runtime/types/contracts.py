@@ -250,6 +250,38 @@ class LearnedMemoryPolicy(StrictModel):
     enabled: bool = False
     max_recall_tokens: int = Field(default=2048, ge=128, le=8192)
     max_retention_seconds: int = Field(default=2592000, ge=60, le=31536000)
+    # How core.memory_recall ranks a non-empty query: ``substring`` matches keys and content
+    # literally; ``semantic`` ranks by embedding similarity; ``hybrid`` combines both.
+    recall: Literal["substring", "semantic", "hybrid"] = "substring"
+    # Semantic and hybrid recall drop records scoring below this (0-1; cosine similarity for
+    # ``semantic``, the weighted score for ``hybrid``).
+    min_score: float = Field(default=0.0, ge=0, le=1)
+    # The weight of a key or substring match in a ``hybrid`` score; similarity gets the rest.
+    hybrid_keyword_weight: float = Field(default=0.3, ge=0, le=1)
+    # A registered model provider (its registration id) and model that embed record content and
+    # recall queries. ``embedding_version`` names the vectors' generation: change it to re-embed
+    # when the provider serves a different model under the same name.
+    embedding_provider: str | None = Field(default=None, min_length=1, max_length=128)
+    embedding_model: str | None = Field(default=None, min_length=1, max_length=256)
+    embedding_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def similarity_needs_embeddings(self) -> LearnedMemoryPolicy:
+        if self.recall != "substring" and self.embedding_provider is None:
+            raise ValueError(
+                f"learned_memory_policy.recall {self.recall!r} needs embedding_provider"
+            )
+        return self
+
+    @property
+    def embedding_identity(self) -> str | None:
+        """The identity recorded with each vector: vectors of another identity are not compared."""
+        if self.recall == "substring" or self.embedding_provider is None:
+            return None
+        return json.dumps(
+            [self.embedding_provider, self.embedding_model, self.embedding_version],
+            separators=(",", ":"),
+        )
 
 
 DEFAULT_SHORTENED_TOOL_RESULT_NOTE = (
