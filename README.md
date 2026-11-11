@@ -444,6 +444,9 @@ Provider and integration dependencies remain optional. See the [provider compati
 
 ## Importable examples
 
+[`examples/README.md`](examples/README.md) lists every example, what it shows, and whether it runs
+offline.
+
 The source and wheel distributions include the `examples` package so portable workflow hook
 providers remain importable by Algen Agent Studio. Import an example directory—or its `agent.yaml`
 or `config/agent.yaml`—and Studio preserves the Runtime `WorkflowManifest` exactly. Credential-free
