@@ -91,9 +91,33 @@ only fixes and additive changes. Read the upgrade notes first; migrations 017 an
   full) and `ToolDefinition.execution: process`, which kills a call at its timeout. (#114)
 - `examples/README.md` index and the offline `quickstart_attachments` example. (#97, #98)
 - A table of the actions each policy boundary supports, pinned by contract tests. (#116)
+- The public surface is recorded in `docs/api/surface.json` (exports with signatures, HTTP routes,
+  configuration fields, errors, event identifiers, `check` codes, protocols, migrations), and
+  `tests/unit/test_api_surface.py` fails on any change to it that the file does not record. Later
+  `0.2` betas only add to it.
 
 ### Fixed
 
+- **The `approval` scaffold no longer approves by itself.** Its `app.py` asks a person by default,
+  fails closed without an answer (exit status 2, nothing applied), and decides headless only with
+  `--approve-all` or `--reject-all`; `--decision` is gone. Generated tests pass the decision
+  explicitly.
+- Generated workflow projects run through the workflow service: the hook module is
+  `<project>_hooks.py`, listed in `security.trusted_plugin_prefixes`, and the README says how to
+  serve it. Before, the service listed their workflows as unavailable and refused to start them.
+- Generated workflows read the run's text from `input`, where the workflow service stores what a
+  caller posts; they read `question`, which only the local `app.py` set, so a run started over
+  HTTP proposed "Default action" and its model saw no text. They also declare their output
+  (`output_key: result` for the approval workflow, `final_summary` with an `output_schema` for the
+  DAG), so `GET /v1/workflows/runs/{id}` returns it instead of `output: null`.
+- An approval decision the workflow refuses (a modification that fails `parameters_schema`, a
+  modification the node does not allow) is refused by `POST /v1/workflows/runs/{id}/approval`
+  with 400 or 409 and the reason. It answered 202 with the run unchanged, and only the server log
+  said why. `MultiAgentWorkflowExecutor.check_approval_decision` runs the same checks without deciding.
+- `check` no longer reports `POST_BUILD_REGISTRATION` for `register_handler` on a
+  `WorkflowHookRegistry` a hook provider returns, and reports a hook provider outside
+  `security.trusted_plugin_prefixes` as `HOOK_PROVIDER_UNTRUSTED` (an error for
+  `--profile standalone`, a warning for Studio, which reviews hook modules itself).
 - A streamed model call falls back to the next candidate when the provider fails before its first
   event; failures count against the provider's health. (#106, contributed by Abhishek Patel)
 - An approved call runs with the arguments its approver approved: a `plan_tool` transform is not
@@ -104,6 +128,11 @@ only fixes and additive changes. Read the upgrade notes first; migrations 017 an
 ### Changed
 
 - The 0.1 history moved to [CHANGELOG-0.1.md](CHANGELOG-0.1.md).
+- The upgrade and rollback drills run against `0.1.0a23` (they ran against `0.1.0a17`), and check
+  that the migrations they apply as the previous release match its tag.
+- `scripts/ci-local.sh` builds and tests the way CI does (sdist, wheel from the sdist, artifact
+  checks, a clean install, the base job on Linux); CI and the release workflow run the same
+  `scripts/check_dist.py` and `scripts/smoke-install.sh`.
 - Development dependencies allow mypy 2, pytest-cov 7 and redis-py up to 8 (#94). `mcp` 2 and
   `transformers` 5 are not supported yet.
 
