@@ -549,6 +549,10 @@ button.feature:hover { border-color: var(--gold-light); box-shadow: var(--shadow
 .release-group ul { margin: 0; padding: 12px 18px 14px 34px; }
 .release-group li { font-size: var(--text-sm); }
 .release-history { display: grid; gap: 8px; margin-top: 14px; }
+.release-line { display: grid; gap: 8px; }
+.release-line > summary { cursor: pointer; font-weight: 600; padding: 6px 2px; }
+.release-line[open] > summary { margin-bottom: 4px; }
+.release-line > button { margin-left: 0; }
 .release-history button { display: grid; grid-template-columns: 96px 1fr auto; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--divider); border-radius: var(--radius); background: var(--paper); text-align: left; cursor: pointer; box-shadow: var(--shadow-xs); }
 .release-history button:hover { border-color: var(--gold-light); }
 .release-history button[aria-current='true'] { border-color: var(--gold-light); background: var(--brand-pale); }
@@ -685,28 +689,6 @@ mark.hit { padding: 0 2px; border-radius: 3px; background: var(--brand-pale); co
   <div class="version-select">
     <label class="sr-only" for="versionSelect">Documentation version</label>
     <select id="versionSelect" title="Documentation version">
-      <option value="0.1.0a23">v0.1.0a23</option>
-      <option value="0.1.0a22">v0.1.0a22</option>
-      <option value="0.1.0a21">v0.1.0a21</option>
-      <option value="0.1.0a20">v0.1.0a20</option>
-      <option value="0.1.0a19">v0.1.0a19</option>
-      <option value="0.1.0a18">v0.1.0a18</option>
-      <option value="0.1.0a17">v0.1.0a17</option>
-      <option value="0.1.0a16">v0.1.0a16</option>
-      <option value="0.1.0a15">v0.1.0a15</option>
-      <option value="0.1.0a14">v0.1.0a14</option>
-      <option value="0.1.0a13">v0.1.0a13</option>
-      <option value="0.1.0a12">v0.1.0a12</option>
-      <option value="0.1.0a11">v0.1.0a11</option>
-      <option value="0.1.0a10">v0.1.0a10</option>
-      <option value="0.1.0a9">v0.1.0a9</option>
-      <option value="0.1.0a8">v0.1.0a8</option>
-      <option value="0.1.0a7">v0.1.0a7</option>
-      <option value="0.1.0a6">v0.1.0a6</option>
-      <option value="0.1.0a5">v0.1.0a5</option>
-      <option value="0.1.0a4">v0.1.0a4</option>
-      <option value="0.1.0a3">v0.1.0a3</option>
-      <option value="0.1.0a2">v0.1.0a2</option>
     </select>
   </div>
   <a class="btn-icon github-link" href="https://github.com/AlgenAI/algen-agent-runtime" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub repository"><svg class="i"><use href="#i-github"/></svg></a>
@@ -995,7 +977,7 @@ Hello</pre></div>
       <section class="doc" id="releases">
         <div class="section-kicker"><span class="section-icon"><svg class="i"><use href="#i-history"/></svg></span>Get started</div>
         <h2>What's new<a class="anchor" href="#releases" aria-label="Link to this section">#</a></h2>
-        <p>Use the version selector in the header to read the documentation for a specific pre-release. Entries are taken from <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>.</p>
+        <p>The version selector in the header lists the newest release of each line; pick any earlier release from the release history below. Entries are taken from <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>.</p>
         <div class="release-head"><span class="pill" id="releaseBadge"></span><span class="release-meta" id="releaseMeta"></span></div>
         <h3 id="releaseTitle" style="margin-top:8px"></h3>
         <p id="releaseSummary"></p>
@@ -3803,7 +3785,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   /* ----- Architecture explorer (data mirrors docs/algen-runtime-architecture-atlas.html) ----- */
   const arch = (() => {
-    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
+    const VERSION_ORDER = ['0.1.0a1', '0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23', '0.2.0b1'];
     const versions = {
       '0.1.0a1': { status: 'first public alpha · native execution foundation', summary: 'A restart-aware, single-node governed agent kernel with typed workflows, durable checkpoints, policy boundaries, tools, storage, retrieval, artifacts, approvals, telemetry, and analytical execution.', changes: {}, overrides: {} },
       '0.1.0a2': { status: 'published pre-alpha · usability and boundary hardening', summary: 'Adds provider-instance identity, uniform capability policy, early references, scaffolding, starter tools, MCP client foundations, application-registered framework adapters, safe outbound networking, API admission controls, and service-backed storage tests.', changes: { added: ['scaffold', 'starter-tools', 'mcp', 'framework-registry', 'network', 'api-admission', 'hook-loader', 'provider-instance'], changed: ['model-router', 'container', 'algen_agent_runtime_examples', 'release'], removed: [] }, overrides: { 'mcp': { state: 'partial', note: 'Python-wired stdio/SSE tool client; secure defaults, but no YAML or Streamable HTTP.' }, 'framework-registry': { state: 'partial', note: 'Trusted application registration; real LangGraph execution evidence.' }, 'network': { state: 'available' }, 'api-admission': { state: 'available' } } },
@@ -3827,6 +3809,7 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
       '0.1.0a20': { status: 'pre-alpha · toolkit configuration errors', summary: 'A toolkit whose client cannot open because of its configuration raises ToolkitConfigurationError with its own message again.', changes: { added: [], changed: ['tools'], removed: [] }, overrides: {} },
       '0.1.0a21': { status: 'pre-alpha · recoverable model errors', summary: 'A malformed or cut-off tool call is retried instead of failing the run, and output repair works on models that refuse assistant prefill. A startup banner, a check profile for self-hosted projects, and references for hooks, MCP results and scopes.', changes: { added: [], changed: ['model-router', 'native-runtime', 'project-check'], removed: [] }, overrides: { 'model-router': { note: 'Malformed tool calls are retryable InvalidToolCallError; dropped schema limits described for Anthropic and OpenAI.' } } },
       '0.1.0a22': { status: 'pre-alpha · approval and timeout fixes', summary: 'Workflow approvals are decided by the approval node\'s recorded status and their tool steps are audited by digest; synchronous tools run in a worker thread and meet their timeout; the README says what framework adapters govern.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'Approval coverage comes from the approval node\'s status; output keys are unique; input cannot change a decision.' } } },
+      '0.2.0b1': { status: 'beta · public API candidate', summary: 'Deprecated interfaces removed; the server and OTLP exporter are optional extras; approvals bound to the exact call, fingerprinted and explained; documents for tools, files from tools, similarity recall and result coverage.', changes: { added: [], changed: ['approvals', 'workflow-engine', 'tools', 'policies', 'stores', 'api'], removed: [] }, overrides: { approvals: { note: 'Bound to the exact call (ToolApproval); tool fingerprint and model rationale recorded; asked again when the tool changed.' }, 'workflow-engine': { note: 'An approval-required tool step runs only with the call its approval showed or bound.' }, policies: { note: 'transform rewrites a tool call before it runs; redact refuses it; actions per boundary documented.' } } },
       '0.1.0a23': { status: 'pre-alpha · approval gating and tool capacity', summary: 'A workflow tool step needs every approval that gates it, so a rejection never falls back to an earlier approval; a timed-out synchronous tool keeps its concurrency slot until its thread ends.', changes: { added: [], changed: ['workflow-engine', 'tool-authoring', 'project-check'], removed: [] }, overrides: { 'workflow-engine': { note: 'A tool step is approved only when every approval that gates it approved.' } } },
     };
     const nodes = {
@@ -4066,11 +4049,45 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   })();
 
   /* ----- Versioned documentation ----- */
-  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23'];
-  const LATEST_VERSION = '0.1.0a23';
+  const DOC_ORDER = ['0.1.0a2', '0.1.0a3', '0.1.0a4', '0.1.0a5', '0.1.0a6', '0.1.0a7', '0.1.0a8', '0.1.0a9', '0.1.0a10', '0.1.0a11', '0.1.0a12', '0.1.0a13', '0.1.0a14', '0.1.0a15', '0.1.0a16', '0.1.0a17', '0.1.0a18', '0.1.0a19', '0.1.0a20', '0.1.0a21', '0.1.0a22', '0.1.0a23', '0.2.0b1'];
+  const LATEST_VERSION = '0.2.0b1';
   const RELEASES = {
+    '0.2.0b1': {
+      date: '2026-11-11', pending: true, kind: 'Beta',
+      title: 'The first 0.2 beta: deprecations removed, approvals bound to the exact call',
+      summary: 'Everything deprecated during 0.1 is removed, the HTTP server and OTLP exporter become optional extras, and the examples move to the algen_agent_runtime_examples package. Approvals are bound to the exact call they approve, record the tool&#39;s fingerprint and the model&#39;s rationale, and are asked again when the tool changed. Also: documents attached for tools to read, files returned by tools, similarity-ranked memory recall, result coverage, a bounded tool thread pool and policy rewrites before a tool runs. Read the upgrade notes first.',
+      fields: { tag: 'v0.2.0b1', package: '0.2.0b1 · beta', version: '0.2.0b1', pip: 'python -m pip install --pre "algen-agent-runtime[service]==0.2.0b1"' },
+      groups: [
+        { kind: 'Upgrade notes', items: [
+          'Install the server explicitly: <code>pip install "algen-agent-runtime[service]"</code> (or <code>server</code>, <code>otlp</code>). Without it, <code>serve</code> names the extra to install. (#115)',
+          'The examples package is <code>algen_agent_runtime_examples</code>: <code>python -m algen_agent_runtime_examples.quickstart_approval.app</code>, and hook providers named <code>examples.&lt;name&gt;</code> change the same way. No shim. (#115)',
+          'Removed: <code>communications</code> (use algen-agent-tools mail, SMTP or Gmail), <code>database_tool</code> (use <code>PostgresToolkit.query</code>), the document extractors (import from <code>algen_agent_tools.documents.inspection</code>), the <code>documents</code> extra, and usage meters whose <code>reserve()</code> has no <code>call</code>. (#88)',
+          '<code>ToolExecutor.execute(approval=)</code> takes a <code>ToolApproval</code>; a call its approval does not cover raises <code>ApprovalMismatchError</code>. (#117)',
+          'A workflow tool step that needs approval runs only with the exact arguments its approval showed or bound; <code>binding: step</code> keeps the old behaviour and is discouraged. A resumed run may ask again when the tool changed (<code>replaces_approval_id</code>). (#109, #127)',
+          'Policies: the secrets policy answers <code>redact</code>; <code>plan_tool</code> refuses <code>redact</code> and <code>require_clarification</code> and uses <code>tool_policies</code>; <code>transform</code> rewrites a tool call&#39;s arguments instead of refusing it. (#116)',
+          'Attachments: <code>attachments.types</code> lists only model-readable types; move others to <code>tool_read_types</code>. The text placeholder carries the file id. (#130, #131)',
+          'Migrations 017 and 018 are additive. A checkpoint with bound approvals cannot be read by 0.1.0a23: finish those runs before rolling back.'
+        ]},
+        { kind: 'Added', items: [
+          'Approval rationale, tool fingerprints and re-asking when a tool changed; strict workflow approval binding. (#109, #117, #120, #127)',
+          '<code>attachments.tool_read_types</code> for Office documents, e-mail and text a tool reads; tools can return images and PDFs to the model (<code>returns_files</code>). (#129, #130)',
+          'Similarity-ranked learned-memory recall (<code>recall: semantic | hybrid</code>). (#124)',
+          '<code>ResultCoverage</code> and the opt-in <code>result_coverage</code> verifier. (#135)',
+          '<code>GovernedToolBridge</code>: Runtime tools called from inside OpenAI Agents or LangGraph go through the Runtime&#39;s executor. (#119)',
+          'A bounded thread pool for synchronous tools and <code>execution: process</code>, killed at its timeout. (#114)',
+          'An index of every example and the offline <code>quickstart_attachments</code> example. (#97, #98)'
+        ]},
+        { kind: 'Fixed', items: [
+          'A streamed call falls back to the next model when the provider fails before its first event. (#106)',
+          'Context shortening keeps older tool results shortened, and a stray tool result no longer fails the run. (#133)'
+        ]},
+        { kind: 'Compatibility', items: [
+          'The full upgrade notes are in <a href="https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">CHANGELOG.md</a>; the 0.1 history is in CHANGELOG-0.1.md. algen-agent-tools and Algen Agent Studio need releases that allow Runtime 0.2.'
+        ]}
+      ]
+    },
     '0.1.0a23': {
-      date: '2026-11-04', pending: true, kind: 'Security and correctness',
+      date: '2026-11-04', pending: false, kind: 'Security and correctness',
       title: 'Tool steps need every gating approval; timed-out tools keep their capacity',
       summary: 'Fixes from a second external review of 0.1.0a22. A workflow tool step that needs approval runs only when every approval that gates it approved, so a rejected approval no longer falls back to an earlier one. Parallel approvals are asked one at a time instead of failing the workflow. A timed-out synchronous tool keeps its concurrency slot until its thread ends and is not retried over it. No migrations, no new deprecations.',
       fields: { tag: 'v0.1.0a23', package: '0.1.0a23 · pre-alpha', version: '0.1.0a23', pip: 'python -m pip install "algen-agent-runtime==0.1.0a23"' },
@@ -4589,6 +4606,24 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
 
   const versionSelect = $('#versionSelect');
   const versionRank = (version) => DOC_ORDER.indexOf(version);
+  // A release line is its minor version: 0.1.0a23 and 0.1.0a2 are both 0.1.
+  const releaseLine = (version) => version.split('.').slice(0, 2).join('.');
+  const ALL_RELEASES = '__all';
+
+  // The selector lists the newest release of each line and the version being read; every other
+  // release is one click away in the release history, so the list grows by line, not by release.
+  function renderVersionOptions(current) {
+    const newest = new Map();
+    DOC_ORDER.forEach((id) => newest.set(releaseLine(id), id));
+    const shown = [...newest.values()];
+    if (!shown.includes(current)) shown.push(current);
+    shown.sort((a, b) => versionRank(b) - versionRank(a));
+    versionSelect.innerHTML = shown.map((id) => {
+      const label = newest.get(releaseLine(id)) === id ? `v${id}` : `v${id} (older ${releaseLine(id)})`;
+      return `<option value="${id}">${label}</option>`;
+    }).join('') + `<option value="${ALL_RELEASES}">All releases…</option>`;
+    versionSelect.value = current;
+  }
 
   function renderRelease(version) {
     const release = RELEASES[version];
@@ -4601,10 +4636,16 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     $('#releaseSummary').textContent = release.summary;
     $('#releaseGroups').innerHTML = release.groups.map((group) => `
       <div class="card release-group"><h4>${group.kind}</h4><ul>${group.items.map((item) => `<li>${item}</li>`).join('')}</ul></div>`).join('');
-    $('#releaseHistory').innerHTML = [...DOC_ORDER].reverse().map((id) => `
-      <button type="button" class="btn btn-secondary" data-version-jump="${id}" aria-current="${id === version}">
-        <code>v${id}</code><span>${RELEASES[id].title}</span><em>${RELEASES[id].pending ? 'pending publication' : RELEASES[id].date}</em>
-      </button>`).join('');
+    const lines = [...new Set([...DOC_ORDER].reverse().map(releaseLine))];
+    $('#releaseHistory').innerHTML = lines.map((line) => {
+      const ids = [...DOC_ORDER].reverse().filter((id) => releaseLine(id) === line);
+      // The line being read is open; older lines are folded.
+      const open = releaseLine(version) === line ? ' open' : '';
+      return `<details class="release-line"${open}><summary>${line}.x <span class="release-meta">${ids.length} release${ids.length === 1 ? '' : 's'}</span></summary>${ids.map((id) => `
+        <button type="button" class="btn btn-secondary" data-version-jump="${id}" aria-current="${id === version}">
+          <code>v${id}</code><span>${RELEASES[id].title}</span><em>${RELEASES[id].pending ? 'pending publication' : RELEASES[id].date}</em>
+        </button>`).join('')}</details>`;
+    }).join('');
     $$('[data-version-jump]').forEach((button) => button.addEventListener('click', () => setVersion(button.dataset.versionJump)));
   }
 
@@ -4620,7 +4661,8 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
   function setVersion(version) {
     const target = RELEASES[version] ? version : LATEST_VERSION;
     const release = RELEASES[target];
-    versionSelect.value = target;
+    renderVersionOptions(target);
+    versionSelect.dataset.current = target;
     $$('[data-version-field]').forEach((element) => {
       const value = release.fields[element.dataset.versionField];
       if (value !== undefined) element.textContent = value;
@@ -4645,7 +4687,11 @@ print_startup_banner(settings, title="ms-email-test", tagline="a governed Outloo
     if (search.value) runSearch();
   }
 
-  versionSelect.addEventListener('change', (event) => setVersion(event.target.value));
+  versionSelect.addEventListener('change', (event) => {
+    if (event.target.value !== ALL_RELEASES) { setVersion(event.target.value); return; }
+    versionSelect.value = DOC_ORDER.includes(versionSelect.dataset.current) ? versionSelect.dataset.current : LATEST_VERSION;
+    location.hash = 'release-history';
+  });
 
   let requestedVersion = null;
   try { requestedVersion = new URL(location.href).searchParams.get('v'); } catch (error) { requestedVersion = null; }
