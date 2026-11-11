@@ -258,6 +258,7 @@ async def test_postgres_sweeper_batches_the_new_windows() -> None:
 
     assert report.deleted == {
         "memory": 20,
+        "session_owners": 20,
         "conversations": 20,
         "conversation_messages": 60,
         "conversation_events": 100,

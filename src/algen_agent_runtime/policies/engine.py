@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from typing import Any, Protocol
@@ -43,19 +43,83 @@ class Policy(Protocol):
     ) -> PolicyDecision: ...
 
 
+# A key that names a credential: the whole key or its last part (``secret``, ``SECRET_KEY``,
+# ``db.password``, ``githubToken``); ``max_tokens`` or ``token_count`` are not.
+_SECRET_KEY = (
+    r"[A-Za-z0-9_.-]*?"
+    r"(?:api[_-]?key|access[_-]?key|secret(?:[_-]?key)?|password|passwd|private[_-]?key|token)"
+)
+
+# Keys that are also ordinary words: after one of these, ``key: value`` may be prose.
+_PROSE_SECRET_KEYS = frozenset({"secret", "password", "passwd", "token"})
+
+
+def _looks_like_credential(value: str) -> bool:
+    """A value written as prose after ``secret:`` or ``token:`` is redacted only when it reads
+    as a credential: it has a digit, letters in mixed case inside it, or it is long and varied.
+    ``The secret: consistency`` is left alone."""
+    if any(character.isdigit() for character in value):
+        return True
+    if len(value) >= 12 and re.search(r"[a-z][A-Z]|[A-Z]{2}[a-z]", value):
+        return True
+    return len(value) >= 16 and len(set(value)) >= 10
+
+
 class SecretRedactionPolicy:
+    """Redact credentials written as ``key: value`` or ``key=value``, and bearer tokens.
+
+    A value is redacted when its key is written the way code and configuration write it (an
+    identifier such as ``api_key`` or ``SECRET``, a quoted key, or ``=``), when the value is
+    quoted, or when the value itself reads as a credential (see ``_looks_like_credential``).
+    Prose such as "The secret: consistency" is left alone.
+    """
+
     name = "secrets"
     category = "input_validation"
     enforcement_mode = "warn"
     applies_to = _CONTENT_BOUNDARIES
     _pattern = re.compile(
-        r"(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*([A-Za-z0-9_\-/.]{8,})"
+        r"(?i)(?P<kq>[\"']?)(?<![A-Za-z0-9_.-])(?P<key>" + _SECRET_KEY + r")(?![A-Za-z0-9_])"
+        r"(?P=kq)\s*(?P<op>[:=])\s*(?P<vq>[\"']?)(?P<value>[A-Za-z0-9_\-/.]{8,})"
     )
     # ``Authorization: Bearer <token>``: a token has a digit or a separator, so prose such as
     # "bearer instruments" is left alone.
     _bearer = re.compile(
         r"(?i)\bbearer\s+((?=[A-Za-z0-9._~+/-]*[0-9._~+/-])[A-Za-z0-9._~+/-]{8,}=*)"
     )
+
+    @staticmethod
+    def _is_secret(match: re.Match[str]) -> bool:
+        key = match.group("key")
+        return bool(
+            match.group("op") == "="
+            or match.group("kq")
+            or match.group("vq")
+            # An identifier (api_key, SECRET, githubToken), not a word in a sentence.
+            or key.lower() not in _PROSE_SECRET_KEYS
+            or key.isupper()
+            or _looks_like_credential(match.group("value"))
+        )
+
+    @classmethod
+    def _redact_text(cls, text: str) -> tuple[str, int]:
+        count = 0
+
+        def keyed(match: re.Match[str]) -> str:
+            nonlocal count
+            if not cls._is_secret(match):
+                return match.group(0)
+            count += 1
+            start, end = match.span("value")
+            offset = match.start()
+            whole = match.group(0)
+            return whole[: start - offset] + "[REDACTED]" + whole[end - offset :]
+
+        transformed = cls._pattern.sub(keyed, text)
+        transformed, found = cls._bearer.subn(
+            lambda match: match.group(0).replace(match.group(1), "[REDACTED]"), transformed
+        )
+        return transformed, count + found
 
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
@@ -79,14 +143,7 @@ class SecretRedactionPolicy:
             # StrEnum members are str instances; rewriting them would drop the enum type.
             return value, False
         if isinstance(value, str):
-            transformed = value
-            count = 0
-            for pattern in (self._pattern, self._bearer):
-                transformed, found = pattern.subn(
-                    lambda match: match.group(0).replace(match.group(1), "[REDACTED]"),
-                    transformed,
-                )
-                count += found
+            transformed, count = self._redact_text(value)
             return transformed, bool(count)
         if isinstance(value, BaseModel):
             updates: dict[str, Any] = {}
@@ -158,9 +215,117 @@ def _luhn(number: str) -> bool:
     return total % 10 == 0
 
 
+# Verhoeff's dihedral-group tables: the last digit of an Aadhaar number is its check digit.
+_VERHOEFF_MULTIPLY = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
+    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
+    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+_VERHOEFF_PERMUTE = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 5, 2, 7),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
+    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
+    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+
+
+def _verhoeff(number: str) -> bool:
+    """Whether a digit string ends in its Verhoeff check digit, as every Aadhaar number does.
+    Nine in ten other 12-digit identifiers (invoice, order and account numbers) fail."""
+    check = 0
+    digits = [int(character) for character in number if character.isdigit()]
+    for index, digit in enumerate(reversed(digits)):
+        check = _VERHOEFF_MULTIPLY[check][_VERHOEFF_PERMUTE[index % 8][digit]]
+    return check == 0
+
+
+# Identifiers must stand alone: a digit run inside a UUID, hash or other token (a letter, digit,
+# underscore or hyphen next to it) is not a phone or Aadhaar number, nor are three groups of a
+# longer grouped number (``2345 6789 0124 5678``) or the digits of a decimal.
+_AADHAAR = re.compile(
+    r"(?<![\w-])(?<!\d{4}[\s-])(?<!\d\.)"
+    r"[2-9]\d{3}(?P<separator>[\s-]?)\d{4}(?P=separator)\d{4}"
+    r"(?![\w-])(?![\s-]\d{4}(?!\d))(?!\.\d)"
+)
+# An Indian mobile number: ten digits starting 6 to 9, perhaps with +91, 91 or 0 before them.
+_PHONE = re.compile(
+    r"(?<![\w+-])(?<!\d\.)"
+    r"(?P<prefix>\+91[\s.-]?|91[\s.-]?|0)?"
+    r"[6-9]\d{4}(?P<separator>[\s.-]?)\d{5}"
+    r"(?![\w-])(?!\.\d)"
+)
+# Words that say a bare ten-digit number near them is a phone number. Without one (or +91, a
+# leading 0, or 5-5 grouping), a ten-digit run is an order, ticket or chat id, and is left alone.
+_PHONE_WORDS = frozenset(
+    {
+        "call",
+        "called",
+        "calling",
+        "calls",
+        "cell",
+        "cellphone",
+        "contact",
+        "dial",
+        "mob",
+        "mobile",
+        "ph",
+        "phone",
+        "phones",
+        "sms",
+        "tel",
+        "telephone",
+        "whats",
+        "whatsapp",
+    }
+)
+# Words in prose and in identifiers: ``contactPhone`` and ``mobile_no`` give contact, phone and
+# mobile, no.
+_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
+_PHONE_CONTEXT_CHARS = 40
+# A value with no whitespace: what an identifier field may hold and still be exempt.
+_SINGLE_TOKEN = re.compile(r"\S{1,512}")
+
+
+def _mentions_phone(text: str) -> bool:
+    return any(word.lower() in _PHONE_WORDS for word in _WORDS.findall(text))
+
+
+def _exempt_entities(context: Mapping[str, Any]) -> frozenset[str]:
+    """The identifier kinds the agent's ``guardrail_policy.pii.exempt_entities`` keeps."""
+    guardrails = getattr(context.get("agent"), "guardrail_policy", None)
+    exempt = getattr(getattr(guardrails, "pii", None), "exempt_entities", None)
+    return frozenset(exempt or ())
+
+
 _TOOL_ARGUMENT_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL})
 # The output schema of a tool, by name (None when unknown).
 _ToolSchemas = Callable[[str], Any]
+
+
+def without_policy_hints(schema: Any) -> Any:
+    """``schema`` without the hints only the policy engine reads (``"x-pii"`` and
+    ``"format": "identifier"``), for sending to a model provider. Some providers (Gemini's
+    function declarations) refuse keywords and formats they don't know."""
+    if isinstance(schema, Mapping):
+        return {
+            key: without_policy_hints(value)
+            for key, value in schema.items()
+            if key != "x-pii" and not (key == "format" and value == "identifier")
+        }
+    if isinstance(schema, list):
+        return [without_policy_hints(item) for item in schema]
+    return schema
 
 
 class _SchemaNode:
@@ -218,6 +383,14 @@ class _SchemaNode:
     def is_email(self) -> bool:
         return any(node.get("format") == "email" for node in self._nodes)
 
+    def is_identifier(self) -> bool:
+        """``"format": "identifier"`` or ``"x-pii": false``: the field holds an id (a chat,
+        message or order id), never a person's details. Both are JSON Schema annotations that
+        validators, model providers and earlier Runtimes ignore."""
+        return any(
+            node.get("format") == "identifier" or node.get("x-pii") is False for node in self._nodes
+        )
+
 
 class PIIRedactionPolicy:
     """Redact common direct identifiers before they cross an agent boundary.
@@ -225,30 +398,32 @@ class PIIRedactionPolicy:
     The patterns are deliberately conservative. Deployments can register a specialised
     DLP policy for jurisdiction- or institution-specific identifiers.
 
+    - An email address is redacted wherever it appears.
+    - A card number is redacted when it has a card network's prefix and length and passes the
+      Luhn check.
+    - An Aadhaar number is redacted when it is a whole 12-digit token (perhaps grouped 4-4-4)
+      whose last digit is its Verhoeff check digit.
+    - A ten-digit Indian mobile number is redacted when it is written as one: with ``+91``,
+      ``91`` or ``0`` before it, grouped 5-5 (``98765 43210``), or with a word such as "phone",
+      "mobile" or "call" up to 40 characters before it or in its field's name. A bare ten-digit
+      run is otherwise an order, ticket or chat id, and is left alone.
+
     A tool argument whose input schema declares ``"format": "email"`` and whose value is
     exactly one email address is the tool's declared purpose (a recipient, say), so it is
     left as is; every other argument, such as a subject or body, is still redacted. The same
     holds for a tool result field whose output schema declares it (a sender's address), so an
     agent can reply to the mail it just read; a message body is still redacted.
+
+    A tool field whose schema declares ``"format": "identifier"`` or ``"x-pii": false`` (a chat,
+    message or order id) is left as is when its value is a single token with no whitespace,
+    whatever it looks like. An agent's ``guardrail_policy.pii.exempt_entities`` turns kinds of
+    identifier (``email``, ``phone``, ``aadhaar``, ``card``) off for that agent everywhere.
     """
 
     name = "pii"
     category = "pii"
     enforcement_mode = "warn"
     applies_to = _CONTENT_BOUNDARIES
-    # Identifiers must stand alone: a digit run inside a UUID, hash or other token (a letter,
-    # digit, underscore or hyphen next to it) is not a phone or Aadhaar number.
-    _patterns = (
-        ("email", _EMAIL),
-        (
-            "phone",
-            re.compile(r"(?<![\w+-])(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?![\w-])"),
-        ),
-        (
-            "aadhaar",
-            re.compile(r"(?<![\w-])[2-9]\d{3}[\s-]?\d{4}[\s-]?\d{4}(?![\w-])"),
-        ),
-    )
 
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
@@ -262,7 +437,9 @@ class PIIRedactionPolicy:
         elif point in {PolicyPoint.AFTER_RETRIEVAL, PolicyPoint.BEFORE_MODEL}:
             # The tool results in the history keep the fields their tool declares as addresses.
             tool_schemas = context.get("tool_output_schema")
-        transformed, labels = self._redact(payload, _SchemaNode.root(schema), tool_schemas)
+        transformed, labels = self._redact(
+            payload, _SchemaNode.root(schema), tool_schemas, _exempt_entities(context)
+        )
         if labels:
             return PolicyDecision(
                 action=PolicyAction.REDACT,
@@ -279,29 +456,70 @@ class PIIRedactionPolicy:
         """``value`` with the identifiers this policy finds replaced, at any depth."""
         return self._redact(value)[0]
 
+    @staticmethod
+    def _redact_text(text: str, exempt: frozenset[str], field: str) -> tuple[str, set[str]]:
+        labels: set[str] = set()
+        transformed = text
+        if "card" not in exempt:
+            transformed = _CARD.sub(
+                lambda match: "[REDACTED_CARD]" if _is_card(match.group(0)) else match.group(0),
+                transformed,
+            )
+            if transformed != text:
+                labels.add("card")
+        if "email" not in exempt:
+            transformed, count = _EMAIL.subn("[REDACTED_EMAIL]", transformed)
+            if count:
+                labels.add("email")
+        if "phone" not in exempt:
+            named = _mentions_phone(field)
+            current = transformed
+
+            def phone(match: re.Match[str]) -> str:
+                prefix = match.group("prefix") or ""
+                window = current[max(0, match.start() - _PHONE_CONTEXT_CHARS) : match.start()]
+                if (
+                    # +91 or a trunk 0, or 91 set apart ("91 98765..."), not a bare 91.
+                    prefix.startswith(("+", "0"))
+                    or prefix.endswith((" ", "-", "\t"))
+                    # Grouped 5-5 ("98765 43210"); a dot could be a decimal.
+                    or match.group("separator") in (" ", "-", "\t")
+                    or named
+                    or _mentions_phone(window)
+                ):
+                    labels.add("phone")
+                    return "[REDACTED_PHONE]"
+                return match.group(0)
+
+            transformed = _PHONE.sub(phone, current)
+        if "aadhaar" not in exempt:
+
+            def aadhaar(match: re.Match[str]) -> str:
+                if _verhoeff(match.group(0)):
+                    labels.add("aadhaar")
+                    return "[REDACTED_AADHAAR]"
+                return match.group(0)
+
+            transformed = _AADHAAR.sub(aadhaar, transformed)
+        return transformed, labels
+
     def _redact(
         self,
         value: Any,
         schema: _SchemaNode | None = None,
         tool_schemas: _ToolSchemas | None = None,
+        exempt: frozenset[str] = frozenset(),
+        field: str = "",
     ) -> tuple[Any, set[str]]:
         if isinstance(value, Enum):
             return value, set()
         if isinstance(value, str):
-            if schema is not None and schema.is_email() and _EMAIL.fullmatch(value):
+            if schema is not None and (
+                (schema.is_email() and _EMAIL.fullmatch(value))
+                or (schema.is_identifier() and _SINGLE_TOKEN.fullmatch(value))
+            ):
                 return value, set()
-            labels: set[str] = set()
-            transformed = _CARD.sub(
-                lambda match: "[REDACTED_CARD]" if _is_card(match.group(0)) else match.group(0),
-                value,
-            )
-            if transformed != value:
-                labels.add("card")
-            for label, pattern in self._patterns:
-                transformed, count = pattern.subn(f"[REDACTED_{label.upper()}]", transformed)
-                if count:
-                    labels.add(label)
-            return transformed, labels
+            return self._redact_text(value, exempt, field)
         if (
             tool_schemas is not None
             and isinstance(value, Message)
@@ -310,13 +528,17 @@ class PIIRedactionPolicy:
         ):
             output = _SchemaNode.root(tool_schemas(value.name))
             if output is not None:
-                return self._redact_tool_message(value, output)
+                return self._redact_tool_message(value, output, exempt)
         if isinstance(value, BaseModel):
             updates: dict[str, Any] = {}
             model_labels: set[str] = set()
             for name in type(value).model_fields:
                 item, item_labels = self._redact(
-                    getattr(value, name), schema.property(name) if schema else None, tool_schemas
+                    getattr(value, name),
+                    schema.property(name) if schema else None,
+                    tool_schemas,
+                    exempt,
+                    name,
                 )
                 updates[name] = item
                 model_labels.update(item_labels)
@@ -326,7 +548,11 @@ class PIIRedactionPolicy:
             mapping_labels: set[str] = set()
             for key, item in value.items():
                 transformed_item, item_labels = self._redact(
-                    item, schema.property(key) if schema else None, tool_schemas
+                    item,
+                    schema.property(key) if schema else None,
+                    tool_schemas,
+                    exempt,
+                    key if isinstance(key, str) else "",
                 )
                 transformed_mapping[key] = transformed_item
                 mapping_labels.update(item_labels)
@@ -335,8 +561,9 @@ class PIIRedactionPolicy:
             transformed_items = []
             sequence_labels: set[str] = set()
             for item in value:
+                # A list keeps its field's name: ``phones: [...]`` holds phone numbers.
                 transformed_item, item_labels = self._redact(
-                    item, schema.items() if schema else None, tool_schemas
+                    item, schema.items() if schema else None, tool_schemas, exempt, field
                 )
                 transformed_items.append(transformed_item)
                 sequence_labels.update(item_labels)
@@ -349,7 +576,7 @@ class PIIRedactionPolicy:
         return value, set()
 
     def _redact_tool_message(
-        self, message: Message, output: _SchemaNode
+        self, message: Message, output: _SchemaNode, exempt: frozenset[str] = frozenset()
     ) -> tuple[Message, set[str]]:
         """A tool result the model is about to read, its JSON redacted against the tool's
         output schema, so declared address fields stay as they were after ``after_tool``."""
@@ -362,13 +589,13 @@ class PIIRedactionPolicy:
                 except ValueError:
                     decoded = None
                 else:
-                    redacted, found = self._redact(decoded, output)
+                    redacted, found = self._redact(decoded, output, exempt=exempt)
                     if found:
                         block = TextBlock(text=json.dumps(redacted, default=str))
                     labels.update(found)
                     blocks.append(block)
                     continue
-            redacted_block, found = self._redact(block)
+            redacted_block, found = self._redact(block, exempt=exempt)
             blocks.append(redacted_block)
             labels.update(found)
         if not labels:
@@ -434,15 +661,56 @@ class SideEffectPolicy:
         )
 
 
+# Where an instruction to the assistant starts: the start of the text or of a clause, or after
+# words that address it ("please", "and", "you must", "I want you to", "can you"). A question
+# about overrides ("how do we detect users who try to bypass our safety policy?") has none of
+# these before its verb, so it passes.
+_ADDRESSED = (
+    r"(?:^|(?<=[.!?;:,\n\"'()\[\]{}<>*#|-])"
+    r"|\b(?:please|now|just|and|then|also|so|instead|first|simply)\s+"
+    r"|\byou\s+(?:must|should|will|shall|need\s+to|have\s+to|are\s+to|can|may)\s+"
+    r"|\b(?:can|could|will|would)\s+you\s+(?:please\s+)?"
+    r"|\b(?:want|need|order|command|instruct|tell|ask)\s+you\s+to\s+)\s*"
+)
+# What an override aims at: the assistant's own rules. A business rule ("override the leave
+# policy") is not one; "your policy", the safety policy and the system prompt are.
+_GUARDS = (
+    r"(?:guardrails?|safeguards?"
+    r"|(?:safety|content|moderation|usage|ethical)\s+(?:polic(?:y|ies)|filters?|rules|guidelines"
+    r"|guardrails?|restrictions|safeguards?)"
+    r"|(?:system|developer)\s+(?:prompt|message|instructions?))"
+)
+_OWN_RULES = (
+    r"your\s+(?:own\s+|current\s+|previous\s+|prior\s+|original\s+|built-?in\s+)?"
+    r"(?:rules|restrictions|filters?|instructions?|guidelines|programming|polic(?:y|ies)|limits"
+    r"|limitations|training|directives|constraints|guardrails?|safeguards?)"
+)
+_OVERRIDE = r"(?:bypass|circumvent|disable|override|deactivate|turn\s+off|switch\s+off|ignore)"
+
 INSTRUCTION_OVERRIDE_PATTERNS = (
-    re.compile(r"(?i)\bignore\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?\b"),
     re.compile(
-        r"(?i)\b(?:reveal|print|show|repeat|expose)\b.{0,40}\b(?:system|developer)\s+(?:prompt|message|instructions?)\b"
+        r"(?i)\bignore\s+(?:all\s+(?:of\s+)?)?(?:your\s+|the\s+)?"
+        r"(?:previous|prior|above|system|developer)\s+instructions?\b"
     ),
     re.compile(
-        r"(?i)\b(?:bypass|disable|override)\b.{0,40}\b(?:guardrails?|safety|policy|instructions?)\b"
+        r"(?i)" + _ADDRESSED + r"(?:reveal|print|show|repeat|expose|output|display|leak)\b"
+        r".{0,40}\b(?:system|developer)\s+(?:prompt|message|instructions?)\b"
     ),
-    re.compile(r"(?i)\b(?:jailbreak|do anything now|DAN mode)\b"),
+    re.compile(
+        r"(?i)" + _ADDRESSED + _OVERRIDE + r"\s+(?:(?:all|any|every)\s+(?:of\s+)?)?"
+        r"(?:(?:the|these|those|its|your)\s+)?(?:own\s+|current\s+|built-?in\s+|existing\s+)?"
+        + _GUARDS
+        + r"\b"
+    ),
+    re.compile(
+        r"(?i)" + _ADDRESSED + r"(?:" + _OVERRIDE + r"|forget|disregard)\s+"
+        r"(?:(?:all|any)\s+(?:of\s+)?)?" + _OWN_RULES + r"\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:do anything now|DAN mode|jailbreak mode|developer mode enabled)\b"
+        r"|\b(?:you\s+are|you're|act\s+as|enter|enable|activate|switch\s+to)\s+(?:now\s+)?"
+        r"(?:in\s+)?(?:an?\s+)?(?:jailbroken|jailbreak|DAN|unrestricted\s+mode)\b"
+    ),
 )
 
 
@@ -488,6 +756,18 @@ class PromptInjectionPolicy:
         )
 
 
+def _strings(value: Any) -> Iterator[str]:
+    """The string values in a parsed JSON value, at any depth (keys are not values)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
 class OutputValidationPolicy:
     """Apply deterministic safety checks before model output reaches a user."""
 
@@ -507,6 +787,21 @@ class OutputValidationPolicy:
                 action=PolicyAction.ALLOW,
                 reason_code="output_validation.not_applicable",
                 reason="Output validation is not applicable at this boundary.",
+            )
+        if context.get("structured_output") and isinstance(payload, (Mapping, list)):
+            # Structured output (a request with a response_schema): the parsed JSON answer.
+            # Its string values are checked one by one, as the text a reader will see.
+            if any(self._privileged_marker.search(text) for text in _strings(payload)):
+                return PolicyDecision(
+                    action=PolicyAction.DENY,
+                    reason_code="output_validation.privileged_instructions",
+                    reason="The response appears to disclose privileged instructions.",
+                    audit_metadata={"risk": "instruction_disclosure", "intervention": "blocked"},
+                )
+            return PolicyDecision(
+                action=PolicyAction.ALLOW,
+                reason_code="output_validation.passed",
+                reason="The response passed deterministic output checks.",
             )
         if (not isinstance(payload, str) or not payload.strip()) and context.get("tool_calls"):
             return PolicyDecision(

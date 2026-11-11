@@ -293,9 +293,10 @@ async def test_postgres_sweeper_only_purges_expired_memory_by_default() -> None:
 
     report = await PostgresRetentionSweeper(database).sweep(RetentionPolicy())
 
-    assert report.deleted == {"memory": 0}
-    assert len(database.statements) == 1
+    assert report.deleted == {"memory": 0, "session_owners": 0}
+    assert len(database.statements) == 2
     assert "algen_agent_runtime_memory" in database.statements[0][0]
+    assert "algen_agent_runtime_session_owners" in database.statements[1][0]
 
 
 async def test_postgres_sweeper_batches_until_short_batch_or_limit() -> None:
@@ -311,6 +312,7 @@ async def test_postgres_sweeper_batches_until_short_batch_or_limit() -> None:
 
     assert report.deleted == {
         "memory": 30,
+        "session_owners": 30,
         "runs": 30,
         "events": 120,
         "approvals": 0,

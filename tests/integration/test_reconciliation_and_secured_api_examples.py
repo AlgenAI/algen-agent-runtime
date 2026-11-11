@@ -62,7 +62,7 @@ def test_secured_api_example() -> None:
     lines = output.splitlines()
 
     assert (
-        "carol: user=carol scopes=['approvals:read', 'auth:revoke', 'runs:read', 'runs:write']"
+        "carol: user=carol scopes=['approvals:decide', 'approvals:read', 'auth:revoke', 'runs:read', 'runs:write']"
         in lines
     )
     assert "no token -> 401" in lines

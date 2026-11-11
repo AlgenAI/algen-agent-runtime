@@ -55,7 +55,7 @@ api:
           role_claims: [roles]
           role_scopes:
             member: [runs:read, runs:write, conversations:read, conversations:write]
-            approver: [runs:read, runs:write, approvals:read]
+            approver: [runs:read, runs:write, approvals:read, approvals:decide]
   token_revocation: {enabled: true, store: memory, require_jti: true}
 
 storage:

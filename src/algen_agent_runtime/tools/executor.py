@@ -278,6 +278,9 @@ class ToolExecutor:
             cache is not None
             and definition.side_effect in {SideEffect.NONE, SideEffect.READ}
             and definition.idempotency == Idempotency.IDEMPOTENT
+            # A volatile tool reads state that changes on its own: a stored result would be stale
+            # the moment it is served, so it is never looked up or stored.
+            and not definition.volatile
             # A call made with the caller's credentials may return what only that caller may
             # see: it is never served from, or stored in, a cache shared beyond the call.
             and not context.credentials

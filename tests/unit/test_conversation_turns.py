@@ -373,6 +373,11 @@ async def test_turn_pauses_for_approval_and_resumes_into_the_same_message() -> N
     assert resumed_event.data["decision"] == "approved"
     assert resumed_event.data["decided_by"] == USER
     assert (await runtime.status(done.run_ids[0], TENANT)).status == RunStatus.COMPLETED
+    # The approval request records the conversation's owner as the approver.
+    approval = await runtime.approvals.get(pending.approval_id, TENANT)
+    assert approval is not None
+    assert (approval.decided_by, approval.comment) == (USER, None)
+    assert approval.decided_at is not None
 
 
 async def test_modified_decision_runs_the_tool_with_the_new_parameters() -> None:
@@ -395,7 +400,7 @@ async def test_modified_decision_runs_the_tool_with_the_new_parameters() -> None
 
 
 async def test_rejected_decision_ends_the_turn_with_a_clear_message() -> None:
-    service, _, _, seen, conversation_id, paused = await paused_for_approval(
+    service, runtime, _, seen, conversation_id, paused = await paused_for_approval(
         tool_call_response("api.write", {"value": "draft"}), "saved"
     )
     assert paused.pending is not None
@@ -408,6 +413,10 @@ async def test_rejected_decision_ends_the_turn_with_a_clear_message() -> None:
         ConversationApprovalDecision(decision="rejected", reason="not now"),
     )
     done = await settled(service, conversation_id, MessageStatus.COMPLETED, MessageStatus.FAILED)
+    # The rejection's reason is recorded as the approver's comment.
+    approval = await runtime.approvals.get(str(paused.pending.approval_id), TENANT)
+    assert approval is not None
+    assert (approval.decided_by, approval.comment) == (USER, "not now")
 
     assert done.id == paused.id
     assert done.status == MessageStatus.FAILED

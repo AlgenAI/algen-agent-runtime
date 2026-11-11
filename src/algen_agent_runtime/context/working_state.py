@@ -61,7 +61,10 @@ def working_state_tool() -> Tool:
             input_schema=WorkingStateUpdate.model_json_schema(),
             output_schema=WorkingStateUpdate.model_json_schema(),
             required_permissions=frozenset({WORKING_STATE_PERMISSION}),
-            side_effect=SideEffect.WRITE,
+            # The update changes only this run's own checkpoint, nothing outside the run, so it
+            # is not a side effect that approval_policy.require_for_side_effects pauses for.
+            # context.write, the memory-write policies and the revision check still apply.
+            side_effect=SideEffect.NONE,
             idempotency=Idempotency.KEYED,
             max_result_bytes=262_144,
         ),

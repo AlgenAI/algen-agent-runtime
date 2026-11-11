@@ -72,13 +72,9 @@ def _run_serve(
             f"error: {MissingExtraError('algen-agent-runtime serve', 'server', missing=missing)}"
         ) from exc
 
-    if agent_ui is not None:
-        settings = settings.model_copy(
-            update={"api": settings.api.model_copy(update={"agent_ui_enabled": agent_ui})}
-        )
-
-    bind_host = host or settings.api.host
-    bind_port = port if port is not None else settings.api.port
+    settings = _with_api_overrides(settings, host=host, port=port, agent_ui=agent_ui)
+    bind_host = settings.api.host
+    bind_port = settings.api.port
 
     # By default only a terminal gets the banner; container and service logs stay plain.
     if banner if banner is not None else sys.stdout.isatty():
@@ -96,6 +92,42 @@ def _run_serve(
         # rewrite it.
         proxy_headers=not settings.api.trusted_proxy_identity.enabled,
     )
+
+
+def _with_api_overrides(
+    settings: AppSettings,
+    *,
+    host: str | None,
+    port: int | None,
+    agent_ui: bool | None,
+) -> AppSettings:
+    """The settings with ``serve``'s ``--host``, ``--port`` and ``--agent-ui`` applied.
+
+    The API settings are validated again with the overrides, so a flag cannot bypass a check
+    the configuration file would fail: ``--host 0.0.0.0`` with development-header
+    authentication exits here, as the same host in the file would.
+    """
+    from pydantic import ValidationError
+
+    from algen_agent_runtime.config.settings import ApiSettings
+
+    update: dict[str, object] = {}
+    if host:
+        update["host"] = host
+    if port is not None:
+        update["port"] = port
+    if agent_ui is not None:
+        update["agent_ui_enabled"] = agent_ui
+    if not update:
+        return settings
+    try:
+        api = ApiSettings.model_validate({**settings.api.model_dump(), **update})
+    except ValidationError as exc:
+        reasons = "; ".join(
+            str(error["msg"]).removeprefix("Value error, ") for error in exc.errors()
+        )
+        raise SystemExit(f"error: invalid API settings for serve: {reasons}") from None
+    return settings.model_copy(update={"api": api})
 
 
 def _discover_config_paths(config: list[str] | None) -> tuple[Path, ...] | None:

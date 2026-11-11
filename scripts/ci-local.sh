@@ -46,7 +46,9 @@ if (( linux )); then
     exit 1
   fi
   echo "== base CI job on Linux ($(basename "$engine"), python:3.12-slim, .[dev] only)"
-  "$engine" run --rm -v "$PWD:/src:ro" python:3.12-slim bash -euo pipefail -c '
+  # --init: without it pytest is PID 1 and never reaps orphans, so the sandbox
+  # process-group test sees a zombie as alive. GitHub runners have a real init.
+  "$engine" run --rm --init -v "$PWD:/src:ro" python:3.12-slim bash -euo pipefail -c '
     cp -r /src /w && cd /w && rm -rf .venv .claude
     pip install -q --root-user-action=ignore --retries 5 --timeout 60 -e ".[dev]"
     ruff format --check src tests algen_agent_runtime_examples

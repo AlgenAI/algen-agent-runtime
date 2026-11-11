@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from algen_agent_runtime.types.contracts import RunResult, RunState
+from algen_agent_runtime.types.contracts import RunResult, RunState, RunStatus
 from algen_agent_runtime.types.interfaces import ResponseComposer
 
 
@@ -12,8 +12,11 @@ class DefaultResponseComposer:
             run_id=state.id,
             status=state.status,
             session_id=state.session_id,
-            output=state.output_text,
+            # Only a completed run delivers an answer: a failed run's text did not pass
+            # verification or the final_response guardrails.
+            output=state.output_text if state.status == RunStatus.COMPLETED else None,
             error=state.error,
+            rejected_output=state.rejected_output,
             artifacts=tuple(state.context_artifact_ids),
             sources=tuple(dict.fromkeys(item.source for item in state.citations)),
             citations=tuple(state.citations),

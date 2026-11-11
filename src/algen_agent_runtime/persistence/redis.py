@@ -188,6 +188,31 @@ class RedisMemoryStore:
         usage = f"{self._prefix}:tenant:{tenant_id}:usage:memory"
         return usage, f"{usage}:sessions", f"{usage}:sizes"
 
+    def _owner_key(self, tenant_id: str, session_id: str) -> str:
+        return f"{self._prefix}:tenant:{tenant_id}:session:{session_id}:owner"
+
+    async def claim_session(self, tenant_id: str, session_id: str, user_id: str) -> bool:
+        """Bind the session to ``user_id`` on first use; False when another user owns it.
+
+        The claim has the memory's TTL and is renewed by each claim of its owner, which the
+        Runtime makes before it appends, so it outlives the session's messages.
+        """
+        key = self._owner_key(tenant_id, session_id)
+        ttl = max(1, self._retention)
+        async with _available():
+            # Twice: a claim that expires between SET NX and GET is taken on the second pass.
+            for _ in range(2):
+                if await self._redis.set(key, user_id, nx=True, ex=ttl):
+                    return True
+                owner = await self._redis.get(key)
+                if owner is None:
+                    continue
+                if _text(owner) != user_id:
+                    return False
+                await self._redis.expire(key, ttl)
+                return True
+        return False
+
     async def append(self, tenant_id: str, session_id: str, messages: Sequence[Message]) -> None:
         async with _available():
             key = self._key(tenant_id, session_id)

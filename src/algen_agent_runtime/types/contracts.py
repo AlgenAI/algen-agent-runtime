@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -326,6 +327,21 @@ class ContextPolicy(StrictModel):
         return self
 
 
+PIIEntity = Literal["email", "phone", "aadhaar", "card"]
+
+
+class PIIGuardrail(StrictModel):
+    """Settings for the built-in ``pii`` policy.
+
+    ``exempt_entities`` lists the kinds of identifier this agent does not redact anywhere, for
+    an agent whose job is to handle them (a support desk that reads customers' phone numbers,
+    say). To exempt one tool field rather than a whole kind, annotate the field in the tool's
+    schema (``"format": "identifier"`` or ``"x-pii": false``).
+    """
+
+    exempt_entities: frozenset[PIIEntity] = frozenset()
+
+
 class GuardrailPolicy(StrictModel):
     policies: tuple[str, ...] = (
         "secrets",
@@ -341,6 +357,16 @@ class GuardrailPolicy(StrictModel):
     # Tool results that look like instructions to the model: ``flag`` marks the result as
     # untrusted data before the model reads it, ``block`` fails the tool call.
     tool_result_injection: Literal["off", "flag", "block"] = "off"
+    pii: PIIGuardrail = Field(default_factory=PIIGuardrail)
+
+    @model_serializer(mode="wrap")
+    def _omit_default_pii(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An agent that does not set pii serialises, and so fingerprints, as it did in 0.2.0b1,
+        # and a b1 replica (extra="forbid") still loads it.
+        data = handler(self)
+        if isinstance(data, dict) and not self.pii.exempt_entities:
+            data.pop("pii", None)
+        return data
 
 
 class VerificationPolicy(StrictModel):
@@ -648,6 +674,23 @@ class AgentDefinition(StrictModel):
     tags: frozenset[str] = frozenset()
     model_allowlist: frozenset[str] = frozenset()
     attachments: AttachmentPolicy = Field(default_factory=AttachmentPolicy)
+    delegates: frozenset[str] = Field(
+        default=frozenset(),
+        description="The agents this agent may delegate to with core.subagent, by name; '*' "
+        "allows any agent of the registry. Empty (the default) allows none.",
+    )
+
+    @field_validator("delegates")
+    @classmethod
+    def _delegate_names(cls, value: frozenset[str]) -> frozenset[str]:
+        invalid = sorted(
+            name
+            for name in value
+            if name != "*" and not re.fullmatch(r"[a-z][a-z0-9_.-]{1,127}", name)
+        )
+        if invalid:
+            raise ValueError(f"delegates must be agent names or '*': {invalid}")
+        return value
 
     @model_validator(mode="after")
     def unique_skills(self) -> AgentDefinition:
@@ -963,6 +1006,11 @@ class RunState(BaseModel):
         "survive a pause and a restart; on an ended run, the ones that were never delivered.",
     )
     output_text: str | None = None
+    rejected_output: str | None = Field(
+        default=None,
+        description="On a run that failed verification, the last answer the verifiers "
+        "rejected, for diagnostics. It was never delivered: ``output_text`` is empty.",
+    )
     error: str | None = None
     pause_payload: dict[str, Any] | None = None
     citations: list[Citation] = Field(default_factory=list)
@@ -983,6 +1031,9 @@ class RunState(BaseModel):
             data.pop("pending_steering", None)
         if isinstance(data, dict) and not self.tool_approvals:
             data.pop("tool_approvals", None)
+        # rejected_output (0.2.0b2) is left out while unset for the same reason.
+        if isinstance(data, dict) and self.rejected_output is None:
+            data.pop("rejected_output", None)
         return data
 
     @model_validator(mode="after")
@@ -1016,8 +1067,21 @@ class RunResult(StrictModel):
     run_id: str
     status: RunStatus
     session_id: str
-    output: str | None = None
+    output: str | None = Field(
+        default=None,
+        description="The delivered answer. Set only on a completed run: a run that failed, "
+        "timed out or was cancelled has none.",
+    )
     error: str | None = None
+    rejected_output: str | None = Field(
+        default=None,
+        # Read it as an attribute; it is left out of model_dump()/JSON, so a result passed on
+        # whole (a sub-agent's tool result, say) never carries text that failed verification.
+        exclude=True,
+        description="On a run that failed verification, the last answer the verifiers "
+        "rejected, for diagnostics only. Do not show it to the user as the answer. Left out "
+        "of model_dump() and JSON.",
+    )
     artifacts: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     citations: tuple[Citation, ...] = ()

@@ -41,6 +41,7 @@ from algen_agent_runtime.retrieval.registry import RetrieverRegistry
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.contracts import Idempotency, SideEffect, Tool, ToolContext
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.tools.subagent import subagent_tool
 from algen_agent_runtime.verification.verifiers import VerificationService
 
 RUNTIME = "runtime"
@@ -258,6 +259,11 @@ def describe_components(settings: AppSettings) -> ComponentInventory:
     tools = ToolRegistry()
     for tool in (*base_tools(settings, secrets=_never_resolve), *_agent_runtime_tools()):
         tools.register(tool)
+    if settings.runtime.subagent.enabled:
+        # Only the definition is read: describe never runs a delegation, so no runtime is needed.
+        tools.register(
+            subagent_tool(cast(Any, None), max_depth=settings.runtime.subagent.max_depth)
+        )
     builtin_tools = {tool.definition.name for tool in tools.list()} - {
         declared.name for declared in settings.http_tools
     }

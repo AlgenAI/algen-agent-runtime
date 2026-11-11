@@ -9,7 +9,6 @@ from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_ca
 from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.types.contracts import (
     AgentDefinition,
-    ApprovalPolicy,
     ContextPolicy,
     ModelProfile,
     RunRequest,
@@ -52,9 +51,8 @@ async def main() -> None:
             ),
             enabled_tools=frozenset({"core.working_state_update"}),
             tool_permissions=frozenset({"context.write"}),
+            # A working-state update changes only this run's checkpoint: it needs no approval.
             context_policy=ContextPolicy(working_state_enabled=True),
-            # This demo enables only the run-local working-state tool.
-            approval_policy=ApprovalPolicy(require_for_side_effects=False),
         )
     )
     try:

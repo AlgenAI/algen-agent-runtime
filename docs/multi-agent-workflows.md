@@ -8,6 +8,9 @@ Runtime—not the application or Studio—owns dependency scheduling, concurrenc
 bounded agent repairs, dynamic map-agent fan-out, clarification limits, run lineage, timeouts, failure
 propagation, first-class human approval checkpoints, and workflow lifecycle events.
 
+For an agent that hands a task to another agent during its own run, without a workflow, see
+`core.subagent` in [Delegating to another agent](agent-tooling.md#delegating-to-another-agent).
+
 ## Typed workflow inputs and outputs
 
 A manifest may declare JSON Schema Draft 2020-12 contracts with `input_schema`, `output_schema`, and
@@ -229,7 +232,10 @@ again showing the current definition. See
 [Approvals and tool changes](tool-authoring.md#approvals-and-tool-changes).
 
 An agent node's invalid JSON output (with `output_schema`) is repaired like a validation failure,
-up to `max_repairs`. Nodes with `pass_attachments: true` hand the run's files to their agent; see
+up to `max_repairs`. Once repairs run out, invalid JSON fails the node with `VerificationError` and
+output its `validator` rejects fails it with `ConfigurationError`. A child agent run that does not
+complete, including one that fails the agent's own output verification, fails the node with a
+plain `RuntimeError` carrying the run's error: the error type is not kept yet. Nodes with `pass_attachments: true` hand the run's files to their agent; see
 [attachments](attachments.md#8-workflows).
 
 ## Input Template Grammar

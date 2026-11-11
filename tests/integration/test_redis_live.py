@@ -214,3 +214,17 @@ async def test_cache_store_ttl_and_tag_invalidation(redis_client: Any, prefix: s
     assert await store.get("a") is None
     assert await store.get("b") is None
     assert await store.get("c") == b"three"
+
+
+async def test_live_redis_claims_a_session_for_its_first_user(
+    redis_client: Any, prefix: str
+) -> None:
+    store = RedisMemoryStore(redis_client, prefix=prefix, retention_seconds=60)
+
+    assert await store.claim_session("tenant-a", "s1", "alice")
+    assert await store.claim_session("tenant-a", "s1", "alice")
+    assert not await store.claim_session("tenant-a", "s1", "bob")
+    assert 0 < await redis_client.ttl(f"{prefix}:tenant:tenant-a:session:s1:owner") <= 60
+    assert await store.claim_session("tenant-b", "s1", "bob")
+    await redis_client.delete(f"{prefix}:tenant:tenant-a:session:s1:owner")
+    assert await store.claim_session("tenant-a", "s1", "bob")

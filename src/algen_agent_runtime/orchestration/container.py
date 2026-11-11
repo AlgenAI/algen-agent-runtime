@@ -182,6 +182,7 @@ from algen_agent_runtime.tools.contracts import Tool, ToolExecutionStore
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.http_api import SecretResolver, http_api_tool
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.tools.subagent import subagent_tool
 from algen_agent_runtime.types.contracts import ModelCapabilities
 from algen_agent_runtime.types.interfaces import (
     ArtifactStore,
@@ -506,7 +507,7 @@ def build_container(
     settings: AppSettings,
     *,
     environment: Mapping[str, str] | None = None,
-    additional_tools: Sequence[Tool] = (),
+    additional_tools: Sequence[Tool | Toolkit] = (),
     mcp_servers: Sequence[MCPServerConfigBase] = (),
     framework_adapters: Sequence[FrameworkAdapter] = (),
     usage_meter: UsageMeter | None = None,
@@ -516,6 +517,10 @@ def build_container(
 
     ``environment`` supplies ephemeral, container-scoped values for ``env://``
     references. Values are never copied into settings or serialized manifests.
+
+    ``additional_tools`` takes ``Tool`` objects and ``Toolkit`` instances. A toolkit is
+    registered as a plugin registers it (``toolkit.register(context)``): its client becomes a
+    container resource and resolves ``env://`` references with the container's secrets.
 
     ``usage_meter`` reserves and settles the token cost of every model call the
     router dispatches (see ``algen_agent_runtime.models.metering``). ``usage_meter_margin``
@@ -959,8 +964,11 @@ def build_container(
         secrets=secret_provider.get,
     )
     plugin_manifests = load_declared_plugins(settings, plugin_context)
-    for tool in additional_tools:
-        tools.register(tool)
+    for item in additional_tools:
+        if isinstance(item, Toolkit):
+            item.register(plugin_context)
+        else:
+            tools.register(item)
     existing_mcp_names = {s.name for s in combined_mcp_servers}
     for s in mcp_servers:
         if s.name in existing_mcp_names:
@@ -1046,6 +1054,8 @@ def build_container(
             max_bytes_total=settings.security.max_attachment_bytes_total,
         ),
     )
+    if settings.runtime.subagent.enabled:
+        tools.register(subagent_tool(runtime, max_depth=settings.runtime.subagent.max_depth))
     _report_unknown_components(
         unknown_agent_components(
             settings.agents,

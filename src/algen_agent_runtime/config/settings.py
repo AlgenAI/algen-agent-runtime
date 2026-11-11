@@ -598,6 +598,24 @@ class ToolThreadSettings(StrictSettings):
     )
 
 
+class SubagentSettings(StrictSettings):
+    """``core.subagent``: delegating a bounded task to another agent of the tenant."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Register core.subagent in the container. An agent still offers it to its "
+        "model only with core.subagent in enabled_tools and agents.delegate in "
+        "tool_permissions, and may delegate only to the agents its delegates names.",
+    )
+    max_depth: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Delegations allowed in a chain, counted from the run's lineage; a call at "
+        "this depth is refused.",
+    )
+
+
 class RuntimeSettings(StrictSettings):
     component_check: Literal["error", "warn"] = Field(
         default="error",
@@ -625,6 +643,10 @@ class RuntimeSettings(StrictSettings):
         description="Streamed model text is recorded as at most one model.delta run event per "
         "interval (chunks in between are joined), so a long stream does not use up "
         "budget.max_events; 0 records every chunk.",
+    )
+    subagent: SubagentSettings = Field(
+        default_factory=SubagentSettings,
+        description="Whether the container registers core.subagent, and its nesting limit.",
     )
 
 

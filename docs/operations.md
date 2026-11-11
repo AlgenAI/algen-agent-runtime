@@ -40,7 +40,7 @@ storage:
   #   default: {artifact_bytes: 10737418240, memory_items: 100000}
 runtime:
   component_check: error  # or warn; see docs/plugins.md
-  recover_incomplete_runs: true
+  recover_incomplete_runs: true   # on one process per database only; see "Restart recovery"
   recovery_limit: 1000
   shutdown_grace_seconds: 10
   recover_service_workflows: true
@@ -310,12 +310,24 @@ start recovers every unfinished run that is not waiting:
   retried attempt makes its own tool calls. A retried node is at-least-once: declare `retry` only
   for nodes whose tools are idempotent or reconcilable.
 
-Recovery is not coordinated between processes: a process that starts while another serves the same
-database also drives the other's unfinished runs. The second drive's first checkpoint write fails
-its version check (`RunConflictError`) and it stands down without touching the run, and ledger
-reservations keep a tool call to one execution, but the model call may be made twice. Run one
-process per database (or schema), and do not overlap old and new processes during a deploy for
-longer than the drain.
+**Recovery is single-node.** `Runtime.recover()` (run at start when
+`runtime.recover_incomplete_runs` is `true`) has no lease or owner on a run: enable
+`recover_incomplete_runs` on exactly one process per database (or schema), and set it to `false`
+on every other replica. Recovery leases for several replicas are planned for 0.3.
+
+A second process that recovers the same database by mistake, or that starts while another still
+serves it, does not fail its start or the runs, but it can repeat work:
+
+- When both processes rewind the same interrupted checkpoint, one rewind loses the version check
+  (`RunConflictError`); that process logs `agent_run_recovery_skipped` and leaves the run to the
+  other.
+- When both drive a run, the drive whose checkpoint write loses its version check, or whose event
+  loses its sequence number to the other's (a unique violation on the events table, raised as
+  `RunConflictError`), logs `agent_run_superseded` and stands down without touching the run.
+- Ledger reservations keep a tool call to one execution, but the model call may be made twice
+  before the losing drive stands down.
+
+Do not overlap old and new processes during a deploy for longer than the drain.
 
 ### Database outages
 
@@ -434,6 +446,8 @@ results, approval requests) is written so the previous release can read it, so:
 | `016_resource_bounds.sql` | `0.1.0a18` | Per-tenant storage usage table, triggers that keep it current on artifact, memory and learned-memory writes, and retention indexes. | Yes; `0.1.0a17` does not read the usage table, and its writes still fire the triggers, so usage stays current. |
 | `017_approval_tool_fingerprint.sql` | `0.2.0b1` | Nullable approval columns `tool`, `tool_version`, `tool_fingerprint`, `arguments_sha256`, `rationale` and `status_reason`. | Yes; the previous release does not read them, and the approval JSON keeps its earlier shape. Approvals created by the previous release have none and run without a fingerprint check. |
 | `018_learned_memory_vectors.sql` | `0.2.0b1` | Learned-memory vector table for semantic and hybrid recall (`real[]`, no extension needed). | Yes; the previous release does not read it. Vectors of records it corrects or deletes are not ranked, and the next maintenance sweep of the new release removes them. |
+| `019_session_owners.sql` | `0.2.0b2` | Session owner table (`tenant_id`, `session_id`, `user_id`, `expires_at`); gives each existing session that has memory to the user of its earliest run. | Yes; the previous release does not read it, but it does not check owners either. Sessions first used while rolled back have no owner until the new release's next run claims them. |
+| `020_approval_decided_by.sql` | `0.2.0b2` | Nullable approval columns `decided_by`, `decided_at` and `comment`: who decided a run's approval, when, and their note. | Yes; the previous release does not read them, and the approval JSON keeps its earlier shape. Approvals it decides while rolled back record no approver. |
 
 Restore from backup instead of rolling back only when a release's notes say a migration is not
 backward compatible; none is so far. Take a backup before every upgrade.
@@ -484,6 +498,8 @@ grants every scope; reserve it for development.
 | `conversations:write` | `POST /v1/conversations`, `PATCH`/`DELETE /v1/conversations/{id}`, `POST .../messages`, `DELETE .../active-response`, `POST .../turns/{turn}/approval`, `/input` |
 | `feedback:read`, `feedback:write` | `GET`, `PUT /v1/conversations/{id}/messages/{message}/feedback` |
 | `approvals:read` | `GET /v1/approvals`, `GET /v1/approvals/{id}` (the approval inbox) |
+| `approvals:decide` | `POST /v1/runs/{id}/approval` on another user's run (with `runs:write`) |
+| `runs:admin` | `DELETE /v1/runs/{id}` on another user's run (with `runs:write`) |
 | `agents:read` | `GET /v1/agents`, `GET /v1/semantic-layers...` |
 | `agents:write` | `POST /v1/agents` |
 | `tools:reconcile` | every `/v1/tool-executions` route (list, read, reconcile, resolve, resume, compensate) |
@@ -494,7 +510,45 @@ grants every scope; reserve it for development.
 
 `/health/live`, `/health/ready` and the agent UI need no scope. A missing scope answers 403 and
 names it. Development headers are accepted only when the API binds to a loopback address, unless
-`allow_insecure_development_auth: true`.
+`allow_insecure_development_auth: true`. The check covers the host the server really binds:
+`algen-agent-runtime serve --host` (and `--port`) re-validates the API settings and exits naming the
+setting, and `create_app` refuses API settings that skipped validation (`model_copy(update=...)`).
+
+**Who may act on a run.** `runs:write` lets a user start runs, but acting on a run is its user's:
+
+- `POST /v1/runs/{id}/approval`: the run's user, or a principal with `approvals:decide` (an
+  approver working from the `/v1/approvals` inbox).
+- `DELETE /v1/runs/{id}` (cancel): the run's user, or a principal with `runs:admin`.
+- `POST /v1/runs/{id}/steer` and `/clarification`: the run's user only. Both put text in front of
+  the model as the user, so no scope delegates them.
+
+The run's user is the conversation's owner for a conversation turn (another user gets 404, as for
+an unknown run) and otherwise the user who started it (another user gets 403 naming the scope
+that would allow it). The in-process `Runtime.resume`, `cancel` and `steer` do not check identity:
+a host calling them decides who may.
+
+**Who decided.** A decided approval request records `decided_by`, `decided_at` and `comment`, and
+`GET /v1/approvals` returns them. Over HTTP `decided_by` is the authenticated principal's user id
+(the body cannot name it) and `comment` is the body's optional `comment` (at most 4,000
+characters); for a conversation turn it is the conversation's owner, with the rejection `reason` as
+the comment. A host that calls `Runtime.resume(run_id, tenant_id, payload, decided_by=user_id)`
+itself passes the approver; the payload's `comment` (or `reason`) is recorded with it. Expiring an
+approved request (`status_reason: tool_changed`) keeps who approved it. PostgreSQL keeps the three
+in columns (migration `020_approval_decided_by.sql`); requests decided before it have none. A
+custom `ApprovalService` whose `decide` has no `decided_by` and `comment` keywords keeps working:
+the Runtime calls it without them, records no approver and logs
+`approval_service_records_no_approver` once per service class. Add the two keywords to record it.
+
+**Sessions belong to their user.** A run's `session_id` keys its session memory (and anything
+else keyed by the session, such as a `session`-scoped tool-result cache). The built-in memory
+stores bind each session to the user who first used it (`SessionOwnership.claim_session`), and the
+Runtime refuses a run that names another user's session of the tenant with `NotFoundError` (404
+over HTTP), the same answer as for a session that does not exist. A session the Runtime generated
+is claimed when its memory is first written. A claim lasts as long as the store keeps the
+session's memory (PostgreSQL: `algen_agent_runtime_session_owners`, migration
+`019_session_owners.sql`, which gives existing sessions with memory to the user of their earliest
+run; Redis: a `...:session:{id}:owner` key with the memory's TTL). A custom `MemoryStore` without
+`claim_session` is trusted to isolate users itself.
 
 ## API authentication
 
@@ -540,7 +594,7 @@ api:
           role_scopes:
             runtime-operators: [runs:read, runs:write, conversations:read]
             runtime-admins: [auth:revoke]
-            runtime-approvers: [approvals:read, runs:write]
+            runtime-approvers: [approvals:read, approvals:decide, runs:write]
 ```
 
 - **Discovery.** Without `jwks_url` the Runtime reads `{issuer}/.well-known/openid-configuration`,
@@ -805,11 +859,11 @@ either mode.
 | `before_retrieval` | the request text before context is built | the run fails | `closed` |
 | `after_retrieval` | loaded conversation history; the built context messages | the run fails | `closed` |
 | `before_model` | every model request, compaction included | the run fails | `closed` |
-| `after_model` | every model reply's text, a compaction summary | the run fails | `closed` |
+| `after_model` | every model reply's text (with a `response_schema`, a JSON answer parsed: see [verification](verification.md#structured-output-and-guardrails)), a compaction summary | the run fails | `closed` |
 | `plan_tool` | each requested tool call, before guards and approval | the call is refused (`tool_policy.on_error`) | `closed` |
 | `before_tool` | the call's arguments in the tool executor (agent runs and workflow tool steps); a redaction here also refuses the call | the call is refused | `closed` |
 | `after_tool` | the tool's output, before it is recorded, cached or shown to the model | the call fails | `closed` |
-| `final_response` | the verified answer | the run fails | `closed` |
+| `final_response` | the verified answer (parsed, with a `response_schema`) | the run fails | `closed` |
 | `before_memory_write` | conversation memory, learned-memory proposals, working state, loaded skills, compaction archives | the run (or the memory tool call) fails | `closed` |
 | `after_memory_write` | the count of messages just written | the run fails (the memory is already written) | `closed` |
 
@@ -856,7 +910,7 @@ is the contract; `tests/unit/test_policy_boundary_contract.py` pins every cell.
 | `plan_tool` | continues | the call is refused | **the call is refused** before guards or approval | the call's arguments become the policy's value, checked against the input schema; the guards, the approval request and the executor see the rewritten call | the run pauses for approval | the call is refused (unsupported) |
 | `before_tool` | the call runs | the call is refused | **the call is refused**: it is never run with masked arguments | the call runs with the policy's value, checked against the input schema; refused for an approved call when it changes the arguments | the call is refused | the call is refused |
 | `after_tool` | the result stands | the call fails | the result becomes the policy's value, checked against the output schema | as `redact` | the call fails | the call fails |
-| `final_response` | continues | run fails | the answer becomes the policy's text | as `redact` | run fails | run fails |
+| `final_response` | continues | run fails | the answer becomes the policy's text; with a `response_schema`, the policy's JSON value, verified again (the run fails if it no longer passes) | as `redact` | run fails | run fails |
 | `before_memory_write` | continues | run fails (or the memory tool call) | what is written becomes the policy's value (conversation memory keeps the original unless it is a list of messages; other writes must keep their structure) | as `redact` | run fails | run fails |
 | `after_memory_write` | continues | run fails (the memory is already written) | no effect: the payload is only the count written | no effect | run fails | run fails |
 | `attachments` | continues | run fails before any model call | the run keeps the files the policy's list names (it can drop files, never add one) | as `redact` | run fails | run fails |
@@ -1208,8 +1262,11 @@ Decide as before with `POST /v1/runs/{run_id}/approval` (scope `runs:write`), or
 conversation turn with `POST /v1/conversations/{id}/turns/{turn_id}/approval`. A run started for a
 conversation turn belongs to the conversation's owner, as on the conversation routes: every
 `/v1/runs/{run_id}` route (read, narrative, events, cancel, clarification, approval and steer)
-answers another user of the tenant `404`, whatever their scopes. Runs started directly with
-`POST /v1/runs` are checked against the tenant only, as before.
+answers another user of the tenant `404` (an approver with `approvals:decide` may still decide
+its approval, and an operator with `runs:admin` cancel it). A run started directly with
+`POST /v1/runs` can be read by any user of the tenant with `runs:read`, but only its user decides
+its approval (or a principal with `approvals:decide`), cancels it (or `runs:admin`), answers its
+clarification or steers it; anyone else gets `403` (see "Who may act on a run").
 
 Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id`, `agent`,
 `proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
@@ -1236,14 +1293,34 @@ between two page reads shifts later pages by one; page with a small `limit` and 
 Requests created at the same instant are ordered by insertion in the in-memory store and by `id` in
 PostgreSQL; both are stable between calls.
 
+## Run event streams
+
+`GET /v1/runs/{run_id}/events` (SSE) and `AlgenAgentRuntimeClient.stream(request)` end after the
+event that ends the run or pauses it, so a caller waiting on a paused run gets control back
+instead of waiting forever:
+
+| Last event | The run |
+| --- | --- |
+| `run.completed`, `run.failed`, `run.cancelled` | ended |
+| `approval.required`, `clarification.required`, `tool.reconciliation_required` | paused until someone answers |
+
+The set is `STREAM_END_EVENT_TYPES` in `algen_agent_runtime.events.contracts`. After answering a
+pause (`POST /v1/runs/{run_id}/approval` or `/clarification`, or `runtime.resume(...)`), follow the
+resumed run from the last event received: reconnect to SSE with `Last-Event-ID` set to that
+event's `id` line (its `sequence`), or in Python call
+`client.stream_events(run_id, after=last_event.sequence)`. A stream opened on a run that already
+ended or paused replays its events up to the first such event; reconnect from there to read past
+an earlier pause.
+
 ## Steering a running run
 
 A user can add to a run while it works: `runtime.steer(run_id, tenant_id, text)` queues a message
 and returns it as a `SteeringMessage` (`id`, `text`, `queued_at`). Over HTTP it is
 `POST /v1/runs/{run_id}/steer` with `{"text": "..."}` (scope `runs:write`, tenant-scoped like every
-run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`. A run started
-for a conversation turn can be steered only by the conversation's owner; any other user of the
-tenant gets `404`, as on the approval and clarification routes.
+run route), which answers `202` with `{"run_id", "steer_id", "status": "queued"}`. Only the run's
+user may steer it: for a conversation turn, the conversation's owner (any other user of the tenant
+gets `404`, as on the approval and clarification routes); otherwise the user who started it (any
+other user gets `403`, whatever their scopes).
 
 - **When the model sees it.** At the run's next step boundary: after the results of every call in
   the model's last reply and before the next model call, as one user message with a text block
@@ -1293,6 +1370,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Paused workflow waits | on (`expire_paused_workflows`) | For runs the HTTP workflow service started: an approval wait past its `expires_at` fails its approval node (`workflow.approval.expired`), and, with `clarification_timeout_seconds` set, an input wait older than that fails its node (`workflow.input.expired`). The engine's own expiry path does this, so rejection policies, dependents and checkpoints behave as for a late decision, and the webhook is notified of the outcome. Each run is handled in its own tenant; runs already being driven are skipped and saves are version-checked, so repeated or concurrent sweeps expire a wait once. At most `batch_size × max_batches_per_sweep` unfinished runs, oldest first, are looked at per sweep. Reports `expired_workflow_pauses`. Runs only in the serving process (`maintenance.enabled`); the `maintenance` command does not drive workflows. |
 | Pending conversation turns | with the paused-run task | A conversation turn whose run the sweep just expired (or that ended otherwise while it waited) ends as `expired`, `cancelled` or `failed`. Reports `reconciled_pending_turns`. |
 | Expired memory | on | Deletes PostgreSQL memory rows past `memory_retention_seconds`; readers already ignore them. |
+| Expired session owners | on | Deletes PostgreSQL session claims (`algen_agent_runtime_session_owners`) past their expiry, reported as `session_owners`; an owner's claim is renewed before each memory write, so it outlives the session's memory. |
 | Expired learned memory | on | Clears content and evidence; retains revisions and replay receipts. Reports `purged_learned_memory`. |
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
@@ -1348,9 +1426,11 @@ as provider capabilities. The authorization fingerprint is included when callers
 
 Exact model-response caching is intentionally disabled by default because it changes freshness and
 sampling behavior. Enable it only for evaluated workloads; streaming and raw-provider responses bypass
-it. Tool caching is restricted to idempotent tools classified `none` or `read`. Destructive, write, and
-externally visible tools always execute normally. A tool whose result depends on the caller's user,
-run or step beyond the policy's scope declares it in `cache_context`, which joins its key (see
+it. Tool caching is restricted to idempotent tools classified `none` or `read` that are not
+`volatile`. Destructive, write, externally visible and volatile tools always execute normally
+(`core.subagent` is volatile and non-idempotent, so a delegation is never served from the
+cache). A tool whose result depends on the caller's user, run or step beyond the policy's scope
+declares it in `cache_context`, which joins its key (see
 [Caching results](tool-authoring.md#caching-results)); a call that carries caller credentials is
 never cached. Cached provider usage is reported as cached tokens with zero incremental
 configured-provider cost.

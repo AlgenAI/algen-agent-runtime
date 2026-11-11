@@ -20,6 +20,7 @@ from algen_agent_runtime.exceptions.errors import ToolExecutionError
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.observability.traccia_adapter import NoopObservabilityAdapter
 from algen_agent_runtime.observability.trace_levels import TraceLevelTracer
+from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.runtime.runtime import AgentRuntime
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.tools.subagent import subagent_tool
@@ -201,6 +202,35 @@ async def test_tool_sees_the_credentials_passed_to_run() -> None:
     assert seen.credentials == [{"authorization": SECRET}]
     with pytest.raises(TypeError):
         seen.contexts[0].credentials["authorization"] = "x"  # type: ignore[index]
+
+
+async def test_the_client_passes_credentials_to_run_and_stream() -> None:
+    """RT-B17: AlgenAgentRuntimeClient.run and stream take the caller's credentials."""
+    seen = Seen()
+    runtime, provider = runtime_with(seen, tool_call_response("api.read", {}), "done")
+    client = AlgenAgentRuntimeClient(runtime)
+
+    result = await client.run(request(), credentials={"authorization": SECRET})
+    assert result.status == RunStatus.COMPLETED, result.error
+    provider.queue(tool_call_response("api.read", {}), "done")
+    events = [event async for event in client.stream(request(), credentials={"x-key": NEWER})]
+    assert events[-1].type == "run.completed"
+    provider.queue(tool_call_response("api.read", {}), "done")
+    await client.run(request())
+
+    assert seen.credentials == [{"authorization": SECRET}, {"x-key": NEWER}, {}]
+
+
+def test_the_client_passes_credentials_to_run_sync() -> None:
+    seen = Seen()
+    runtime, _ = runtime_with(seen, tool_call_response("api.read", {}), "done")
+
+    result = AlgenAgentRuntimeClient(runtime).run_sync(
+        request(), credentials={"authorization": SECRET}
+    )
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    assert seen.credentials == [{"authorization": SECRET}]
 
 
 async def test_resume_shows_only_the_new_credentials() -> None:
@@ -500,6 +530,7 @@ async def test_child_run_sees_the_parents_credentials() -> None:
         make_agent(
             enabled_tools=frozenset({"core.subagent"}),
             tool_permissions=frozenset({"agents.delegate"}),
+            delegates=frozenset({"child-agent"}),
         ),
     )
     runtime.agents.register(make_agent(name="child-agent", enabled_tools=frozenset({"api.read"})))

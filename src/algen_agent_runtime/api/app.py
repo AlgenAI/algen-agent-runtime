@@ -19,7 +19,7 @@ try:
     from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 except ModuleNotFoundError as exc:
     raise MissingExtraError("The HTTP API", "server", missing=exc.name) from exc
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from algen_agent_runtime import __version__
 from algen_agent_runtime.api.auth_routes import add_auth_routes
@@ -46,11 +46,12 @@ from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.approvals.service import (
     MAX_APPROVAL_OFFSET,
     MAX_APPROVAL_PAGE,
+    MAX_COMMENT_CHARS,
     ApprovalRequest,
     ApprovalStatus,
 )
 from algen_agent_runtime.artifacts import ArtifactLifecycleService, BasicArtifactScanner
-from algen_agent_runtime.config.settings import AppSettings, load_settings
+from algen_agent_runtime.config.settings import ApiSettings, AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
     ConversationEvent,
@@ -58,9 +59,10 @@ from algen_agent_runtime.conversations.contracts import (
     ConversationStatus,
 )
 from algen_agent_runtime.conversations.feedback import FeedbackRating
-from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
+from algen_agent_runtime.events.contracts import STREAM_END_EVENT_TYPES, AuditEvent, RunEvent
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
+    ConfigurationError,
     ConflictError,
     NotFoundError,
     QuotaExceededError,
@@ -114,6 +116,8 @@ class ApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: str
     modified_parameters: dict[str, Any] | None = None
+    # The approver's note, recorded on the approval request with who decided and when.
+    comment: str | None = Field(default=None, max_length=MAX_COMMENT_CHARS)
 
 
 class ArtifactStatusBody(BaseModel):
@@ -167,11 +171,27 @@ def _conversation_sse(event: ConversationEvent) -> bytes:
     ).encode()
 
 
+def _check_api_settings(api: ApiSettings) -> None:
+    """Validate the API settings again before serving them.
+
+    ``model_copy(update=...)`` skips validation, so settings changed that way (a host override,
+    say) could otherwise serve development-header authentication on a non-loopback host.
+    """
+    try:
+        ApiSettings.model_validate(api.model_dump())
+    except ValidationError as exc:
+        reasons = "; ".join(
+            str(error["msg"]).removeprefix("Value error, ") for error in exc.errors()
+        )
+        raise ConfigurationError(f"invalid API settings: {reasons}") from None
+
+
 def create_app(
     settings: AppSettings | None = None,
     container: Container | None = None,
 ) -> FastAPI:
     resolved = settings or AppSettings()
+    _check_api_settings(resolved.api)
     dependencies = container or build_container(resolved)
     authenticate = principal_dependency(
         resolved.api,
@@ -377,6 +397,27 @@ def create_app(
         if owner != identity.user_id:
             raise NotFoundError(f"run {run_id!r} not found")
 
+    async def require_run_user(
+        run_id: str, identity: Principal, action: str, *, override_scope: str | None = None
+    ) -> None:
+        """Acting on a run (deciding its approval, cancelling, steering or answering it) is
+        its user's: the conversation's owner for a conversation turn, else the user who started
+        it. ``override_scope``, when given and held, lets an operator act on any run of the
+        tenant (an approver with ``approvals:decide``, say)."""
+        if override_scope is not None and (
+            override_scope in identity.scopes or "*" in identity.scopes
+        ):
+            await dependencies.runtime.status(run_id, identity.tenant_id)
+            return
+        await require_conversation_owner(run_id, identity)
+        state = await dependencies.runtime.status(run_id, identity.tenant_id)
+        if state.request.conversation_id is None and state.request.user_id != identity.user_id:
+            allowed = f" or a principal with scope {override_scope}" if override_scope else ""
+            raise HTTPException(
+                status_code=403,
+                detail=f"only the run's user{allowed} may {action} it",
+            )
+
     def approval_view(approval: ApprovalRequest) -> dict[str, Any]:
         """An approval as the inbox routes return it. ``redacted_parameters`` were redacted
         before they were stored; ``modified_parameters`` are stored as the approver sent them,
@@ -418,7 +459,7 @@ def create_app(
     @app.delete("/v1/runs/{run_id}")
     async def cancel_run(run_id: str, identity: Principal = identity_dependency) -> dict[str, Any]:
         require_scope(identity, "runs:write")
-        await require_conversation_owner(run_id, identity)
+        await require_run_user(run_id, identity, "cancel", override_scope="runs:admin")
         state = await dependencies.runtime.cancel(run_id, identity.tenant_id)
         return {"run_id": state.id, "status": state.status}
 
@@ -427,7 +468,8 @@ def create_app(
         run_id: str, body: ClarificationBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
-        await require_conversation_owner(run_id, identity)
+        # The answer goes to the model as the user's: only the run's user may give it.
+        await require_run_user(run_id, identity, "answer")
         state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
         return {"run_id": state.id, "status": state.status}
 
@@ -436,8 +478,8 @@ def create_app(
         run_id: str, body: SteerBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
-        # Steering puts text in front of the model as the user: only a conversation's owner may.
-        await require_conversation_owner(run_id, identity)
+        # Steering puts text in front of the model as the user: only the run's user may.
+        await require_run_user(run_id, identity, "steer")
         try:
             message = await dependencies.runtime.steer(run_id, identity.tenant_id, body.text)
         except ValueError as exc:
@@ -449,8 +491,14 @@ def create_app(
         run_id: str, body: ApprovalBody, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
-        await require_conversation_owner(run_id, identity)
-        state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
+        await require_run_user(run_id, identity, "decide", override_scope="approvals:decide")
+        # The approver is the authenticated user, never a field of the body.
+        state = await dependencies.runtime.resume(
+            run_id,
+            identity.tenant_id,
+            body.model_dump(),
+            decided_by=identity.user_id,
+        )
         return {"run_id": state.id, "status": state.status}
 
     @app.get("/v1/approvals")
@@ -510,7 +558,9 @@ def create_app(
                     continue
                 delivered = event.sequence
                 yield _sse(event)
-                if event.type in {"run.completed", "run.failed", "run.cancelled"}:
+                # The stream ends when the run ends or pauses; after answering a pause, the
+                # client reconnects with Last-Event-ID to follow the resumed run.
+                if event.type in STREAM_END_EVENT_TYPES:
                     return
 
         return StreamingResponse(
