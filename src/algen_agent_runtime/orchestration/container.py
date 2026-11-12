@@ -147,6 +147,7 @@ from algen_agent_runtime.persistence.retention import (
 )
 from algen_agent_runtime.persistence.s3 import S3ArtifactStore
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
+from algen_agent_runtime.persistence.user_data import UserDataService
 from algen_agent_runtime.planning.planners import PlannerRegistry
 from algen_agent_runtime.plugins.registration import RuntimePluginContext
 from algen_agent_runtime.plugins.sdk import PluginLoader, PluginManifest
@@ -167,7 +168,7 @@ from algen_agent_runtime.retrieval.vector_stores import (
     QdrantRetriever,
 )
 from algen_agent_runtime.runtime.attachments import AttachmentLimits
-from algen_agent_runtime.runtime.runtime import AgentRuntime
+from algen_agent_runtime.runtime.runtime import AgentRuntime, RecoveryCredentialsProvider
 from algen_agent_runtime.security.network import (
     OutboundNetwork,
     create_outbound_http_client,
@@ -255,6 +256,8 @@ class Container:
     # Start/drain phase and the service-owned workflow runs (attach_workflows).
     lifecycle: ContainerLifecycle = field(default_factory=ContainerLifecycle)
     recover_service_workflows: bool = True
+    # Export or erase one user's data across every store (persistence/user_data.py).
+    user_data: UserDataService | None = None
 
     def attach_workflows(self, workflows: OwnedWorkflows) -> None:
         """Let the container recover, expire and drain the workflow runs a service owns."""
@@ -512,6 +515,7 @@ def build_container(
     framework_adapters: Sequence[FrameworkAdapter] = (),
     usage_meter: UsageMeter | None = None,
     usage_meter_margin: float = 1.0,
+    recovery_credentials: RecoveryCredentialsProvider | None = None,
 ) -> Container:
     """Build an isolated runtime container.
 
@@ -526,6 +530,10 @@ def build_container(
     router dispatches (see ``algen_agent_runtime.models.metering``). ``usage_meter_margin``
     scales the input tokens it reserves (``ModelRouter(reserve_input_margin=...)``), for
     example ``4 / 3`` to reserve as if a token were three characters; it must be at least 1.0.
+
+    ``recovery_credentials`` supplies credentials for a run recovered at start that was acting
+    with its caller's (``AgentRuntime.recovery_credentials``): a mapping to continue it with, or
+    None to pause it in ``awaiting_credentials`` until the host resumes it with credentials.
     """
     environment = environment or {}
     secret_provider = _ScopedEnvironmentSecretProvider(environment)
@@ -1054,6 +1062,7 @@ def build_container(
             max_bytes_total=settings.security.max_attachment_bytes_total,
         ),
     )
+    runtime.recovery_credentials = recovery_credentials
     if settings.runtime.subagent.enabled:
         tools.register(subagent_tool(runtime, max_depth=settings.runtime.subagent.max_depth))
     _report_unknown_components(
@@ -1116,6 +1125,7 @@ def build_container(
             stream=settings.conversation_streaming.enabled,
             delta_interval_seconds=settings.conversation_streaming.delta_interval_ms / 1000,
             delta_max_chars=settings.conversation_streaming.delta_max_chars,
+            tool_steps=settings.conversation_streaming.tool_steps,
         )
     )
     conversations = ConversationService(
@@ -1222,6 +1232,25 @@ def build_container(
             observability=observability,
         ),
         recover_service_workflows=settings.runtime.recover_service_workflows,
+        user_data=UserDataService(
+            runs=runs,
+            memory=memory,
+            events=events,
+            approvals=approvals,
+            tool_executions=executions,
+            artifacts=artifacts,
+            learned_memory=learned_memory_store,
+            conversations=conversation_store,
+            conversation_events=conversation_events,
+            conversation_feedback=conversation_feedback,
+            workflow_checkpoints=workflow_checkpoints,
+            mcp_tokens=(
+                mcp_manager.oauth.store
+                if mcp_manager is not None and mcp_manager.oauth is not None
+                else None
+            ),
+            audits=audits,
+        ),
     )
 
 

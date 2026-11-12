@@ -117,6 +117,25 @@ class InMemoryMCPTokenStore:
     async def delete(self, key: MCPTokenKey) -> bool:
         return self._tokens.pop(key, None) is not None
 
+    async def servers_for_user(self, tenant_id: str, user_id: str) -> tuple[str, ...]:
+        """The servers ``user_id`` has a user-scoped connection to in the tenant."""
+        return tuple(
+            sorted(
+                key.server
+                for key in self._tokens
+                if key.tenant_id == tenant_id and key.user_id == user_id
+            )
+        )
+
+    async def forget_user(self, tenant_id: str, user_id: str) -> int:
+        """Delete ``user_id``'s user-scoped connections in the tenant; return how many went."""
+        doomed = [
+            key for key in self._tokens if key.tenant_id == tenant_id and key.user_id == user_id
+        ]
+        for key in doomed:
+            del self._tokens[key]
+        return len(doomed)
+
     async def put_pending(self, pending: MCPOAuthPendingAuthorization) -> None:
         async with self._lock:
             now = utc_now()
@@ -172,6 +191,29 @@ class PostgresMCPTokenStore:
             key.server,
         )
         return row is not None
+
+    async def servers_for_user(self, tenant_id: str, user_id: str) -> tuple[str, ...]:
+        """The servers ``user_id`` has a user-scoped connection to in the tenant."""
+        if not user_id:
+            return ()
+        rows = await self._database.fetch(
+            "SELECT server FROM algen_agent_runtime_mcp_oauth_tokens "
+            "WHERE tenant_id=$1 AND user_id=$2 ORDER BY server",
+            tenant_id,
+            user_id,
+        )
+        return tuple(str(row["server"]) for row in rows)
+
+    async def forget_user(self, tenant_id: str, user_id: str) -> int:
+        """Delete ``user_id``'s user-scoped connections in the tenant; return how many went."""
+        if not user_id:
+            return 0  # '' is the tenant-scoped connections' user id
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_mcp_oauth_tokens WHERE tenant_id=$1 AND user_id=$2",
+            tenant_id,
+            user_id,
+        )
+        return int(str(result).rsplit(" ", 1)[-1])
 
     async def put_pending(self, pending: MCPOAuthPendingAuthorization) -> None:
         await self._database.execute(

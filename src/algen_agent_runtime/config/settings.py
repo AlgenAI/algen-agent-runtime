@@ -3,13 +3,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from algen_agent_runtime.cache.contracts import CacheScope
 from algen_agent_runtime.config.authentication import (
@@ -481,8 +482,26 @@ class ApiSettings(StrictSettings):
         "X-Artifact-Metadata",
     )
     rate_limiting: ApiRateLimitSettings = Field(default_factory=ApiRateLimitSettings)
+    credential_headers: tuple[str, ...] = Field(
+        default=(),
+        max_length=16,
+        description=(
+            "Request headers whose values the run and conversation routes forward to tools as "
+            "the caller's credentials (context.credentials, keyed by the lower-case header "
+            "name), for example authorization; memory only, never stored. Empty forwards none"
+        ),
+    )
     agent_ui_enabled: bool = False
     agent_ui_path: str = Field(default="/agent-ui", pattern=r"^/[a-zA-Z0-9_\-\./]*$")
+
+    @field_validator("credential_headers")
+    @classmethod
+    def _credential_header_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        names = tuple(dict.fromkeys(item.strip().lower() for item in value))
+        for name in names:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
+                raise ValueError(f"credential_headers: {name!r} is not a header name")
+        return names
 
     @model_validator(mode="after")
     def validate_authentication(self) -> ApiSettings:
@@ -725,6 +744,14 @@ class ConversationStreamingSettings(StrictSettings):
         ge=16,
         le=65_536,
         description="Largest delta event; a fuller buffer is sent at once, in pieces of this size",
+    )
+    tool_steps: bool = Field(
+        default=False,
+        description=(
+            "Also send each tool call as agent.tool.started and agent.tool.completed events: "
+            "tool name, status, side effect, argument names and result size, never arguments "
+            "or results"
+        ),
     )
 
 

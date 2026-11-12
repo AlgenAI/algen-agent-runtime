@@ -18,6 +18,7 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
     VerificationError,
+    run_failure_error,
 )
 from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext, tool_fingerprint
@@ -1600,7 +1601,9 @@ class MultiAgentWorkflowExecutor:
             parent_run_id = result.run_id
             state.nodes[node.id].attempts += 1
             if result.status != RunStatus.COMPLETED:
-                raise RuntimeError(result.error or f"agent {node.agent!r} failed")
+                # The child run's own error type: VerificationError when its answer failed
+                # verification, BudgetExceededError at a limit, and so on.
+                raise run_failure_error(result, f"agent {node.agent!r} failed")
             structured = node.output_schema is not None or node.output_schema_hook is not None
             try:
                 value = json.loads(result.output or "null") if structured else result.output

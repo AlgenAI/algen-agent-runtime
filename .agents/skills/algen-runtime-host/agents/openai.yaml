@@ -1,0 +1,5 @@
+interface:
+  display_name: "Algen Runtime Host"
+  short_description: "Embed Runtime in an app without rebuilding it"
+  brand_color: "#10B981"
+  default_prompt: "Use $algen-runtime-host to review this application for code that duplicates what the Runtime already provides."

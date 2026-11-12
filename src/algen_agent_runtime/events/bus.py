@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
-from algen_agent_runtime.exceptions.errors import RunConflictError
+from algen_agent_runtime.exceptions.errors import EventStreamOverflowError, RunConflictError
 
 
 def _is_sequence_conflict(exc: BaseException) -> bool:
@@ -17,11 +17,50 @@ def _is_sequence_conflict(exc: BaseException) -> bool:
     return "sequence" in str(exc)
 
 
+class _Subscription:
+    """One subscriber's live queue.
+
+    A publish that finds the queue full marks the subscription ``overflowed`` and stops adding
+    to it, instead of dropping an event the subscriber would never know it missed: once the
+    subscriber has read what is queued, it reads on from the bus's history after the last event
+    it received.
+    """
+
+    __slots__ = ("overflowed", "queue")
+
+    def __init__(self, size: int) -> None:
+        self.queue: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=size)
+        self.overflowed = False
+
+    def offer(self, event: RunEvent) -> None:
+        if self.overflowed:
+            return
+        try:
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            self.overflowed = True
+
+    @property
+    def behind(self) -> bool:
+        """Whether the subscriber must read on from the history: it overflowed and has read
+        everything that was queued before."""
+        return self.overflowed and self.queue.empty()
+
+
 class InMemoryEventBus:
-    def __init__(self, history_limit: int = 1000) -> None:
+    """Run events in process memory: the last ``history_limit`` events of each run, and live
+    fan-out to subscribers with queues of ``subscriber_queue_size`` events.
+
+    A subscriber that falls more than its queue behind reads on from the history; when the
+    history no longer holds the events it missed, its subscription ends with
+    ``EventStreamOverflowError`` rather than skipping them.
+    """
+
+    def __init__(self, history_limit: int = 1000, subscriber_queue_size: int = 1000) -> None:
         self._history: dict[str, list[RunEvent]] = defaultdict(list)
-        self._subscribers: dict[str, set[asyncio.Queue[RunEvent]]] = defaultdict(set)
+        self._subscribers: dict[str, set[_Subscription]] = defaultdict(set)
         self._history_limit = history_limit
+        self._subscriber_queue_size = subscriber_queue_size
         self._lock = asyncio.Lock()
 
     async def next_sequence(self, run_id: str) -> int:
@@ -35,33 +74,58 @@ class InMemoryEventBus:
             history.append(event)
             del history[: -self._history_limit]
             subscribers = tuple(self._subscribers[event.run_id])
-        for queue in subscribers:
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            queue.put_nowait(event)
+        for subscription in subscribers:
+            subscription.offer(event)
 
     async def history(self, run_id: str, after: int = 0) -> tuple[RunEvent, ...]:
         async with self._lock:
             return tuple(event for event in self._history.get(run_id, ()) if event.sequence > after)
 
-    async def subscribe(self, run_id: str, after: int = 0) -> AsyncIterator[RunEvent]:
-        queue: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=1000)
+    async def forget_runs(self, run_ids: Sequence[str]) -> int:
+        """Drop the event history of these runs; return how many events went."""
         async with self._lock:
-            self._subscribers[run_id].add(queue)
+            return sum(len(self._history.pop(run_id, ())) for run_id in set(run_ids))
+
+    async def subscribe(self, run_id: str, after: int = 0) -> AsyncIterator[RunEvent]:
+        """Yield the run's events after sequence ``after``, then live ones, in order.
+
+        Raises ``EventStreamOverflowError`` (with the last delivered sequence) when this
+        subscriber fell behind further than the kept history reaches.
+        """
+        subscription = _Subscription(self._subscriber_queue_size)
+        async with self._lock:
+            self._subscribers[run_id].add(subscription)
             backlog = tuple(
                 event for event in self._history.get(run_id, ()) if event.sequence > after
             )
+        cursor = after
         try:
             for event in backlog:
+                cursor = max(cursor, event.sequence)
                 yield event
             while True:
-                yield await queue.get()
+                if subscription.behind:
+                    async with self._lock:
+                        subscription.overflowed = False
+                        missed = tuple(
+                            event
+                            for event in self._history.get(run_id, ())
+                            if event.sequence > cursor
+                        )
+                    if missed and missed[0].sequence > cursor + 1:
+                        raise EventStreamOverflowError(run_id, cursor)
+                    for event in missed:
+                        if event.sequence > cursor:
+                            cursor = event.sequence
+                            yield event
+                    continue
+                event = await subscription.queue.get()
+                if event.sequence > cursor:
+                    cursor = event.sequence
+                    yield event
         finally:
             async with self._lock:
-                self._subscribers[run_id].discard(queue)
+                self._subscribers[run_id].discard(subscription)
 
 
 class InMemoryAuditLog:
@@ -88,7 +152,7 @@ class PostgresEventBus:
 
     def __init__(self, database: Any, subscriber_queue_size: int = 1000) -> None:
         self._database = database
-        self._subscribers: dict[str, set[asyncio.Queue[RunEvent]]] = defaultdict(set)
+        self._subscribers: dict[str, set[_Subscription]] = defaultdict(set)
         self._subscriber_queue_size = subscriber_queue_size
         self._lock = asyncio.Lock()
 
@@ -124,13 +188,8 @@ class PostgresEventBus:
             raise
         async with self._lock:
             subscribers = tuple(self._subscribers[event.run_id])
-        for queue in subscribers:
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            queue.put_nowait(event)
+        for subscription in subscribers:
+            subscription.offer(event)
 
     async def history(self, run_id: str, after: int = 0) -> tuple[RunEvent, ...]:
         rows = await self._database.fetch(
@@ -141,16 +200,38 @@ class PostgresEventBus:
         )
         return tuple(RunEvent.model_validate_json(row["event"]) for row in rows)
 
+    async def forget_runs(self, run_ids: Sequence[str]) -> int:
+        """Delete the event history of these runs; return how many events went."""
+        if not run_ids:
+            return 0
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_events WHERE run_id = ANY($1::text[])", list(run_ids)
+        )
+        return int(str(result).rsplit(" ", 1)[-1])
+
     async def subscribe(self, run_id: str, after: int = 0) -> AsyncIterator[RunEvent]:
-        queue: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=self._subscriber_queue_size)
+        """Yield the run's events after sequence ``after``, then live ones, in order.
+
+        A subscriber that falls more than its queue behind reads on from the durable history,
+        so it misses nothing.
+        """
+        subscription = _Subscription(self._subscriber_queue_size)
+        queue = subscription.queue
         async with self._lock:
-            self._subscribers[run_id].add(queue)
+            self._subscribers[run_id].add(subscription)
         try:
             cursor = after
             for event in await self.history(run_id, cursor):
                 cursor = max(cursor, event.sequence)
                 yield event
             while True:
+                if subscription.behind:
+                    subscription.overflowed = False
+                    for event in await self.history(run_id, cursor):
+                        if event.sequence > cursor:
+                            cursor = event.sequence
+                            yield event
+                    continue
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.5)
                     if event.sequence > cursor:
@@ -164,7 +245,7 @@ class PostgresEventBus:
                         yield event
         finally:
             async with self._lock:
-                self._subscribers[run_id].discard(queue)
+                self._subscribers[run_id].discard(subscription)
 
 
 class PostgresAuditLog:

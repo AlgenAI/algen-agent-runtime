@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from algen_agent_runtime.context.packing import REPAIR_MESSAGE_NAME
 from algen_agent_runtime.planning.contracts import ActionType, Plan, PlannedAction
-from algen_agent_runtime.types.contracts import AgentDefinition, RunState
+from algen_agent_runtime.types.contracts import AgentDefinition, Role, RunState
 from algen_agent_runtime.types.interfaces import Planner
 
 
@@ -17,6 +18,22 @@ def _pending_tool_actions(state: RunState) -> tuple[PlannedAction, ...]:
         for call in state.pending_tool_calls
         if call.id not in state.completed_tool_call_ids
     )
+
+
+def _answered(state: RunState) -> bool:
+    """A run started with empty input has since been given some: a clarification answer.
+
+    Answers are user messages after the run's own (empty) request; earlier turns of the
+    session, before it, do not count.
+    """
+    history = state.context_history if state.context_history is not None else state.messages
+    for message in reversed(history):
+        if message.role != Role.USER or message.name == REPAIR_MESSAGE_NAME:
+            continue
+        if not message.text_content.strip():
+            return False  # the run's own request: nothing after it answered
+        return True
+    return False
 
 
 class DirectPlanner:
@@ -72,7 +89,7 @@ class RuleBasedPlanner:
     name = "rule_based"
 
     async def plan(self, state: RunState, agent: AgentDefinition) -> Plan:
-        if not state.request.input.strip():
+        if not state.request.input.strip() and not _answered(state):
             return Plan(
                 actions=(
                     PlannedAction(

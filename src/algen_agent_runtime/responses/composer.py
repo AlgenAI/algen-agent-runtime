@@ -16,6 +16,10 @@ class DefaultResponseComposer:
             # verification or the final_response guardrails.
             output=state.output_text if state.status == RunStatus.COMPLETED else None,
             error=state.error,
+            error_type=state.error_type if state.status == RunStatus.FAILED else None,
+            limit_reached=state.limit_reached,
+            # A completed run that reached a limit answered from what it had (on_limit: summarize).
+            partial=state.status == RunStatus.COMPLETED and state.limit_reached is not None,
             rejected_output=state.rejected_output,
             artifacts=tuple(state.context_artifact_ids),
             sources=tuple(dict.fromkeys(item.source for item in state.citations)),

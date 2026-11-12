@@ -4,7 +4,11 @@ A deployment that bills or rations model use passes a ``UsageMeter`` to
 ``build_container(usage_meter=...)`` (or ``ModelRouter(usage_meter=...)``). The router reserves
 the most a call could cost before it reaches a provider and settles what the provider reports
 afterwards, so steps, retries, fallbacks, repairs, streaming and compaction are all charged. A
-call that fails is released without charge.
+call that fails is released without charge. A streamed call that stops after output reached the
+caller (the user pressed Stop, the client went away, the provider failed mid-stream) was billed by
+the provider, so it is settled with an estimate instead: the request's input estimate and about
+four characters per output token of what streamed. A meter whose ``settle`` accepts an
+``estimated`` keyword receives ``estimated=True`` for it.
 
 Each reservation carries a ``MeterCall``: whose call it is (tenant, user, run, agent), why it is
 made (a step or compaction, which attempt) and which model is being tried. A multi-tenant meter
@@ -95,12 +99,36 @@ class UsageMeter(Protocol):
         ...
 
     async def settle(self, ticket: object, usage: TokenUsage) -> None:
-        """Charge a completed call what the provider reported it used."""
+        """Charge a completed call what the provider reported it used.
+
+        A streamed call that ended after delivering output but before the provider reported
+        usage is settled with the router's estimate. A meter that wants to tell the two apart
+        declares ``settle(self, ticket, usage, *, estimated: bool = False)``: the router passes
+        ``estimated=True`` for an estimate (and nothing otherwise). A meter without the keyword
+        receives the estimate as a plain settle.
+        """
         ...
 
     async def release(self, ticket: object) -> None:
         """Drop the reservation of a call that failed or was cancelled, without charge."""
         ...
+
+
+def accepts_estimated(meter: UsageMeter) -> bool:
+    """Whether the meter's ``settle`` takes an ``estimated`` keyword (or ``**kwargs``)."""
+    try:
+        parameters = inspect.signature(meter.settle).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == "estimated"
+            and parameter.kind
+            in {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+        )
+        for parameter in parameters
+    )
 
 
 def require_call_parameter(meter: UsageMeter) -> None:

@@ -15,7 +15,7 @@
 Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
 
 > [!IMPORTANT]
-> `0.2.0b2` is the second beta of a single-node foundation; its public API is a candidate for `1.0`. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> `0.2.0b3` is the third beta of a single-node foundation; its public API is a candidate for `1.0`. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
 
 **[Documentation](https://algenai.github.io/algen-agent-runtime/)** · [Why use it](docs/why-algen-agent-runtime.md) · [Examples](#importable-examples) · [Changelog](CHANGELOG.md)
 
@@ -87,7 +87,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | Area | Status |
 | --- | --- |
 | Python | 3.12 and 3.13 |
-| Package maturity | Beta (`0.2.0b2`) |
+| Package maturity | Beta (`0.2.0b3`) |
 | Core execution | Available and covered by deterministic tests |
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
@@ -129,7 +129,7 @@ python -m pip install --pre 'algen-agent-runtime[langgraph]'
 To install a release from its GitHub tag instead of PyPI:
 
 ```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.2.0b2
+python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.2.0b3
 ```
 
 For development from a checkout:
@@ -284,6 +284,10 @@ algen-agent-runtime describe --config agent.yaml --path src --json
 algen-agent-runtime check agent.yaml --path src
 # ...or for a project that runs its own server, without the Studio-only warnings
 algen-agent-runtime check agent.yaml --path src --profile standalone
+
+# Copy the Agent Skills for coding agents into the project (.agents/skills/); --force refreshes them
+algen-agent-runtime skills list
+algen-agent-runtime skills install --path .
 ```
 
 ## Run the HTTP service
@@ -425,6 +429,7 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Product fit and boundaries | [Why Algen Agent Runtime](docs/why-algen-agent-runtime.md) |
 | Architecture | [Architecture](docs/architecture.md) |
 | Deployment and configuration | [Operations](docs/operations.md) |
+| Embedding the Runtime in an application | [Conversations from a host](docs/conversations.md) and the `algen-runtime-host` skill |
 | Providers | [Provider extension](docs/providers.md) and [compatibility](docs/provider-compatibility.md) |
 | MCP tools | [Model Context Protocol (MCP)](docs/mcp.md) |
 | HTTP API tools | [HTTP API tools](docs/http-tools.md) |
@@ -558,11 +563,20 @@ containers (`scripts/integration-tests.sh`, docker or podman), and smoke-test th
 Repository-scoped skills under [`.agents/skills`](.agents/skills) help coding agents use the current
 Runtime contracts instead of inventing parallel abstractions:
 
-- `algen-runtime-contributor` — safe, compatible open-source contributions;
-- `algen-runtime-extension` — providers, tools, stores, retrieval, telemetry, and framework adapters;
 - `algen-agent-builder` — Studio-importable single-agent and multi-agent projects;
 - `algen-agent-connector` — governed combinations of APIs, MCP, databases, retrieval, memory,
-  persistence, and telemetry.
+  persistence, and telemetry;
+- `algen-runtime-host` — applications that embed the Runtime (chat UIs, run following, approval
+  inboxes, metering, storage) without rebuilding its conversations, approvals, event streams,
+  recovery, model routing, redaction or guards;
+- `algen-runtime-extension` — providers, tools, stores, retrieval, telemetry, and framework adapters;
+- `algen-runtime-contributor` — safe, compatible open-source contributions to this repository.
+
+The package ships the first four, so an application repository gets the copy that matches its
+installed Runtime: `algen-agent-runtime skills install --path .` writes them into
+`.agents/skills/` (`--skill NAME` for one, `--skills-dir .claude/skills` for Claude Code, `--force`
+to replace an installed copy after an upgrade). The contributor and external-review skills are for
+work on this repository and stay here.
 
 Invoke a skill by name when supported by your coding agent, for example:
 

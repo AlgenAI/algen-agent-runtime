@@ -164,7 +164,9 @@ happens only in the request sent to the model. The default and retrieval builder
 policy; it is off by default. It works alongside `offload_tool_results` (an offloaded reference
 is already short) and `compact_history` (which summarises before packing).
 
-The policy applies to the context builder's budget (`max_estimated_tokens`). When a model profile
+The policy applies to the context builder's budget (`max_estimated_tokens`, or the agent's own
+`context_policy.max_context_tokens` from 0.2.0b3, see
+[the context budget of an agent](context-management.md#the-context-budget-of-an-agent-020b3)). When a model profile
 sets `context_window_tokens`, the request is packed once more against that window just before the
 call, and that final packing drops older exchanges whole. To keep shortening in effect, set the
 builder budget at or below the model's message allowance, so the final packing has nothing left
@@ -172,6 +174,27 @@ to drop.
 
 Builders that override `pack(self, messages)` keep working: `build()` passes the policy to `pack`
 only when shortening is on.
+
+## One oversized tool result
+
+From 0.2.0b3, when the newest tool results alone do not fit the context builder's budget (which
+failed the run with `required context exceeds max_estimated_tokens`), the Runtime shortens them as
+a last resort (`context_policy.oversized_tool_result: truncate`, the default):
+
+1. When the agent can call `core.context_read` (enabled, with `context.read`) and context artifact
+   storage is configured, each result longer than 2,048 characters is offloaded, as
+   `offload_tool_results` would, and replaced by its reference.
+2. Every result still too long is then cut to the longest length that fits and replaced by
+   `{"truncated": true, "notice", "total_chars", "kept_chars", "content"}`. The notice tells the
+   model the result is incomplete. A `coverage` the tool reported is kept, marked `capped`, so the
+   result-coverage verifier does not read the cut as absence.
+
+The run's history keeps the shortened result, so later steps do not shorten it again, and a
+`context.tool_result_truncated` event and audit record each one (`tool`, `tool_call_id`,
+`original_chars`, `kept_chars`, `offloaded`, `artifact_id`). The run still fails when even empty
+results would not fit. `oversized_tool_result: fail` restores the earlier behaviour. It covers the
+default and retrieval builders' budget; a request packed again against a model profile's
+`context_window_tokens` is not shortened, so keep the builder budget at or below that window.
 
 ## Recoverable history compaction
 

@@ -109,7 +109,8 @@ WITH doomed AS (
           WHERE m.conversation_id = c.id
             AND (m.created_at >= now() - ($1 * interval '1 second')
                  OR m.message->>'status' IN
-                    ('accepted', 'streaming', 'awaiting_approval', 'awaiting_input'))
+                    ('accepted', 'streaming', 'awaiting_approval', 'awaiting_input',
+                     'awaiting_credentials'))
       )
     ORDER BY c.updated_at
     LIMIT $2

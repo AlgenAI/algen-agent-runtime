@@ -234,8 +234,11 @@ again showing the current definition. See
 An agent node's invalid JSON output (with `output_schema`) is repaired like a validation failure,
 up to `max_repairs`. Once repairs run out, invalid JSON fails the node with `VerificationError` and
 output its `validator` rejects fails it with `ConfigurationError`. A child agent run that does not
-complete, including one that fails the agent's own output verification, fails the node with a
-plain `RuntimeError` carrying the run's error: the error type is not kept yet. Nodes with `pass_attachments: true` hand the run's files to their agent; see
+complete fails the node with the error that ended it, carrying the run's error message: a
+`VerificationError` when it failed the agent's own output verification, a `BudgetExceededError`
+(with `limit`) at a limit, `PolicyDeniedError`, `ToolExecutionError` and so on
+(`RunResult.error_type`), `TimeoutError` when it timed out, and `RuntimeError` otherwise. Before
+0.2.0b3 it was always a plain `RuntimeError`. Nodes with `pass_attachments: true` hand the run's files to their agent; see
 [attachments](attachments.md#8-workflows).
 
 ## Input Template Grammar
@@ -471,8 +474,8 @@ its own inbox.
 | `GET /v1/workflows` | `runs:read` | The configured workflows, their input schema, and whether each can run |
 | `POST /v1/workflows/{name}/runs` | `runs:write` | Starts a run with `input` (text) or `inputs` (an object); a `workflow_id` you choose makes a retried start find the run it started |
 | `GET /v1/workflows/runs/{workflow_id}` | `runs:read` | Where the run stands: status, each step, what a waiting step asks (`pause`), and the result (`output`, from the manifest's `output_key`) |
-| `POST /v1/workflows/runs/{workflow_id}/approval` | `runs:write` | Answers the approval step it waits on: `approved`, `rejected`, or `modified` with `modified_parameters` |
-| `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write` | Answers the question a paused step asked, with `values`. They cannot set an approval node's `output_key`, or replace a value an approval already showed (400) |
+| `POST /v1/workflows/runs/{workflow_id}/approval` | `runs:write`; from 0.2.0b3 only the run's user or a principal with `approvals:decide` (others get 403) | Answers the approval step it waits on: `approved`, `rejected`, or `modified` with `modified_parameters`. The decision's `decided_by` is the authenticated user |
+| `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write`; from 0.2.0b3 only the run's user (others get 403) | Answers the question a paused step asked, with `values`. They cannot set an approval node's `output_key`, or replace a value an approval already showed (400) |
 
 Runs execute in the background with the container's checkpoint store, so with
 `storage.workflow_store: postgres` a waiting run survives a restart. Every call sees only the

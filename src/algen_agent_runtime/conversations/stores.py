@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Collection, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -107,6 +107,24 @@ class InMemoryConversationStore:
                     return
             raise ConflictError(f"message {message.id!r} was not found")
 
+    async def update_message_if(
+        self, message: ConversationMessage, statuses: Collection[MessageStatus]
+    ) -> bool:
+        """Replace the message only while its stored status is one of ``statuses``.
+
+        Returns False, changing nothing, when another writer already moved it on (for example a
+        second process that recovered the same turn) or it is gone.
+        """
+        async with self._lock:
+            messages = self._messages.get(message.conversation_id, [])
+            for index, current in enumerate(messages):
+                if current.id == message.id and current.tenant_id == message.tenant_id:
+                    if current.status not in statuses:
+                        return False
+                    messages[index] = message.model_copy(deep=True)
+                    return True
+            return False
+
     async def messages(
         self,
         conversation_id: str,
@@ -163,6 +181,8 @@ class InMemoryConversationEventBus:
     async def publish(self, event: ConversationEvent) -> None:
         async with self._lock:
             history = self._history[event.conversation_id]
+            if history and history[-1].sequence >= event.sequence:
+                raise ConflictError(f"conversation event sequence {event.sequence} is taken")
             history.append(event)
             del history[: -self._history_limit]
             subscribers = tuple(self._subscribers[event.conversation_id])
@@ -316,6 +336,23 @@ class PostgresConversationStore:
         if result != "UPDATE 1":
             raise ConflictError(f"message {message.id!r} was not found")
 
+    async def update_message_if(
+        self, message: ConversationMessage, statuses: Collection[MessageStatus]
+    ) -> bool:
+        """Replace the message only while its stored status is one of ``statuses``, in one
+        statement; False when another writer moved it on first or it is gone."""
+        result = await self._database.execute(
+            "UPDATE algen_agent_runtime_conversation_messages SET message=$1::jsonb "
+            "WHERE id=$2 AND conversation_id=$3 AND tenant_id=$4 "
+            "AND message->>'status' = ANY($5::text[])",
+            message.model_dump_json(),
+            message.id,
+            message.conversation_id,
+            message.tenant_id,
+            [MessageStatus(item).value for item in statuses],
+        )
+        return bool(result == "UPDATE 1")
+
     async def messages(
         self,
         conversation_id: str,
@@ -351,7 +388,7 @@ class PostgresConversationStore:
         rows = await self._database.fetch(
             "SELECT message FROM algen_agent_runtime_conversation_messages "
             "WHERE message->>'role'='assistant' "
-            "AND message->>'status' IN ('awaiting_approval','awaiting_input') "
+            "AND message->>'status' IN ('awaiting_approval','awaiting_input','awaiting_credentials') "
             "ORDER BY created_at LIMIT $1",
             limit,
         )
@@ -374,17 +411,26 @@ class PostgresConversationEventBus:
         return int(row["sequence"])
 
     async def publish(self, event: ConversationEvent) -> None:
-        await self._database.execute(
-            "INSERT INTO algen_agent_runtime_conversation_events "
-            "(id,conversation_id,tenant_id,sequence,event,created_at) "
-            "VALUES ($1,$2,$3,$4,$5::jsonb,$6)",
-            event.id,
-            event.conversation_id,
-            event.tenant_id,
-            event.sequence,
-            event.model_dump_json(),
-            event.timestamp,
-        )
+        """Insert the event; ``ConflictError`` when its sequence is taken (another writer got
+        there first), so the caller allocates a new one."""
+        try:
+            await self._database.execute(
+                "INSERT INTO algen_agent_runtime_conversation_events "
+                "(id,conversation_id,tenant_id,sequence,event,created_at) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb,$6)",
+                event.id,
+                event.conversation_id,
+                event.tenant_id,
+                event.sequence,
+                event.model_dump_json(),
+                event.timestamp,
+            )
+        except Exception as exc:
+            if "UniqueViolationError" in type(exc).__name__:
+                raise ConflictError(
+                    f"conversation event sequence {event.sequence} is taken"
+                ) from exc
+            raise
         async with self._lock:
             subscribers = tuple(self._subscribers[event.conversation_id])
         for queue in subscribers:

@@ -22,6 +22,7 @@ from algen_agent_runtime.models.metering import (
     DEFAULT_RESERVED_OUTPUT_TOKENS,
     MeterCall,
     UsageMeter,
+    accepts_estimated,
     require_call_parameter,
 )
 from algen_agent_runtime.types.contracts import (
@@ -31,6 +32,7 @@ from algen_agent_runtime.types.contracts import (
     ModelRequest,
     ModelResponse,
     ModelStreamEvent,
+    TokenUsage,
 )
 from algen_agent_runtime.types.interfaces import ModelProvider
 
@@ -146,6 +148,8 @@ class ModelRouter:
         self._reserve_input_margin = reserve_input_margin
         if usage_meter is not None:
             require_call_parameter(usage_meter)
+        # Whether the meter's settle takes ``estimated``, asked once (see _settle_estimate).
+        self._meter_takes_estimated = usage_meter is not None and accepts_estimated(usage_meter)
 
     async def _capabilities(
         self,
@@ -447,6 +451,7 @@ class ModelRouter:
             )
             settled = False
             delivered = False
+            streamed_chars = 0
             started = time.monotonic()
             try:
                 async for event in provider.stream(
@@ -473,6 +478,10 @@ class ModelRouter:
                             assert event.response is not None
                             await self._usage_meter.settle(ticket, event.response.usage)
                             settled = True
+                    elif event.delta:
+                        streamed_chars += len(event.delta)
+                    elif event.tool_call is not None:
+                        streamed_chars += len(event.tool_call.model_dump_json())
                     delivered = True
                     yield event
                 health = self._health[rid]
@@ -496,8 +505,13 @@ class ModelRouter:
                 failures.append(exc)
             finally:
                 # An error, cancellation or a consumer that stops early ends the stream unsettled.
+                # Once output reached the caller the provider bills it, so the call is charged
+                # an estimate; only a call that delivered nothing is released.
                 if self._usage_meter is not None and not settled:
-                    await self._usage_meter.release(ticket)
+                    if delivered:
+                        await self._settle_estimate(ticket, rid, candidate_request, streamed_chars)
+                    else:
+                        await self._usage_meter.release(ticket)
         if not fitted:
             raise BudgetExceededError(
                 "no streaming model candidate fits the configured context budget"
@@ -509,6 +523,32 @@ class ModelRouter:
         kind = failures[-1].error_kind if len(kinds) == 1 else ErrorKind.UNKNOWN
         retryable = bool(failures) and all(failure.retryable for failure in failures)
         raise ProviderError("all model candidates failed: " + "; ".join(errors), kind, retryable)
+
+    async def _settle_estimate(
+        self, ticket: object, registration_id: str, request: ModelRequest, streamed_chars: int
+    ) -> None:
+        """Charge a stream that ended before the provider reported usage: the request's input
+        estimate and about four characters per output token of what streamed. A meter whose
+        ``settle`` takes ``estimated`` is told so."""
+        assert self._usage_meter is not None
+        input_tokens = estimate_request_tokens(request)
+        output_tokens = (streamed_chars + 3) // 4
+        input_cost, output_cost = self._costs.get(registration_id, (0.0, 0.0))
+        usage = TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost_usd=(input_tokens * input_cost + output_tokens * output_cost) / 1000,
+        )
+        logger.info(
+            "model_stream_settled_with_estimate",
+            provider=registration_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        if self._meter_takes_estimated:
+            await self._usage_meter.settle(ticket, usage, estimated=True)  # type: ignore[call-arg]
+        else:
+            await self._usage_meter.settle(ticket, usage)
 
     async def _reserve(
         self,

@@ -1,0 +1,1133 @@
+{
+  "migrations": [
+    "001_initial.sql",
+    "002_conversations.sql",
+    "003_analytical_execution.sql",
+    "004_conversation_feedback.sql",
+    "005_algen_agent_runtime_rename.sql",
+    "006_artifact_lifecycle.sql",
+    "007_s3_artifacts.sql",
+    "008_workflow_checkpoints.sql",
+    "009_preserve_run_state_json_order.sql",
+    "010_retention_indexes.sql",
+    "011_learned_memory.sql",
+    "012_mcp_oauth.sql",
+    "013_token_revocation.sql",
+    "014_tool_execution_reconciliation.sql",
+    "015_approval_agent.sql",
+    "016_resource_bounds.sql",
+    "017_approval_tool_fingerprint.sql",
+    "018_learned_memory_vectors.sql",
+    "019_session_owners.sql",
+    "020_approval_decided_by.sql",
+    "021_user_data_indexes.sql",
+    "022_run_turn_index.sql"
+  ],
+  "tables": {
+    "algen_agent_runtime_analytical_graphs": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "state": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "status": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "version": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_analytical_graphs_pkey",
+        "algen_agent_runtime_analytical_graphs_tenant_idx",
+        "algen_agent_runtime_analytical_graphs_terminal_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_approvals": {
+      "columns": {
+        "agent": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "approval": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "arguments_sha256": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "comment": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "decided_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "decided_by": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "rationale": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "run_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "status_reason": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tool": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "tool_fingerprint": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "tool_version": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_approvals_agent_idx",
+        "algen_agent_runtime_approvals_pkey",
+        "algen_agent_runtime_approvals_run_idx",
+        "algen_agent_runtime_approvals_tenant_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_artifacts": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "data": {
+          "has_default": false,
+          "not_null": false,
+          "type": "bytea"
+        },
+        "expires_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "media_type": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "metadata": {
+          "has_default": true,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "name": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "run_id": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "sha256": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "size_bytes": {
+          "has_default": false,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "status": {
+          "has_default": true,
+          "not_null": true,
+          "type": "text"
+        },
+        "storage_backend": {
+          "has_default": true,
+          "not_null": true,
+          "type": "text"
+        },
+        "storage_key": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_artifacts_expiry_idx",
+        "algen_agent_runtime_artifacts_pkey",
+        "algen_agent_runtime_artifacts_storage_idx",
+        "algen_agent_runtime_artifacts_tenant_idx"
+      ],
+      "triggers": [
+        "algen_agent_runtime_artifact_usage"
+      ]
+    },
+    "algen_agent_runtime_audit_events": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "event": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_audit_created_idx",
+        "algen_agent_runtime_audit_events_pkey",
+        "algen_agent_runtime_audit_tenant_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_conversation_events": {
+      "columns": {
+        "conversation_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "event": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "sequence": {
+          "has_default": false,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_conversation_e_conversation_id_sequence_key",
+        "algen_agent_runtime_conversation_events_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_conversation_feedback": {
+      "columns": {
+        "conversation_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "feedback": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "message_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_conversati_tenant_id_user_id_message_id_key",
+        "algen_agent_runtime_conversation_feedback_conversation_id_idx",
+        "algen_agent_runtime_conversation_feedback_conversation_idx",
+        "algen_agent_runtime_conversation_feedback_message_idx",
+        "algen_agent_runtime_conversation_feedback_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_conversation_messages": {
+      "columns": {
+        "conversation_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "message": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "ordinal": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_conversation_messages_conversation_idx",
+        "algen_agent_runtime_conversation_messages_idx",
+        "algen_agent_runtime_conversation_messages_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_conversations": {
+      "columns": {
+        "conversation": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "version": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_conversations_pkey",
+        "algen_agent_runtime_conversations_updated_idx",
+        "algen_agent_runtime_conversations_user_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_events": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "event": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "run_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "sequence": {
+          "has_default": false,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_events_pkey",
+        "algen_agent_runtime_events_run_id_sequence_key"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_learned_memory": {
+      "columns": {
+        "agent_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "deleted": {
+          "has_default": true,
+          "not_null": true,
+          "type": "boolean"
+        },
+        "expires_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "key": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "record": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "revision": {
+          "has_default": false,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_learned_memory_expiry_idx",
+        "algen_agent_runtime_learned_memory_pkey",
+        "algen_agent_runtime_learned_memory_recall_idx"
+      ],
+      "triggers": [
+        "algen_agent_runtime_learned_memory_usage"
+      ]
+    },
+    "algen_agent_runtime_learned_memory_vectors": {
+      "columns": {
+        "agent_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "dimensions": {
+          "has_default": false,
+          "not_null": true,
+          "type": "integer"
+        },
+        "embedding": {
+          "has_default": false,
+          "not_null": true,
+          "type": "real[]"
+        },
+        "key": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "model": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "revision": {
+          "has_default": false,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_learned_memory_vectors_model_idx",
+        "algen_agent_runtime_learned_memory_vectors_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_mcp_oauth_states": {
+      "columns": {
+        "ciphertext": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "expires_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "server": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "state_hash": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_mcp_oauth_states_expiry_idx",
+        "algen_agent_runtime_mcp_oauth_states_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_mcp_oauth_tokens": {
+      "columns": {
+        "ciphertext": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "server": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_mcp_oauth_tokens_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_memory": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "expires_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "message": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "session_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_memory_expiry_idx",
+        "algen_agent_runtime_memory_pkey",
+        "algen_agent_runtime_memory_session_idx"
+      ],
+      "triggers": [
+        "algen_agent_runtime_memory_usage"
+      ]
+    },
+    "algen_agent_runtime_memory_operations": {
+      "columns": {
+        "agent_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "fingerprint": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "operation_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "receipt": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_memory_operations_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_revoked_subjects": {
+      "columns": {
+        "reason": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "revoked_before": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "subject": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_revoked_subjects_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_revoked_tokens": {
+      "columns": {
+        "expires_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "jti": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "reason": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "revoked_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_revoked_tokens_expiry_idx",
+        "algen_agent_runtime_revoked_tokens_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_runs": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "state": {
+          "has_default": false,
+          "not_null": true,
+          "type": "json"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "version": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_runs_pkey",
+        "algen_agent_runtime_runs_tenant_idx",
+        "algen_agent_runtime_runs_turn_idx",
+        "algen_agent_runtime_runs_updated_idx",
+        "algen_agent_runtime_runs_user_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_schema_migrations": {
+      "columns": {
+        "applied_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "name": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_schema_migrations_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_session_owners": {
+      "columns": {
+        "claimed_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "expires_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "session_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_session_owners_expiry_idx",
+        "algen_agent_runtime_session_owners_pkey",
+        "algen_agent_runtime_session_owners_user_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_tenant_usage": {
+      "columns": {
+        "bytes": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "items": {
+          "has_default": true,
+          "not_null": true,
+          "type": "bigint"
+        },
+        "resource": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_tenant_usage_pkey"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_tool_executions": {
+      "columns": {
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "idempotency_key": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "record": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "run_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "status": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "step_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tool_name": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_tool_executions_pkey",
+        "algen_agent_runtime_tool_executions_run_id_idx",
+        "algen_agent_runtime_tool_executions_run_idx",
+        "algen_agent_runtime_tool_executions_status_idx"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_work_items": {
+      "columns": {
+        "attempts": {
+          "has_default": true,
+          "not_null": true,
+          "type": "integer"
+        },
+        "available_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "created_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "deduplication_key": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "error": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "item": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "kind": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "lease_expires_at": {
+          "has_default": false,
+          "not_null": false,
+          "type": "timestamp with time zone"
+        },
+        "lease_owner": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
+        },
+        "maximum_attempts": {
+          "has_default": true,
+          "not_null": true,
+          "type": "integer"
+        },
+        "result": {
+          "has_default": false,
+          "not_null": false,
+          "type": "jsonb"
+        },
+        "status": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": true,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_work_items_claim_idx",
+        "algen_agent_runtime_work_items_finished_idx",
+        "algen_agent_runtime_work_items_pkey",
+        "algen_agent_runtime_work_items_tenant_id_deduplication_key_key"
+      ],
+      "triggers": []
+    },
+    "algen_agent_runtime_workflow_checkpoints": {
+      "columns": {
+        "id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "manifest_name": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "manifest_version": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "state": {
+          "has_default": false,
+          "not_null": true,
+          "type": "jsonb"
+        },
+        "status": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "tenant_id": {
+          "has_default": false,
+          "not_null": true,
+          "type": "text"
+        },
+        "updated_at": {
+          "has_default": false,
+          "not_null": true,
+          "type": "timestamp with time zone"
+        },
+        "version": {
+          "has_default": false,
+          "not_null": true,
+          "type": "integer"
+        }
+      },
+      "indexes": [
+        "algen_agent_runtime_workflow_checkpoints_pkey",
+        "algen_agent_runtime_workflow_checkpoints_recovery_idx",
+        "algen_agent_runtime_workflow_checkpoints_tenant_idx",
+        "algen_agent_runtime_workflow_checkpoints_terminal_idx"
+      ],
+      "triggers": []
+    }
+  }
+}

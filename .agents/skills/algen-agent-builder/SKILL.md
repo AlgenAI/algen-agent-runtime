@@ -48,11 +48,19 @@ what the settings declare, never constructor arguments, so:
 
 An agent that makes many tool calls or changes state should use the Runtime's own guards rather than
 rules in its instructions or plugin code: prechecks, refusal limits, the repeat guard and call
-limits, the wrap-up notice and shortened older tool results. A tool that must act as the signed-in
+limits, the wrap-up notice, shortened older tool results, the partial answer at a limit
+(`budget.on_limit: summarize`, read `RunResult.partial`) and the cut of an oversized tool result
+(`context_policy.oversized_tool_result`, on by default). An agent that needs a larger context
+budget than the builder's 16,000 tokens sets `context_policy.max_context_tokens` instead of
+registering its own context builder. Screen retrieved evidence from corpora
+others can write to with `guardrail_policy.retrieval_injection`. A tool that must act as the signed-in
 user reads the caller's credentials from `ToolContext.credentials`. For several users, give each
 user their own `session_id`, grant `approvals:decide` to people who approve other users' runs, and
 let an agent delegate with `core.subagent` only to the agents in its `delegates` list (off unless
-`runtime.subagent.enabled`). See "Tool-heavy and acting agents" in `references/project-shape.md`.
+`runtime.subagent.enabled`); a delegate's approval or question pauses the caller and is decided
+there. An agent that must ask the user mid-task enables `core.ask_user`. Follow a whole turn,
+through its pauses, with `client.follow(run_id)` or `?through_pauses=true`. See "Tool-heavy and
+acting agents" in `references/project-shape.md`.
 
 Validate YAML by loading it through the current Runtime model rather than relying on syntax alone.
 Run the project smoke test and relevant Runtime tests. Do not publish to a marketplace or deploy

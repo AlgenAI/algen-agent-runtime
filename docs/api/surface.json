@@ -23,6 +23,8 @@
   "agents[].attachments.tool_read_types": "list[string]",
   "agents[].attachments.types": "list[string]",
   "agents[].budget": "object",
+  "agents[].budget.limit_answer_max_output_tokens": "integer",
+  "agents[].budget.limit_answer_timeout_seconds": "number",
   "agents[].budget.max_cost_usd": "number",
   "agents[].budget.max_events": "integer",
   "agents[].budget.max_latency_seconds": "number",
@@ -30,6 +32,7 @@
   "agents[].budget.max_output_tokens": "integer",
   "agents[].budget.max_response_chars": "integer",
   "agents[].budget.max_tokens": "integer",
+  "agents[].budget.on_limit": "enum[\"fail\", \"summarize\"]",
   "agents[].capabilities": "list[string]",
   "agents[].context_builder": "string",
   "agents[].context_policy": "object",
@@ -42,7 +45,9 @@
   "agents[].context_policy.compaction_trigger_ratio": "number | null",
   "agents[].context_policy.compaction_trigger_tokens": "integer",
   "agents[].context_policy.loaded_skills_max_tokens": "integer",
+  "agents[].context_policy.max_context_tokens": "integer | null",
   "agents[].context_policy.offload_tool_results": "boolean",
+  "agents[].context_policy.oversized_tool_result": "enum[\"truncate\", \"fail\"]",
   "agents[].context_policy.shorten_older_tool_results": "boolean",
   "agents[].context_policy.shortened_tool_result_chars": "integer",
   "agents[].context_policy.shortened_tool_result_note": "string",
@@ -93,6 +98,7 @@
   "agents[].guardrail_policy.pii.exempt_entities": "list[enum[\"email\", \"phone\", \"aadhaar\", \"card\"]]",
   "agents[].guardrail_policy.policies": "list[string]",
   "agents[].guardrail_policy.require_citations": "boolean",
+  "agents[].guardrail_policy.retrieval_injection": "enum[\"off\", \"flag\", \"drop\"]",
   "agents[].guardrail_policy.tool_policies": "list[string] | null",
   "agents[].guardrail_policy.tool_result_injection": "enum[\"off\", \"flag\", \"block\"]",
   "agents[].learned_memory_policy": "object",
@@ -170,6 +176,7 @@
   "api.cors_allow_credentials": "boolean",
   "api.cors_allowed_headers": "list[string]",
   "api.cors_allowed_origins": "list[string]",
+  "api.credential_headers": "list[string]",
   "api.host": "string",
   "api.jwt_algorithms": "list[string]",
   "api.jwt_audience": "string | null",
@@ -240,6 +247,7 @@
   "conversation_streaming.delta_interval_ms": "integer",
   "conversation_streaming.delta_max_chars": "integer",
   "conversation_streaming.enabled": "boolean",
+  "conversation_streaming.tool_steps": "boolean",
   "distributed_execution": "object",
   "distributed_execution.enabled": "boolean",
   "distributed_execution.lease_seconds": "integer",
@@ -473,6 +481,9 @@
   "ConflictError": [
    "AlgenAgentRuntimeError"
   ],
+  "EventStreamOverflowError": [
+   "AlgenAgentRuntimeError"
+  ],
   "InvalidToolCallError": [
    "ProviderError"
   ],
@@ -516,6 +527,9 @@
    "ToolNotAttemptedError",
    "ConfigurationError"
   ],
+  "UserDataUnsupportedError": [
+   "CapabilityError"
+  ],
   "VerificationError": [
    "AlgenAgentRuntimeError"
   ]
@@ -528,6 +542,7 @@
   "assistant.message.failed",
   "assistant.message.resumed",
   "assistant.message.started",
+  "assistant.message.steered",
   "auth.subject.revoked",
   "auth.token.revoked",
   "budget.refused",
@@ -539,12 +554,14 @@
   "context.retrieved",
   "context.skills",
   "context.skills.updated",
+  "context.tool_result_truncated",
   "context.working_state",
   "context.working_state.updated",
   "conversation.created",
   "conversation.feedback.recorded",
   "conversation.message.accepted",
   "conversation.updated",
+  "credentials.required",
   "mcp.auth_required",
   "mcp.oauth.connect",
   "mcp.oauth.revoke",
@@ -584,6 +601,8 @@
   "tool.reconciliation_required",
   "tool.started",
   "tool.wrap_up",
+  "user_data.erased",
+  "user_data.exported",
   "verification.completed",
   "workflow.approval.decided",
   "workflow.approval.expired",
@@ -658,7 +677,7 @@
      "cancel": "(self, run_id: 'str', tenant_id: 'str') -> 'RunState'",
      "expire_paused_runs": "(self, *, clarification_timeout_seconds: 'float | None' = None, limit: 'int' = 1000) -> 'int'",
      "narrative": "(self, run_id: 'str', tenant_id: 'str') -> 'RunNarrative'",
-     "recover": "(self, limit: 'int' = 1000) -> 'int'",
+     "recover": "(self, limit: 'int' = 1000, *, credentials_provider: 'RecoveryCredentialsProvider | None' = None) -> 'int'",
      "resume": "(self, run_id: 'str', tenant_id: 'str', payload: 'Mapping[str, Any]', *, credentials: 'Mapping[str, str] | None' = None, decided_by: 'str | None' = None) -> 'RunState'",
      "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
      "shutdown": "(self, grace_seconds: 'float' = 10.0) -> 'None'",
@@ -671,10 +690,11 @@
    "AlgenAgentRuntimeClient": {
     "class": "(runtime: 'AgentRuntime') -> 'None'",
     "methods": {
+     "follow": "(self, run_id: 'str', *, after: 'int' = 0) -> 'AsyncIterator[RunEvent]'",
      "run": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
      "run_sync": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'RunResult'",
-     "stream": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None) -> 'AsyncIterator[RunEvent]'",
-     "stream_events": "(self, run_id: 'str', *, after: 'int' = 0) -> 'AsyncIterator[RunEvent]'"
+     "stream": "(self, request: 'RunRequest', *, credentials: 'Mapping[str, str] | None' = None, through_pauses: 'bool' = False) -> 'AsyncIterator[RunEvent]'",
+     "stream_events": "(self, run_id: 'str', *, after: 'int' = 0, through_pauses: 'bool' = False) -> 'AsyncIterator[RunEvent]'"
     }
    },
    "Artifact": {
@@ -846,8 +866,11 @@
      "citations": "tuple[Citation, ...]",
      "confidence": "float | None",
      "error": "str | None",
+     "error_type": "str | None",
      "execution_summary": "ExecutionSummary",
+     "limit_reached": "str | None",
      "output": "str | None",
+     "partial": "bool",
      "rejected_output": "str | None",
      "run_id": "str",
      "session_id": "str",
@@ -1118,6 +1141,7 @@
    "Conversation": {
     "model": {
      "agent": "str",
+     "allowed_agents": "tuple[str, ...]",
      "created_at": "datetime",
      "handler": "str",
      "id": "str",
@@ -1139,6 +1163,9 @@
    },
    "ConversationContentBlock": {
     "alias": "Annotated[algen_agent_runtime.types.contracts.TextBlock | algen_agent_runtime.types.contracts.ImageBlock | algen_agent_runtime.types.contracts.FileBlock | algen_agent_runtime.conversations.contracts.CodeBlock | algen_agent_runtime.conversations.contracts.TableBlock | algen_agent_runtime.conversations.contracts.ChartBlock | algen_agent_runtime.conversations.contracts.NoticeBlock | algen_agent_runtime.conversations.contracts.DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')]"
+   },
+   "ConversationCredentialsRenewal": {
+    "model": {}
    },
    "ConversationEvent": {
     "model": {
@@ -1184,6 +1211,7 @@
    },
    "ConversationMessage": {
     "model": {
+     "agent": "str | None",
      "artifacts": "tuple[str, ...]",
      "citations": "tuple[dict[str, Any], ...]",
      "content": "tuple[Annotated[TextBlock | ImageBlock | FileBlock | CodeBlock | TableBlock | ChartBlock | NoticeBlock | DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')], ...]",
@@ -1205,8 +1233,10 @@
     "model": {
      "approval_id": "str | None",
      "approval_kind": "str | None",
+     "child_run_id": "str | None",
+     "choices": "tuple[str, ...]",
      "expires_at": "datetime | None",
-     "kind": "Literal['approval', 'input']",
+     "kind": "Literal['approval', 'input', 'credentials']",
      "options": "tuple[str, ...]",
      "parameters_schema": "dict[str, Any] | None",
      "paused_at": "datetime",
@@ -1222,10 +1252,11 @@
     }
    },
    "ConversationPresentation": {
-    "class": "(progress_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, error_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, show_technical_details: 'bool' = False, technical_details_expanded: 'bool' = False) -> None",
+    "class": "(progress_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, error_audience: 'PresentationAudience' = <PresentationAudience.BUSINESS: 'business'>, show_technical_details: 'bool' = False, technical_details_expanded: 'bool' = False, failure_messages: 'Mapping[str, str]' = <factory>) -> None",
     "methods": {
      "error_message": "(self, error: 'Exception', *, business_message: 'str' = \"I couldn't complete that request safely. Please try again or refine the question.\") -> 'str'",
      "progress": "(self, business: 'dict[str, Any]', developer: 'dict[str, Any]') -> 'dict[str, Any]'",
+     "run_failure_message": "(self, reason: 'str | None', error: 'str | None') -> 'str'",
      "unexpected_error_message": "(self, error: 'Exception') -> 'str'"
     }
    },
@@ -1233,24 +1264,29 @@
     "class": "(store: 'ConversationStore', events: 'ConversationEventPublisher', handlers: 'ConversationHandlerRegistry', audits: 'Any | None' = None, observability: 'ObservabilityAdapter | None' = None, telemetry_include_content: 'bool' = False, telemetry_max_content_chars: 'int' = 16384, presentation: 'ConversationPresentation | None' = None, feedback_store: 'ConversationFeedbackStore | None' = None, followup_provider: 'FollowupSuggestionProvider | None' = None) -> 'None'",
     "methods": {
      "cancel": "(self, conversation_id: 'str', tenant_id: 'str') -> 'None'",
-     "create": "(self, *, tenant_id: 'str', user_id: 'str', agent: 'str', handler: 'str' = 'runtime', title: 'str' = 'New conversation', metadata: 'dict[str, Any] | None' = None) -> 'Conversation'",
+     "create": "(self, *, tenant_id: 'str', user_id: 'str', agent: 'str', handler: 'str' = 'runtime', title: 'str' = 'New conversation', metadata: 'dict[str, Any] | None' = None, allowed_agents: 'Sequence[str]' = ()) -> 'Conversation'",
      "delete": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str') -> 'None'",
      "feedback": "(self, conversation_id: 'str', message_id: 'str', tenant_id: 'str', user_id: 'str') -> 'ConversationFeedback | None'",
+     "follow": "(self, conversation_id: 'str', turn_id: 'str', tenant_id: 'str', user_id: 'str') -> 'ConversationMessage'",
      "get": "(self, conversation_id: 'str', tenant_id: 'str') -> 'Conversation'",
      "list": "(self, tenant_id: 'str', user_id: 'str', limit: 'int' = 50, before: 'datetime | None' = None) -> 'Sequence[Conversation]'",
-     "messages": "(self, conversation_id: 'str', tenant_id: 'str', limit: 'int' = 100, before: 'datetime | None' = None) -> 'Sequence[ConversationMessage]'",
+     "messages": "(self, conversation_id: 'str', tenant_id: 'str', limit: 'int' = 100, before: 'datetime | None' = None, *, user_id: 'str | None' = None) -> 'Sequence[ConversationMessage]'",
      "reconcile_pending_turns": "(self, limit: 'int' = 1000) -> 'int'",
      "record_feedback": "(self, conversation_id: 'str', message_id: 'str', tenant_id: 'str', user_id: 'str', rating: 'FeedbackRating', *, category: 'str | None' = None, comment: 'str | None' = None, tags: 'tuple[str, ...]' = ()) -> 'ConversationFeedback'",
      "recover": "(self, limit: 'int' = 1000) -> 'int'",
      "respond": "(self, conversation_id: 'str', turn_id: 'str', tenant_id: 'str', user_id: 'str', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'ConversationMessage'",
      "shutdown": "(self, grace_seconds: 'float' = 10) -> 'None'",
-     "submit": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str', text: 'str', metadata: 'dict[str, Any] | None' = None, *, credentials: 'Mapping[str, str] | None' = None, attachments: 'tuple[RunAttachment, ...]' = ()) -> 'tuple[ConversationMessage, ConversationMessage]'",
+     "steer": "(self, conversation_id: 'str', turn_id: 'str', tenant_id: 'str', user_id: 'str', text: 'str') -> 'SteeringMessage'",
+     "submit": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str', text: 'str', metadata: 'dict[str, Any] | None' = None, *, credentials: 'Mapping[str, str] | None' = None, attachments: 'tuple[RunAttachment, ...]' = (), run_input: 'str | None' = None, agent: 'str | None' = None) -> 'tuple[ConversationMessage, ConversationMessage]'",
      "suggestions": "(self, handler: 'str', tenant_id: 'str', user_id: 'str', limit: 'int' = 5) -> 'tuple[str, ...]'",
      "update": "(self, conversation_id: 'str', tenant_id: 'str', user_id: 'str', *, title: 'str | None' = None, status: 'ConversationStatus | None' = None) -> 'Conversation'"
     }
    },
+   "ConversationTurnInterruptedError": {
+    "class": "(…)"
+   },
    "ConversationTurnResponse": {
-    "alias": "algen_agent_runtime.conversations.contracts.ConversationApprovalDecision | algen_agent_runtime.conversations.contracts.ConversationInputAnswer"
+    "alias": "algen_agent_runtime.conversations.contracts.ConversationApprovalDecision | algen_agent_runtime.conversations.contracts.ConversationInputAnswer | algen_agent_runtime.conversations.contracts.ConversationCredentialsRenewal"
    },
    "ConversationTurnResult": {
     "model": {
@@ -1258,7 +1294,7 @@
      "citations": "tuple[dict[str, Any], ...]",
      "content": "tuple[Annotated[TextBlock | ImageBlock | FileBlock | CodeBlock | TableBlock | ChartBlock | NoticeBlock | DetailsBlock, FieldInfo(annotation=NoneType, required=True, discriminator='type')], ...]",
      "metadata": "dict[str, Any]",
-     "outcome": "Literal['completed', 'failed', 'blocked', 'awaiting_clarification', 'awaiting_approval', 'awaiting_input', 'cancelled', 'expired']",
+     "outcome": "Literal['completed', 'failed', 'blocked', 'awaiting_clarification', 'awaiting_approval', 'awaiting_input', 'awaiting_credentials', 'cancelled', 'expired']",
      "pending": "ConversationPendingAction | None",
      "run_ids": "tuple[str, ...]",
      "suggested_followups": "tuple[str, ...]"
@@ -1308,6 +1344,12 @@
    "PresentationAudience": {
     "class": "(*values)"
    },
+   "ReattachableConversationHandler": {
+    "protocol": {
+     "follow_turn": "(self, conversation: 'Conversation', turn_id: 'str', run_id: 'str', emit: 'DeltaEmitter') -> 'ConversationTurnResult'",
+     "turn_run": "(self, conversation: 'Conversation', turn_id: 'str') -> 'str | None'"
+    }
+   },
    "ResumableConversationHandler": {
     "protocol": {
      "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
@@ -1318,14 +1360,18 @@
     }
    },
    "RuntimeConversationHandler": {
-    "class": "(runtime: 'Runtime', presentation: 'ConversationPresentation | None' = None, *, stream: 'bool' = True, delta_interval_seconds: 'float' = 0.05, delta_max_chars: 'int' = 2048) -> 'None'",
+    "class": "(runtime: 'Runtime', presentation: 'ConversationPresentation | None' = None, *, stream: 'bool' = True, delta_interval_seconds: 'float' = 0.05, delta_max_chars: 'int' = 2048, tool_steps: 'bool' = False) -> 'None'",
     "methods": {
      "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
      "follow": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', emit: 'Any') -> 'ConversationTurnResult'",
-     "handle": "(self, conversation: 'Conversation', user_message: 'ConversationMessage', history: 'Sequence[ConversationMessage]', emit: 'Any', *, credentials: 'Mapping[str, str] | None' = None) -> 'ConversationTurnResult'",
+     "follow_turn": "(self, conversation: 'Conversation', turn_id: 'str', run_id: 'str', emit: 'Any') -> 'ConversationTurnResult'",
+     "forget_conversation": "(self, conversation: 'Conversation') -> 'None'",
+     "handle": "(self, conversation: 'Conversation', user_message: 'ConversationMessage', history: 'Sequence[ConversationMessage]', emit: 'Any', *, credentials: 'Mapping[str, str] | None' = None, run_input: 'str | None' = None) -> 'ConversationTurnResult'",
      "pending_state": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> \"Literal['paused', 'running', 'ended']\"",
      "resume": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction', response: 'ConversationTurnResponse', *, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
-     "settle": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'ConversationTurnResult'"
+     "settle": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'ConversationTurnResult'",
+     "steer": "(self, conversation: 'Conversation', run_id: 'str', text: 'str') -> 'SteeringMessage'",
+     "turn_run": "(self, conversation: 'Conversation', turn_id: 'str') -> 'str | None'"
     }
    },
    "TableBlock": {
@@ -1731,9 +1777,11 @@
     "class": "() -> 'None'",
     "methods": {
      "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+     "forget_user": "(self, tenant_id: 'str', user_id: 'str') -> 'int'",
      "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
      "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
      "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+     "servers_for_user": "(self, tenant_id: 'str', user_id: 'str') -> 'tuple[str, ...]'",
      "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
     }
    },
@@ -1933,9 +1981,11 @@
     "class": "(database: 'Any', cipher: 'SecretCipher') -> 'None'",
     "methods": {
      "delete": "(self, key: 'MCPTokenKey') -> 'bool'",
+     "forget_user": "(self, tenant_id: 'str', user_id: 'str') -> 'int'",
      "get": "(self, key: 'MCPTokenKey') -> 'MCPOAuthTokenSet | None'",
      "put": "(self, key: 'MCPTokenKey', tokens: 'MCPOAuthTokenSet') -> 'None'",
      "put_pending": "(self, pending: 'MCPOAuthPendingAuthorization') -> 'None'",
+     "servers_for_user": "(self, tenant_id: 'str', user_id: 'str') -> 'tuple[str, ...]'",
      "take_pending": "(self, state_hash: 'str') -> 'MCPOAuthPendingAuthorization | None'"
     }
    }
@@ -2070,6 +2120,70 @@
      "version": "str",
      "warnings": "tuple[str, ...]"
     }
+   }
+  },
+  "algen_agent_runtime.persistence": {
+   "Migration": {
+    "class": "(name: 'str', number: 'int', path: 'Path') -> None"
+   },
+   "SchemaIssue": {
+    "model": {
+     "actual": "str | None",
+     "column": "str | None",
+     "expected": "str | None",
+     "kind": "Literal['missing_table', 'missing_column', 'type_mismatch', 'not_null_mismatch', 'missing_default', 'missing_index', 'missing_trigger']",
+     "name": "str | None",
+     "table": "str"
+    }
+   },
+   "SchemaReport": {
+    "model": {
+     "issues": "list[SchemaIssue]",
+     "latest_migration": "str",
+     "runtime_version": "str",
+     "schema_name": "str",
+     "unrecorded_migrations": "list[str]"
+    }
+   },
+   "USER_DATA_KINDS": {
+    "value": "tuple"
+   },
+   "UserDataReport": {
+    "model": {
+     "blocked": "list[str]",
+     "counts": "dict[str, int]",
+     "dry_run": "bool",
+     "retained": "list[str]",
+     "tenant_id": "str",
+     "user_id": "str"
+    }
+   },
+   "UserDataService": {
+    "class": "(*, runs: 'Any', memory: 'Any', events: 'Any', approvals: 'Any', tool_executions: 'Any', artifacts: 'Any', learned_memory: 'Any | None' = None, conversations: 'Any | None' = None, conversation_events: 'Any | None' = None, conversation_feedback: 'Any | None' = None, workflow_checkpoints: 'Any | None' = None, mcp_tokens: 'Any | None' = None, audits: 'Any | None' = None) -> 'None'",
+    "methods": {
+     "erase_user": "(self, tenant_id: 'str', user_id: 'str', *, dry_run: 'bool' = False, actor_id: 'str' = 'runtime.user_data') -> 'UserDataReport'",
+     "export_user": "(self, tenant_id: 'str', user_id: 'str', *, include_artifact_data: 'bool' = False, actor_id: 'str' = 'runtime.user_data') -> 'dict[str, Any]'"
+    }
+   },
+   "check_schema": {
+    "function": "(target: 'Any', *, schema: 'str | None' = None) -> 'SchemaReport'"
+   },
+   "migration_sql": {
+    "function": "(*, since: 'int | None' = None, schema: 'str | None' = None, record: 'bool' = True) -> 'str'"
+   },
+   "migrations": {
+    "function": "() -> 'tuple[Migration, ...]'"
+   }
+  },
+  "algen_agent_runtime.security": {
+   "PII_ENTITIES": {
+    "value": "tuple"
+   },
+   "redact_pii": {
+    "function": "(value: 'Any', *, entities: 'Iterable[str] | None' = None, exempt: 'Iterable[str]' = (), schema: 'Mapping[str, Any] | None' = None) -> 'Any'"
+   },
+   "redact_secrets": {
+    "function": "(value: 'Any') -> 'Any'"
    }
   },
   "algen_agent_runtime.semantics": {
@@ -2404,7 +2518,9 @@
     "class": "() -> 'None'",
     "methods": {
      "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+     "delete_many": "(self, tenant_id: 'str', workflow_ids: 'Sequence[str]') -> 'int'",
      "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+     "list_for_user": "(self, tenant_id: 'str', user_id: 'str') -> 'Sequence[WorkflowExecutionState]'",
      "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
      "purge_finished": "(self, cutoff: 'datetime', limit: 'int') -> 'int'",
      "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
@@ -2443,7 +2559,9 @@
     "class": "(database: 'Any') -> 'None'",
     "methods": {
      "create": "(self, state: 'WorkflowExecutionState') -> 'None'",
+     "delete_many": "(self, tenant_id: 'str', workflow_ids: 'Sequence[str]') -> 'int'",
      "get": "(self, workflow_id: 'str', tenant_id: 'str') -> 'WorkflowExecutionState | None'",
+     "list_for_user": "(self, tenant_id: 'str', user_id: 'str') -> 'Sequence[WorkflowExecutionState]'",
      "list_recoverable": "(self, limit: 'int' = 1000) -> 'Sequence[WorkflowExecutionState]'",
      "save": "(self, state: 'WorkflowExecutionState', expected_version: 'int') -> 'None'"
     }
@@ -2667,6 +2785,7 @@
   }
  },
  "http_routes": [
+  "DELETE /v1/admin/users/{user_id}/data",
   "DELETE /v1/artifacts/{artifact_id}",
   "DELETE /v1/conversations/{conversation_id}",
   "DELETE /v1/conversations/{conversation_id}/active-response",
@@ -2680,6 +2799,7 @@
   "GET /health/ready",
   "GET /openapi.json",
   "GET /redoc",
+  "GET /v1/admin/users/{user_id}/data",
   "GET /v1/agents",
   "GET /v1/approvals",
   "GET /v1/approvals/{approval_id}",
@@ -2714,7 +2834,9 @@
   "POST /v1/conversations",
   "POST /v1/conversations/{conversation_id}/messages",
   "POST /v1/conversations/{conversation_id}/turns/{turn_id}/approval",
+  "POST /v1/conversations/{conversation_id}/turns/{turn_id}/credentials",
   "POST /v1/conversations/{conversation_id}/turns/{turn_id}/input",
+  "POST /v1/conversations/{conversation_id}/turns/{turn_id}/steer",
   "POST /v1/mcp/servers/{server}/oauth/start",
   "POST /v1/runs",
   "POST /v1/runs/{run_id}/approval",
@@ -2749,7 +2871,9 @@
   "017_approval_tool_fingerprint.sql",
   "018_learned_memory_vectors.sql",
   "019_session_owners.sql",
-  "020_approval_decided_by.sql"
+  "020_approval_decided_by.sql",
+  "021_user_data_indexes.sql",
+  "022_run_turn_index.sql"
  ],
  "protocols": {
   "algen_agent_runtime.analytics.contracts.AnalyticalGraphStore": {
@@ -2804,6 +2928,10 @@
    "pending_messages": "(self, limit: 'int' = 1000) -> 'Sequence[ConversationMessage]'",
    "save": "(self, conversation: 'Conversation', expected_version: 'int') -> 'None'",
    "update_message": "(self, message: 'ConversationMessage') -> 'None'"
+  },
+  "algen_agent_runtime.conversations.contracts.ReattachableConversationHandler": {
+   "follow_turn": "(self, conversation: 'Conversation', turn_id: 'str', run_id: 'str', emit: 'DeltaEmitter') -> 'ConversationTurnResult'",
+   "turn_run": "(self, conversation: 'Conversation', turn_id: 'str') -> 'str | None'"
   },
   "algen_agent_runtime.conversations.contracts.ResumableConversationHandler": {
    "cancel_pending": "(self, conversation: 'Conversation', pending: 'ConversationPendingAction') -> 'None'",
@@ -2998,6 +3126,9 @@
   },
   "algen_agent_runtime.types.interfaces.SecretProvider": {
    "get": "(self, reference: 'str') -> 'str'"
+  },
+  "algen_agent_runtime.types.interfaces.SessionDeletion": {
+   "delete_session": "(self, tenant_id: 'str', session_id: 'str') -> 'int'"
   },
   "algen_agent_runtime.types.interfaces.SessionOwnership": {
    "claim_session": "(self, tenant_id: 'str', session_id: 'str', user_id: 'str') -> 'bool'"

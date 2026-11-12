@@ -237,6 +237,41 @@ class Budget(StrictModel):
         description="Run events one run may record. Past it, only events that end or pause the "
         "run are recorded, and the run fails at its next step.",
     )
+    on_limit: Literal["fail", "summarize"] = Field(
+        default="fail",
+        description="What a run does when it reaches its step, model-call, token, cost or time "
+        "limit and continuation_policy does not extend it. ``fail`` ends it failed, without an "
+        "answer. ``summarize`` makes one last model call with no tools, capped at "
+        "limit_answer_max_output_tokens and limit_answer_timeout_seconds, to answer from what "
+        "the run has gathered; the run completes with ``partial`` set on its result.",
+    )
+    limit_answer_max_output_tokens: int = Field(
+        default=1_024,
+        ge=16,
+        le=32_768,
+        description="The output-token cap of the on_limit: summarize answer call.",
+    )
+    limit_answer_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="How long the on_limit: summarize answer call may take. After the time "
+        "limit it is the only extra time the run gets.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_on_limit(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An agent that does not set on_limit serialises, and so fingerprints, as it did in
+        # 0.2.0b2, and a b2 replica (extra="forbid") still loads it.
+        data = handler(self)
+        if isinstance(data, dict):
+            for name in _ON_LIMIT_FIELDS:
+                if getattr(self, name) == type(self).model_fields[name].default:
+                    data.pop(name, None)
+        return data
+
+
+_ON_LIMIT_FIELDS = ("on_limit", "limit_answer_max_output_tokens", "limit_answer_timeout_seconds")
 
 
 class MemoryPolicy(StrictModel):
@@ -292,6 +327,17 @@ DEFAULT_SHORTENED_TOOL_RESULT_NOTE = (
 
 
 class ContextPolicy(StrictModel):
+    max_context_tokens: int | None = Field(
+        default=None,
+        ge=1_024,
+        le=2_000_000,
+        description="The estimated token budget the context builder packs this agent's messages "
+        "into (0.2.0b3). None (the default) keeps the builder's own: 16,000 for the default "
+        "builder, retrieval.max_context_tokens for a retrieval builder. A model profile's "
+        "context_window_tokens still bounds what is sent: the smaller of the two applies. "
+        "shorten_older_tool_results, oversized_tool_result and compaction_trigger_ratio work "
+        "against this budget.",
+    )
     skills_enabled: bool = False
     skill_catalog_max_tokens: int = Field(default=2048, ge=128, le=8192)
     loaded_skills_max_tokens: int = Field(default=4096, ge=256, le=16384)
@@ -319,6 +365,26 @@ class ContextPolicy(StrictModel):
     shortened_tool_result_note: str = Field(
         default=DEFAULT_SHORTENED_TOOL_RESULT_NOTE, max_length=512
     )
+    oversized_tool_result: Literal["truncate", "fail"] = Field(
+        default="truncate",
+        description="What happens when the newest tool results alone do not fit the context. "
+        "``truncate`` (the default) offloads each to a context artifact the model pages "
+        "through with core.context_read, when the agent can call it, and otherwise cuts it to "
+        "what fits, marked as truncated; the run fails only when even that does not fit. "
+        "``fail`` fails the run, as before 0.2.0b3.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_oversized(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An agent that does not set oversized_tool_result fingerprints as it did in 0.2.0b2,
+        # and a b2 replica (extra="forbid") still loads it.
+        data = handler(self)
+        if isinstance(data, dict) and self.oversized_tool_result == "truncate":
+            data.pop("oversized_tool_result", None)
+        # max_context_tokens (0.2.0b3) likewise, while unset.
+        if isinstance(data, dict) and self.max_context_tokens is None:
+            data.pop("max_context_tokens", None)
+        return data
 
     @model_validator(mode="after")
     def archive_requires_compaction(self) -> ContextPolicy:
@@ -357,6 +423,13 @@ class GuardrailPolicy(StrictModel):
     # Tool results that look like instructions to the model: ``flag`` marks the result as
     # untrusted data before the model reads it, ``block`` fails the tool call.
     tool_result_injection: Literal["off", "flag", "block"] = "off"
+    retrieval_injection: Literal["off", "flag", "drop"] = Field(
+        default="off",
+        description="Retrieved evidence chunks that look like instructions to the model, "
+        "screened by the same check as tool_result_injection. ``flag`` keeps the chunk, marked "
+        "as untrusted data the model must not follow; ``drop`` leaves it, and its citation, "
+        "out of the context. Off by default, like tool_result_injection.",
+    )
     pii: PIIGuardrail = Field(default_factory=PIIGuardrail)
 
     @model_serializer(mode="wrap")
@@ -366,6 +439,9 @@ class GuardrailPolicy(StrictModel):
         data = handler(self)
         if isinstance(data, dict) and not self.pii.exempt_entities:
             data.pop("pii", None)
+        # retrieval_injection (0.2.0b3) likewise, while it is off.
+        if isinstance(data, dict) and self.retrieval_injection == "off":
+            data.pop("retrieval_injection", None)
         return data
 
 
@@ -719,6 +795,9 @@ class RunStatus(StrEnum):
     # Paused on a tool call whose outcome is unknown until an operator settles it (only with
     # ``ToolPolicy.on_indeterminate="pause"``).
     AWAITING_RECONCILIATION = "awaiting_reconciliation"
+    # A run recovered after a restart that was acting with its caller's credentials: it waits
+    # for them again (``resume(..., credentials=...)``), since credentials are never stored.
+    AWAITING_CREDENTIALS = "awaiting_credentials"
     INVOKING_MODEL = "invoking_model"
     INVOKING_TOOL = "invoking_tool"
     VERIFYING = "verifying"
@@ -738,6 +817,7 @@ PAUSED_STATUSES = frozenset(
         RunStatus.AWAITING_CLARIFICATION,
         RunStatus.AWAITING_APPROVAL,
         RunStatus.AWAITING_RECONCILIATION,
+        RunStatus.AWAITING_CREDENTIALS,
     }
 )
 
@@ -956,6 +1036,13 @@ class SteeringMessage(StrictModel):
     queued_at: datetime = Field(default_factory=utc_now)
 
 
+class RetrievalScreening(StrictModel):
+    """Retrieved chunks the ``retrieval_injection`` guardrail flagged or dropped in one build."""
+
+    action: Literal["flag", "drop"]
+    chunk_ids: tuple[str, ...]
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -1005,6 +1092,18 @@ class RunState(BaseModel):
         description="Steering messages not yet delivered to the model. Checkpointed, so they "
         "survive a pause and a restart; on an ended run, the ones that were never delivered.",
     )
+    caller_credentials: bool = Field(
+        default=False,
+        description="Whether the run's current drive was started or resumed with caller "
+        "credentials. Only this flag is stored, never the credentials: a run recovered after a "
+        "restart with it set pauses in awaiting_credentials (credentials.required) unless the "
+        "recovery credentials provider supplies them.",
+    )
+    delegated_runs: dict[str, str] = Field(
+        default_factory=dict,
+        description="The child run each core.subagent call of this run is waiting for, by "
+        "tool call id, while the child is paused for an approval or a clarification.",
+    )
     output_text: str | None = None
     rejected_output: str | None = Field(
         default=None,
@@ -1012,9 +1111,22 @@ class RunState(BaseModel):
         "rejected, for diagnostics. It was never delivered: ``output_text`` is empty.",
     )
     error: str | None = None
+    error_type: str | None = Field(
+        default=None,
+        description="On a failed run, the runtime error that ended it, by its class name in "
+        "algen_agent_runtime.exceptions (VerificationError, BudgetExceededError, ...).",
+    )
+    limit_reached: str | None = Field(
+        default=None,
+        description="The limit that ended the run, or that cut it short with "
+        "budget.on_limit summarize.",
+    )
     pause_payload: dict[str, Any] | None = None
     citations: list[Citation] = Field(default_factory=list)
     summary: ExecutionSummary = Field(default_factory=ExecutionSummary)
+    # What the last context build's retrieval_injection screening matched, for the runtime to
+    # report; never checkpointed.
+    _retrieval_screening: RetrievalScreening | None = PrivateAttr(default=None)
     # The run's first agent.run span ({"trace_id", "span_id"} as hex), so a run resumed after a
     # pause continues the same trace.
     trace_parent: dict[str, str] | None = None
@@ -1034,6 +1146,16 @@ class RunState(BaseModel):
         # rejected_output (0.2.0b2) is left out while unset for the same reason.
         if isinstance(data, dict) and self.rejected_output is None:
             data.pop("rejected_output", None)
+        # caller_credentials and delegated_runs (0.2.0b3) likewise, while unset.
+        if isinstance(data, dict) and not self.caller_credentials:
+            data.pop("caller_credentials", None)
+        if isinstance(data, dict) and not self.delegated_runs:
+            data.pop("delegated_runs", None)
+        # error_type and limit_reached (0.2.0b3) likewise.
+        if isinstance(data, dict):
+            for name in ("error_type", "limit_reached"):
+                if getattr(self, name) is None:
+                    data.pop(name, None)
         return data
 
     @model_validator(mode="after")
@@ -1057,6 +1179,18 @@ class RunState(BaseModel):
             raise ValueError("pinned history can contain at most one user message")
         return self
 
+    @property
+    def retrieval_screening(self) -> RetrievalScreening | None:
+        """What the last context build's ``retrieval_injection`` screening matched, if anything.
+
+        Kept in memory for the runtime to report, never checkpointed.
+        """
+        return self._retrieval_screening
+
+    @retrieval_screening.setter
+    def retrieval_screening(self, value: RetrievalScreening | None) -> None:
+        self._retrieval_screening = value
+
     def append_message(self, message: Message) -> None:
         self.messages.append(message)
         if self.context_history is not None:
@@ -1073,6 +1207,25 @@ class RunResult(StrictModel):
         "timed out or was cancelled has none.",
     )
     error: str | None = None
+    error_type: str | None = Field(
+        default=None,
+        description="On a failed run, the runtime error that ended it, by its class name in "
+        "algen_agent_runtime.exceptions: VerificationError when the answer failed "
+        "verification, BudgetExceededError at a limit, PolicyDeniedError, ToolExecutionError, "
+        "ProviderError and so on. None on a run that did not fail, or failed another way "
+        "(timed out, cancelled, an internal error).",
+    )
+    limit_reached: str | None = Field(
+        default=None,
+        description="The limit the run reached: execution_steps, model_calls, model_tokens, "
+        "estimated_cost or time (and, on a failed run, response_chars or events). On a failed "
+        "run, the one that ended it; on a partial answer, the one that cut it short.",
+    )
+    partial: bool = Field(
+        default=False,
+        description="The run reached a limit and, with budget.on_limit: summarize, answered "
+        "from what it had gathered by then: the answer may be incomplete.",
+    )
     rejected_output: str | None = Field(
         default=None,
         # Read it as an attribute; it is left out of model_dump()/JSON, so a result passed on
@@ -1093,3 +1246,16 @@ class RunResult(StrictModel):
         description="On an ended run, the steering messages it ended before delivering, for "
         "the host to hand back to the user.",
     )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_outcome(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # error_type, limit_reached and partial (0.2.0b3) are left out while unset, so a
+        # 0.2.0b2 client (extra="forbid") still reads the result of a run that did not use them.
+        data = handler(self)
+        if isinstance(data, dict):
+            for name in ("error_type", "limit_reached"):
+                if getattr(self, name) is None:
+                    data.pop(name, None)
+            if not self.partial:
+                data.pop("partial", None)
+        return data

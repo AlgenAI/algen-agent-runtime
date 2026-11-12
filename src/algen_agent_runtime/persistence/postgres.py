@@ -5,7 +5,6 @@ import json
 from collections.abc import Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -23,6 +22,7 @@ from algen_agent_runtime.persistence.quotas import (
     postgres_quota_write,
     read_usage,
 )
+from algen_agent_runtime.persistence.schema import migrations
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -220,14 +220,12 @@ class PostgresDatabase:
         )
         rows = await connection.fetch("SELECT name FROM algen_agent_runtime_schema_migrations")
         applied = {str(row["name"]) for row in rows}
-        directory = Path(__file__).with_name("migrations")
-        for migration in sorted(directory.glob("*.sql")):
+        # The same list ``algen-agent-runtime migrations sql`` prints for hosts that own the schema.
+        for migration in migrations():
             if migration.name in applied:
                 continue
             async with connection.transaction():
-                await connection.execute(
-                    migration.read_text(encoding="utf-8"), timeout=_MIGRATION_TIMEOUT_SECONDS
-                )
+                await connection.execute(migration.sql, timeout=_MIGRATION_TIMEOUT_SECONDS)
                 await connection.execute(
                     "INSERT INTO algen_agent_runtime_schema_migrations (name) VALUES ($1)",
                     migration.name,
@@ -346,6 +344,66 @@ class PostgresRunStore:
         )
         return tuple(RunState.model_validate_json(row["state"]) for row in rows)
 
+    async def find_by_turn(
+        self, tenant_id: str, conversation_id: str, turn_id: str
+    ) -> RunState | None:
+        """The latest run started for a conversation turn, ended or not, or None."""
+        row = await self._database.fetchrow(
+            "SELECT state FROM algen_agent_runtime_runs "
+            "WHERE tenant_id=$1 AND state->'request'->>'conversation_id'=$2 "
+            "AND state->'request'->>'turn_id'=$3 ORDER BY created_at DESC LIMIT 1",
+            tenant_id,
+            conversation_id,
+            turn_id,
+        )
+        return RunState.model_validate_json(row["state"]) if row else None
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> Sequence[RunState]:
+        """Every run of ``user_id`` in the tenant, oldest first (for user data export/erasure)."""
+        rows = await self._database.fetch(
+            "SELECT state FROM algen_agent_runtime_runs "
+            "WHERE tenant_id=$1 AND state->'request'->>'user_id'=$2 ORDER BY created_at, id",
+            tenant_id,
+            user_id,
+        )
+        return tuple(RunState.model_validate_json(row["state"]) for row in rows)
+
+    async def delete_many(self, tenant_id: str, run_ids: Sequence[str]) -> dict[str, int]:
+        """Delete the tenant's runs among ``run_ids`` with the events, approvals and tool
+        executions that reference them, in one statement (the foreign keys are checked at its
+        end, as in the retention sweep). Artifacts keep their row with ``run_id`` NULL."""
+        if not run_ids:
+            return {"runs": 0}
+        row = await self._database.fetchrow(_DELETE_RUNS, tenant_id, list(dict.fromkeys(run_ids)))
+        return {key: int(row[key]) for key in ("runs", "events", "approvals", "tool_executions")}
+
+
+_DELETE_RUNS = """
+WITH doomed AS (
+    SELECT id FROM algen_agent_runtime_runs
+    WHERE tenant_id = $1 AND id = ANY($2::text[])
+    FOR UPDATE
+),
+deleted_events AS (
+    DELETE FROM algen_agent_runtime_events e USING doomed d WHERE e.run_id = d.id RETURNING 1
+),
+deleted_approvals AS (
+    DELETE FROM algen_agent_runtime_approvals a USING doomed d WHERE a.run_id = d.id RETURNING 1
+),
+deleted_tool_executions AS (
+    DELETE FROM algen_agent_runtime_tool_executions t USING doomed d
+    WHERE t.run_id = d.id RETURNING 1
+),
+deleted_runs AS (
+    DELETE FROM algen_agent_runtime_runs r USING doomed d WHERE r.id = d.id RETURNING 1
+)
+SELECT
+    (SELECT count(*) FROM deleted_runs) AS runs,
+    (SELECT count(*) FROM deleted_events) AS events,
+    (SELECT count(*) FROM deleted_approvals) AS approvals,
+    (SELECT count(*) FROM deleted_tool_executions) AS tool_executions
+"""
+
 
 class PostgresMemoryStore:
     def __init__(
@@ -421,6 +479,40 @@ class PostgresMemoryStore:
             tenant_id,
             session_id,
         )
+
+    async def delete_session(self, tenant_id: str, session_id: str) -> int:
+        """Delete the session's memory, expired rows included, and its owner, in one statement;
+        return how many messages went."""
+        row = await self._database.fetchrow(
+            "WITH deleted_owner AS (DELETE FROM algen_agent_runtime_session_owners "
+            "WHERE tenant_id=$1 AND session_id=$2 RETURNING 1), "
+            "deleted AS (DELETE FROM algen_agent_runtime_memory "
+            "WHERE tenant_id=$1 AND session_id=$2 RETURNING 1) "
+            "SELECT (SELECT count(*) FROM deleted) AS messages, "
+            "(SELECT count(*) FROM deleted_owner) AS owners",
+            tenant_id,
+            session_id,
+        )
+        return int(row["messages"])
+
+    async def session_owner(self, tenant_id: str, session_id: str) -> str | None:
+        row = await self._database.fetchrow(
+            "SELECT user_id FROM algen_agent_runtime_session_owners "
+            "WHERE tenant_id=$1 AND session_id=$2",
+            tenant_id,
+            session_id,
+        )
+        return None if row is None else str(row["user_id"])
+
+    async def sessions_for_user(self, tenant_id: str, user_id: str) -> Sequence[str]:
+        """The sessions ``user_id`` owns in the tenant, expired claims included."""
+        rows = await self._database.fetch(
+            "SELECT session_id FROM algen_agent_runtime_session_owners "
+            "WHERE tenant_id=$1 AND user_id=$2 ORDER BY session_id",
+            tenant_id,
+            user_id,
+        )
+        return tuple(str(row["session_id"]) for row in rows)
 
 
 class PostgresArtifactStore:
@@ -668,6 +760,32 @@ class PostgresToolExecutionStore:
             limit,
         )
         return tuple(_tool_record(row) for row in rows)
+
+    async def list_for_runs(
+        self, tenant_id: str, run_ids: Sequence[str]
+    ) -> Sequence[ToolExecutionRecord]:
+        """Every record of these runs in the tenant, oldest first."""
+        if not run_ids:
+            return ()
+        rows = await self._database.fetch(
+            f"SELECT {_TOOL_RECORD_COLUMNS} FROM algen_agent_runtime_tool_executions "
+            "WHERE tenant_id=$1 AND run_id = ANY($2::text[]) ORDER BY created_at, idempotency_key",
+            tenant_id,
+            list(run_ids),
+        )
+        return tuple(_tool_record(row) for row in rows)
+
+    async def forget_runs(self, tenant_id: str, run_ids: Sequence[str]) -> int:
+        """Delete the records of these runs; return how many went."""
+        if not run_ids:
+            return 0
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_tool_executions "
+            "WHERE tenant_id=$1 AND run_id = ANY($2::text[])",
+            tenant_id,
+            list(run_ids),
+        )
+        return int(str(result).rsplit(" ", 1)[-1])
 
     async def transition(
         self, record: ToolExecutionRecord, *, expected: Collection[ToolExecutionStatus]

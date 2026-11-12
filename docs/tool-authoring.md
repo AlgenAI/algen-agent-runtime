@@ -254,8 +254,9 @@ async def my_open_tickets(context: ToolContext) -> list[Ticket]:
   agent](agent-tooling.md#delegating-to-another-agent)). A host's own delegation tool should do
   the same with `runtime.run(child_request, credentials=context.credentials)`.
 - Workflow tool steps and the agent runs a workflow starts get none: the workflow API takes no
-  credentials. The HTTP API's run endpoints pass none either; a host that needs them calls the
-  Runtime itself.
+  credentials. The HTTP API's run and conversation endpoints pass none unless
+  `api.credential_headers` names the request headers to forward (keyed by the lower-case header
+  name, for example `authorization`); otherwise a host that needs them calls the Runtime itself.
 - A declared HTTP tool can forward one of them without code: `auth.type: caller` in
   [HTTP API tools](http-tools.md#calling-the-api-as-the-signed-in-user).
 - A call that carries credentials is never served from, or stored in, the tool-result cache.

@@ -39,6 +39,7 @@ from algen_agent_runtime.policies.engine import CompositePolicyEngine
 from algen_agent_runtime.responses.composer import ResponseComposerRegistry
 from algen_agent_runtime.retrieval.registry import RetrieverRegistry
 from algen_agent_runtime.semantics import SemanticLayerRegistry
+from algen_agent_runtime.tools.ask_user import ask_user_tool
 from algen_agent_runtime.tools.contracts import Idempotency, SideEffect, Tool, ToolContext
 from algen_agent_runtime.tools.registry import ToolRegistry
 from algen_agent_runtime.tools.subagent import subagent_tool
@@ -189,6 +190,7 @@ def _agent_runtime_tools() -> tuple[Tool, ...]:
         *LearnedMemoryService(InMemoryLearnedMemoryStore(), _never_called).tools(),
         working_state_tool(),
         skill_load_tool(_never_called),
+        ask_user_tool(),
         ContextArtifactService(InMemoryArtifactStore()).read_tool(),
     )
 

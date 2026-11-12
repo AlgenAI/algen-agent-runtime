@@ -4,7 +4,354 @@ All notable changes to Algen Agent Runtime will be documented in this file.
 The project follows [Semantic Versioning](https://semver.org/) while public
 contracts are explicitly marked experimental during the `0.x` series.
 
+Each release lists, in this order and only when it has some: `### Upgrade notes` (what to change
+before upgrading), `### You can now remove` (host or agent code this release makes unnecessary:
+what to delete and the Runtime API that replaces it), `### Security`, `### Fixed`, `### Added`,
+`### Changed` and `### Documentation`. Capabilities from releases before 0.2.0b3 that replace
+host code are listed in the `algen-runtime-host` skill
+(`.agents/skills/algen-runtime-host/references/host-capabilities.md`).
+
 ## [Unreleased]
+
+## [0.2.0b3] - 2026-11-12
+
+Conversation turns survive restarts and deploys, pauses can be followed end to end (a delegate's
+approval or question surfaces on its parent, the agent can ask the user, a recovered run waits for
+the caller's credentials), a run at a limit can answer instead of failing, hosts that own the
+Runtime's PostgreSQL schema get its migration SQL and a schema check, one user's data can be
+exported or erased, and the Runtime's Agent Skills install into a project. Migrations 021 and 022
+are additive (indexes only). The public surface only grows (`docs/api/surface.json`); some
+behaviour changes: read the upgrade notes.
+
+### Upgrade notes
+
+1. **Migrations 021 and 022 (indexes).** `021_user_data_indexes.sql` adds an expression index on
+   runs by user and an index on session owners by user (user data export and erasure);
+   `022_run_turn_index.sql` adds a partial expression index on runs by tenant, conversation and
+   turn (finding a turn's run after a restart). Both are additive, but on a large
+   `algen_agent_runtime_runs` table each index build holds a write lock on the table while it
+   runs. Create `algen_agent_runtime_runs_user_idx` and `algen_agent_runtime_runs_turn_idx` with
+   `CREATE INDEX CONCURRENTLY` (same definitions, in the files) before upgrading, or apply them in a
+   quiet period; the migrations then find them. Hosts that own the schema apply both with
+   `algen-agent-runtime migrations sql --since 20`.
+2. **Workflow approvals follow the run actor rule (security).** `POST
+   /v1/workflows/runs/{id}/approval` now accepts only the user who started the workflow run, or a
+   principal with `approvals:decide` (with `runs:write`, as before); others get 403. Callers that
+   decide other users' workflow approvals, such as a service token or an approver UI, need
+   `approvals:decide`. The decision's `decided_by` is the authenticated user, as before. `POST
+   /v1/workflows/runs/{id}/input` now accepts only the user who started the workflow run, as an
+   agent run's `/clarification` does; no scope lets another user answer, so a host that answers
+   for its users must start the run as that user.
+3. **A stopped turn is followed, not failed.** `ConversationService.recover()` follows or settles a
+   streaming turn's run (completed, paused, failed or cancelled with the run's outcome) and fails
+   only a turn with no run, or whose run is gone, as `InterruptedResponse`. Keep calling it after
+   `Runtime.recover()` (`Container.astart` does).
+4. **Shutdown detaches turns.** `ConversationService.shutdown()` no longer cancels turns still
+   running after its grace period: it leaves them `streaming` and their runs to
+   `Runtime.shutdown()`, and the next start completes them. A user's cancel still cancels the turn
+   and its run.
+5. **A failed run's turn keeps its reason.** A turn whose run failed or timed out now has
+   `metadata.error_type: "RunFailed"` (was `"RuntimeError"`), with `reason`, `run_status`,
+   `retryable` and `usage`, plus `run_error_type` (the run's `RunResult.error_type`) and
+   `limit_reached` when the run reports them, and a fixed text per reason from
+   `ConversationPresentation.failure_messages`.
+6. **A recovered run that had caller credentials waits for them.** A run started or resumed with
+   `credentials=` and interrupted by a restart no longer continues without them (its tools saw no
+   credentials and failed as "not signed in"). `recover()` pauses it in the new paused status
+   `awaiting_credentials` with a `credentials.required` event; `resume(run_id, tenant_id, {},
+   credentials=...)` continues it. Set `AgentRuntime.recovery_credentials` (or
+   `build_container(recovery_credentials=...)`, or `recover(credentials_provider=...)`) to supply
+   credentials (a service token, say) and continue such runs at once. Only a flag,
+   `RunState.caller_credentials`, is stored; never the credentials. Clients that switch on
+   `RunStatus` may see `awaiting_credentials`; `PAUSED_STATUSES`, `RUN_PAUSE_EVENT_TYPES` and
+   `STREAM_END_EVENT_TYPES` include it, so `stream()` and the SSE run stream end on
+   `credentials.required` by default. Runs started over HTTP never carry credentials and are not
+   affected. A conversation turn whose run is paused this way becomes `awaiting_credentials` (new
+   `MessageStatus`, `pending.kind: credentials`, event `assistant.message.awaiting_credentials`):
+   continue it with `respond(..., ConversationCredentialsRenewal(), credentials=...)` or
+   `POST /v1/conversations/{id}/turns/{turn_id}/credentials`. UIs that switch on message status
+   should handle it.
+7. **A child run's pause pauses its `core.subagent` parent.** When a delegated child run pauses for
+   an approval or a clarification, its parent pauses too, in `awaiting_approval` or
+   `awaiting_clarification`, with the child's pause payload plus `child_run_id`, `origin_run_id`,
+   `child_agent` and `subagent_call_id`; before, the parent's model got the paused child's result
+   and carried on. Approval inboxes that list `GET /v1/approvals` see the request once, under the
+   child run. Answering the parent's pause answers the child's.
+8. **An oversized tool result no longer fails the run by default.** When the newest tool results
+   alone do not fit the context (`required context exceeds max_estimated_tokens`), each is
+   offloaded to a context artifact the model pages with `core.context_read`, when the agent can
+   call it, or else cut to what fits and replaced by a JSON object with `truncated: true`,
+   `total_chars`, `kept_chars`, a `notice` and the cut `content` (the tool's `coverage`, if any,
+   is kept, marked `capped`). The run's history keeps the shortened result. A
+   `context.tool_result_truncated` event and audit record it. The run still fails when even empty
+   results do not fit. Set `context_policy.oversized_tool_result: fail` to keep the 0.2.0b2
+   behaviour. (G32)
+9. **A failed workflow agent node keeps the child run's error type.** It raises the runtime error
+   that ended the child run (`VerificationError` when its answer failed verification,
+   `BudgetExceededError` at a limit, `PolicyDeniedError`, ...) or `TimeoutError` for a timed-out
+   child, instead of a plain `RuntimeError`. The node's `error` now reads, for example,
+   `VerificationError: final output failed verification`. Code matching `RuntimeError:` in node
+   errors should match the type it expects. (RT-B19)
+10. **Streams stopped part-way are charged.** A streamed model call that stops after a delta or
+    tool call reached the caller (Stop, a closed client, a provider error mid-stream) is now
+    settled with an estimate (the request's input estimate and about four characters per output
+    token streamed) instead of released, since the provider bills it. Only a call that delivered
+    nothing is released. A `UsageMeter` whose `settle` takes `estimated: bool = False` receives
+    `estimated=True` for such a call; other meters get a plain `settle`.
+11. **Deleting a conversation deletes its session memory.** `DELETE /v1/conversations/{id}` and
+    `ConversationService.delete` also delete the memory session the turns wrote (the
+    conversation's id), expired rows included, and its owner. Before, the memory (tool results
+    included) stayed until `memory_retention_seconds`.
+12. **Slow event subscribers.** A subscriber whose live queue fills up no longer loses the oldest
+    events without notice: it reads on from the bus's history (PostgreSQL: nothing is lost). When
+    the in-memory history no longer holds the missed events, the subscription raises
+    `EventStreamOverflowError` with `last_sequence`, and the SSE run stream ends with a
+    `stream.overflow` frame whose `id` is the last event delivered, so a client reconnecting with
+    `Last-Event-ID` reads on from there.
+13. **New event types.** Run events: `credentials.required` and `context.tool_result_truncated`.
+    Conversation events: `agent.run.started` (`{run_id, agent}`), `assistant.message.steered`,
+    `agent.steer.delivered`, `agent.steer.undelivered`, `assistant.message.awaiting_credentials`
+    and, with `conversation_streaming.tool_steps`, `agent.tool.started` / `agent.tool.completed`.
+    Consumers that validate event types against a closed list should add them; a client that
+    ignores unknown types needs no change.
+14. **`core.ask_user` is a built-in name.** Every `AgentRuntime` registers it, so a host tool of
+    that name now raises `ConflictError` at registration; rename it or use the built-in.
+15. **Stored records.** A conversation with `allowed_agents`, an assistant message with `agent`, a
+    pending action with `choices` or `child_run_id`, a run with `caller_credentials`,
+    `delegated_runs`, `error_type` or `limit_reached`, and an agent with
+    `context_policy.oversized_tool_result: fail` or `max_context_tokens` carry the new fields;
+    unset, they are stored and fingerprinted exactly as before, so 0.2.0b2 still reads them.
+
+### You can now remove
+
+- **Your own context builder kept only to change the token budget**
+  (`DefaultContextBuilder(memory, max_estimated_tokens=...)` registered under another name, as
+  algen-hrms does for 80,000): set `context_policy.max_context_tokens` on the agent.
+- **Host-side restart handling of streaming turns** (marking them failed, re-running them, or
+  looking their run up by time): the Runtime stores each turn's run id and settles it by the run's
+  state; `ConversationService.follow` re-attaches.
+- **Steering a conversation turn by looking up its run id**: call `ConversationService.steer` or
+  `POST /v1/conversations/{id}/turns/{turn_id}/steer`.
+- **Host code that forwards request headers to tools as credentials**: list them in
+  `api.credential_headers`.
+- **Your own `events.subscribe` loop that resubscribes after each pause** to follow a turn to its
+  end: use `client.follow(run_id)` or `?through_pauses=true`. (A2)
+- **Code that polls a delegated child run for its approval or question**, or a custom delegation
+  tool written to surface it: the parent run shows the child's pause and answering it there
+  resumes both. (A4)
+- **A custom "ask the user" tool or planner** that pauses the run for a clarification: enable
+  `core.ask_user`. (A5)
+- **A host-side guard that cancels or re-authenticates runs recovered without credentials**: a
+  recovered run waits for them, or takes them from `recovery_credentials`.
+- **Host code that cuts or pages large tool results** before returning them only so a run does
+  not fail with `required context exceeds max_estimated_tokens`: the Runtime now offloads or
+  truncates the newest oversized result itself. Keep tool-side paging where the tool can return a
+  better page than a cut.
+- **Host code that catches a failed or limit-ended run and makes its own final "answer from what
+  you have" model call**: set `budget.on_limit: summarize` and read `RunResult.partial`.
+- **Host code that parses `RunResult.error`** or a workflow node's `RuntimeError:` message to tell
+  a verification failure or a limit from other failures: read `RunResult.error_type` and
+  `limit_reached`, or catch the specific error from the workflow node.
+- **Custom `after_retrieval` policies whose only job is to screen retrieved chunks** for prompt
+  injection with the built-in patterns: set `guardrail_policy.retrieval_injection`.
+- **Hand-copied Runtime DDL** in a host's own migrations (Algen Studio's copies of `001`-`020`):
+  generate it with `algen-agent-runtime migrations sql --since NNN`, and replace hand-written
+  column checks with `check_schema(...).raise_for_issues()` in the host's tests.
+- **Re-implemented PII or credential masking** (copies of `PIIRedactionPolicy().redact_value`,
+  `security.redaction.redact` or the guardrail regexes): call `redact_pii` and `redact_secrets`.
+- **Host-side user erasure or export scripts** that deleted Runtime rows table by table (and had to
+  know the foreign-key order): call `container.user_data.erase_user` / `export_user`, the `users`
+  CLI or the admin routes.
+- **Host-side session memory cleanup after deleting a conversation**: the Runtime deletes the
+  conversation's memory session itself.
+- **Host-side top-up charges for stopped streams** that billed the reservation when a stream was
+  cancelled: the Runtime settles an estimate itself.
+- **Host-side approver checks in front of the workflow approval route**: the route now requires
+  the run's user or `approvals:decide`; the input route requires the run's user.
+- **Copies of the Runtime's Agent Skills kept by hand in an application repository**:
+  `algen-agent-runtime skills install --path .` writes the ones matching the installed Runtime
+  (`--force` refreshes them after an upgrade).
+- **Host code for what the Runtime already provides**, now documented for hosts: conversation and
+  turn state (`ConversationService`), restart follow-up of waiting turns
+  (`reconcile_pending_turns`), lists of ending or pausing events (`STREAM_END_EVENT_TYPES`), PII
+  and credential masking, and direct provider calls (`ModelRouter.generate` with `meter_call`). The
+  `algen-runtime-host` skill's table says which release added each.
+
+### Security
+
+- `POST /v1/workflows/runs/{id}/approval` accepted a decision from any principal with
+  `runs:write` in the tenant, including a service token, so a host could not separate who starts
+  a workflow from who approves it. It now applies the run approval rule from 0.2.0b2: the
+  workflow run's user, or a principal with `approvals:decide` (403 otherwise). The decider is
+  recorded from the authenticated principal; the request body cannot name one. The in-process
+  `WorkflowService.decide` is unchanged and does not check identity, like `Runtime.resume`.
+- `POST /v1/workflows/runs/{id}/input` accepted an answer from any principal with `runs:write` in
+  the tenant, so another user or a service token could put words in a run as its user. It now
+  accepts only the workflow run's user (403 otherwise), as an agent run's `/clarification` does.
+  The in-process `WorkflowService.provide_input` does not check identity.
+
+### Fixed
+
+- A conversation turn whose process was killed mid-run is no longer marked "interrupted, please
+  retry" when its run was recovered and answered: the run id is stored on the assistant message as
+  soon as the run starts (`agent.run.started`), and `ConversationService.recover()` follows the run
+  to its end, or settles the turn at once if the run already completed (the answer), paused
+  (`awaiting_approval`, `awaiting_input` or `awaiting_credentials` with its pending action, or
+  `expired` if the approval expired meanwhile), failed or was cancelled. A turn whose run id was
+  not stored yet finds its run by conversation and turn (`find_by_turn` on the run stores).
+  Settling is a conditional message update (`update_message_if` on the conversation stores), so
+  repeated or concurrent recovery settles a turn once, and recovery skips conversations this
+  process is answering.
+- A deploy no longer cancels every in-flight turn: shutdown detaches turns from their runs, the
+  Runtime saves the runs for recovery, and the next start completes the turns.
+- A failed turn keeps why its run failed (reason, status, token usage) and shows a user-safe text
+  for known reasons, such as a usage meter's refusal, instead of a generic error.
+- Two events published at once on one conversation no longer collide: sequences are allocated one
+  at a time per conversation in a process, a sequence another process took is allocated again
+  (PostgreSQL's unique violation is now a `ConflictError`), and a lost progress or delta event no
+  longer fails a turn whose run goes on.
+- Turns of different conversations no longer wait on one service-wide lock: each conversation has
+  its own, kept only while in use.
+- A run recovered after a restart continued without its caller's credentials; its conversation
+  turn now waits for them as `awaiting_credentials` instead of being shown as an approval.
+- A slow run event subscriber silently lost events, possibly `run.completed`.
+- `RuleBasedPlanner` treats the clarification answer to a run started with empty input as its
+  input, instead of asking again. (RT-B11)
+
+### Added
+
+- **`context_policy.max_context_tokens`** (1,024 to 2,000,000; unset by default): an agent's own
+  estimated token budget for the default and retrieval context builders, instead of the builder's
+  (16,000, or `retrieval.max_context_tokens`). `shorten_older_tool_results`,
+  `oversized_tool_result` and `compaction_trigger_ratio` work against it; a model profile's
+  `context_window_tokens` still caps what is sent. Left out of the agent's JSON while unset, so
+  fingerprints do not change. `DefaultContextBuilder.token_budget(agent)` and
+  `RetrievalContextBuilder.token_budget(agent)` return the budget an agent gets.
+- `ConversationService.follow(conversation_id, turn_id, tenant_id, user_id)` re-attaches to a
+  streaming turn after a restart (owner only, idempotent).
+- `ConversationService.steer(conversation_id, turn_id, tenant_id, user_id, text)` and
+  `POST /v1/conversations/{id}/turns/{turn_id}/steer` (`conversations:write`) send more
+  instructions to a working turn's run.
+- `ConversationService.create(..., allowed_agents=...)` and `submit(..., agent=...)` (and the
+  message body's `agent`) let a turn choose its agent from the conversation's allowlist; the
+  assistant message records it as `agent`.
+- `submit(..., run_input=...)` gives the turn's run its own input text (a date prefix, attachment
+  references), keeping the message text.
+- `messages(..., user_id=...)` applies the owner check.
+- `conversation_streaming.tool_steps` (`RuntimeConversationHandler(tool_steps=True)`) forwards tool
+  calls as `agent.tool.started` and `agent.tool.completed` events, with names and sizes only.
+- `api.credential_headers` forwards the listed request headers as caller credentials from the run
+  and conversation routes (none by default).
+- `ReattachableConversationHandler` (`follow_turn`, `turn_run`), `ConversationTurnInterruptedError`,
+  `ConversationPresentation.failure_messages` and `run_failure_message`, `RUN_FAILURE_MESSAGES`,
+  and `find_by_turn` on the in-memory, Redis and PostgreSQL run stores.
+- `MessageStatus.AWAITING_CREDENTIALS`, `ConversationPendingAction.kind: "credentials"`, the
+  `awaiting_credentials` turn outcome, `ConversationCredentialsRenewal` and
+  `POST /v1/conversations/{id}/turns/{turn_id}/credentials` (`conversations:write`; the
+  credentials are the `api.credential_headers` headers, 409 without any).
+- `AlgenAgentRuntimeClient.follow(run_id, *, after=0)` and `through_pauses=True` on `stream()` and
+  `stream_events()`: one subscription for a whole turn, through approvals, clarifications and
+  credential pauses, ending only on `run.completed`, `run.failed` (including an expired pause) or
+  `run.cancelled`. `GET /v1/runs/{run_id}/events?through_pauses=true` does the same over SSE and
+  sends a `: keepalive` comment every 15 seconds while nothing happens. Defaults are unchanged.
+  (A2)
+- A `core.subagent` child's approval or clarification reaches the host on the parent: the
+  parent's `approval.required` or `clarification.required` carries it with `child_run_id`.
+  Deciding it on the parent, through the normal `resume` or `POST /v1/runs/{id}/approval` and
+  `/clarification` (same actor checks and `approvals:decide`; `decided_by` is recorded on the
+  child's approval), resumes the child, then the parent with the child's final result. Deciding
+  it on the child continues the waiting parents too. Nested delegations surface at the root.
+  Cancelling the parent cancels the waiting child. `RunState.delegated_runs` records the waiting
+  calls, so the pause survives a restart. Conversation turns show it with
+  `ConversationPendingAction.child_run_id` and the child's `tool`. (A4, G61)
+- `core.ask_user`: a built-in tool the model calls to ask the user a question (`question`, optional
+  `choices`). The run pauses in `awaiting_clarification` with a `clarification.required` payload of
+  `kind: ask_user`; the answer, given with the usual clarification resume (`{"clarification":
+  ...}`, `POST /v1/runs/{id}/clarification`, or a conversation turn's input answer), reaches the
+  model as the call's result `{"answer": ...}`. Registered by every `AgentRuntime`; an agent
+  enables it with `core.ask_user` in `enabled_tools` and `user.ask` in `tool_permissions`. Side
+  effect `none`, never cached, retried or held back as a repeat. Works with every planner,
+  including `react`. `ConversationPendingAction.choices` carries the choices. (A5, G56)
+- `RunStatus.AWAITING_CREDENTIALS`, the `credentials.required` run event,
+  `RecoveryCredentialsProvider`, `AgentRuntime.recovery_credentials`,
+  `recover(credentials_provider=...)`, `build_container(recovery_credentials=...)` and
+  `RunState.caller_credentials`.
+- `EventStreamOverflowError`, and `InMemoryEventBus(subscriber_queue_size=...)`.
+- `budget.on_limit: summarize`: a run that reaches its step, model-call, token, cost or time limit
+  (and that `continuation_policy` does not extend) makes one last model call with no tools, capped
+  by `budget.limit_answer_max_output_tokens` (1024) and `budget.limit_answer_timeout_seconds` (30),
+  to answer from what it gathered. The answer is verified with no repair turn; the run completes
+  with `RunResult.partial: true` and `limit_reached`, and `run.completed` carries
+  `outcome: partial` and `limit`. The default, `fail`, is unchanged. (G30)
+- `RunResult.error_type` names the runtime error that ended a failed run (`VerificationError`,
+  `BudgetExceededError`, ...), and `RunResult.limit_reached` the limit it reached. Both, and
+  `partial`, are left out of JSON while unset. `run_failure_error(result)` in
+  `algen_agent_runtime.exceptions` turns a run that did not complete back into that error.
+  (RT-B19)
+- `guardrail_policy.retrieval_injection` (`off` by default, like `tool_result_injection`; `flag`
+  or `drop`) screens retrieved evidence chunks with the same check as tool results. `flag` keeps a
+  matching chunk, marked as untrusted data not to follow; `drop` leaves it and its citation out.
+  Each build that matches emits `policy.evaluated` (`boundary: after_retrieval`,
+  `reason_code: retrieval_injection.detected`) and an audit with the chunk ids. (G10)
+- `context_policy.oversized_tool_result` (`truncate`, the default, or `fail`). (G32)
+- **`algen-agent-runtime migrations list` and `migrations sql [--since NNN] [--schema NAME]
+  [--no-record]`** print the Runtime's own migrations, in order, from the installed package (no
+  database needed), each with the history row the Runtime writes; `persistence.migrations()` and
+  `migration_sql()` give the same in Python. (A1)
+- **`check_schema(target, *, schema=None)`** (`algen_agent_runtime.persistence`) compares a live
+  schema with what the migrations create and returns a `SchemaReport` of missing tables, columns,
+  defaults, indexes and triggers, type and NOT NULL differences, and migrations missing from the
+  history table; `report.raise_for_issues()` fails a host's test. It only reads the catalog. The
+  expected catalog ships as `persistence/schema_catalog.json` (regenerate with
+  `scripts/schema_catalog.py --update`). (A1)
+- **`algen_agent_runtime.security.redact_pii(value, *, entities=None, exempt=(), schema=None)`
+  and `redact_secrets(value)`**, the `pii` and `secrets` guardrails' own rules as documented
+  functions over strings, dicts and lists (`PII_ENTITIES` lists the kinds). (A3)
+- **`UserDataService`** (`container.user_data`, `algen_agent_runtime.persistence`):
+  `erase_user(tenant_id, user_id, *, dry_run=False)` and `export_user(tenant_id, user_id, *,
+  include_artifact_data=False)` across runs, run events, approvals, tool executions, artifacts,
+  session memory and owners, learned memory, conversations (messages, events, feedback), workflow
+  runs and the user's MCP connections, in memory, Redis and PostgreSQL. Erasure is idempotent,
+  deletes children first, refuses while the user has work in progress (including a turn awaiting
+  credentials), and is audited (`user_data.erased`, `user_data.exported`); audit events are kept.
+  A store that cannot do it raises the new `UserDataUnsupportedError`. CLI
+  `algen-agent-runtime users erase|export`, and `GET`/`DELETE /v1/admin/users/{user_id}/data` with
+  the new `users:admin` scope. (G39)
+- Store methods behind it: run stores `list_for_user`, `delete_many`; memory stores
+  `sessions_for_user`, `session_owner`, `delete_session` (the new `SessionDeletion` protocol);
+  event stores `forget_runs`; approval and tool execution stores `list_for_runs`, `forget_runs`;
+  learned memory `list_for_user`, `forget_user` (`UserMemoryRecord`); workflow checkpoint stores
+  `list_for_user`, `delete_many`; MCP token stores `servers_for_user`, `forget_user`.
+- `metering.accepts_estimated(meter)` and the `model_stream_settled_with_estimate` log line.
+- `algen-agent-runtime skills list` and `skills install --path DIR [--skill NAME]
+  [--skills-dir DIR] [--force]`. The wheel ships the user-facing Agent Skills
+  (`algen-agent-builder`, `algen-agent-connector`, `algen-runtime-extension`,
+  `algen-runtime-host`) under `algen_agent_runtime/_skills`; `install` copies them into a
+  project's `.agents/skills/`, prints each file, and refuses to overwrite an installed skill
+  without `--force`. The maintainer skills stay in the repository.
+- The `algen-runtime-host` Agent Skill, for applications that embed the Runtime: a table of what
+  a host needs, the Runtime API that provides it, the release that added it, and when to keep
+  your own.
+
+### Documentation
+
+- `docs/conversations.md`: `ConversationService` from a host (the calls and which check the
+  owner, following a turn, paused turns including credentials, delegated pauses and `ask_user`,
+  steering, agents per turn, failures, restarts and recovery by run, credentials, attachments,
+  sessions and deletion, custom handlers).
+- "Reusing the Runtime's redaction" (`docs/agent-tooling.md`), "Following a run from a host" and
+  "Following a run through its pauses" (`docs/operations.md`) and "One-off model calls"
+  (`docs/providers.md`), with matching sections on the docs page.
+- `docs/operations.md`: "Hosts that own the schema: `migrations` and `check_schema`", "Erasing or
+  exporting one user's data", migrations 021 and 022 in the upgrade table, conversation deletion
+  and memory, `users:admin` and the workflow approval rule in the scope table, stopped streams in
+  usage metering, conversation turns awaiting credentials. `docs/agent-tooling.md`: "Reusing the
+  redaction rules" and the estimate for stopped streams.
+- `docs/context-management.md`: "The context budget of an agent".
+- `docs/threat-model.md` and `docs/multi-agent-workflows.md`: who may decide a workflow approval.
+- `docs/docs.html`: the 0.2.0b3 content, gated `data-version-min="0.2.0b3"`.
+- The changelog's "You can now remove" subsection, and the contributor checklist step that fills
+  it. The `algen-runtime-host` skill's table covers every 0.2.0b3 capability.
 
 ## [0.2.0b2] - 2026-11-11
 
@@ -270,6 +617,7 @@ only fixes and additive changes. Read the upgrade notes first; migrations 017 an
 
 The `0.1` pre-releases (`0.1.0a1` to `0.1.0a23`) are in [CHANGELOG-0.1.md](CHANGELOG-0.1.md).
 
-[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b2...HEAD
+[Unreleased]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b3...HEAD
+[0.2.0b3]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b2...v0.2.0b3
 [0.2.0b2]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.2.0b1...v0.2.0b2
 [0.2.0b1]: https://github.com/AlgenAI/algen-agent-runtime/compare/v0.1.0a23...v0.2.0b1

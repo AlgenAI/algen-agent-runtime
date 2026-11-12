@@ -105,6 +105,8 @@ examples.
 A deployed project's service runs its `settings.workflows` over HTTP (docs/multi-agent-workflows.md,
 "Running workflows over HTTP"): `POST /v1/workflows/{name}/runs` starts one, `GET
 /v1/workflows/runs/{id}` follows it, and `.../approval` or `.../input` answers a waiting step.
+From 0.2.0b3 only the run's user (or, for approvals, a principal with `approvals:decide`) may
+answer, so a trigger that starts runs with a service token cannot also answer their questions.
 Give the trigger (a mail worker, a scheduler) a `workflow_id` per item it handles, so a retry
 finds the run it started. For approvals that people give in another system's inbox, configure
 `workflow_notifications` (an https webhook, signed with an `env://` secret) and have that system

@@ -31,6 +31,12 @@ def _delegated(state: RunState) -> bool:
     )
 
 
+def delegated_run(state: RunState) -> str | None:
+    """The run that delegated ``state`` with ``core.subagent``, or None for a run nobody
+    delegated (a root run, or a workflow node chained by ``parent_run_id``)."""
+    return state.request.parent_run_id if _delegated(state) else None
+
+
 def subagent_tool(runtime: Runtime, max_depth: int = 3) -> Tool:
     """``core.subagent``: delegate a bounded task to another agent of the tenant.
 
@@ -40,6 +46,11 @@ def subagent_tool(runtime: Runtime, max_depth: int = 3) -> Tool:
     (``RunRequest.parent_run_id``), never taken from the model, and a delegation is never served
     from the tool-result cache. The child runs for the same tenant and user, with the parent's
     credentials.
+
+    When the child pauses for an approval or a clarification, the parent pauses with it: the
+    parent's ``approval.required`` or ``clarification.required`` carries the child's pause with
+    ``child_run_id``, and answering it on the parent (or on the child) continues the child, then
+    the parent with the child's final result.
     """
 
     async def status(run_id: str, tenant_id: str) -> RunState:

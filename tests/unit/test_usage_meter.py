@@ -346,24 +346,53 @@ async def test_streamed_call_settles_on_completion() -> None:
 
 
 class BrokenStreamProvider(MockModelProvider):
-    """Delivers one delta, then fails or waits forever."""
+    """Delivers one delta (unless ``deltas=False``), then fails or waits forever."""
 
-    def __init__(self, *, hang: bool = False) -> None:
+    def __init__(self, *, hang: bool = False, deltas: bool = True) -> None:
         super().__init__(["unused"])
         self.hang = hang
+        self.deltas = deltas
         self.started = asyncio.Event()
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
-        yield ModelStreamEvent(type="delta", delta="partial ")
+        if self.deltas:
+            yield ModelStreamEvent(type="delta", delta="partial ")
         self.started.set()
         if self.hang:
             await asyncio.Event().wait()
         raise ProviderError("connection reset", ErrorKind.UNAVAILABLE, retryable=False)
 
 
-async def test_stream_error_releases_the_reservation() -> None:
+class EstimateAwareMeter(RecordingMeter):
+    """A meter whose settle takes ``estimated``, as metering.py describes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.estimated: list[bool] = []
+
+    async def settle(self, ticket: object, usage: TokenUsage, *, estimated: bool = False) -> None:
+        self.estimated.append(estimated)
+        await super().settle(ticket, usage)
+
+
+async def test_stream_error_after_output_settles_an_estimate() -> None:
+    # The provider bills what it streamed: a failure mid-stream is charged, not released.
     meter = RecordingMeter()
     runtime = metered(meter, ("mock", BrokenStreamProvider()))
+
+    result = await runtime.run(request(stream=True))
+
+    assert result.status == RunStatus.FAILED
+    assert meter.released == []
+    [(ticket, usage)] = meter.settled
+    assert ticket == 0
+    assert usage.input_tokens > 0
+    assert usage.output_tokens == 2  # "partial " is eight characters, about two tokens
+
+
+async def test_stream_error_before_any_output_releases_the_reservation() -> None:
+    meter = RecordingMeter()
+    runtime = metered(meter, ("mock", BrokenStreamProvider(deltas=False)))
 
     result = await runtime.run(request(stream=True))
 
@@ -372,9 +401,26 @@ async def test_stream_error_releases_the_reservation() -> None:
     assert meter.released == [0]
 
 
-async def test_cancelled_stream_releases_the_reservation() -> None:
-    meter = RecordingMeter()
+async def test_cancelled_stream_after_its_first_delta_settles_an_estimate() -> None:
+    meter = EstimateAwareMeter()
     provider = BrokenStreamProvider(hang=True)
+    runtime = metered(meter, ("mock", provider))
+
+    state = await runtime.start(request(stream=True))
+    await asyncio.wait_for(provider.started.wait(), 5)
+    await runtime.cancel(state.id, "t")
+    result = await runtime.wait(state.id, "t")
+
+    assert result.status == RunStatus.CANCELLED
+    assert meter.released == []
+    assert [ticket for ticket, _ in meter.settled] == [0]
+    assert meter.estimated == [True]
+    assert meter.settled[0][1].output_tokens == 2
+
+
+async def test_cancelled_stream_before_any_output_releases_the_reservation() -> None:
+    meter = RecordingMeter()
+    provider = BrokenStreamProvider(hang=True, deltas=False)
     runtime = metered(meter, ("mock", provider))
 
     state = await runtime.start(request(stream=True))
@@ -387,21 +433,45 @@ async def test_cancelled_stream_releases_the_reservation() -> None:
     assert meter.released == [0]
 
 
-async def test_stream_closed_early_by_its_consumer_is_released() -> None:
-    meter = RecordingMeter()
+async def test_stream_closed_early_by_its_consumer_settles_an_estimate() -> None:
+    meter = EstimateAwareMeter()
     router = ModelRouter(usage_meter=meter)
     router.register_provider(MockModelProvider(["one two three"]))
     profile = ModelProfile(name="m", provider="mock", model="deterministic")
-    stream = router.stream(
-        ModelRequest(messages=(Message.text(Role.USER, "hi"),), max_output_tokens=64), (profile,)
-    )
+    model_request = ModelRequest(messages=(Message.text(Role.USER, "hi"),), max_output_tokens=64)
+    stream = router.stream(model_request, (profile,))
 
     first = await anext(stream)
     await stream.aclose()
 
     assert first.delta == "one "
     assert meter.reserved[0][2] == 64
-    assert meter.settled == [] and meter.released == [0]
+    assert meter.released == []
+    [(_, usage)] = meter.settled
+    assert usage.input_tokens == estimate_request_tokens(
+        model_request.model_copy(update={"model": "deterministic"})
+    )
+    assert usage.output_tokens == 1
+    assert meter.estimated == [True]
+
+
+async def test_completed_stream_settles_the_reported_usage_not_an_estimate() -> None:
+    meter = EstimateAwareMeter()
+    router = ModelRouter(usage_meter=meter)
+    router.register_provider(MockModelProvider(["one two three"]))
+    profile = ModelProfile(name="m", provider="mock", model="deterministic")
+    events = [
+        event
+        async for event in router.stream(
+            ModelRequest(messages=(Message.text(Role.USER, "hi"),), max_output_tokens=64),
+            (profile,),
+        )
+    ]
+
+    final = next(event.response for event in events if event.response is not None)
+    assert meter.settled == [(0, final.usage)]
+    assert meter.estimated == [False]
+    assert meter.released == []
 
 
 async def test_stream_refusal_happens_before_the_provider_is_called() -> None:
