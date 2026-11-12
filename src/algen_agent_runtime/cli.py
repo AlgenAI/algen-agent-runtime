@@ -339,6 +339,29 @@ def _run_plugin(args: argparse.Namespace) -> int:
         return 1
 
 
+def _run_skills(args: argparse.Namespace) -> int:
+    """``skills list`` and ``skills install``: the Agent Skills shipped with this version."""
+    from algen_agent_runtime._coding_skills import available_skills, install_skills
+
+    try:
+        if args.skills_command == "list":
+            for skill in available_skills():
+                print(f"{skill.name}: {skill.description}")
+            return 0
+        target = Path(args.path) / args.skills_dir
+        written = install_skills(
+            Path(args.path), args.skill or (), skills_dir=Path(args.skills_dir), force=args.force
+        )
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    for path in written:
+        print(f"wrote {path}")
+    installed = sorted({path.relative_to(target).parts[0] for path in written})
+    print(f"installed {len(installed)} skill(s) into {target}: {', '.join(installed)}")
+    return 0
+
+
 def _run_generate_ui(
     config: list[str] | None = None,
     output: str = "agent-ui.html",
@@ -436,6 +459,86 @@ def _run_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_migrations(args: argparse.Namespace) -> int:
+    """Print the Runtime's migrations, or their SQL, for a host that owns the schema."""
+    import json
+
+    from algen_agent_runtime.exceptions.errors import ConfigurationError
+    from algen_agent_runtime.persistence.schema import (
+        describe_migrations,
+        migration_sql,
+        migrations,
+    )
+
+    if args.migrations_command == "list":
+        described = describe_migrations(migrations())
+        if args.json:
+            print(json.dumps(described, indent=2))
+        else:
+            for item in described:
+                print(f"{item['name']}  {item['summary']}".rstrip())
+        return 0
+    known = {item.number for item in migrations()}
+    if args.since is not None and args.since not in known and args.since != 0:
+        print(
+            f"Error: no migration {args.since:03d}; the latest is {max(known):03d}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        sql = migration_sql(since=args.since, schema=args.schema, record=args.record)
+    except ConfigurationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(sql)
+    return 0
+
+
+def _run_users(args: argparse.Namespace) -> int:
+    """Export or erase one user's data with the stores the configuration selects."""
+    import asyncio
+    import json
+
+    from algen_agent_runtime.exceptions.errors import ConflictError, UserDataUnsupportedError
+    from algen_agent_runtime.orchestration.container import build_container
+
+    container = build_container(_settings_from_config(args.config))
+    service = container.user_data
+    if service is None:
+        raise RuntimeError("runtime container has no user data service")
+
+    async def act() -> int:
+        try:
+            if args.users_command == "export":
+                data = await service.export_user(
+                    args.tenant,
+                    args.user,
+                    include_artifact_data=args.include_artifact_data,
+                    actor_id="cli",
+                )
+                text = json.dumps(data, indent=2)
+                if args.output and args.output != "-":
+                    descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                        handle.write(text + "\n")
+                    print(f"Wrote {args.output}", file=sys.stderr)
+                else:
+                    print(text)
+                return 0
+            report = await service.erase_user(
+                args.tenant, args.user, dry_run=args.dry_run, actor_id="cli"
+            )
+            print(report.model_dump_json(indent=2))
+            return 1 if report.blocked else 0
+        except (ConflictError, UserDataUnsupportedError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            await container.aclose()
+
+    return asyncio.run(act())
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="algen-agent-runtime",
@@ -479,6 +582,70 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path(s) to configuration YAML file(s)",
     )
+
+    # migrations command
+    migrations_parser = subparsers.add_parser(
+        "migrations",
+        help="List the Runtime's PostgreSQL migrations or print their SQL (no database needed)",
+    )
+    migrations_commands = migrations_parser.add_subparsers(dest="migrations_command", required=True)
+    migrations_list = migrations_commands.add_parser(
+        "list", help="List the migrations in the order the Runtime applies them"
+    )
+    migrations_list.add_argument("--json", action="store_true", help="Print them as JSON")
+    migrations_sql = migrations_commands.add_parser(
+        "sql", help="Print the migrations' SQL in order, for a host's own migration tool"
+    )
+    migrations_sql.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        metavar="NNN",
+        help="Only the migrations after number NNN (e.g. 20 prints 021 onwards)",
+    )
+    migrations_sql.add_argument(
+        "--schema",
+        default=None,
+        metavar="NAME",
+        help="Create and use this schema first (storage.postgres_schema)",
+    )
+    migrations_sql.add_argument(
+        "--no-record",
+        dest="record",
+        action="store_false",
+        help="Leave out the rows the Runtime writes to algen_agent_runtime_schema_migrations",
+    )
+
+    # users command
+    users_parser = subparsers.add_parser(
+        "users", help="Export or erase everything the Runtime stores about one user"
+    )
+    users_commands = users_parser.add_subparsers(dest="users_command", required=True)
+    for name, text in (
+        ("export", "Print the user's data as JSON"),
+        ("erase", "Delete the user's data and print the counts per kind"),
+    ):
+        command = users_commands.add_parser(name, help=text)
+        command.add_argument("--tenant", required=True, help="Tenant id")
+        command.add_argument("--user", required=True, help="User id")
+        command.add_argument(
+            "--config", nargs="*", default=None, help="Path(s) to configuration YAML file(s)"
+        )
+        if name == "export":
+            command.add_argument(
+                "--output", "-o", default=None, help="Write to this file (mode 600) instead"
+            )
+            command.add_argument(
+                "--include-artifact-data",
+                action="store_true",
+                help="Include each artifact's bytes, base64",
+            )
+        else:
+            command.add_argument(
+                "--dry-run",
+                action="store_true",
+                help="Only count what would go and list what blocks the erasure",
+            )
 
     # new command
     new_parser = subparsers.add_parser("new", help="Scaffold a new agent or workflow project")
@@ -630,6 +797,35 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument(
         "--path", action="append", default=None, help="Directory to find plugin modules in"
     )
+    # skills command
+    skills_parser = subparsers.add_parser(
+        "skills",
+        help="List or install the Agent Skills for coding agents shipped with this version",
+    )
+    skills_commands = skills_parser.add_subparsers(dest="skills_command", required=True)
+    skills_commands.add_parser("list", help="List the packaged skills")
+    install_parser = skills_commands.add_parser(
+        "install", help="Copy the packaged skills into a project for its coding agents"
+    )
+    install_parser.add_argument(
+        "--path", default=".", help="Project directory (default: the current directory)"
+    )
+    install_parser.add_argument(
+        "--skill",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Install only this skill (repeatable; default: all)",
+    )
+    install_parser.add_argument(
+        "--skills-dir",
+        default=".agents/skills",
+        help="Skills folder inside the project (default: .agents/skills; Claude Code reads "
+        ".claude/skills)",
+    )
+    install_parser.add_argument(
+        "--force", action="store_true", help="Replace skills that are already installed"
+    )
     # ui / export-ui command
     for cmd_name, cmd_help in [
         ("ui", "Generate standalone static HTML for the Agent YAML UI"),
@@ -701,8 +897,14 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_agent(args.agent, args.input, attach=args.attach, config=args.config))
     elif args.command == "policy":
         sys.exit(_run_policy(args))
+    elif args.command == "migrations":
+        sys.exit(_run_migrations(args))
+    elif args.command == "users":
+        sys.exit(_run_users(args))
     elif args.command == "plugin":
         sys.exit(_run_plugin(args))
+    elif args.command == "skills":
+        sys.exit(_run_skills(args))
     elif args.command in {"ui", "export-ui"}:
         _run_generate_ui(
             config=args.config,

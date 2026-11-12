@@ -31,6 +31,21 @@ if "$venv/bin/algen-agent-runtime" serve 2>serve.err; then
 fi
 grep -q "algen-agent-runtime\[server\]" serve.err
 
+# The packaged Agent Skills: listed, installed into a project, and not overwritten without --force.
+"$venv/bin/algen-agent-runtime" skills list >skills.out
+grep -q "^algen-runtime-host:" skills.out
+if grep -q "algen-runtime-contributor\|algen-external-pr-review" skills.out; then
+  echo "smoke-install: a maintainer-only skill is packaged" >&2
+  exit 1
+fi
+"$venv/bin/algen-agent-runtime" skills install --path skills-project >/dev/null
+test -f skills-project/.agents/skills/algen-runtime-host/references/host-capabilities.md
+if "$venv/bin/algen-agent-runtime" skills install --path skills-project 2>/dev/null; then
+  echo "smoke-install: skills install overwrote installed skills without --force" >&2
+  exit 1
+fi
+"$venv/bin/algen-agent-runtime" skills install --path skills-project --force >/dev/null
+
 "$venv/bin/pip" install -q "${wheel}[service]"
 "$venv/bin/algen-agent-runtime" serve --help >/dev/null
 "$venv/bin/python" -c "from algen_agent_runtime.api.app import create_app; assert create_app().title == 'Algen Agent Runtime'"

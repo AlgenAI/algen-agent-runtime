@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — beta (`0.2.0b2`)  
-Last reviewed: 2026-11-11
+Status: Active tracking — beta (`0.2.0b3`)  
+Last reviewed: 2026-11-12
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -27,7 +27,8 @@ production evidence rather than for the feature list.
 | `0.1.0a23` | A workflow tool step needs every approval that gates it (security fix); timed-out synchronous tools keep their concurrency slot ([#114](https://github.com/AlgenAI/algen-agent-runtime/issues/114)); `check` reads a modifiable decision only through its parameters ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)) | Released; no new deprecations |
 | `0.2.0b1` | Beta: deprecated APIs removed; optional `server`/`otlp` extras and the namespaced examples package ([#115](https://github.com/AlgenAI/algen-agent-runtime/issues/115)); strict approval binding ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109), [#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117), [#127](https://github.com/AlgenAI/algen-agent-runtime/issues/127)) and the other open issues | Released; entry criteria met or waived |
 | `0.2.0b2` | Fixes from an independent review of 0.2.0b1 (session ownership, run actors, delegation allowlist, output integrity, policy false positives); approval attribution, client credentials, `core.subagent` from settings. Additive surface; behaviour changes listed in the upgrade notes | Released |
-| `0.2.0b3` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
+| `0.2.0b3` | Conversation turns survive restarts and deploys; pauses followed end to end (delegated pauses, `core.ask_user`, credentials after recovery); `budget.on_limit: summarize`; typed run errors; migration SQL, `check_schema`, user data export and erasure; public redaction helpers; settable context budget; workflow approval and input routes follow the run actor rule; the host skill and skills installed from the package. Additive surface; behaviour changes listed in the upgrade notes | Released |
+| `0.2.0b4` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
 | `1.0.0` | General availability | Every box below is checked |

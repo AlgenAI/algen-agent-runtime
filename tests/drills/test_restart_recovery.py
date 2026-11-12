@@ -131,7 +131,7 @@ async def test_a_workflow_interrupted_by_a_crash_is_recovered_once() -> None:
 
 async def test_conversation_turns_after_a_crash() -> None:
     """A turn paused for approval resumes on the new process; a turn that was streaming is
-    failed as interrupted (retryable), and its run's effect is not repeated."""
+    followed to its recovered run's answer, not failed, and its run's effect is not repeated."""
     async with fresh_database() as dsn:
         child = await Child.spawn(
             dsn,
@@ -154,10 +154,13 @@ async def test_conversation_turns_after_a_crash() -> None:
                 messages = await conversations.messages(conversation_id, TENANT)
                 return messages[-1] if messages and messages[-1].status in statuses else None
 
-            interrupted = await until(
-                lambda: last(streaming_id, MessageStatus.FAILED), "the interrupted turn"
+            recovered = await until(
+                lambda: last(streaming_id, MessageStatus.COMPLETED, MessageStatus.FAILED),
+                "the recovered turn",
             )
-            assert interrupted.metadata["error_type"] == "InterruptedResponse"
+            assert recovered.status is MessageStatus.COMPLETED, recovered
+            assert recovered.metadata.get("error_type") != "InterruptedResponse"
+            assert recovered.run_ids
             paused = await until(
                 lambda: last(paused_id, MessageStatus.AWAITING_APPROVAL), "the paused turn"
             )

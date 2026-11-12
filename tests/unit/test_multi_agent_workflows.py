@@ -8,8 +8,13 @@ from typing import Any
 
 import pytest
 
-from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError
-from algen_agent_runtime.types.contracts import RunStatus, utc_now
+from algen_agent_runtime.exceptions.errors import (
+    BudgetExceededError,
+    ConfigurationError,
+    ConflictError,
+    run_failure_error,
+)
+from algen_agent_runtime.types.contracts import ExecutionSummary, RunResult, RunStatus, utc_now
 from algen_agent_runtime.workflows import (
     MultiAgentWorkflowExecutor,
     WorkflowHookRegistry,
@@ -1478,3 +1483,88 @@ async def test_invalid_json_after_every_repair_fails_the_node() -> None:
     assert "invalid structured output after 1 repair" in (
         state.nodes["extract"].error or state.error or ""
     )
+
+
+def _failing_runner(**result: Any) -> Any:
+    async def run_agent(request: Any, context: Any) -> Any:
+        return RunResult(
+            run_id="child-1",
+            session_id="s",
+            execution_summary=ExecutionSummary(),
+            **result,
+        )
+
+    return run_agent
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            {
+                "status": RunStatus.FAILED,
+                "error": "final output failed verification",
+                "error_type": "VerificationError",
+            },
+            "VerificationError: final output failed verification",
+        ),
+        (
+            {
+                "status": RunStatus.FAILED,
+                "error": "model_tokens budget exhausted",
+                "error_type": "BudgetExceededError",
+                "limit_reached": "model_tokens",
+            },
+            "BudgetExceededError: model_tokens budget exhausted",
+        ),
+        (
+            # A type that takes structured arguments falls back to its nearest plain base.
+            {
+                "status": RunStatus.FAILED,
+                "error": "approval.tool_mismatch: other tool",
+                "error_type": "ApprovalMismatchError",
+            },
+            "PolicyDeniedError: approval.tool_mismatch: other tool",
+        ),
+        ({"status": RunStatus.TIMED_OUT}, "TimeoutError: agent 'worker' failed"),
+        ({"status": RunStatus.FAILED, "error": "boom"}, "RuntimeError: boom"),
+    ],
+)
+async def test_a_failed_child_agent_run_keeps_its_error_type(
+    result: dict[str, Any], expected: str
+) -> None:
+    workflow = WorkflowManifest(
+        name="typed-failure",
+        version="1.0.0",
+        nodes=(
+            WorkflowNode(
+                id="work",
+                kind=WorkflowNodeKind.AGENT,
+                agent="worker",
+                input_template="{{input}}",
+                output_key="out",
+            ),
+        ),
+    )
+    state = await MultiAgentWorkflowExecutor(
+        FakeRuntime(), WorkflowHookRegistry(), agent_runner=_failing_runner(**result)
+    ).run(workflow, {"input": "go"}, tenant_id="t", user_id="u")
+
+    assert state.status == WorkflowStatus.FAILED
+    assert state.nodes["work"].error == expected
+
+
+def test_run_failure_error_carries_the_limit() -> None:
+    error = run_failure_error(
+        RunResult(
+            run_id="r",
+            session_id="s",
+            status=RunStatus.FAILED,
+            error="estimated_cost budget exhausted",
+            error_type="BudgetExceededError",
+            limit_reached="estimated_cost",
+            execution_summary=ExecutionSummary(),
+        )
+    )
+    assert isinstance(error, BudgetExceededError)
+    assert error.limit == "estimated_cost"

@@ -88,6 +88,27 @@ class InMemoryWorkflowCheckpointStore:
                 del self._states[(state.tenant_id, state.id)]
             return len(doomed)
 
+    async def list_for_user(self, tenant_id: str, user_id: str) -> Sequence[WorkflowExecutionState]:
+        """Every workflow run of ``user_id`` in the tenant, oldest first."""
+        async with self._lock:
+            states = [
+                deepcopy(state)
+                for (tenant, _), state in self._states.items()
+                if tenant == tenant_id and state.user_id == user_id
+            ]
+        states.sort(key=lambda state: state.created_at)
+        return tuple(states)
+
+    async def delete_many(self, tenant_id: str, workflow_ids: Sequence[str]) -> int:
+        """Delete the tenant's workflow runs among ``workflow_ids``; return how many went."""
+        async with self._lock:
+            doomed = [
+                key for key in {(tenant_id, item) for item in workflow_ids} if key in self._states
+            ]
+            for key in doomed:
+                del self._states[key]
+            return len(doomed)
+
 
 class PostgresWorkflowCheckpointStore:
     def __init__(self, database: Any) -> None:
@@ -148,3 +169,25 @@ class PostgresWorkflowCheckpointStore:
             limit,
         )
         return tuple(WorkflowExecutionState.model_validate_json(row["state"]) for row in rows)
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> Sequence[WorkflowExecutionState]:
+        """Every workflow run of ``user_id`` in the tenant, oldest first."""
+        rows = await self._database.fetch(
+            "SELECT state FROM algen_agent_runtime_workflow_checkpoints "
+            "WHERE tenant_id=$1 AND state->>'user_id'=$2 ORDER BY updated_at, id",
+            tenant_id,
+            user_id,
+        )
+        return tuple(WorkflowExecutionState.model_validate_json(row["state"]) for row in rows)
+
+    async def delete_many(self, tenant_id: str, workflow_ids: Sequence[str]) -> int:
+        """Delete the tenant's workflow runs among ``workflow_ids``; return how many went."""
+        if not workflow_ids:
+            return 0
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_workflow_checkpoints "
+            "WHERE tenant_id=$1 AND id = ANY($2::text[])",
+            tenant_id,
+            list(workflow_ids),
+        )
+        return int(str(result).rsplit(" ", 1)[-1])

@@ -163,6 +163,51 @@ storage:
 - The pgvector retriever opens its own connection and keeps its table in `retrieval.<name>.table_name`;
   this setting does not apply to it.
 
+### Hosts that own the schema: `migrations` and `check_schema`
+
+A host whose database role may not run DDL at start-up sets `storage.initialize_schema: false` and
+creates the Runtime's tables with its own migration tool (Alembic, Flyway, Django). It takes the
+SQL from the Runtime instead of copying it, and checks the result (since 0.2.0b3):
+
+```bash
+algen-agent-runtime migrations list                 # 001_initial.sql ... in order, with a summary
+algen-agent-runtime migrations sql > runtime.sql    # every migration, in order
+algen-agent-runtime migrations sql --since 20       # only 021 onwards, after upgrading from 0.2.0b2
+algen-agent-runtime migrations sql --since 20 --schema agent_runtime
+```
+
+- The SQL is read from the installed package, so no database is needed. Each migration is preceded
+  by a `-- algen-agent-runtime migration NNN_name.sql` comment and followed by the row the Runtime
+  writes to `algen_agent_runtime_schema_migrations`, so a Runtime later started with
+  `initialize_schema: true` does not run it again (`--no-record` leaves those rows out). Run each
+  migration in a transaction, as the Runtime does.
+- `--schema NAME` starts with `CREATE SCHEMA IF NOT EXISTS` and `SET search_path TO` that schema, as
+  the Runtime does for `postgres_schema`; the functions migration 016 creates pin it with
+  `SET search_path FROM CURRENT`.
+- Every release adds migrations only forward. After upgrading the Runtime, apply
+  `migrations sql --since <the last number you applied>` before starting the new version.
+
+`check_schema` compares a live schema with what the migrations create and reports what the Runtime
+would miss: tables, columns, column defaults, indexes and triggers, and a type or NOT NULL that
+differs. Tables, columns and indexes the host added are not reported. It only reads the catalog, so
+the Runtime's own role can run it, and it fits a host's test suite or a deploy check:
+
+```python
+from algen_agent_runtime.persistence import check_schema
+
+async def test_runtime_schema_is_current(database_url):
+    report = await check_schema(database_url, schema="agent_runtime")
+    report.raise_for_issues()   # AssertionError listing every issue
+```
+
+`check_schema(target, *, schema=None)` takes a DSN (`env://VAR` is resolved first), a
+`PostgresDatabase` (its `postgres_schema` by default), or an asyncpg connection or pool; without
+`schema` it uses the connection's `current_schema()`. The `SchemaReport` has `ok`, `issues`
+(`SchemaIssue` with `kind`, `table`, `column`, `name`, `expected`, `actual`) and
+`unrecorded_migrations`, the migrations missing from the history table (informational: a host that
+owns the schema need not keep it). `migrations()` and `migration_sql(since=, schema=, record=)`
+give the same as the command in Python.
+
 ## Readiness and lifecycle
 
 ### Readiness contract
@@ -448,6 +493,8 @@ results, approval requests) is written so the previous release can read it, so:
 | `018_learned_memory_vectors.sql` | `0.2.0b1` | Learned-memory vector table for semantic and hybrid recall (`real[]`, no extension needed). | Yes; the previous release does not read it. Vectors of records it corrects or deletes are not ranked, and the next maintenance sweep of the new release removes them. |
 | `019_session_owners.sql` | `0.2.0b2` | Session owner table (`tenant_id`, `session_id`, `user_id`, `expires_at`); gives each existing session that has memory to the user of its earliest run. | Yes; the previous release does not read it, but it does not check owners either. Sessions first used while rolled back have no owner until the new release's next run claims them. |
 | `020_approval_decided_by.sql` | `0.2.0b2` | Nullable approval columns `decided_by`, `decided_at` and `comment`: who decided a run's approval, when, and their note. | Yes; the previous release does not read them, and the approval JSON keeps its earlier shape. Approvals it decides while rolled back record no approver. |
+| `021_user_data_indexes.sql` | `0.2.0b3` | Indexes on runs by `(tenant_id, user_id)` and on session owners by `(tenant_id, user_id)`, for erasing or exporting one user's data. | Yes; the previous release does not use them. On a large runs table, create `algen_agent_runtime_runs_user_idx` with `CREATE INDEX CONCURRENTLY` (same definition) before upgrading: the migration then finds it and takes no long write lock. |
+| `022_run_turn_index.sql` | `0.2.0b3` | Partial expression index on runs by `(tenant_id, conversation_id, turn_id)`, for conversation recovery (`find_by_turn`). | Yes; the previous release does not use it. On a large runs table, create `algen_agent_runtime_runs_turn_idx` with `CREATE INDEX CONCURRENTLY` (same definition) before upgrading, for the same reason. |
 
 Restore from backup instead of rolling back only when a release's notes say a migration is not
 backward compatible; none is so far. Take a backup before every upgrade.
@@ -495,10 +542,10 @@ grants every scope; reserve it for development.
 | `artifacts:read`, `artifacts:write` | `GET /v1/artifacts...`; `POST /v1/artifacts`, `DELETE /v1/artifacts/{id}` (each accepts the matching `runs:` scope instead) |
 | `artifacts:scan` | `PATCH /v1/artifacts/{id}/status` (a scanner's verdict) |
 | `conversations:read` | `GET /v1/conversations...` (list, one, messages, events, suggestions) |
-| `conversations:write` | `POST /v1/conversations`, `PATCH`/`DELETE /v1/conversations/{id}`, `POST .../messages`, `DELETE .../active-response`, `POST .../turns/{turn}/approval`, `/input` |
+| `conversations:write` | `POST /v1/conversations`, `PATCH`/`DELETE /v1/conversations/{id}`, `POST .../messages`, `DELETE .../active-response`, `POST .../turns/{turn}/approval`, `/input`, `/credentials`, `/steer` |
 | `feedback:read`, `feedback:write` | `GET`, `PUT /v1/conversations/{id}/messages/{message}/feedback` |
 | `approvals:read` | `GET /v1/approvals`, `GET /v1/approvals/{id}` (the approval inbox) |
-| `approvals:decide` | `POST /v1/runs/{id}/approval` on another user's run (with `runs:write`) |
+| `approvals:decide` | `POST /v1/runs/{id}/approval` on another user's run, and from 0.2.0b3 `POST /v1/workflows/runs/{id}/approval` on another user's workflow run (with `runs:write`) |
 | `runs:admin` | `DELETE /v1/runs/{id}` on another user's run (with `runs:write`) |
 | `agents:read` | `GET /v1/agents`, `GET /v1/semantic-layers...` |
 | `agents:write` | `POST /v1/agents` |
@@ -507,6 +554,7 @@ grants every scope; reserve it for development.
 | `mcp:connect` (plus `mcp:admin` for a tenant-wide server) | `POST /v1/mcp/servers/{server}/oauth/start`, `DELETE /v1/mcp/servers/{server}/oauth` |
 | `usage:read` | `GET /v1/storage/usage` |
 | `auth:revoke` | `POST /v1/auth/revocations/tokens`, `/subjects` |
+| `users:admin` | `GET`, `DELETE /v1/admin/users/{user_id}/data` (export or erase one user's data; see [Erasing or exporting one user's data](#erasing-or-exporting-one-users-data)) |
 
 `/health/live`, `/health/ready` and the agent UI need no scope. A missing scope answers 403 and
 names it. Development headers are accepted only when the API binds to a loopback address, unless
@@ -518,6 +566,15 @@ setting, and `create_app` refuses API settings that skipped validation (`model_c
 
 - `POST /v1/runs/{id}/approval`: the run's user, or a principal with `approvals:decide` (an
   approver working from the `/v1/approvals` inbox).
+- `POST /v1/workflows/runs/{id}/approval` (from 0.2.0b3): the user who started the workflow run,
+  or a principal with `approvals:decide`; another user, including a service token that only holds
+  `runs:write`, gets 403. The workflow decision's `decided_by` is the authenticated principal's
+  user id (the body cannot name one). Before 0.2.0b3 any principal with `runs:write` could decide.
+  The in-process `WorkflowService.decide` does not check identity.
+- `POST /v1/workflows/runs/{id}/input` (from 0.2.0b3): the user who started the workflow run
+  only, as for `/clarification`; no scope lets another user answer. Before 0.2.0b3 any principal
+  with `runs:write` could answer. The in-process `WorkflowService.provide_input` does not check
+  identity.
 - `DELETE /v1/runs/{id}` (cancel): the run's user, or a principal with `runs:admin`.
 - `POST /v1/runs/{id}/steer` and `/clarification`: the run's user only. Both put text in front of
   the model as the user, so no scope delegates them.
@@ -805,6 +862,12 @@ See [Agent tool behaviour](agent-tooling.md#metering-model-calls) for the protoc
 | `budget.refused` audit record | audit log | Outcome `refused`, the agent as resource, and `reason`, `provider` and `model` as in the event. |
 | `budget.refused = true` | `agent.run` span | Set on the run root whose drive the refusal ended. |
 
+A streamed call that stops after output reached the caller (Stop, a closed client, a provider
+error mid-stream) is billed by the provider, so it is settled with an estimate rather than released,
+and the router logs `model_stream_settled_with_estimate` (see
+[Metering model calls](agent-tooling.md#metering-model-calls)). Only a call that delivered nothing
+is released.
+
 A refusal is not a provider error: it is not retried, the router does not try a fallback model, and
 it does not count towards the provider's circuit breaker or latency. The run ends `failed`. Alert on
 `budget.refused` separately from provider failures. A meter must not raise any other exception from
@@ -1037,6 +1100,8 @@ uses, so existing agents are unaffected; lower them for agents that face untrust
 | `budget.max_model_calls` | 1,000 | Model calls in the run: steps, rejected completions that were retried, history compaction and verification repairs. | Like the step limit: a continuation (`continuation_policy`) adds `step_increment` calls, otherwise the run fails. The wrap-up notice counts the calls left (`reason: model_calls`). |
 | `budget.max_response_chars` | 1,000,000 (at least 1,000) | One model response: its text plus its tool calls' arguments as compact JSON. | The run fails at once. A streamed response is cut off as soon as it passes the limit; a complete one is charged to the run's usage first. |
 | `budget.max_events` | 100,000 (at least 100) | Run events recorded for the run. | Further events are dropped, except those that end or pause the run (`run.completed`, `run.failed`, `run.cancelled`, `approval.required`, `clarification.required`, `tool.reconciliation_required`, `mcp.auth_required`, `budget.refused`, `steer.undelivered`), and the run fails at its next step. |
+| `budget.on_limit` | `fail` | What a run does at its step, model-call, token, cost or time limit when `continuation_policy` does not extend it. | `fail` ends it failed. `summarize` (0.2.0b3) makes one last model call with no tools, from a transcript of what the run gathered, and completes the run with `RunResult.partial: true` and `limit_reached`; see [Partial answers at a limit](#partial-answers-at-a-limit). |
+| `budget.limit_answer_max_output_tokens` · `limit_answer_timeout_seconds` | 1,024 · 30 | The output-token cap (16 to 32,768) and time (up to 600 s) of that last call. | The call is not retried and its answer gets no repair turn. Past the time, the run fails with `BudgetExceededError`. |
 | `runtime.stream_delta_interval_ms` | 50 (0 to 5,000) | How often streamed text is recorded. | Chunks that arrive within the interval are joined into one `model.delta` event (the first is sent at once, the rest at the end of the stream at the latest), so a long stream does not use up `max_events`. `0` records every chunk, as `AgentRuntime` does when constructed directly. |
 
 A run that ends at a limit fails with `RunState.error` naming it and a `run.failed` event with
@@ -1046,6 +1111,28 @@ A run that ends at a limit fails with `RunState.error` naming it and a `run.fail
 the `agent.run` span carries `agent.run.limit_exceeded`. The event count is the run's event
 sequence, so it holds across pauses and restarts. Alert on `run.limit_exceeded`: a run that keeps
 reaching a limit is looping or being fed hostile input.
+
+From 0.2.0b3 the run's result says so too: `RunResult.error_type` is `BudgetExceededError` and
+`RunResult.limit_reached` names the limit. `error_type` names the runtime error behind any failed
+run (`VerificationError`, `PolicyDeniedError`, `ToolExecutionError`, `ProviderError`, ...), and
+`algen_agent_runtime.exceptions.run_failure_error(result)` turns the result back into that error.
+
+### Partial answers at a limit
+
+With `budget.on_limit: summarize`, a run that reaches its step (`execution_steps`), model-call,
+token or cost limit, or its time (`max_latency_seconds`, reported as `time`), answers instead of
+failing. It makes exactly one more model call: no tools, the run's context with each tool exchange
+written out as text (a call that never got its result is left out) and a closing request to answer
+from what is there and say what is missing. That call is capped at
+`limit_answer_max_output_tokens` and `limit_answer_timeout_seconds`, is not retried, and is the
+only spend past the limit. The answer goes through the `after_model` and `final_response`
+guardrails and the agent's verifiers, with no repair turn: an answer that fails them fails the
+run, with `limit_reached` still set.
+
+The run completes with `RunResult.partial: true` and `limit_reached`, the `run.completed` event
+carries `outcome: partial` and `limit`, and the audit log records `run.limit_exceeded` with
+outcome `summarize`. Show partial answers as such. `continuation_policy`, when enabled, still
+extends or pauses the run first; `response_chars` and `events` limits always fail the run.
 
 ## Storage quotas
 
@@ -1302,7 +1389,7 @@ instead of waiting forever:
 | Last event | The run |
 | --- | --- |
 | `run.completed`, `run.failed`, `run.cancelled` | ended |
-| `approval.required`, `clarification.required`, `tool.reconciliation_required` | paused until someone answers |
+| `approval.required`, `clarification.required`, `tool.reconciliation_required`, `credentials.required` (0.2.0b3) | paused until someone answers |
 
 The set is `STREAM_END_EVENT_TYPES` in `algen_agent_runtime.events.contracts`. After answering a
 pause (`POST /v1/runs/{run_id}/approval` or `/clarification`, or `runtime.resume(...)`), follow the
@@ -1311,6 +1398,78 @@ event's `id` line (its `sequence`), or in Python call
 `client.stream_events(run_id, after=last_event.sequence)`. A stream opened on a run that already
 ended or paused replays its events up to the first such event; reconnect from there to read past
 an earlier pause.
+
+### Following a run from a host
+
+Three ways to read a run's events, for different jobs:
+
+| Use | Ends | For |
+| --- | --- | --- |
+| `runtime.events.subscribe(run_id, after=n)` (since 0.1.0a1) | never by itself: the caller stops reading | a process that follows a run across its pauses, such as a worker that updates a record on every event |
+| `AlgenAgentRuntimeClient(runtime).stream(request, credentials=...)` | after the first event in `STREAM_END_EVENT_TYPES` (from 0.2.0b2) | starting a run and showing it until it ends or needs someone |
+| `client.stream_events(run_id, after=n)` (from 0.2.0b2) | the same | following an existing run, such as after answering its pause |
+| `GET /v1/runs/{run_id}/events` (SSE, `Last-Event-ID`) | the same, from 0.2.0b2 | a browser or another service |
+
+Events carry a per-run `sequence`, starting at 1. Keep the last one shown and pass it as `after`
+(or `Last-Event-ID`) when reconnecting or following a resumed run: nothing is repeated or lost.
+Decide whether a run ended or paused with the Runtime's sets, not a list of your own, which falls
+behind when a pausing event is added (`tool.reconciliation_required` was):
+
+```python
+from algen_agent_runtime.events.contracts import (
+    RUN_END_EVENT_TYPES,    # run.completed, run.failed, run.cancelled
+    RUN_PAUSE_EVENT_TYPES,  # approval.required, clarification.required,
+                            # tool.reconciliation_required, credentials.required (0.2.0b3)
+    STREAM_END_EVENT_TYPES, # both
+)
+
+async for event in client.stream_events(run_id, after=last_sequence):
+    last_sequence = event.sequence
+    show(event)
+if event.type in RUN_PAUSE_EVENT_TYPES:
+    ask_the_user(event)  # then runtime.resume(...) and follow again from last_sequence
+```
+
+A chat UI follows the conversation instead (`container.conversations.events.subscribe`, or
+`GET /v1/conversations/{id}/events`): its events name the messages and coalesce the model's
+deltas. See [conversations from a host](conversations.md#following-a-turn).
+### Following a run through its pauses (0.2.0b3)
+
+To keep one subscription for a whole turn (an approval, the decision, then the answer), follow the
+run through its pauses: `client.follow(run_id, after=0)` (or `through_pauses=True` on `stream()`
+and `stream_events()`), or `GET /v1/runs/{run_id}/events?through_pauses=true`. It ends only on
+`run.completed`, `run.failed` or `run.cancelled` (`RUN_END_EVENT_TYPES`). A pause that expires
+ends the run with `run.failed` (reason `approval_expired`, `clarification_expired` or
+`credentials_expired`) once the maintenance sweep expires it, which ends the stream too. A pause
+can last as long as its approval's `expires_seconds` (an hour by default): the SSE stream sends a
+`: keepalive` comment every 15 seconds while nothing happens, so proxies keep it open; set the
+proxy's read timeout above that. In Python nothing times out: wrap the iteration in
+`asyncio.timeout(...)` to bound it.
+
+### Subscribers that fall behind
+
+Each subscriber has a bounded live queue. A subscriber that falls more than its queue behind reads
+on from the bus's history after the last event it received, so it misses nothing on PostgreSQL. An
+in-memory bus keeps the last `history_limit` events of a run (1000); a subscriber further behind
+than that gets `EventStreamOverflowError` (`last_sequence`: the last event it received) instead of
+a silent gap, and the SSE stream ends with a frame
+`id: <last_sequence>`, `event: stream.overflow`, `data: {"last_sequence": ..., "reconnect": true}`.
+Reconnect with `Last-Event-ID` (or `after=last_sequence`) to read on.
+
+### Recovered runs and caller credentials (0.2.0b3)
+
+Credentials passed to `start`, `run` or `resume` are kept in memory only. A run that was acting
+with them (`RunState.caller_credentials`, a flag; the values are never stored) and is recovered
+after a restart does not continue without them: `recover()` pauses it in `awaiting_credentials`
+with a `credentials.required` event (`pause_payload`: `kind: credentials`, `reason: recovered`).
+`runtime.resume(run_id, tenant_id, {}, credentials={...})` continues it where its checkpoint left
+off; resuming without credentials raises `ConflictError` (409 over HTTP, whose routes never
+forward credentials). To continue such runs at once, give the Runtime a provider, an async function from the `RunState` to a credentials mapping or `None`:
+`build_container(settings, recovery_credentials=provider)`, `runtime.recovery_credentials =
+provider`, or `runtime.recover(credentials_provider=provider)`. A provider that returns `None` or
+raises leaves the run paused. The maintenance sweep expires a run waiting for credentials after
+`clarification_timeout_seconds`, like a clarification. Runs started over HTTP never carry
+credentials, so they always continue as before.
 
 ## Steering a running run
 
@@ -1375,7 +1534,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Expired artifacts | on | Calls `purge_expired()` on the configured artifact store, including S3 blobs. |
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
 | Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |
-| Conversations | off | With `conversation_retention_days` set, deletes conversations not updated within that window, together with their messages, conversation events and feedback. A conversation is kept while any of its messages is newer than the window or a turn is in progress or waiting (`accepted`, `streaming`, `awaiting_approval`, `awaiting_input`). Reports `conversations`, `conversation_messages`, `conversation_events` and `conversation_feedback`. |
+| Conversations | off | With `conversation_retention_days` set, deletes conversations not updated within that window, together with their messages, conversation events and feedback. A conversation is kept while any of its messages is newer than the window or a turn is in progress or waiting (`accepted`, `streaming`, `awaiting_approval`, `awaiting_input`, `awaiting_credentials`). Reports `conversations`, `conversation_messages`, `conversation_events` and `conversation_feedback`. |
 | Workflow checkpoints | off | With `workflow_checkpoint_retention_days` set, deletes `completed`, `failed` and `cancelled` workflow runs not updated within that window, except a child run whose parent run is unfinished (the parent's recovery reads it). Reports `workflow_checkpoints`. |
 | Analytical graphs | off | With `analytical_graph_retention_days` set, deletes `completed`, `failed` and `cancelled` graphs not updated within that window. Reports `analytical_graphs`. |
 | Work items | off | With `work_item_retention_days` set, deletes `completed` and `failed` (dead) distributed work items not updated within that window. Their deduplication keys are released: enqueueing the same key later creates a new item. Reports `work_items`. |
@@ -1395,6 +1554,68 @@ supporting indexes; on large existing tables, create them `CONCURRENTLY` before 
 long write lock. Choose
 retention windows that cover your incident-investigation and compliance needs before enabling
 deletion, and back up the database first.
+
+**Deleting a conversation deletes its memory** (since 0.2.0b3). `DELETE /v1/conversations/{id}`
+(and `ConversationService.delete`) also deletes the session memory the conversation's turns wrote
+(the session is the conversation's id), expired rows included, and the session's owner, so the
+tool results in it go with the conversation instead of waiting for `memory_retention_seconds`. The
+built-in memory stores implement `SessionDeletion.delete_session(tenant_id, session_id)`; a custom
+`MemoryStore` without it gets `delete(tenant_id, session_id)`.
+
+### Erasing or exporting one user's data
+
+A data-subject request (erasure or access) covers everything the Runtime keeps about one user of a
+tenant. `container.user_data` (a `UserDataService`) does it across the stores the settings select,
+in memory, Redis or PostgreSQL (since 0.2.0b3):
+
+```python
+report = await container.user_data.erase_user("acme", "alice", dry_run=True)
+report.counts   # {"runs": 12, "run_events": 340, "session_memory": 58, ...}
+report.blocked  # what stops the erasure, if anything
+report = await container.user_data.erase_user("acme", "alice", actor_id="dpo@acme")
+data = await container.user_data.export_user("acme", "alice", include_artifact_data=True)
+```
+
+```bash
+algen-agent-runtime users erase --tenant acme --user alice --dry-run --config agent.yaml
+algen-agent-runtime users erase --tenant acme --user alice --config agent.yaml
+algen-agent-runtime users export --tenant acme --user alice -o alice.json --config agent.yaml
+```
+
+Over HTTP, `GET /v1/admin/users/{user_id}/data` exports (`?include_artifact_data=true` adds each
+file's bytes, base64) and `DELETE /v1/admin/users/{user_id}/data` erases (`?dry_run=true` only
+counts). Both need the `users:admin` scope and act only in the caller's tenant.
+
+| Kind (`counts` key) | What |
+| --- | --- |
+| `runs`, `run_events`, `approvals`, `tool_executions` | The user's runs (state, checkpointed messages and working state) and what references them. |
+| `artifacts` | Files the user's runs wrote, files attached to them or to their workflow runs and conversation messages, and context artifacts. Expired artifacts are left to the artifact purge. |
+| `session_memory`, `session_owners` | The sessions the user owns, the sessions of their runs and conversations (unless another user owns one), expired messages included. |
+| `learned_memory` | Every learned-memory record of the user, for every agent, with its vectors and operation receipts. |
+| `conversations`, `conversation_messages`, `conversation_events`, `conversation_feedback` | The user's conversations and everything in them. |
+| `workflow_runs` | The user's workflow checkpoints. |
+| `mcp_connections` | The user's own MCP OAuth connections (tenant-wide ones are kept). The export lists server names, never tokens. |
+
+- **Work in progress blocks erasure.** While the user has a run or workflow run that has not
+  finished, a conversation turn in progress or waiting, or a tool call whose outcome is unresolved
+  (`started`, `indeterminate`, `compensating`, `compensation_failed`, the records the retention
+  sweep keeps), `erase_user` raises `ConflictError` (409 over HTTP, exit status 1 from the CLI) and
+  deletes nothing. A dry run lists these under `blocked`. Cancel the runs, answer or cancel the
+  turns, [resolve the tool calls](#resolving-indeterminate-tool-calls), then erase.
+- **Order and retries.** Children are deleted before their parents (artifacts, tool executions,
+  approvals and events before the runs they reference; the PostgreSQL run delete removes any child
+  written in between in the same statement), so a failure part-way leaves no dangling reference.
+  Erasure is idempotent: run it again to finish, and a second run reports zero counts.
+- **What is kept.** Audit events (`retained: ["audit_events"]`): they record who did what, and the
+  erasure itself is audited as `user_data.erased` (export as `user_data.exported`) with the actor
+  and the counts; `audit_retention_days` removes them. Storage quotas follow the deletions.
+- **Export** returns one JSON-serialisable dict built in memory, with a key per kind above plus
+  `tenant_id`, `user_id`, `exported_at` and `runtime_version`. For a user with very large
+  histories, run it from the CLI with `-o` (the file is created mode 600).
+- **Custom stores.** Every store given to `UserDataService` must list and delete one user's
+  records; a store that cannot raises `UserDataUnsupportedError` naming the store and the missing
+  method, before anything is read or deleted. Migration `021_user_data_indexes.sql` indexes runs
+  and session owners by user so the lookups do not scan the tenant.
 
 ## Scoped caching
 
@@ -1466,24 +1687,37 @@ A conversation turn is one user message and the assistant message that answers i
   whose models cannot stream produces only the final message. Streamed model calls bypass the
   model-response cache, as streaming runs always have; set `enabled: false` to keep caching turns.
   Delta events carry only model text, never tool arguments or results, and are not audited.
-- **pauses** when its run awaits an approval or a clarification. The assistant message moves to
-  `awaiting_approval` or `awaiting_input` and its `pending` field (also in the event) carries what a
-  UI needs: `turn_id`, `run_id`, `approval_id`, `tool`, `proposed_action`, `side_effect_summary`,
+  With `conversation_streaming.tool_steps: true` (off by default) each tool call also arrives, as
+  `agent.tool.started` (`{call_id, tool, status, side_effect, argument_keys}`) and
+  `agent.tool.completed` (`{call_id, tool, status, side_effect, result_redacted, result_chars,
+  artifact_count}`): names and sizes, never arguments or results. A UI that needs more reads the
+  run's own events, by the run id the turn announces.
+- **announces its run** with `agent.run.started` (`{run_id, agent}`) as soon as the run exists, and
+  stores the id on the assistant message's `run_ids` at once, while the turn still streams.
+- **pauses** when its run awaits an approval or a clarification (its own, or, from 0.2.0b3, a
+  delegated child run's, with `child_run_id`), or its recovered run awaits the caller's
+  credentials. The assistant message moves to `awaiting_approval`, `awaiting_input` or
+  `awaiting_credentials` and its `pending` field (also in the event) carries what a UI needs:
+  `kind`, `turn_id`, `run_id`, `approval_id`, `tool`, `proposed_action`, `side_effect_summary`,
   `risk`, `expires_at`, `options`, `redacted_parameters` (as in the run's `approval.required`
-  event; never raw arguments) and the tool's `parameters_schema`, or the `question` to answer.
+  event; never raw arguments) and the tool's `parameters_schema`, or the `question` to answer with
+  its suggested `choices` (a `core.ask_user` call's).
 - **resumes** into the same assistant message when the user answers:
 
   | Route | Body | Scope |
   | --- | --- | --- |
   | `POST /v1/conversations/{id}/turns/{turn_id}/approval` | `{"decision": "approved" \| "rejected" \| "modified", "modified_parameters": {...}, "reason": "..."}` | `conversations:write` |
   | `POST /v1/conversations/{id}/turns/{turn_id}/input` | `{"text": "..."}` | `conversations:write` |
+  | `POST /v1/conversations/{id}/turns/{turn_id}/credentials` (0.2.0b3) | none: the credentials are the headers `api.credential_headers` lists | `conversations:write` |
 
   `turn_id` is the user message id (`pending.turn_id`). The authenticated user is recorded as
-  `decided_by`. Both return `202` with the assistant message id and `streaming`; another tenant or
+  `decided_by`. All return `202` with the assistant message id and `streaming`; another tenant or
   user gets `404`; an answer of the wrong kind, a second answer, or an answer to a turn that no
   longer waits gets `409`; an answer after the approval expired ends the turn as `expired` and
-  gets `409`. In Python, call `ConversationService.respond(conversation_id, turn_id, tenant_id,
-  user_id, ConversationApprovalDecision(...) | ConversationInputAnswer(...), credentials=...)`.
+  gets `409`; continuing a turn that awaits credentials without any gets `409` and the turn keeps
+  waiting. In Python, call `ConversationService.respond(conversation_id, turn_id, tenant_id,
+  user_id, ConversationApprovalDecision(...) | ConversationInputAnswer(...) |
+  ConversationCredentialsRenewal(), credentials=...)`.
 
 Only one turn per conversation can wait. A new message while one waits is refused with `409`
 naming the waiting turn id; answer it or cancel it with `DELETE .../active-response`, which also
@@ -1495,20 +1729,78 @@ before the message was updated, recovery follows the run to its end instead of r
 the run ended while the turn waited, the turn ends with that outcome. The maintenance sweep does the
 same for turns whose paused run it expires.
 
+A turn that was **streaming** when its process stopped is not lost either. `Container.astart` runs
+`Runtime.recover()` and then `ConversationService.recover()`; keep that order when you call them
+yourself, so the runs are driven again by this process before their turns are followed. For each
+streaming turn, recovery finds its run (the id on the message, or the run store's
+`find_by_turn(tenant, conversation, turn)` when the process stopped between starting the run and
+storing its id) and never starts the work again:
+
+| The run | The turn |
+| --- | --- |
+| still works | followed to its end, into the same message |
+| completed meanwhile | `completed` with its answer |
+| paused (approval, clarification, reconciliation) | `awaiting_approval` or `awaiting_input` with its `pending`; `expired` if the approval expired meanwhile |
+| paused for the caller's credentials (`Runtime.recover` paused it: it acted with credentials, which are never stored) | `awaiting_credentials` with `pending.kind: credentials`; continue it with the user's credentials (above) |
+| failed, timed out or cancelled | `failed` with the run's reason (below), or `cancelled` |
+| none, or gone | `failed`, "interrupted during a service restart", `metadata.error_type: InterruptedResponse`, retryable |
+
+A run that another process drives is polled until it ends; one that nothing drives any more is given
+up 30 seconds after its deadline, as interrupted. Settling is a conditional update of the message, so
+running `recover()` again, or in two processes at once, settles each turn once. Recovery is still
+single-node (one process runs it); the one-active-turn-per-conversation check is per process too, and
+leases for several replicas are planned for 0.3. `ConversationService.follow(conversation_id,
+turn_id, tenant_id, user_id)` re-attaches to one streaming turn the same way (owner only;
+idempotent; a turn with no run yet is returned as it is).
+
+On shutdown, `ConversationService.shutdown()` lets turns finish for its grace period and then
+**detaches** the rest from their runs instead of cancelling them: the message stays `streaming` with
+its run id, `Runtime.shutdown()` finishes or saves the run, and the next start's `recover()` completes
+the turn. A user's cancel (`DELETE .../active-response`) still cancels the turn and its run.
+
+A turn whose run fails keeps why: `metadata` has `error_type: RunFailed`, the run's `reason` (the
+`run.failed` event's, such as `budget_refused`, `limit_exceeded` or `timeout`), `run_status`,
+`retryable` and the run's token `usage`, plus, when the run reports them (0.2.0b3), `run_error_type`
+(`RunResult.error_type`, such as `BudgetExceededError`) and `limit_reached`. `error_type` stays
+`RunFailed` for every failed turn, so a host keeps one check. The user is shown a fixed text for known reasons
+(`ConversationPresentation.failure_messages`, defaulting to `RUN_FAILURE_MESSAGES`; for
+`budget_refused`, that the organization reached its usage limit) and otherwise a generic one, never
+the run's error text (the developer error audience shows the redacted error).
+
+Steer a working turn with `POST /v1/conversations/{id}/turns/{turn_id}/steer` (`{"text": "..."}`,
+`conversations:write`, owner only) or `ConversationService.steer(conversation_id, turn_id,
+tenant_id, user_id, text)`: the text reaches the turn's run (`Runtime.steer`) at its next step. The
+conversation gets `assistant.message.steered` (`{turn_id, steer_id, chars}`) and then
+`agent.steer.delivered` or `agent.steer.undelivered` (`{count, messages: [{id, chars}]}`), never the
+text. A turn with no run, or that has ended, gets `409`.
+
+A conversation created with `allowed_agents` lets each turn choose its agent: `submit(...,
+agent="...")` or the message body's `agent`. Any other agent is refused (`ValueError`, `422` over
+HTTP); the assistant message records the chosen agent as `agent` (unset for the conversation's own).
+
+`submit(..., run_input="...")` gives the turn's run that text instead of the message's (a date
+prefix, attachment references); the stored message and its events keep what the user wrote.
+`messages(..., user_id=...)` applies the owner check (`NotFoundError` for another user).
+
 `submit(..., credentials=...)` and `respond(..., credentials=...)` pass the caller's credentials to
 the turn's run for its tools (see [tool authoring](tool-authoring.md#credentials-of-the-caller)).
 They are held in memory only, never stored, emitted, audited or logged; a turn that pauses drops
-them, so pass them again when answering. The HTTP routes never forward request headers as
-credentials. A custom handler takes them by accepting a `credentials` keyword argument in `handle`;
+them, so pass them again when answering. Over HTTP, `api.credential_headers` (empty by default)
+names request headers whose values the run routes (`POST /v1/runs`, `.../clarification`,
+`.../approval`) and the conversation routes (messages, turn approval, input and credentials) forward as
+credentials, keyed by the lower-case header name, for example `credential_headers:
+[authorization]`. Nothing else is forwarded, and a request without those headers forwards none.
+List only headers your tools need: they reach every tool of the run. A custom handler takes them by accepting a `credentials` keyword argument in `handle`;
 passing credentials to a handler that does not is a `ConfigurationError`.
 
 | Message status | Meaning | Event |
 | --- | --- | --- |
-| `accepted`, `streaming` | queued, running (also after an answer) | `assistant.message.started`, `assistant.message.delta`, `assistant.message.resumed` |
+| `accepted`, `streaming` | queued, running (also after an answer) | `assistant.message.started`, `agent.run.started`, `assistant.message.delta`, `assistant.message.resumed` |
 | `awaiting_approval` | the run waits for an approval decision | `assistant.message.awaiting_approval` |
 | `awaiting_input` | the run asked the user a question | `assistant.message.awaiting_input` |
+| `awaiting_credentials` | the run was recovered after a restart and needs the caller's credentials again (0.2.0b3) | `assistant.message.awaiting_credentials` |
 | `completed` | answered | `assistant.message.completed` |
-| `failed` | failed, or the action was rejected (`metadata.reason: approval_rejected`) | `assistant.message.failed` |
+| `failed` | failed (`metadata.reason`), interrupted (`metadata.error_type: InterruptedResponse`), or the action was rejected (`metadata.reason: approval_rejected`) | `assistant.message.failed` |
 | `cancelled` | cancelled by the user or with its run | `assistant.message.cancelled` |
 | `expired` | the approval or answer did not come in time | `assistant.message.expired` |
 
@@ -1520,6 +1812,8 @@ for input. The awaiting, completed, failed and expired events carry the assistan
 
 `algen_agent_runtime_examples/quickstart_conversation` prints these events for a streamed turn and for one that pauses
 for approval and resumes, driven from Python with `ConversationService.submit` and `respond`.
+A host that drives conversations from Python (ownership checks, restarts, credentials, custom
+handlers) reads [conversations from a host](conversations.md).
 
 Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
 

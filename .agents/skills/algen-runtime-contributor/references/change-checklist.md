@@ -17,6 +17,21 @@ Use the applicable sections; do not force irrelevant work into a small change.
 - Does every new or changed tool pass `assert_tool_contract`, and does a change to a preset in
   `tools/authoring.py` keep the rule that writes are keyed and single-attempt?
 - If compatibility changes, is there an upgrade note, migration path, and changelog entry?
+- Could a host application that embeds the Runtime already have built this capability itself:
+  conversation or approval state, event handling, recovery, steering, model calls, metering,
+  redaction, guards, storage? Then add a row to the
+  table in `.agents/skills/algen-runtime-host/references/host-capabilities.md` (the API, the
+  release that adds it, and when a host should keep its own), and an entry under
+  `### You can now remove` in the `[Unreleased]` section of `CHANGELOG.md`. Check the known hosts
+  (Algen Studio; fly91-hrms; the Traccia assistant service, `traccia-assistant-service`, whose
+  assistant is Traccia's "azai", not Algen Studio's azAI) for their own version, and tell the
+  maintainer which ones to open an issue in, with the code to delete; never open issues or pull
+  requests in another repository yourself.
+- Does the change alter how to build on the Runtime (a public API, configuration field, extra,
+  example name, removal or behaviour)? Update the affected skills in `.agents/skills/` in the same
+  change and run `python scripts/sync_docs_skills.py`. A new user-facing skill is added to
+  `SKILLS` (and `SINCE`) there, to `PACKAGED_SKILLS` in `algen_agent_runtime/_coding_skills.py`
+  and to the wheel's `force-include` in `pyproject.toml`.
 - Can the previous alpha still read what this version stores during a rolling upgrade? New fields
   stay out of stored run state, checkpoints and manifest fingerprints while empty or unset.
 - For durable workflows, are tenant isolation, optimistic version conflicts, manifest fingerprints,

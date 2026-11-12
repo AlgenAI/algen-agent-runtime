@@ -11,6 +11,7 @@ from algen_agent_runtime.memory.contracts import (
     MemoryMutation,
     MemoryReceipt,
     MemoryScope,
+    UserMemoryRecord,
 )
 from algen_agent_runtime.persistence.quotas import (
     ResourceUsage,
@@ -209,6 +210,29 @@ class InMemoryLearnedMemoryStore:
                 if record is None or record.revision != revision or record.content is None:
                     del self._vectors[key]
             return len(keys)
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> tuple[UserMemoryRecord, ...]:
+        """Every record of ``user_id`` in the tenant, for every agent, deletions included."""
+        async with self._lock:
+            return tuple(
+                UserMemoryRecord(agent_id=key[2], record=record.model_copy(deep=True))
+                for key, record in sorted(self._records.items())
+                if key[:2] == (tenant_id, user_id)
+            )
+
+    async def forget_user(self, tenant_id: str, user_id: str) -> int:
+        """Delete every record, vector and operation receipt of ``user_id`` in the tenant;
+        return how many records went."""
+        async with self._lock:
+            records = [key for key in self._records if key[:2] == (tenant_id, user_id)]
+            for key in records:
+                del self._records[key]
+                self._vectors.pop(key, None)
+            for key in [key for key in self._operations if key[:2] == (tenant_id, user_id)]:
+                del self._operations[key]
+            for key in [key for key in self._vectors if key[:2] == (tenant_id, user_id)]:
+                del self._vectors[key]
+            return len(records)
 
 
 _VECTORS = "algen_agent_runtime_learned_memory_vectors"
@@ -448,3 +472,31 @@ class PostgresLearnedMemoryStore:
             limit,
         )
         return len(rows)
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> tuple[UserMemoryRecord, ...]:
+        """Every record of ``user_id`` in the tenant, for every agent, deletions included."""
+        rows = await self._database.fetch(
+            "SELECT agent_id, record FROM algen_agent_runtime_learned_memory "
+            "WHERE tenant_id=$1 AND user_id=$2 ORDER BY agent_id, key",
+            tenant_id,
+            user_id,
+        )
+        return tuple(
+            UserMemoryRecord(agent_id=str(row["agent_id"]), record=self._decode(row["record"]))
+            for row in rows
+        )
+
+    async def forget_user(self, tenant_id: str, user_id: str) -> int:
+        """Delete every record, vector (by cascade) and operation receipt of ``user_id`` in the
+        tenant, in one statement; return how many records went."""
+        row = await self._database.fetchrow(
+            "WITH deleted_operations AS (DELETE FROM algen_agent_runtime_memory_operations "
+            "WHERE tenant_id=$1 AND user_id=$2 RETURNING 1), "
+            "deleted AS (DELETE FROM algen_agent_runtime_learned_memory "
+            "WHERE tenant_id=$1 AND user_id=$2 RETURNING 1) "
+            "SELECT (SELECT count(*) FROM deleted) AS records, "
+            "(SELECT count(*) FROM deleted_operations) AS operations",
+            tenant_id,
+            user_id,
+        )
+        return int(row["records"])

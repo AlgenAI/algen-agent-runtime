@@ -94,6 +94,11 @@ return redis.call('DEL', KEYS[1])
 """
 
 
+def _glob_escape(value: str) -> str:
+    """``value`` matched literally in a Redis SCAN MATCH pattern."""
+    return "".join("\\" + character if character in "*?[]\\" else character for character in value)
+
+
 def _text(value: Any) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
@@ -106,6 +111,10 @@ class RedisRunStore:
     def _key(self, tenant_id: str, run_id: str) -> str:
         return f"{self._prefix}:tenant:{tenant_id}:run:{run_id}"
 
+    def _turn_key(self, tenant_id: str, conversation_id: str, turn_id: str) -> str:
+        # Not matched by list_active's ``*:run:*`` pattern.
+        return f"{self._prefix}:tenant:{tenant_id}:turn-run:{conversation_id}:{turn_id}"
+
     async def create(self, state: RunState) -> None:
         async with _available():
             created = await self._redis.set(
@@ -113,6 +122,40 @@ class RedisRunStore:
             )
             if not created:
                 raise ConflictError(f"run {state.id!r} already exists")
+            request = state.request
+            if request.conversation_id and request.turn_id:
+                # The turn's latest run, so a restarted conversation service finds it.
+                await self._redis.set(
+                    self._turn_key(request.tenant_id, request.conversation_id, request.turn_id),
+                    state.id,
+                )
+
+    async def find_by_turn(
+        self, tenant_id: str, conversation_id: str, turn_id: str
+    ) -> RunState | None:
+        """The latest run started for a conversation turn, ended or not, or None.
+
+        Runs created before this index existed are found by scanning the tenant's runs.
+        """
+        async with _available():
+            run_id = await self._redis.get(self._turn_key(tenant_id, conversation_id, turn_id))
+            if run_id:
+                value = await self._redis.get(self._key(tenant_id, _text(run_id)))
+                return RunState.model_validate_json(value) if value else None
+            latest: RunState | None = None
+            pattern = f"{self._prefix}:tenant:{tenant_id}:run:*"
+            async for key in self._redis.scan_iter(match=pattern, count=1000):
+                value = await self._redis.get(key)
+                if not value:
+                    continue
+                state = RunState.model_validate_json(value)
+                if (
+                    state.request.conversation_id == conversation_id
+                    and state.request.turn_id == turn_id
+                    and (latest is None or state.updated_at > latest.updated_at)
+                ):
+                    latest = state
+            return latest
 
     async def get(self, run_id: str, tenant_id: str) -> RunState | None:
         async with _available():
@@ -158,6 +201,28 @@ class RedisRunStore:
                             break
             states.sort(key=lambda state: state.updated_at)
             return tuple(states)
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> Sequence[RunState]:
+        """Every run of ``user_id`` in the tenant, oldest first. Scans the tenant's run keys."""
+        async with _available():
+            states: list[RunState] = []
+            pattern = f"{_glob_escape(self._prefix)}:tenant:{_glob_escape(tenant_id)}:run:*"
+            async for key in self._redis.scan_iter(match=pattern, count=1000):
+                value = await self._redis.get(key)
+                if value:
+                    state = RunState.model_validate_json(value)
+                    if state.request.tenant_id == tenant_id and state.request.user_id == user_id:
+                        states.append(state)
+            states.sort(key=lambda state: state.started_at)
+            return tuple(states)
+
+    async def delete_many(self, tenant_id: str, run_ids: Sequence[str]) -> dict[str, int]:
+        """Delete the tenant's runs among ``run_ids``; return ``{"runs": count}``."""
+        keys = [self._key(tenant_id, run_id) for run_id in dict.fromkeys(run_ids)]
+        if not keys:
+            return {"runs": 0}
+        async with _available():
+            return {"runs": int(await self._redis.delete(*keys))}
 
 
 class RedisMemoryStore:
@@ -263,3 +328,30 @@ class RedisMemoryStore:
                 await self._redis.delete(key)
                 return
             await self._redis.eval(_DELETE_MEMORY, 4, key, *self._usage_keys(tenant_id))
+
+    async def delete_session(self, tenant_id: str, session_id: str) -> int:
+        """Delete the session's memory and its owner; return how many messages went."""
+        async with _available():
+            count = int(await self._redis.llen(self._key(tenant_id, session_id)))
+        await self.delete(tenant_id, session_id)
+        async with _available():
+            await self._redis.delete(self._owner_key(tenant_id, session_id))
+        return count
+
+    async def session_owner(self, tenant_id: str, session_id: str) -> str | None:
+        async with _available():
+            owner = await self._redis.get(self._owner_key(tenant_id, session_id))
+        return None if owner is None else _text(owner)
+
+    async def sessions_for_user(self, tenant_id: str, user_id: str) -> Sequence[str]:
+        """The sessions ``user_id`` owns in the tenant. Scans the tenant's owner keys."""
+        head = f"{self._prefix}:tenant:{tenant_id}:session:"
+        pattern = f"{_glob_escape(head)}*:owner"
+        sessions: list[str] = []
+        async with _available():
+            async for key in self._redis.scan_iter(match=pattern, count=1000):
+                name = _text(key)
+                owner = await self._redis.get(key)
+                if owner is not None and _text(owner) == user_id:
+                    sessions.append(name[len(head) : -len(":owner")])
+        return tuple(sorted(sessions))

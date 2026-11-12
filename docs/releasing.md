@@ -31,6 +31,9 @@ Algen Agent Runtime supports three reproducible distribution channels:
 
 - The target version is set in `src/algen_agent_runtime/__init__.py`.
 - `CHANGELOG.md` contains the release date, changes, compatibility notes, and known limitations.
+  A release that lets hosts delete code of their own (a capability they may already have built)
+  says so under `### You can now remove`, after the upgrade notes; the format is described at the
+  top of `CHANGELOG.md`.
   The Auto Release workflow takes the release notes from this file only; the `0.1` history is in
   `CHANGELOG-0.1.md`, so a `0.1` backport release puts its entry in `CHANGELOG.md`.
 - The protected default branch is green on all required quality and security checks.

@@ -315,6 +315,32 @@ class InMemoryApprovalService:
         ]
         return tuple(ordered[offset : offset + limit])
 
+    async def list_for_runs(
+        self, tenant_id: str, run_ids: Sequence[str]
+    ) -> Sequence[ApprovalRequest]:
+        """Every approval request of these runs in the tenant, oldest first."""
+        wanted = set(run_ids)
+        now = utc_now()
+        async with self._lock:
+            return tuple(
+                item.effective(now).model_copy(deep=True)
+                for item in self._items.values()
+                if item.tenant_id == tenant_id and item.run_id in wanted
+            )
+
+    async def forget_runs(self, tenant_id: str, run_ids: Sequence[str]) -> int:
+        """Delete the approval requests of these runs; return how many went."""
+        wanted = set(run_ids)
+        async with self._lock:
+            doomed = [
+                key
+                for key, item in self._items.items()
+                if item.tenant_id == tenant_id and item.run_id in wanted
+            ]
+            for key in doomed:
+                del self._items[key]
+            return len(doomed)
+
 
 class PostgresApprovalService:
     def __init__(self, database: Any) -> None:
@@ -464,6 +490,33 @@ class PostgresApprovalService:
             *arguments,
         )
         return tuple(_from_row(row).effective(now) for row in rows)
+
+    async def list_for_runs(
+        self, tenant_id: str, run_ids: Sequence[str]
+    ) -> Sequence[ApprovalRequest]:
+        """Every approval request of these runs in the tenant, oldest first."""
+        if not run_ids:
+            return ()
+        now = utc_now()
+        rows = await self._database.fetch(
+            f"SELECT {_SELECTED} FROM algen_agent_runtime_approvals "
+            "WHERE tenant_id=$1 AND run_id = ANY($2::text[]) ORDER BY created_at, id",
+            tenant_id,
+            list(run_ids),
+        )
+        return tuple(_from_row(row).effective(now) for row in rows)
+
+    async def forget_runs(self, tenant_id: str, run_ids: Sequence[str]) -> int:
+        """Delete the approval requests of these runs; return how many went."""
+        if not run_ids:
+            return 0
+        result = await self._database.execute(
+            "DELETE FROM algen_agent_runtime_approvals "
+            "WHERE tenant_id=$1 AND run_id = ANY($2::text[])",
+            tenant_id,
+            list(run_ids),
+        )
+        return int(str(result).rsplit(" ", 1)[-1])
 
     async def _save(self, item: ApprovalRequest, expected: ApprovalStatus) -> bool:
         result = await self._database.execute(

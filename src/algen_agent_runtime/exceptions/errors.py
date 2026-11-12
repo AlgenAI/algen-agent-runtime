@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING as _TYPE_CHECKING
+
 from algen_agent_runtime.types.contracts import ErrorKind
+
+if _TYPE_CHECKING:
+    from algen_agent_runtime.types.contracts import RunResult
 
 
 class AlgenAgentRuntimeError(Exception):
@@ -68,6 +73,11 @@ class ApprovalMismatchError(PolicyDeniedError):
 
 class CapabilityError(AlgenAgentRuntimeError):
     error_kind = ErrorKind.INVALID_REQUEST
+
+
+class UserDataUnsupportedError(CapabilityError):
+    """A configured store cannot list or delete one user's data, so ``UserDataService`` cannot
+    export or erase it. Raised before anything is read or deleted; the message names the store."""
 
 
 class ProviderError(AlgenAgentRuntimeError):
@@ -223,6 +233,24 @@ class RunPaused(AlgenAgentRuntimeError):
     pass
 
 
+class EventStreamOverflowError(AlgenAgentRuntimeError):
+    """A run event subscription fell too far behind to be served from the bus's history.
+
+    ``last_sequence`` is the sequence of the last event the subscriber received: subscribe again
+    with ``after=last_sequence`` (over HTTP, reconnect with ``Last-Event-ID``) to read on from a
+    durable history. A subscription never skips an event silently: it delivers every event in
+    order or ends with this error.
+    """
+
+    def __init__(self, run_id: str, last_sequence: int) -> None:
+        super().__init__(
+            f"event subscription to run {run_id!r} fell behind after event {last_sequence}; "
+            f"subscribe again with after={last_sequence}"
+        )
+        self.run_id = run_id
+        self.last_sequence = last_sequence
+
+
 class MCPNotConnectedError(ToolExecutionError):
     """An OAuth MCP server has no usable connection for this tenant (or user).
 
@@ -251,3 +279,45 @@ class MCPNotConnectedError(ToolExecutionError):
             "token_scope": self.token_scope,
             "start_path": self.start_path,
         }
+
+
+def runtime_error_type(exc: BaseException) -> str | None:
+    """The class name ``RunResult.error_type`` records for ``exc``.
+
+    It is the nearest class defined in this module (a host's subclass of
+    ``ToolExecutionError`` is recorded as ``ToolExecutionError``), or ``None`` for an error that
+    is not a runtime error.
+    """
+    for cls in type(exc).__mro__:
+        if cls.__module__ == __name__ and issubclass(cls, AlgenAgentRuntimeError):
+            return cls.__name__
+    return None
+
+
+def run_failure_error(result: RunResult, default_message: str | None = None) -> Exception:
+    """The error to raise for a run that did not complete, keeping its type.
+
+    A failed run raises the runtime error that ended it (``RunResult.error_type``): a
+    ``VerificationError`` when its answer failed verification, a ``BudgetExceededError`` (with
+    ``limit``) when it reached a limit, and so on. A run that timed out raises ``TimeoutError``;
+    any other ends in ``RuntimeError``. The message is the run's ``error``, else
+    ``default_message``.
+    """
+    status = getattr(result.status, "value", result.status)
+    message = result.error or default_message or f"run {result.run_id} ended {status}"
+    if status == "timed_out":
+        return TimeoutError(message)
+    found = globals().get(getattr(result, "error_type", None) or "")
+    if isinstance(found, type) and issubclass(found, AlgenAgentRuntimeError):
+        # The nearest class that takes just a message: some carry structured arguments.
+        for cls in found.__mro__:
+            if not issubclass(cls, AlgenAgentRuntimeError):
+                break
+            try:
+                error = cls(message)
+            except TypeError:
+                continue
+            if isinstance(error, BudgetExceededError):
+                error.limit = getattr(result, "limit_reached", None)
+            return error
+    return RuntimeError(message)

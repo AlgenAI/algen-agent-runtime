@@ -62,6 +62,36 @@ fallback_models:
   - {name: fast, provider: groq, model: openai/gpt-oss-120b, routing_preference: ordered}
 ```
 
+## One-off model calls
+
+A host that needs a model outside an agent run (a conversation title, a summary for a list, a
+classification) calls the router the Runtime already built, not a provider:
+
+```python
+from algen_agent_runtime.models.metering import MeterCall
+from algen_agent_runtime.types.contracts import Message, ModelRequest, Role
+
+agent = container.agents.get("support-assistant")  # reuse an agent's models, or build profiles
+response = await container.runtime.router.generate(
+    ModelRequest(messages=(Message.text(Role.USER, prompt),), max_output_tokens=200),
+    (agent.default_model, *agent.fallback_models),
+    meter_call=MeterCall(tenant_id=tenant_id, user_id=user_id),  # since 0.1.0a15
+)
+title = response.message.text_content
+```
+
+`ModelRouter.generate` (and `stream`) gives the call what a run's model calls get: the next
+candidate on a provider failure (above), circuit breakers and per-provider rate limits, the
+profiles' context budgets, `usage.estimated_cost_usd`, and the deployment's `UsageMeter`, which
+reserves and settles the call with `purpose="other"` and the tenant and user from `meter_call`
+([metering](agent-tooling.md#metering-model-calls)). Calling `provider.generate(...)` directly skips
+all of that, so the meter never sees the tokens. Pass the real user in `meter_call`, or the call is
+charged to no one.
+
+It is a model call, not a run: no policies, verification, events, audit records or retries (a
+run's `retry_policy` retries its own steps). Retry in the host if the call matters, and run an
+agent instead when the text comes from a user and needs the guardrails.
+
 ## Provider instances vs. adapter types
 
 Configuration keys under `providers:` in `agent.yaml` represent **provider instance IDs** (deployment identities), while the `type:` field specifies the underlying adapter implementation.

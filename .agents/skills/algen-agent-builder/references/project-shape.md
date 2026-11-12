@@ -123,10 +123,24 @@ agents:
       enabled: true                 # warn when only room to answer is left
     context_policy:
       shorten_older_tool_results: true   # keep old results shortened, not dropped
+      max_context_tokens: 80000          # 0.2.0b3: this agent's context budget (default 16,000)
+    budget:
+      on_limit: summarize           # at a limit, answer once without tools (RunResult.partial)
 ```
 
 - Arguments are always checked against the tool's input schema before the call runs or is put to
   the user, so keep schemas strict rather than validating again in the handler.
+- A tool result too large for the context no longer fails the run: it is offloaded (when the agent
+  can call `core.context_read`) or cut and marked `truncated`
+  (`context_policy.oversized_tool_result`). Page large results in the tool when it can return a
+  better page than a cut; do not shorten them in the host only to avoid the failure.
+- Set `context_policy.max_context_tokens` (1,024 to 2,000,000; from 0.2.0b3) for a larger or
+  smaller context budget than the builder's (16,000 by default); shortening and the oversized cut
+  work against it, and the model profile's `context_window_tokens` still caps what is sent. Do not
+  register a `DefaultContextBuilder` of your own only to change the budget.
+- With `budget.on_limit: summarize`, show an answer whose `RunResult.partial` is true as partial.
+  A failed run's `RunResult.error_type` (`VerificationError`, `BudgetExceededError`, ...) and
+  `limit_reached` say why; do not parse `error`.
 - Give a write tool a `precheck` (`@tool(write(approval=True), precheck=...)`) when it can say why a
   change would fail before anyone is asked to approve it.
 - Mark reads of state that changes on its own (a job status, a clock) `volatile=True` (or
@@ -137,7 +151,9 @@ agents:
   default, allows none). The deployment registers the tool with `runtime.subagent.enabled: true`
   (`max_depth`, default 3, bounds a chain); it is off by default. A delegate's
   `tool_permissions` must be within the caller's, and the Runtime counts the nesting depth itself
-  (docs/agent-tooling.md, "Delegating to another agent").
+  (docs/agent-tooling.md, "Delegating to another agent"). A child's approval or question pauses
+  the parent with the child's payload and `child_run_id`; decide it on the parent as usual and
+  both continue.
 - A `session_id` belongs to the user who first used it: a run naming another user's session is
   refused as not found. Do not share one session id between users; give each user their own.
 - Over HTTP, only a run's own user decides its approval, cancels, steers or answers it (a
@@ -149,9 +165,17 @@ agents:
   check `status` first. A verification failure keeps the rejected answer in `rejected_output` for
   review, never for the user.
 - `AlgenAgentRuntimeClient.stream()` and `GET /v1/runs/{id}/events` end when the run pauses
-  (`approval.required`, `clarification.required`, `tool.reconciliation_required`). After the
-  decision, follow the resumed run with `client.stream_events(run_id, after=...)` or reconnect
-  with `Last-Event-ID`.
+  (`approval.required`, `clarification.required`, `tool.reconciliation_required`,
+  `credentials.required`). After the decision, follow the resumed run with
+  `client.stream_events(run_id, after=...)` or reconnect with `Last-Event-ID`. To keep one
+  subscription for the whole turn, use `client.follow(run_id)` or `?through_pauses=true`: it ends
+  only when the run ends (an expired pause ends it with `run.failed`). Bound a Python follow with
+  `asyncio.timeout`; reconnect from `EventStreamOverflowError.last_sequence` (SSE: a
+  `stream.overflow` frame) after a subscriber fell behind.
+- An agent that must ask the user mid-task enables `core.ask_user` (with `user.ask` in
+  `tool_permissions`) instead of a custom tool or planner: the run pauses with a
+  `clarification.required` payload of `kind: ask_user` (`question`, `choices`) and the usual
+  clarification answer continues it.
 - The `pii` guardrail keeps a tool field whose schema declares `"format": "identifier"` (or
   `"x-pii": false`): use it for order, tracking and chat ids, not for free text. An agent that must
   see a kind unmasked turns it off with `guardrail_policy.pii.exempt_entities` (for example
@@ -161,10 +185,15 @@ agents:
 - A tool that acts as the signed-in user reads `context.credentials` (for example
   `context.credentials["authorization"]`). The host passes them with
   `runtime.run(request, credentials=...)` (or `AlgenAgentRuntimeClient.run`/`stream` with the same
-  keyword) and again on every `resume`; they are kept in memory only.
+  keyword) and again on every `resume`; they are kept in memory only. Over HTTP, the run and
+  conversation routes forward only the request headers listed in `api.credential_headers` (none
+  by default), keyed by the lower-case header name: list just what the tools need.
   Never put credentials in `RunRequest.metadata`, tool arguments or the agent's instructions:
-  metadata is persisted. A run resumed without credentials, or recovered after a restart, gives
-  tools an empty mapping, so return an "authentication required" tool error then.
+  metadata is persisted. A run resumed without credentials gives tools an empty mapping, so return
+  an "authentication required" tool error then. A run that had credentials and is recovered after
+  a restart pauses in `awaiting_credentials` (`credentials.required`) until the host resumes it
+  with `resume(..., credentials=...)`, or continues with what `recovery_credentials` (a
+  `build_container` argument) supplies.
 - `requires_approval` is enforced when the tool runs, not only when the model plans the call. A
   workflow `tool:` step that calls an approval-gated tool needs an `approval` node before it, and
   runs only with the exact arguments that approval showed (see references/workflows.md).

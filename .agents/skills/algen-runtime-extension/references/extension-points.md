@@ -106,6 +106,22 @@ to its first user, renews the claim for that user, and lets the claim last at le
 session's messages. The Runtime then refuses a run that names another user's session. A store
 without it is trusted to isolate users itself (for example one bound to a single user's thread).
 
+Since 0.2.0b3 a memory store should also implement `SessionDeletion.delete_session(tenant_id,
+session_id) -> int` (messages, expired ones included, and the owner; returns the message count):
+deleting a conversation calls it for the conversation's session, and falls back to `delete`
+without it. `UserDataService` (export and erasure of one user, `container.user_data`) needs a few
+more methods on every store it is given, and raises `UserDataUnsupportedError` naming the store and
+the method before reading or deleting anything when one is missing: run stores `list_for_user` and
+`delete_many`; memory stores `sessions_for_user`, `session_owner` and `delete_session`; event,
+approval and tool execution stores `forget_runs` (and `list_for_runs` for the last two); learned
+memory and MCP token stores `forget_user` (plus `list_for_user` / `servers_for_user`); workflow
+checkpoint stores `list_for_user` and `delete_many`. See `persistence/user_data.py` and the
+built-in stores for the exact signatures.
+
+A new PostgreSQL migration also regenerates the schema catalog `check_schema` compares against:
+`POSTGRES_DSN=... python scripts/schema_catalog.py --update` (tests/unit/test_schema_migrations.py
+fails until it names the new migration).
+
 Workflow checkpoint stores additionally require detached reads, tenant isolation, compare-and-set
 versions, manifest fingerprints, recoverable-state filtering, and corruption failure behavior. Run
 the shared in-memory/PostgreSQL conformance suite when adding another backend. Parent/child workflow
@@ -132,6 +148,12 @@ usage)` and `release(ticket)`; charge the account named by `call` (tenant, or an
 `RunRequest.metadata`), keep `call` in the ticket when settling depends on the model, and refuse
 only by raising `MeterRefusedError`. A meter whose `reserve` has no `call` parameter is refused with
 `ConfigurationError` when the router is built.
+
+Since 0.2.0b3 a streamed call that stops after output reached the caller (Stop, a closed client, a
+provider error mid-stream) is settled with an estimate, not released: the request's input estimate
+and about four characters per output token streamed. Declare `settle(self, ticket, usage, *,
+estimated: bool = False)` to tell estimates apart; a meter without the keyword gets a plain
+`settle`. Only a call that delivered nothing is released.
 
 ## MCP OAuth token storage
 

@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import inspect
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import datetime
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import structlog
@@ -14,6 +24,7 @@ from algen_agent_runtime.conversations.contracts import (
     AWAITING_MESSAGE_STATUSES,
     Conversation,
     ConversationApprovalDecision,
+    ConversationCredentialsRenewal,
     ConversationEvent,
     ConversationEventPublisher,
     ConversationHandler,
@@ -22,6 +33,7 @@ from algen_agent_runtime.conversations.contracts import (
     ConversationPendingAction,
     ConversationStatus,
     ConversationStore,
+    ConversationTurnInterruptedError,
     ConversationTurnResponse,
     ConversationTurnResult,
     MessageStatus,
@@ -37,7 +49,14 @@ from algen_agent_runtime.conversations.feedback import (
 )
 from algen_agent_runtime.conversations.followups import FollowupSuggestionProvider
 from algen_agent_runtime.conversations.presentation import ConversationPresentation
-from algen_agent_runtime.conversations.streaming import DELTA_EVENT, DeltaCoalescer, follow_run
+from algen_agent_runtime.conversations.streaming import (
+    DELTA_EVENT,
+    DETACH_SIGNAL,
+    RUN_STARTED_EVENT,
+    DeltaCoalescer,
+    detaching,
+    follow_run,
+)
 from algen_agent_runtime.events.contracts import AuditEvent
 from algen_agent_runtime.exceptions.errors import (
     ConfigurationError,
@@ -60,10 +79,11 @@ from algen_agent_runtime.types.contracts import (
     RunResult,
     RunState,
     RunStatus,
+    SteeringMessage,
     TextBlock,
     utc_now,
 )
-from algen_agent_runtime.types.interfaces import Runtime
+from algen_agent_runtime.types.interfaces import Runtime, SessionDeletion
 
 
 class ConversationHandlerRegistry:
@@ -92,6 +112,14 @@ class RuntimeConversationHandler:
     text deltas reach the conversation as ``assistant.message.delta`` events, coalesced to at most
     one per ``delta_interval_seconds`` (or per ``delta_max_chars`` characters). Otherwise the turn
     produces only its final message, as before.
+
+    With ``tool_steps``, the run's tool calls also reach the conversation, as
+    ``agent.tool.started`` and ``agent.tool.completed`` events carrying the tool's name, status,
+    side effect, argument names and result size: never arguments or results.
+
+    Each turn announces its run with an ``agent.run.started`` event (``{"run_id": ...}``), which
+    the service stores on the assistant message, so a restarted service follows the run with
+    :meth:`follow_turn` instead of failing the turn.
     """
 
     name = "runtime"
@@ -104,8 +132,10 @@ class RuntimeConversationHandler:
         stream: bool = True,
         delta_interval_seconds: float = 0.05,
         delta_max_chars: int = 2_048,
+        tool_steps: bool = False,
     ) -> None:
         self._runtime = runtime
+        self._tool_steps = tool_steps
         self._presentation = presentation or ConversationPresentation()
         self._stream = stream
         self._delta_interval = delta_interval_seconds
@@ -113,6 +143,16 @@ class RuntimeConversationHandler:
         # The run's last event sequence just before each resume, so ``follow`` forwards every
         # delta of the resumed drive even if it starts before ``follow`` subscribes.
         self._resume_cursors: dict[str, int] = {}
+
+    async def forget_conversation(self, conversation: Conversation) -> None:
+        """Delete the memory session the conversation's runs used (its id), owner included."""
+        memory = getattr(self._runtime, "memory", None)
+        if memory is None:
+            return
+        if isinstance(memory, SessionDeletion):
+            await memory.delete_session(conversation.tenant_id, conversation.id)
+        else:
+            await memory.delete(conversation.tenant_id, conversation.id)
 
     async def handle(
         self,
@@ -122,7 +162,13 @@ class RuntimeConversationHandler:
         emit: Any,
         *,
         credentials: Mapping[str, str] | None = None,
+        run_input: str | None = None,
     ) -> ConversationTurnResult:
+        """Answer the turn with one run of the conversation's agent.
+
+        ``run_input`` is the text the run gets instead of the message's text (see
+        :meth:`ConversationService.submit`).
+        """
         await emit(
             "workflow.progress",
             self._presentation.progress(
@@ -151,7 +197,7 @@ class RuntimeConversationHandler:
         state = await self._runtime.start(
             RunRequest(
                 agent=conversation.agent,
-                input=user_message.text_content,
+                input=user_message.text_content if run_input is None else run_input,
                 attachments=tuple(
                     RunAttachment(artifact_id=block.artifact_id, media_type=block.media_type)
                     for block in user_message.content
@@ -167,11 +213,14 @@ class RuntimeConversationHandler:
             ),
             credentials=credentials,
         )
+        await emit(RUN_STARTED_EVENT, {"run_id": state.id, "agent": conversation.agent})
         result = await follow_run(
             self._runtime,
             state.id,
             conversation.tenant_id,
             self._coalescer(emit) if stream else None,
+            steps=emit,
+            tool_steps=self._tool_steps,
         )
         return await self._turn_result(conversation, user_message.id, result, paused=False)
 
@@ -192,22 +241,21 @@ class RuntimeConversationHandler:
                 raise ConflictError(
                     f"turn {pending.turn_id!r} accepts only: {', '.join(pending.options)}"
                 )
-            approvals = getattr(self._runtime, "approvals", None)
-            if approvals is not None and pending.approval_id:
-                approval = await approvals.get(pending.approval_id, conversation.tenant_id)
-                if approval is not None and (
-                    approval.status == ApprovalStatus.EXPIRED
-                    or (
-                        approval.status == ApprovalStatus.PENDING
-                        and approval.expires_at <= utc_now()
-                    )
-                ):
-                    raise PendingTurnExpiredError(f"turn {pending.turn_id!r} approval expired")
+            if await self._approval_expired(conversation, pending):
+                raise PendingTurnExpiredError(f"turn {pending.turn_id!r} approval expired")
             payload = {"decision": response.decision}
             if response.modified_parameters is not None:
                 payload["modified_parameters"] = response.modified_parameters
             if response.reason:
                 payload["reason"] = response.reason
+        elif pending.kind == "credentials":
+            if not isinstance(response, ConversationCredentialsRenewal):
+                raise ConflictError(f"turn {pending.turn_id!r} awaits the caller's credentials")
+            if not credentials:
+                raise ConflictError(
+                    f"turn {pending.turn_id!r} awaits the caller's credentials: pass them again"
+                )
+            payload = {}
         else:
             if not isinstance(response, ConversationInputAnswer):
                 raise ConflictError(f"turn {pending.turn_id!r} awaits an answer, not a decision")
@@ -244,8 +292,101 @@ class RuntimeConversationHandler:
             conversation.tenant_id,
             self._coalescer(emit) if stream else None,
             after=cursor,
+            steps=emit,
+            tool_steps=self._tool_steps,
         )
         return await self._turn_result(conversation, pending.turn_id, result, paused=False)
+
+    async def follow_turn(
+        self,
+        conversation: Conversation,
+        turn_id: str,
+        run_id: str,
+        emit: Any,
+    ) -> ConversationTurnResult:
+        """Follow the run of a turn that was streaming when its process stopped.
+
+        It never starts the work again. A run this process drives (``Runtime.recover`` resumed
+        it) is followed to its end or pause, forwarding what it emits from now on. A run that
+        already ended or paused settles at once: completed with its answer, paused with its
+        pending action (``expired`` if its approval expired meanwhile), failed or cancelled with
+        the run's own outcome. A run another process drives is polled until it ends or pauses.
+        Raises :class:`ConversationTurnInterruptedError` when the run is gone, belongs to another
+        conversation, or nothing drives it past its deadline.
+        """
+        tenant_id = conversation.tenant_id
+        state = await self._run_state(run_id, tenant_id)
+        if state is None or state.request.conversation_id not in (None, conversation.id):
+            raise ConversationTurnInterruptedError(f"turn {turn_id!r} has no run to follow")
+        cursor = await self._event_cursor(run_id)
+        try:
+            result = await follow_run(
+                self._runtime,
+                run_id,
+                tenant_id,
+                self._coalescer(emit) if state.request.stream else None,
+                after=cursor,
+                steps=emit,
+                tool_steps=self._tool_steps,
+            )
+            while result.status not in TERMINAL_STATUSES | PAUSED_STATUSES:
+                # Not driven here: another process drives it, or nothing does any more.
+                current = await self._run_state(run_id, tenant_id)
+                if current is None:
+                    raise ConversationTurnInterruptedError(f"turn {turn_id!r} lost its run")
+                if current.status not in TERMINAL_STATUSES | PAUSED_STATUSES:
+                    limit = (current.deadline or current.updated_at) + _ORPHAN_GRACE
+                    if utc_now() > limit:
+                        raise ConversationTurnInterruptedError(
+                            f"turn {turn_id!r}: nothing drives its run any more"
+                        )
+                    await asyncio.sleep(_ORPHAN_POLL_SECONDS)
+                result = await self._runtime.wait(run_id, tenant_id)
+        except NotFoundError as exc:
+            raise ConversationTurnInterruptedError(f"turn {turn_id!r} lost its run") from exc
+        turn = await self._turn_result(conversation, turn_id, result, paused=False)
+        if turn.pending is not None and await self._approval_expired(conversation, turn.pending):
+            return ConversationTurnResult(
+                content=(TextBlock(text=_EXPIRED_TEXT),),
+                run_ids=turn.run_ids,
+                outcome="expired",
+                metadata={"reason": "approval_expired"},
+            )
+        return turn
+
+    async def steer(self, conversation: Conversation, run_id: str, text: str) -> SteeringMessage:
+        """Queue the user's ``text`` for the turn's run (``Runtime.steer``)."""
+        steer = getattr(self._runtime, "steer", None)
+        if steer is None:
+            raise ConflictError("this runtime cannot steer runs")
+        message: SteeringMessage = await steer(run_id, conversation.tenant_id, text)
+        return message
+
+    async def turn_run(self, conversation: Conversation, turn_id: str) -> str | None:
+        """The run started for ``turn_id``, found in the run store by conversation and turn.
+
+        Used for a streaming turn whose message has no run id: a process that stopped between
+        starting the run and storing its id, or a message an earlier release stored.
+        """
+        runs = getattr(self._runtime, "runs", None)
+        finder = getattr(runs, "find_by_turn", None)
+        if finder is None:
+            return None
+        state: RunState | None = await finder(conversation.tenant_id, conversation.id, turn_id)
+        return state.id if state is not None else None
+
+    async def _approval_expired(
+        self, conversation: Conversation, pending: ConversationPendingAction
+    ) -> bool:
+        """Whether a pending approval's request has already expired."""
+        approvals = getattr(self._runtime, "approvals", None)
+        if pending.kind != "approval" or approvals is None or not pending.approval_id:
+            return False
+        approval = await approvals.get(pending.approval_id, conversation.tenant_id)
+        return approval is not None and (
+            approval.status == ApprovalStatus.EXPIRED
+            or (approval.status == ApprovalStatus.PENDING and approval.expires_at <= utc_now())
+        )
 
     async def settle(
         self, conversation: Conversation, pending: ConversationPendingAction
@@ -345,6 +486,14 @@ class RuntimeConversationHandler:
                 return ConversationTurnResult(
                     content=content, run_ids=run_ids, outcome="awaiting_approval", pending=pending
                 )
+            if pending.kind == "credentials":
+                content = (NoticeBlock(level="info", text=_CREDENTIALS_TEXT),)
+                return ConversationTurnResult(
+                    content=content,
+                    run_ids=run_ids,
+                    outcome="awaiting_credentials",
+                    pending=pending,
+                )
             content = (TextBlock(text=pending.question or "Please provide more detail."),)
             return ConversationTurnResult(
                 content=content, run_ids=run_ids, outcome="awaiting_input", pending=pending
@@ -372,6 +521,7 @@ class RuntimeConversationHandler:
                     outcome="failed",
                     metadata={"reason": reason},
                 )
+            return self._failed(result, reason)
         if result.error:
             raise RuntimeError(result.error)
         return ConversationTurnResult(
@@ -381,23 +531,66 @@ class RuntimeConversationHandler:
             citations=tuple(item.model_dump(mode="json") for item in result.citations),
         )
 
+    def _failed(self, result: RunResult, reason: str | None) -> ConversationTurnResult:
+        """A failed turn that keeps why its run failed: the reason, status and usage in the
+        metadata, and a user-safe text for the reason (never the run's error text)."""
+        if reason is None and result.status == RunStatus.TIMED_OUT:
+            reason = "timeout"
+        reason = reason or "run_failed"
+        metadata: dict[str, Any] = {
+            "error_type": "RunFailed",
+            "reason": reason,
+            "run_status": result.status.value,
+            "retryable": reason in _RETRYABLE_REASONS,
+            "usage": result.execution_summary.usage.model_dump(mode="json"),
+        }
+        # The run's own typed error and the limit it reached (RunResult, 0.2.0b3), when set:
+        # error_type stays "RunFailed" for every failed turn, so hosts keep one check.
+        if result.error_type:
+            metadata["run_error_type"] = result.error_type
+        if result.limit_reached:
+            metadata["limit_reached"] = result.limit_reached
+        return ConversationTurnResult(
+            content=(TextBlock(text=self._presentation.run_failure_message(reason, result.error)),),
+            run_ids=(result.run_id,),
+            outcome="failed",
+            metadata=metadata,
+        )
+
     async def _pending(
         self, conversation: Conversation, turn_id: str, run_id: str
     ) -> ConversationPendingAction:
         state = await self._run_state(run_id, conversation.tenant_id)
         payload: dict[str, Any] = dict((state.pause_payload if state else None) or {})
         paused_at = _parse_time(payload.get("paused_at")) or utc_now()
+        child_run_id = _optional_text(payload.get("child_run_id"))
+        if state is not None and state.status == RunStatus.AWAITING_CREDENTIALS:
+            # A run recovered without the caller's credentials it was acting with: nothing to
+            # decide or answer, the user continues it by passing their credentials again.
+            return ConversationPendingAction(
+                kind="credentials",
+                turn_id=turn_id,
+                run_id=run_id,
+                child_run_id=child_run_id,
+                paused_at=paused_at,
+            )
         if state is not None and state.status == RunStatus.AWAITING_CLARIFICATION:
+            choices = payload.get("choices")
             return ConversationPendingAction(
                 kind="input",
                 turn_id=turn_id,
                 run_id=run_id,
                 question=_optional_text(payload.get("question")),
+                choices=tuple(str(item) for item in choices) if isinstance(choices, list) else (),
+                child_run_id=child_run_id,
                 paused_at=paused_at,
             )
         call_id = str(payload.get("tool_call_id") or "")
         calls = state.pending_tool_calls if state is not None else []
         tool_name = next((call.name for call in calls if call.id == call_id), None)
+        if tool_name is None:
+            # A child run's approval (core.subagent): the call is the child's, named in the payload.
+            tool_name = _optional_text(payload.get("tool"))
         schema: dict[str, Any] | None = None
         tools = getattr(self._runtime, "tools", None)
         if tool_name and tools is not None:
@@ -421,13 +614,22 @@ class RuntimeConversationHandler:
             redacted_parameters=dict(redacted) if isinstance(redacted, Mapping) else {},
             rationale=_optional_text(payload.get("rationale")),
             parameters_schema=schema,
+            child_run_id=child_run_id,
             paused_at=paused_at,
         )
 
 
-_EXPIRY_REASONS = frozenset({"approval_expired", "clarification_expired"})
+_EXPIRY_REASONS = frozenset({"approval_expired", "clarification_expired", "credentials_expired"})
 _REJECTION_REASONS = frozenset({"approval_rejected", "continuation_rejected"})
+_RETRYABLE_REASONS = frozenset({"timeout", "timeout_during_recovery"})
 _EXPIRED_TEXT = "This request expired before it was answered. Please ask again."
+_CREDENTIALS_TEXT = (
+    "This response was paused during a service restart. Continue it to pick up where it left off."
+)
+_INTERRUPTED_TEXT = "The response was interrupted during a service restart. Please retry."
+# A run nothing drives is given up this long after its deadline; it is polled meanwhile.
+_ORPHAN_GRACE = timedelta(seconds=30)
+_ORPHAN_POLL_SECONDS = 0.25
 
 
 def _optional_text(value: Any) -> str | None:
@@ -456,6 +658,7 @@ _STATUS_BY_OUTCOME: dict[str, MessageStatus] = {
     "expired": MessageStatus.EXPIRED,
     "awaiting_approval": MessageStatus.AWAITING_APPROVAL,
     "awaiting_input": MessageStatus.AWAITING_INPUT,
+    "awaiting_credentials": MessageStatus.AWAITING_CREDENTIALS,
 }
 _EVENT_BY_STATUS: dict[MessageStatus, str] = {
     MessageStatus.COMPLETED: "assistant.message.completed",
@@ -464,6 +667,7 @@ _EVENT_BY_STATUS: dict[MessageStatus, str] = {
     MessageStatus.EXPIRED: "assistant.message.expired",
     MessageStatus.AWAITING_APPROVAL: "assistant.message.awaiting_approval",
     MessageStatus.AWAITING_INPUT: "assistant.message.awaiting_input",
+    MessageStatus.AWAITING_CREDENTIALS: "assistant.message.awaiting_credentials",
 }
 
 
@@ -485,8 +689,50 @@ def _accepts(function: Any, keyword: str) -> bool:
     )
 
 
+_IN_PROGRESS = frozenset({MessageStatus.ACCEPTED, MessageStatus.STREAMING})
+
+
+def _for_turn(conversation: Conversation, assistant: ConversationMessage) -> Conversation:
+    """The conversation as the handler sees it for one turn: with the turn's agent."""
+    if assistant.agent is None or assistant.agent == conversation.agent:
+        return conversation
+    return conversation.model_copy(update={"agent": assistant.agent})
+
+
+_PUBLISH_ATTEMPTS = 8
+
+
+class _KeyedLocks:
+    """An ``asyncio.Lock`` per key, kept only while someone holds or waits for it."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.Lock, list[int]]] = {}
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
+    @contextlib.asynccontextmanager
+    async def hold(self, key: str) -> AsyncIterator[None]:
+        entry = self._locks.get(key)
+        if entry is None:
+            entry = self._locks[key] = (asyncio.Lock(), [0])
+        lock, users = entry
+        users[0] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            users[0] -= 1
+            if users[0] == 0:
+                self._locks.pop(key, None)
+
+
 def _awaited(status: MessageStatus) -> str:
-    return "approval" if status == MessageStatus.AWAITING_APPROVAL else "input"
+    if status == MessageStatus.AWAITING_APPROVAL:
+        return "approval"
+    if status == MessageStatus.AWAITING_CREDENTIALS:
+        return "credentials"
+    return "input"
 
 
 class ConversationService:
@@ -515,7 +761,11 @@ class ConversationService:
         self._followup_provider = followup_provider
         self._tracer = self._observability.tracer("algen_agent_runtime.conversations")
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._lock = asyncio.Lock()
+        # One lock per conversation, so turns of different conversations never wait on each
+        # other; a lock exists only while held or awaited.
+        self._locks = _KeyedLocks()
+        self._emit_locks = _KeyedLocks()
+        self._detach = asyncio.Event()
         self._accepting = True
 
     async def create(
@@ -527,12 +777,19 @@ class ConversationService:
         handler: str = "runtime",
         title: str = "New conversation",
         metadata: dict[str, Any] | None = None,
+        allowed_agents: Sequence[str] = (),
     ) -> Conversation:
+        """Create a conversation answered by ``agent``.
+
+        ``allowed_agents`` are the other agents a turn may choose (``submit(..., agent=...)``);
+        by default every turn is answered by ``agent``.
+        """
         self.handlers.get(handler)
         conversation = Conversation(
             tenant_id=tenant_id,
             user_id=user_id,
             agent=agent,
+            allowed_agents=tuple(dict.fromkeys(item for item in allowed_agents if item != agent)),
             handler=handler,
             title=title,
             metadata=redact(metadata or {}),
@@ -570,6 +827,14 @@ class ConversationService:
         await self._end_pending_run(conversation)
         if not await self.store.delete(conversation_id, tenant_id):
             raise NotFoundError(f"conversation {conversation_id!r} not found")
+        # The session memory holds the turns' tool results: it goes with the conversation.
+        try:
+            handler: Any = self.handlers.get(conversation.handler)
+        except NotFoundError:
+            handler = None
+        forget = getattr(handler, "forget_conversation", None)
+        if callable(forget):
+            await forget(conversation)
         if self._audits is not None:
             await self._audits.append(
                 AuditEvent(
@@ -624,8 +889,18 @@ class ConversationService:
         tenant_id: str,
         limit: int = 100,
         before: datetime | None = None,
+        *,
+        user_id: str | None = None,
     ) -> Sequence[ConversationMessage]:
-        await self.get(conversation_id, tenant_id)
+        """The conversation's messages, oldest first.
+
+        With ``user_id``, only the conversation's owner sees them: another user gets
+        ``NotFoundError``, as for a conversation that does not exist.
+        """
+        if user_id is None:
+            await self.get(conversation_id, tenant_id)
+        else:
+            await self._owned(conversation_id, tenant_id, user_id)
         return await self.store.messages(conversation_id, tenant_id, limit, before)
 
     async def feedback(
@@ -688,8 +963,20 @@ class ConversationService:
         *,
         credentials: Mapping[str, str] | None = None,
         attachments: tuple[RunAttachment, ...] = (),
+        run_input: str | None = None,
+        agent: str | None = None,
     ) -> tuple[ConversationMessage, ConversationMessage]:
         """Accept a user message and answer it in the background.
+
+        ``agent`` answers this turn instead of the conversation's agent; it must be the
+        conversation's agent or one of its ``allowed_agents`` (``ValueError`` otherwise). The
+        assistant message records it as ``agent``.
+
+        ``run_input`` is the text the turn's run gets instead of ``text``, for a host that shapes
+        it (today's date, references to attachments, context of its own). The stored message,
+        its events and the history keep ``text``; ``run_input`` is not stored. The handler must
+        accept a ``run_input`` keyword, as :class:`RuntimeConversationHandler` does. Without it,
+        the run gets ``text`` as before.
 
         ``attachments`` (uploaded files, by artifact reference) are kept on the message as file
         blocks and handed to the turn's run; the agent must accept them.
@@ -704,12 +991,22 @@ class ConversationService:
         if not text.strip():
             raise ValueError("message cannot be empty")
         conversation = await self._owned(conversation_id, tenant_id, user_id)
+        if agent is not None and not conversation.allows(agent):
+            raise ValueError(f"agent {agent!r} is not allowed in this conversation")
+        turn_agent = None if agent is None or agent == conversation.agent else agent
         handler = self.handlers.get(conversation.handler)
         if credentials and not _accepts(handler.handle, "credentials"):
             raise ConfigurationError(
                 f"conversation handler {handler.name!r} does not accept credentials"
             )
-        async with self._lock:
+        if run_input is not None:
+            if not run_input.strip():
+                raise ValueError("run_input cannot be empty")
+            if not _accepts(handler.handle, "run_input"):
+                raise ConfigurationError(
+                    f"conversation handler {handler.name!r} does not accept run_input"
+                )
+        async with self._locks.hold(conversation.id):
             active = self._tasks.get(conversation_id)
             if active and not active.done():
                 raise ConflictError("conversation already has an active response")
@@ -737,6 +1034,7 @@ class ConversationService:
                 content=(),
                 status=MessageStatus.ACCEPTED,
                 reply_to_message_id=user_message.id,
+                agent=turn_agent,
             )
             await self.store.append_message(assistant_message)
             if conversation.title == "New conversation":
@@ -750,22 +1048,26 @@ class ConversationService:
                 {"role": "user", "text": text.strip()},
                 user_message.id,
             )
+            turn = _for_turn(conversation, assistant_message)
 
             async def work(
                 emit: Callable[[str, dict[str, Any] | None], Awaitable[None]],
                 history: Sequence[ConversationMessage],
             ) -> ConversationTurnResult:
+                options: dict[str, Any] = {}
                 if credentials:
+                    options["credentials"] = credentials
+                if run_input is not None:
+                    options["run_input"] = run_input
+                if options:
                     handle: Any = handler.handle
                     result: ConversationTurnResult = await handle(
-                        conversation, user_message, history, emit, credentials=credentials
+                        turn, user_message, history, emit, **options
                     )
                     return result
-                return await handler.handle(conversation, user_message, history, emit)
+                return await handler.handle(turn, user_message, history, emit)
 
-            task = asyncio.create_task(
-                self._respond(conversation, user_message, assistant_message, work)
-            )
+            task = self._start(self._respond(turn, user_message, assistant_message, work))
             self._tasks[conversation.id] = task
             task.add_done_callback(self._forget_task)
             return user_message, assistant_message
@@ -784,7 +1086,9 @@ class ConversationService:
 
         ``turn_id`` is the id of the user message that started the turn (``pending.turn_id``).
         ``response`` is a :class:`ConversationApprovalDecision` for ``awaiting_approval`` or a
-        :class:`ConversationInputAnswer` for ``awaiting_input``. The turn keeps streaming into the
+        :class:`ConversationInputAnswer` for ``awaiting_input`` or a
+        :class:`ConversationCredentialsRenewal` with ``credentials`` for ``awaiting_credentials``
+        (a run recovered after a restart without them). The turn keeps streaming into the
         same assistant message, which is returned in ``streaming`` status. ``credentials`` are as
         for :meth:`submit`: the resumed turn sees only these.
 
@@ -798,7 +1102,7 @@ class ConversationService:
         handler: Any = self.handlers.get(conversation.handler)
         if getattr(handler, "resume", None) is None or getattr(handler, "follow", None) is None:
             raise ConflictError(f"conversation handler {handler.name!r} cannot resume turns")
-        async with self._lock:
+        async with self._locks.hold(conversation.id):
             active = self._tasks.get(conversation_id)
             if active and not active.done():
                 raise ConflictError("conversation already has an active response")
@@ -842,8 +1146,45 @@ class ConversationService:
             elif isinstance(response, ConversationInputAnswer):
                 resumed["text"] = response.text
             await self._emit(conversation, "assistant.message.resumed", resumed, assistant.id)
-            self._follow(conversation, user_message, streaming, pending)
+            self._follow(_for_turn(conversation, assistant), user_message, streaming, pending)
             return streaming
+
+    async def steer(
+        self, conversation_id: str, turn_id: str, tenant_id: str, user_id: str, text: str
+    ) -> SteeringMessage:
+        """Send the user more instructions for a turn that is still working.
+
+        The text reaches the turn's run (``Runtime.steer``): the model reads it at the run's
+        next step, after the current tool results. ``agent.steer.delivered`` follows on the
+        conversation, or ``agent.steer.undelivered`` if the run ends first; the turn's run must
+        be followed by this process for those (it is, for a turn submitted or recovered here).
+        An ``assistant.message.steered`` event records the request, with sizes, not text.
+
+        Only the conversation's owner may steer it (``NotFoundError`` otherwise). Raises
+        ``ConflictError`` when the turn has no run yet, has ended, or its run cannot take more
+        steering, and ``ValueError`` for empty or too long text.
+        """
+        conversation = await self._owned(conversation_id, tenant_id, user_id)
+        handler: Any = self.handlers.get(conversation.handler)
+        steer = getattr(handler, "steer", None)
+        if steer is None:
+            raise ConflictError(f"conversation handler {handler.name!r} cannot steer turns")
+        _, assistant = await self._turn(conversation, turn_id)
+        if (
+            assistant.status not in _IN_PROGRESS | AWAITING_MESSAGE_STATUSES
+            or not assistant.run_ids
+        ):
+            raise ConflictError(f"turn {turn_id!r} is not running")
+        message: SteeringMessage = await steer(
+            _for_turn(conversation, assistant), assistant.run_ids[-1], text
+        )
+        await self._emit(
+            conversation,
+            "assistant.message.steered",
+            {"turn_id": turn_id, "steer_id": message.id, "chars": len(message.text)},
+            assistant.id,
+        )
+        return message
 
     async def cancel(self, conversation_id: str, tenant_id: str) -> None:
         """Cancel the active response, or end a turn that awaits approval or input."""
@@ -852,7 +1193,7 @@ class ConversationService:
         if task and not task.done():
             task.cancel()
             return
-        async with self._lock:
+        async with self._locks.hold(conversation.id):
             awaiting = await self._awaiting_message(conversation)
             if awaiting is None:
                 return
@@ -874,36 +1215,72 @@ class ConversationService:
             )
 
     async def recover(self, limit: int = 1000) -> int:
-        """Fail interrupted responses safely instead of replaying unknown side effects.
+        """Settle or follow the turns a stopped process left streaming; return how many.
 
-        Turns that await approval or input stay pending; see :meth:`reconcile_pending_turns`.
+        Run it after ``Runtime.recover()`` (``Container.astart`` does), so that the runs it
+        resumed are driven by this process and their turns are followed to the end. For each
+        streaming turn, the run is the one stored on the message, or the turn's run in the run
+        store (a stop between starting the run and storing its id):
+
+        - a run that still works is followed to its end, into the same message;
+        - a run that ended or paused meanwhile settles the turn at once: completed with the
+          answer, awaiting approval or input with its pending action (expired if its approval
+          expired), awaiting credentials when ``Runtime.recover`` paused the run for the
+          caller's credentials it was started with (continue it with ``respond`` and a
+          :class:`ConversationCredentialsRenewal`), failed or cancelled with the run's own outcome;
+        - a turn with no run, or whose run is gone, fails as interrupted (retryable).
+
+        The turn's work is never started again. Settling uses a conditional update, so calling it
+        again, or from two processes at once, settles each turn once. Turns that await approval
+        or input stay pending; see :meth:`reconcile_pending_turns`.
         """
         recovered = 0
         for assistant in await self.store.pending_messages(limit):
             conversation = await self.store.get(assistant.conversation_id, assistant.tenant_id)
             if conversation is None:
                 continue
-            failed = assistant.model_copy(
-                update={
-                    "status": MessageStatus.FAILED,
-                    "content": (
-                        TextBlock(
-                            text="The response was interrupted during a service restart. Please retry."
-                        ),
-                    ),
-                    "metadata": {"error_type": "InterruptedResponse"},
-                    "updated_at": utc_now(),
-                }
-            )
-            await self.store.update_message(failed)
-            await self._emit(
-                conversation,
-                "assistant.message.failed",
-                {"error_type": "InterruptedResponse", "retryable": True},
-                assistant.id,
-            )
-            recovered += 1
+            try:
+                async with self._locks.hold(conversation.id):
+                    active = self._tasks.get(conversation.id)
+                    if active and not active.done():
+                        continue  # this process is answering it
+                    if await self._reattach(conversation, assistant, fail_without_run=True):
+                        recovered += 1
+            except Exception as exc:
+                structlog.get_logger("algen_agent_runtime.conversations").warning(
+                    "conversation_turn_recovery_failed",
+                    conversation_id=assistant.conversation_id,
+                    message_id=assistant.id,
+                    error_type=type(exc).__name__,
+                )
         return recovered + await self.reconcile_pending_turns(limit)
+
+    async def follow(
+        self, conversation_id: str, turn_id: str, tenant_id: str, user_id: str
+    ) -> ConversationMessage:
+        """Re-attach to a turn that is still streaming, and return its assistant message.
+
+        For a host whose process restarted, or that takes a turn over from another process: the
+        turn's run is followed in the background into the same message, whose events reach the
+        conversation's subscribers as for any turn. A run that already ended or paused settles
+        the turn at once. It never starts the turn's work again.
+
+        Idempotent: a turn this process already answers, or that no longer streams, is returned
+        as it is. A turn with no run yet is returned as it is too (its process may still be
+        starting it); :meth:`recover` fails such turns after a restart. Raises ``NotFoundError``
+        for an unknown turn or another user's conversation.
+        """
+        if not self._accepting:
+            raise ConflictError("conversation service is draining")
+        conversation = await self._owned(conversation_id, tenant_id, user_id)
+        async with self._locks.hold(conversation.id):
+            _, assistant = await self._turn(conversation, turn_id)
+            active = self._tasks.get(conversation_id)
+            if assistant.status not in _IN_PROGRESS or (active and not active.done()):
+                return assistant
+            await self._reattach(conversation, assistant, fail_without_run=False)
+            _, current = await self._turn(conversation, turn_id)
+            return current
 
     async def reconcile_pending_turns(self, limit: int = 1000) -> int:
         """End or reattach pending turns whose run no longer waits; return how many changed.
@@ -922,7 +1299,7 @@ class ConversationService:
             if conversation is None or message.pending is None:
                 continue
             try:
-                async with self._lock:
+                async with self._locks.hold(conversation.id):
                     active = self._tasks.get(conversation.id)
                     if active and not active.done():
                         continue
@@ -944,7 +1321,13 @@ class ConversationService:
                             }
                         )
                         await self.store.update_message(streaming)
-                        self._follow(conversation, user_message, streaming, pending)
+                        self._follow(
+                            _for_turn(conversation, current),
+                            user_message,
+                            streaming,
+                            pending,
+                            recovered=True,
+                        )
                     changed += 1
             except Exception as exc:
                 structlog.get_logger("algen_agent_runtime.conversations").warning(
@@ -956,11 +1339,19 @@ class ConversationService:
         return changed
 
     async def shutdown(self, grace_seconds: float = 10) -> None:
+        """Stop accepting turns, let active ones finish for ``grace_seconds``, then detach.
+
+        A turn still answering after the grace period is detached from its run, not cancelled:
+        the run keeps going for ``Runtime.shutdown`` to finish or save for recovery, and the
+        message stays ``streaming`` with its run id, for the next start's :meth:`recover` to
+        follow or settle. :meth:`cancel` still cancels a turn and its run.
+        """
         self._accepting = False
         tasks = tuple(task for task in self._tasks.values() if not task.done())
         if not tasks:
             return
         _, pending = await asyncio.wait(tasks, timeout=grace_seconds)
+        self._detach.set()
         for task in pending:
             task.cancel()
         if pending:
@@ -1074,6 +1465,8 @@ class ConversationService:
         user_message: ConversationMessage,
         streaming: ConversationMessage,
         pending: ConversationPendingAction,
+        *,
+        recovered: bool = False,
     ) -> None:
         handler: Any = self.handlers.get(conversation.handler)
 
@@ -1085,11 +1478,124 @@ class ConversationService:
             result: ConversationTurnResult = await handler.follow(conversation, pending, emit)
             return result
 
-        task = asyncio.create_task(
-            self._respond(conversation, user_message, streaming, work, resumed=True)
+        self._spawn(conversation, user_message, streaming, work, recovered=recovered)
+
+    def _start(self, work: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Run a turn in a task that sees this service's detach signal (see ``shutdown``)."""
+        context = contextvars.copy_context()
+        context.run(DETACH_SIGNAL.set, self._detach)
+        return asyncio.create_task(work, context=context)
+
+    def _spawn(
+        self,
+        conversation: Conversation,
+        user_message: ConversationMessage,
+        streaming: ConversationMessage,
+        work: _TurnWork,
+        *,
+        recovered: bool,
+    ) -> None:
+        task = self._start(
+            self._respond(
+                conversation, user_message, streaming, work, resumed=True, recovered=recovered
+            )
         )
         self._tasks[conversation.id] = task
         task.add_done_callback(self._forget_task)
+
+    async def _reattach(
+        self,
+        conversation: Conversation,
+        assistant: ConversationMessage,
+        *,
+        fail_without_run: bool,
+    ) -> bool:
+        """Follow (or settle) the run behind a streaming turn; fail it when it has none.
+
+        Called under the conversation's lock with no local task answering the conversation. Returns
+        whether the turn was taken over or settled here.
+        """
+        conversation = _for_turn(conversation, assistant)
+        handler: Any = self.handlers.get(conversation.handler)
+        follow_turn = getattr(handler, "follow_turn", None)
+        turn_id = assistant.reply_to_message_id
+        run_id = assistant.run_ids[-1] if assistant.run_ids else None
+        turn_run = getattr(handler, "turn_run", None)
+        if run_id is None and turn_id and turn_run is not None:
+            run_id = await turn_run(conversation, turn_id)
+        user_message: ConversationMessage | None = None
+        if turn_id:
+            messages = await self.store.messages(
+                conversation.id, conversation.tenant_id, limit=1000
+            )
+            user_message = next(
+                (item for item in messages if item.id == turn_id and item.role == Role.USER), None
+            )
+        if follow_turn is None or run_id is None or user_message is None or turn_id is None:
+            if not fail_without_run:
+                return False
+            return await self._interrupt(conversation, assistant)
+        streaming = assistant.model_copy(
+            update={
+                "status": MessageStatus.STREAMING,
+                "run_ids": tuple(dict.fromkeys((*assistant.run_ids, run_id))),
+                "updated_at": utc_now(),
+            }
+        )
+        if not await self._write(streaming, _IN_PROGRESS):
+            return False  # another process settled it first
+        followed_run: str = run_id
+        followed_turn: str = turn_id
+
+        async def work(
+            emit: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+            history: Sequence[ConversationMessage],
+        ) -> ConversationTurnResult:
+            del history
+            result: ConversationTurnResult = await follow_turn(
+                conversation, followed_turn, followed_run, emit
+            )
+            return result
+
+        self._spawn(conversation, user_message, streaming, work, recovered=True)
+        return True
+
+    async def _interrupt(self, conversation: Conversation, assistant: ConversationMessage) -> bool:
+        """Fail a turn whose work is gone: interrupted, retryable. False if already settled."""
+        failed = assistant.model_copy(
+            update={
+                "status": MessageStatus.FAILED,
+                "content": (TextBlock(text=_INTERRUPTED_TEXT),),
+                "metadata": {"error_type": "InterruptedResponse", "retryable": True},
+                "updated_at": utc_now(),
+            }
+        )
+        if not await self._write(failed, _IN_PROGRESS):
+            return False
+        await self._emit(
+            conversation,
+            "assistant.message.failed",
+            {"error_type": "InterruptedResponse", "retryable": True, "message": _INTERRUPTED_TEXT},
+            assistant.id,
+        )
+        return True
+
+    async def _write(
+        self, message: ConversationMessage, expected: Collection[MessageStatus] | None
+    ) -> bool:
+        """Store ``message``; with ``expected``, only while the stored one has such a status."""
+        if expected is None:
+            await self.store.update_message(message)
+            return True
+        conditional = getattr(self.store, "update_message_if", None)
+        if conditional is not None:
+            return bool(await conditional(message, expected))
+        messages = await self.store.messages(message.conversation_id, message.tenant_id, limit=1000)
+        current = next((item for item in messages if item.id == message.id), None)
+        if current is None or current.status not in expected:
+            return False
+        await self.store.update_message(message)
+        return True
 
     async def _respond(
         self,
@@ -1099,6 +1605,7 @@ class ConversationService:
         work: _TurnWork,
         *,
         resumed: bool = False,
+        recovered: bool = False,
     ) -> None:
         attributes: dict[str, Any] = {
             "span.type": "agent",
@@ -1150,6 +1657,7 @@ class ConversationService:
                         trace_context,
                         work=work,
                         resumed=resumed,
+                        recovered=recovered,
                     )
                 except asyncio.CancelledError:
                     span.set_attribute("conversation.turn.status", "cancelled")
@@ -1181,7 +1689,10 @@ class ConversationService:
         *,
         work: _TurnWork | None = None,
         resumed: bool = False,
+        recovered: bool = False,
     ) -> tuple[str, tuple[str, ...], int, str]:
+        # A recovered turn may be followed by two processes: only the first ends it.
+        expected = frozenset({MessageStatus.STREAMING}) if recovered else None
         if resumed:
             streaming = assistant_message
         else:
@@ -1197,10 +1708,29 @@ class ConversationService:
             )
 
         async def emit(event_type: str, data: dict[str, Any] | None = None) -> None:
+            nonlocal streaming
             payload = dict(data or {})
             if event_type == DELTA_EVENT:
                 payload = {"message_id": assistant_message.id, **payload}
-            await self._emit(conversation, event_type, payload, assistant_message.id)
+            elif event_type == RUN_STARTED_EVENT and payload.get("run_id"):
+                # Stored at once, so a restarted service follows this run instead of failing
+                # the turn.
+                run_id = str(payload["run_id"])
+                if run_id not in streaming.run_ids:
+                    streaming = streaming.model_copy(
+                        update={"run_ids": (*streaming.run_ids, run_id), "updated_at": utc_now()}
+                    )
+                    await self.store.update_message(streaming)
+            try:
+                await self._emit(conversation, event_type, payload, assistant_message.id)
+            except Exception as exc:
+                # A lost progress event must not abandon a turn whose run goes on.
+                structlog.get_logger("algen_agent_runtime.conversations").warning(
+                    "conversation_event_publish_failed",
+                    conversation_id=conversation.id,
+                    event_type=event_type,
+                    error_type=type(exc).__name__,
+                )
 
         if work is None:
             handler = self.handlers.get(conversation.handler)
@@ -1244,9 +1774,14 @@ class ConversationService:
                 result,
                 suggested_followups=suggested_followups,
                 trace_context=trace_context,
+                expected=expected,
             )
             return result.outcome, result.run_ids, len(result.content), output_text
         except asyncio.CancelledError:
+            if detaching():
+                # Shutting down: the run goes on or is saved for recovery, and the message stays
+                # streaming with its run id for the next start's recover().
+                raise
             cancelled = streaming.model_copy(
                 update={
                     "status": MessageStatus.CANCELLED,
@@ -1254,9 +1789,12 @@ class ConversationService:
                     "updated_at": utc_now(),
                 }
             )
-            await self.store.update_message(cancelled)
-            await emit("assistant.message.cancelled", {})
+            if await self._write(cancelled, expected):
+                await emit("assistant.message.cancelled", {})
             raise
+        except ConversationTurnInterruptedError:
+            await self._interrupt(conversation, streaming)
+            return "failed", streaming.run_ids, 1, _INTERRUPTED_TEXT
         except Exception as exc:
             public_message = self.presentation.unexpected_error_message(exc)
             structlog.get_logger("algen_agent_runtime.conversations").exception(
@@ -1277,7 +1815,8 @@ class ConversationService:
                     "updated_at": utc_now(),
                 }
             )
-            await self.store.update_message(failed)
+            if not await self._write(failed, expected):
+                return "failed", (), 1, public_message
             await emit(
                 "assistant.message.failed",
                 {
@@ -1296,8 +1835,13 @@ class ConversationService:
         *,
         suggested_followups: tuple[str, ...] | None = None,
         trace_context: dict[str, str] | None = None,
+        expected: Collection[MessageStatus] | None = None,
     ) -> str:
-        """Record the turn's result on its assistant message and announce it; return its text."""
+        """Record the turn's result on its assistant message and announce it; return its text.
+
+        With ``expected``, only while the stored message has such a status: a turn another
+        process already ended is left as it is and not announced again.
+        """
         status = _STATUS_BY_OUTCOME.get(result.outcome, MessageStatus.COMPLETED)
         updated = message.model_copy(
             update={
@@ -1319,14 +1863,24 @@ class ConversationService:
                 "updated_at": utc_now(),
             }
         )
-        await self.store.update_message(updated)
         output_text = _output_text(result)
+        if not await self._write(updated, expected):
+            return output_text
         event_payload = updated.model_dump(mode="json")
         if status == MessageStatus.FAILED:
             event_payload["message"] = output_text
         if result.pending is not None:
             event_payload["turn_id"] = result.pending.turn_id
-        await self._emit(conversation, _EVENT_BY_STATUS[status], event_payload, message.id)
+        try:
+            await self._emit(conversation, _EVENT_BY_STATUS[status], event_payload, message.id)
+        except Exception as exc:
+            # The message is stored: a reader gets it from messages(), so the turn stands.
+            structlog.get_logger("algen_agent_runtime.conversations").warning(
+                "conversation_event_publish_failed",
+                conversation_id=conversation.id,
+                event_type=_EVENT_BY_STATUS[status],
+                error_type=type(exc).__name__,
+            )
         return output_text
 
     def _telemetry_content(self, value: str) -> str:
@@ -1356,17 +1910,27 @@ class ConversationService:
         data: dict[str, Any],
         message_id: str | None = None,
     ) -> None:
-        sequence = await self.events.next_sequence(conversation.id)
-        await self.events.publish(
-            ConversationEvent(
-                type=event_type,
-                conversation_id=conversation.id,
-                tenant_id=conversation.tenant_id,
-                message_id=message_id,
-                sequence=sequence,
-                data=data,
-            )
-        )
+        # Sequences are allocated one at a time per conversation in this process; a sequence
+        # another process took first (a unique violation, as ConflictError) is allocated again.
+        async with self._emit_locks.hold(conversation.id):
+            for attempt in range(_PUBLISH_ATTEMPTS):
+                sequence = await self.events.next_sequence(conversation.id)
+                try:
+                    await self.events.publish(
+                        ConversationEvent(
+                            type=event_type,
+                            conversation_id=conversation.id,
+                            tenant_id=conversation.tenant_id,
+                            message_id=message_id,
+                            sequence=sequence,
+                            data=data,
+                        )
+                    )
+                    break
+                except ConflictError:
+                    if attempt == _PUBLISH_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(0.005 * (attempt + 1))
         # Text deltas are transient presentation; the completed message is the audited record.
         if self._audits is not None and event_type != DELTA_EVENT:
             await self._audits.append(

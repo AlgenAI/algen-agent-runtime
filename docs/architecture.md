@@ -39,6 +39,7 @@ Because the pending action lives in the conversation store and the paused run in
 restart loses neither and nothing re-runs: recovery leaves paused turns waiting and only follows or
 settles runs that already moved on. A handler opts in by implementing
 `ResumableConversationHandler` (`resume`, `follow`, `settle`, `pending_state`, `cancel_pending`).
+How a host application calls `ConversationService` is in [conversations from a host](conversations.md).
 
 ```mermaid
 sequenceDiagram

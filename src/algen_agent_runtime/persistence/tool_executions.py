@@ -100,6 +100,33 @@ class InMemoryToolExecutionStore:
         matches.sort(key=lambda record: record.updated_at or utc_now())
         return tuple(matches[:limit])
 
+    async def list_for_runs(
+        self, tenant_id: str, run_ids: Sequence[str]
+    ) -> Sequence[ToolExecutionRecord]:
+        """Every record of these runs in the tenant, oldest first."""
+        wanted = set(run_ids)
+        async with self._lock:
+            records = [
+                record.model_copy(deep=True)
+                for record in self._records.values()
+                if record.tenant_id == tenant_id and record.run_id in wanted
+            ]
+        records.sort(key=lambda record: record.created_at or utc_now())
+        return tuple(records)
+
+    async def forget_runs(self, tenant_id: str, run_ids: Sequence[str]) -> int:
+        """Delete the records of these runs; return how many went."""
+        wanted = set(run_ids)
+        async with self._lock:
+            doomed = [
+                key
+                for key, record in self._records.items()
+                if record.tenant_id == tenant_id and record.run_id in wanted
+            ]
+            for key in doomed:
+                del self._records[key]
+            return len(doomed)
+
     async def transition(
         self, record: ToolExecutionRecord, *, expected: Collection[ToolExecutionStatus]
     ) -> ToolExecutionRecord | None:

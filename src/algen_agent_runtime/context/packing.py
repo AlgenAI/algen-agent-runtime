@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+
+from pydantic import BaseModel, ConfigDict
 
 from algen_agent_runtime.exceptions.errors import BudgetExceededError, ConflictError
 from algen_agent_runtime.runtime.attachments import estimated_tokens
+from algen_agent_runtime.tools.contracts import COVERAGE_KEY, ResultCoverage
 from algen_agent_runtime.types.contracts import (
     DEFAULT_SHORTENED_TOOL_RESULT_NOTE,
     FileBlock,
@@ -185,3 +189,157 @@ def pack_messages(
         if index in selected
         for message in shortened.get(index, group)
     )
+
+
+# A result this short is never worth offloading: its reference would be about as long.
+MIN_OFFLOAD_CHARS = 2_048
+TRUNCATED_TOOL_RESULT_NOTICE = (
+    "This tool result was cut to fit the context, so it is incomplete: only its first "
+    "{kept} of {total} characters follow. Do not read what is missing as absent. If the answer "
+    "depends on the rest, say so, or call the tool again for less (a narrower query, a page)."
+)
+
+
+class ToolResultTruncation(BaseModel):
+    """How one of the newest tool results was shortened to fit the context."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tool: str
+    tool_call_id: str
+    original_chars: int
+    kept_chars: int | None = None
+    offloaded: bool = False
+    artifact_id: str | None = None
+
+
+def newest_tool_results(messages: Sequence[Message]) -> list[Message]:
+    """The results of the newest tool exchange, when the context ends with one."""
+    groups = message_groups(messages)
+    if not groups:
+        return []
+    head = groups[-1][0]
+    if head.role != Role.ASSISTANT or not head.tool_calls:
+        return []
+    return list(groups[-1][1:])
+
+
+def _with_text(message: Message, text: str) -> Message:
+    return message.model_copy(update={"content": (TextBlock(text=text), *message.content[1:])})
+
+
+def _cut_result(message: Message, keep: int, coverage: ResultCoverage | None) -> Message:
+    first = message.content[0] if message.content else None
+    if not isinstance(first, TextBlock) or len(first.text) <= keep:
+        return message
+    payload: dict[str, object] = {
+        "truncated": True,
+        "notice": TRUNCATED_TOOL_RESULT_NOTICE.format(kept=keep, total=len(first.text)),
+        "total_chars": len(first.text),
+        "kept_chars": keep,
+        "content": first.text[:keep],
+    }
+    if coverage is not None:
+        # What the tool covered stays visible, marked capped: the cut dropped some of it.
+        payload[COVERAGE_KEY] = coverage.model_copy(update={"capped": True}).model_dump(
+            mode="json", exclude_none=True
+        )
+    return _with_text(message, json.dumps(payload, ensure_ascii=False))
+
+
+def fit_newest_tool_results(
+    messages: Sequence[Message],
+    max_estimated_tokens: int,
+    *,
+    replacements: Mapping[str, str] | None = None,
+) -> list[tuple[Message, ToolResultTruncation]] | None:
+    """The newest tool results shortened so the required context fits, as a last resort.
+
+    ``messages`` is a context whose newest group, a tool exchange, is required and too large.
+    ``replacements`` (by tool call id) are used first, for results offloaded to an artifact;
+    then every result still too long is cut to the same, largest length that fits, and marked
+    as truncated. Returns each changed result with what was done, or ``None`` when the context
+    does not end with a tool exchange or even empty results would not fit.
+    """
+    groups = message_groups(messages)
+    if not groups:
+        return None
+    last = groups[-1]
+    head = last[0]
+    if head.role != Role.ASSISTANT or not head.tool_calls or len(last) < 2:
+        return None
+    required = _required_groups(groups)
+    fixed = estimate_message(head) + sum(
+        estimate_message(message)
+        for index in required
+        if index != len(groups) - 1
+        for message in groups[index]
+    )
+    available = max_estimated_tokens - fixed
+    replacements = replacements or {}
+    originals = list(last[1:])
+    current = [
+        _with_text(message, replacements[message.tool_call_id])
+        if message.tool_call_id is not None and message.tool_call_id in replacements
+        else message
+        for message in originals
+    ]
+
+    def fits(candidate: Sequence[Message]) -> bool:
+        return sum(estimate_message(message) for message in candidate) <= available
+
+    if not fits(current):
+        coverages = [
+            ResultCoverage.of(message.content[0].text)
+            if message.content and isinstance(message.content[0], TextBlock)
+            else None
+            for message in current
+        ]
+        longest = max(
+            (
+                len(message.content[0].text)
+                for message in current
+                if message.content and isinstance(message.content[0], TextBlock)
+            ),
+            default=0,
+        )
+        best: list[Message] | None = None
+        low, high = 0, longest
+        while low <= high:
+            keep = (low + high) // 2
+            candidate = [
+                _cut_result(message, keep, coverage)
+                for message, coverage in zip(current, coverages, strict=True)
+            ]
+            if fits(candidate):
+                best, low = candidate, keep + 1
+            else:
+                high = keep - 1
+        if best is None:
+            return None
+        current = best
+    changed: list[tuple[Message, ToolResultTruncation]] = []
+    for original, message in zip(originals, current, strict=True):
+        if message is original:
+            continue
+        call_id = original.tool_call_id or ""
+        kept: int | None = None
+        if message.content and isinstance(message.content[0], TextBlock):
+            try:
+                value = json.loads(message.content[0].text)
+            except ValueError:
+                value = None
+            if isinstance(value, dict) and value.get("truncated") is True:
+                kept = int(value["kept_chars"])
+        changed.append(
+            (
+                message,
+                ToolResultTruncation(
+                    tool=original.name or "",
+                    tool_call_id=call_id,
+                    original_chars=len(original.text_content),
+                    kept_chars=kept,
+                    offloaded=call_id in replacements,
+                ),
+            )
+        )
+    return changed

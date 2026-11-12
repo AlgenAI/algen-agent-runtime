@@ -57,6 +57,46 @@ class InMemoryRunStore:
         active.sort(key=lambda state: state.updated_at)
         return tuple(active[:limit])
 
+    async def find_by_turn(
+        self, tenant_id: str, conversation_id: str, turn_id: str
+    ) -> RunState | None:
+        """The turn's most recently updated run, ended or not, or None."""
+        async with self._lock:
+            matches = [
+                state
+                for state in self._runs.values()
+                if state.request.tenant_id == tenant_id
+                and state.request.conversation_id == conversation_id
+                and state.request.turn_id == turn_id
+            ]
+        if not matches:
+            return None
+        return max(matches, key=lambda state: state.updated_at).model_copy(deep=True)
+
+    async def list_for_user(self, tenant_id: str, user_id: str) -> Sequence[RunState]:
+        """Every run of ``user_id`` in the tenant, oldest first (for user data export/erasure)."""
+        async with self._lock:
+            runs = [
+                state.model_copy(deep=True)
+                for state in self._runs.values()
+                if state.request.tenant_id == tenant_id and state.request.user_id == user_id
+            ]
+        runs.sort(key=lambda state: state.started_at)
+        return tuple(runs)
+
+    async def delete_many(self, tenant_id: str, run_ids: Sequence[str]) -> dict[str, int]:
+        """Delete the tenant's runs among ``run_ids``; return ``{"runs": count}``."""
+        async with self._lock:
+            doomed = [
+                run_id
+                for run_id in dict.fromkeys(run_ids)
+                if (state := self._runs.get(run_id)) is not None
+                and state.request.tenant_id == tenant_id
+            ]
+            for run_id in doomed:
+                del self._runs[run_id]
+        return {"runs": len(doomed)}
+
 
 def _message_bytes(message: Message) -> int:
     return len(message.model_dump_json().encode())
@@ -106,6 +146,27 @@ class InMemoryMemoryStore:
     async def delete(self, tenant_id: str, session_id: str) -> None:
         async with self._lock:
             self._messages.pop((tenant_id, session_id), None)
+
+    async def delete_session(self, tenant_id: str, session_id: str) -> int:
+        """Delete the session's memory and its owner; return how many messages went."""
+        async with self._lock:
+            self._owners.pop((tenant_id, session_id), None)
+            return len(self._messages.pop((tenant_id, session_id), ()))
+
+    async def session_owner(self, tenant_id: str, session_id: str) -> str | None:
+        async with self._lock:
+            return self._owners.get((tenant_id, session_id))
+
+    async def sessions_for_user(self, tenant_id: str, user_id: str) -> Sequence[str]:
+        """The sessions ``user_id`` owns in the tenant."""
+        async with self._lock:
+            return tuple(
+                sorted(
+                    session
+                    for (tenant, session), owner in self._owners.items()
+                    if tenant == tenant_id and owner == user_id
+                )
+            )
 
 
 class InMemoryArtifactStore:

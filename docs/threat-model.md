@@ -113,7 +113,7 @@ External MCP servers integrate into Runtime under explicit security boundaries:
 
 ### Per-run caller credentials
 
-Credentials a host passes to `Runtime.start`, `run` or `resume` (for example the signed-in user's bearer token, for tools that act as that user) are kept only in the process's memory, keyed by run, and only while the run executes. They are never written to `RunState`, checkpoints, the run, approval, event or audit stores, events, audits, spans, logs, caches or the model's context, and `ToolContext` leaves them out of its `repr`, serialization, equality and hashing, so a store, exporter, log line or traceback cannot hold them. They are dropped when the run pauses for approval or clarification and when it ends, however it ends. A pause can last longer than a token lives, and a persisted token would outlive the request that carried it and become readable to anyone with access to the stores, so the host must supply fresh credentials on `resume`; a run resumed without them, or recovered after a restart, gives its tools an empty mapping and they should refuse to act. Concurrent runs never share credentials; a child run started by `core.subagent` holds its own copy of its parent's until it ends. Tools receive a read-only copy and must not echo it in results or errors, which do reach the model, events and stores.
+Credentials a host passes to `Runtime.start`, `run` or `resume` (for example the signed-in user's bearer token, for tools that act as that user) are kept only in the process's memory, keyed by run, and only while the run executes. They are never written to `RunState`, checkpoints, the run, approval, event or audit stores, events, audits, spans, logs, caches or the model's context, and `ToolContext` leaves them out of its `repr`, serialization, equality and hashing, so a store, exporter, log line or traceback cannot hold them. They are dropped when the run pauses for approval or clarification and when it ends, however it ends. A pause can last longer than a token lives, and a persisted token would outlive the request that carried it and become readable to anyone with access to the stores, so the host must supply fresh credentials on `resume`. The HTTP API forwards request headers as credentials only when the operator lists them in `api.credential_headers` (none by default): each listed header's value reaches every tool of that run, so list only what the tools need and never identity headers a tool should not see; a run resumed without them, or recovered after a restart, gives its tools an empty mapping and they should refuse to act. Concurrent runs never share credentials; a child run started by `core.subagent` holds its own copy of its parent's until it ends. Tools receive a read-only copy and must not echo it in results or errors, which do reach the model, events and stores.
 
 ### Sessions, runs and users of one tenant
 
@@ -126,9 +126,12 @@ A tenant's users share its agents, not each other's data:
   A custom `MemoryStore` without `claim_session` must isolate users itself.
 - **Acting on a run.** Over HTTP only the run's user decides its approval, cancels, steers or
   answers it; `approvals:decide` (approval) and `runs:admin` (cancel) let an operator act on
-  another user's run, and nothing lets another user steer or answer one. The approval request
-  records who decided it (`decided_by`, from the authenticated principal, never the request
-  body), when and their comment.
+  another user's run, and nothing lets another user steer or answer one. From 0.2.0b3 the same
+  rule covers workflow approvals (`POST /v1/workflows/runs/{id}/approval`): the user who started
+  the workflow run, or `approvals:decide`, so a service token that starts or uploads workflows
+  cannot also approve them. Answering a workflow run's question (`POST
+  /v1/workflows/runs/{id}/input`) is, from 0.2.0b3, the run's user's only. The approval request records who decided it (`decided_by`, from the
+  authenticated principal, never the request body), when and their comment.
 - **Delegation.** `core.subagent` is registered only when the deployment sets
   `runtime.subagent.enabled`, and offered only to agents that list it in `enabled_tools`. It
   delegates only to the agents the calling agent lists in `delegates`, only to an agent whose

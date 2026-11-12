@@ -108,6 +108,31 @@ history does not fit, a share of the budget is held back so older tool results s
 form, each ending with a note that it was already retrieved, instead of being dropped. See
 [shortened older tool results](artifacts.md#shortened-older-tool-results) for the settings.
 
+### The context budget of an agent (0.2.0b3)
+
+The built-in context builders pack an agent's messages into an estimated token budget: 16,000
+for the default builder, `retrieval.max_context_tokens` for a retrieval builder. An agent that
+needs more (or less) sets its own, without a context builder of its own:
+
+```yaml
+agents:
+  - name: hr-assistant
+    context_policy:
+      max_context_tokens: 80000        # 1,024 to 2,000,000; unset keeps the builder's budget
+      shorten_older_tool_results: true # works against this budget
+```
+
+- Unset (the default), nothing changes: the builder's budget applies, and the agent serialises
+  and fingerprints as before.
+- `shorten_older_tool_results`, `oversized_tool_result` (whether the newest tool results fit, and
+  how far one is cut) and `compaction_trigger_ratio` all work against this budget.
+- The model profile's `context_window_tokens` still bounds what is sent: the router packs the
+  request into the window's room for messages, so the smaller of the two applies. Raise the
+  budget only for models whose window has room for it.
+- `DefaultContextBuilder.token_budget(agent)` returns the budget an agent gets. A host that kept
+  its own `DefaultContextBuilder(memory, max_estimated_tokens=...)` only to change this number can
+  drop it and set `context_policy.max_context_tokens` instead.
+
 Run the deterministic offline example:
 
 ```bash

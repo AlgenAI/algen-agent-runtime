@@ -14,6 +14,7 @@ EventType = Literal[
     "context.retrieved",
     "context.compaction.assessed",
     "context.compacted",
+    "context.tool_result_truncated",
     "context.working_state.updated",
     "context.skills.updated",
     "model.started",
@@ -38,6 +39,7 @@ EventType = Literal[
     "memory.learned.updated",
     "clarification.required",
     "approval.required",
+    "credentials.required",
     "mcp.auth_required",
     "run.continued",
     "steer.delivered",
@@ -50,14 +52,21 @@ EventType = Literal[
 
 #: Events that end a run.
 RUN_END_EVENT_TYPES: frozenset[str] = frozenset({"run.completed", "run.failed", "run.cancelled"})
-#: Events that pause a run until someone answers: an approval, a clarification or a tool
-#: call an operator must reconcile.
+#: Events that pause a run until someone answers: an approval, a clarification, a tool call an
+#: operator must reconcile, or (0.2.0b3) a recovered run that needs its caller's credentials.
 RUN_PAUSE_EVENT_TYPES: frozenset[str] = frozenset(
-    {"approval.required", "clarification.required", "tool.reconciliation_required"}
+    {
+        "approval.required",
+        "clarification.required",
+        "tool.reconciliation_required",
+        "credentials.required",
+    }
 )
 #: Events after which a run's event stream (``AlgenAgentRuntimeClient.stream`` and
-#: ``GET /v1/runs/{run_id}/events``) ends: the run ended or paused. After a pause, follow the
-#: resumed run from the last event's ``sequence``.
+#: ``GET /v1/runs/{run_id}/events``) ends by default: the run ended or paused. After a pause,
+#: follow the resumed run from the last event's ``sequence``, or follow it through its pauses
+#: (``AlgenAgentRuntimeClient.follow``, ``?through_pauses=true``) to end on
+#: ``RUN_END_EVENT_TYPES`` only.
 STREAM_END_EVENT_TYPES: frozenset[str] = RUN_END_EVENT_TYPES | RUN_PAUSE_EVENT_TYPES
 
 

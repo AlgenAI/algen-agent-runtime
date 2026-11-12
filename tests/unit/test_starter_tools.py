@@ -369,6 +369,7 @@ def test_starter_tools_disabled_by_default_in_container() -> None:
         "core.memory_recall",
         "core.memory_write",
         "core.memory_delete",
+        "core.ask_user",
     }
     assert "core.context_read" not in settings.agents[0].enabled_tools
     assert "starter.calculator" not in registered_names

@@ -23,7 +23,11 @@ Preserve these invariants:
 - secret-free configuration committed to source control.
 
 Add the narrowest meaningful test and cover the relevant failure path. Update public documentation,
-examples, and `CHANGELOG.md` for user-visible behavior. Run the repository quality gates before
+examples, and `CHANGELOG.md` for user-visible behavior. When a new capability is one a host
+application may already have built itself, add it to the `algen-runtime-host` skill's table and to
+the changelog's "You can now remove", and tell the maintainer which known hosts (Algen Studio,
+fly91-hrms, and the Traccia assistant service, `traccia-assistant-service`) to open an issue in;
+never open one yourself. Run the repository quality gates before
 finishing; report any gate that could not run and why. Provide a concise, well-structured Git commit
 message summarizing the verified changes. Do not commit, push, publish, or open a pull
 request unless the user explicitly requests it.

@@ -4,14 +4,18 @@
 ``GET /v1/workflows/runs/{workflow_id}`` reads a run; ``.../approval`` answers the approval step
 it waits on and ``.../input`` the question a paused step asked. Starting and answering need the
 ``runs:write`` scope and reading ``runs:read``, as for agent runs; every call sees only its
-caller's tenant.
+caller's tenant. Deciding a run's approval is, as for agent runs (0.2.0b2), its user's: the user
+who started the workflow run, or a principal with ``approvals:decide`` (0.2.0b3). The decider is
+always the authenticated user. Answering a run's question is, as for an agent run's clarification,
+its user's only (0.2.0b3). In process, ``WorkflowService.decide`` and ``provide_input`` do not
+check who acts.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.api.dependencies import Principal, require_scope
@@ -59,6 +63,25 @@ def run_view(state: WorkflowExecutionState, output_key: str | None) -> dict[str,
     }
 
 
+def require_workflow_user(
+    state: WorkflowExecutionState,
+    caller: Principal,
+    action: str,
+    *,
+    override_scope: str | None = None,
+) -> None:
+    """Acting on a workflow run is its user's (who started it); ``override_scope``, when given
+    and held, lets an operator act on any run of the tenant."""
+    if override_scope is not None and (override_scope in caller.scopes or "*" in caller.scopes):
+        return
+    if state.user_id != caller.user_id:
+        allowed = f" or a principal with scope {override_scope}" if override_scope else ""
+        raise HTTPException(
+            status_code=403,
+            detail=f"only the workflow run's user{allowed} may {action} it",
+        )
+
+
 def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -> None:
     def output_key(name: str) -> str | None:
         manifest = service.manifest_or_none(name)
@@ -100,6 +123,9 @@ def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -
         workflow_id: str, body: WorkflowApprovalBody, caller: Principal = identity
     ) -> dict[str, Any]:
         require_scope(caller, "runs:write")
+        current = await service.status(workflow_id, caller.tenant_id)
+        require_workflow_user(current, caller, "decide", override_scope="approvals:decide")
+        # The approver is the authenticated user, never a field of the body.
         state = await service.decide(
             workflow_id,
             tenant_id=caller.tenant_id,
@@ -115,6 +141,9 @@ def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -
         workflow_id: str, body: WorkflowInputBody, caller: Principal = identity
     ) -> dict[str, Any]:
         require_scope(caller, "runs:write")
+        current = await service.status(workflow_id, caller.tenant_id)
+        # The answer goes into the run as its user's: only the run's user may give it.
+        require_workflow_user(current, caller, "answer")
         state = await service.provide_input(
             workflow_id, tenant_id=caller.tenant_id, values=body.values
         )

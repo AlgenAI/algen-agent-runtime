@@ -5,7 +5,7 @@ import inspect
 import json
 import re
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import aclosing
 from contextvars import Token
 from dataclasses import dataclass, field
@@ -53,7 +53,14 @@ from algen_agent_runtime.context.history import (
     initialize_history,
     project_history,
 )
-from algen_agent_runtime.context.packing import REPAIR_MESSAGE_NAME, estimate_message
+from algen_agent_runtime.context.packing import (
+    MIN_OFFLOAD_CHARS,
+    REPAIR_MESSAGE_NAME,
+    estimate_message,
+    fit_newest_tool_results,
+    newest_tool_results,
+    pack_messages,
+)
 from algen_agent_runtime.context.skills import (
     SKILL_LOAD_PERMISSION,
     SKILL_LOAD_TOOL,
@@ -86,6 +93,7 @@ from algen_agent_runtime.exceptions.errors import (
     StoreUnavailableError,
     ToolExecutionError,
     VerificationError,
+    runtime_error_type,
 )
 from algen_agent_runtime.memory.contracts import LearnedMemoryStore, MemoryReceipt
 from algen_agent_runtime.memory.service import (
@@ -118,6 +126,7 @@ from algen_agent_runtime.runtime import attachments as run_attachments
 from algen_agent_runtime.runtime.guards import (
     REPEATED,
     call_key,
+    limit_answer_messages,
     over_limit,
     read_only,
     refusal_note,
@@ -129,6 +138,11 @@ from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.security.redaction import redact, redact_parameters, redact_text
+from algen_agent_runtime.tools.ask_user import (
+    ASK_USER_TOOL,
+    MAX_ANSWER_CHARS,
+    ask_user_tool,
+)
 from algen_agent_runtime.tools.contracts import (
     MAX_TOOL_NOTES_PER_CALL,
     EarlierCall,
@@ -149,6 +163,7 @@ from algen_agent_runtime.tools.contracts import (
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.tools.subagent import SUBAGENT_TOOL, delegated_run
 from algen_agent_runtime.types.contracts import (
     MAX_PENDING_STEERING,
     MAX_STEERING_CHARS,
@@ -166,6 +181,7 @@ from algen_agent_runtime.types.contracts import (
     Message,
     ModelRequest,
     ModelResponse,
+    RetrievalScreening,
     Role,
     RunRequest,
     RunResult,
@@ -185,12 +201,29 @@ from algen_agent_runtime.types.contracts import (
 from algen_agent_runtime.types.interfaces import (
     ArtifactStore,
     AuditLog,
+    ContextBuilder,
     EventPublisher,
     MemoryStore,
     RunStore,
     SessionOwnership,
 )
 from algen_agent_runtime.verification.verifiers import VerificationService
+
+# The limits budget.on_limit: summarize answers at; response_chars and events are not budgets
+# an answer can be made within.
+_SUMMARIZED_LIMITS = frozenset(
+    {"execution_steps", "model_calls", "model_tokens", "estimated_cost", "time"}
+)
+# The statuses a run can answer at its limit from, and the steps that take it to
+# invoking_model. A run already composing or paused is not answered.
+_LIMIT_ANSWER_ROUTES: dict[RunStatus, tuple[RunStatus, ...]] = {
+    RunStatus.BUILDING_CONTEXT: (RunStatus.PLANNING,),
+    RunStatus.PLANNING: (),
+    RunStatus.INVOKING_TOOL: (RunStatus.PLANNING,),
+    RunStatus.INVOKING_MODEL: (),
+    RunStatus.RETRYING: (),
+    RunStatus.VERIFYING: (RunStatus.RETRYING,),
+}
 
 # Events recorded even past ``Budget.max_events``: they end or pause the run, or say why.
 _ALWAYS_RECORDED_EVENTS = frozenset(
@@ -201,6 +234,7 @@ _ALWAYS_RECORDED_EVENTS = frozenset(
         "approval.required",
         "clarification.required",
         "tool.reconciliation_required",
+        "credentials.required",
         "mcp.auth_required",
         "budget.refused",
         "steer.undelivered",
@@ -224,6 +258,16 @@ _SINGLE_PATH_PLAN_ACTIONS = frozenset(
         PolicyAction.REQUIRE_CLARIFICATION,
     }
 )
+
+
+#: Supplies credentials for a run that ``AgentRuntime.recover`` resumes after a restart: a
+#: mapping (a service token, say) to continue the run with, or None to pause it in
+#: ``awaiting_credentials`` until the host resumes it with ``resume(..., credentials=...)``.
+RecoveryCredentialsProvider = Callable[[RunState], Awaitable[Mapping[str, str] | None]]
+# A child run's pauses its core.subagent parent waits in too.
+_DELEGATED_PAUSES = frozenset({RunStatus.AWAITING_APPROVAL, RunStatus.AWAITING_CLARIFICATION})
+# How often a parent looks again at a child run another process is driving.
+_CHILD_POLL_SECONDS = 0.1
 
 
 def _planned_call(
@@ -463,6 +507,9 @@ class AgentRuntime:
                 self.tools.register(tool)
         self.tools.register(working_state_tool())
         self.tools.register(skill_load_tool(self._skill_agent))
+        self.tools.register(ask_user_tool())
+        # Credentials for runs recover() resumes after a restart (see RecoveryCredentialsProvider).
+        self.recovery_credentials: RecoveryCredentialsProvider | None = None
         if context_artifacts is not None:
             self.tools.register(context_artifacts.read_tool())
         self.telemetry_include_content = telemetry_include_content
@@ -571,6 +618,8 @@ class AgentRuntime:
         state_values: dict[str, Any] = {
             "request": request,
             "agent_key": agent.key,
+            # Only whether there were credentials, never their values: recovery asks again.
+            "caller_credentials": bool(credentials),
             "deadline": utc_now()
             + timedelta(seconds=min(timeout, agent.budget.max_latency_seconds)),
         }
@@ -658,6 +707,12 @@ class AgentRuntime:
         if state.status not in TERMINAL_STATUSES:
             await self._transition(state, RunStatus.CANCELLED)
             await self._emit(state, "run.cancelled", {})
+        # A core.subagent call waiting for a paused child run: the child is cancelled with it.
+        for child_run_id in state.delegated_runs.values():
+            try:
+                await self.cancel(child_run_id, tenant_id)
+            except (NotFoundError, ConflictError):
+                self._logger.warning("child_run_cancel_failed", run_id=run_id, child=child_run_id)
         return state
 
     async def steer(self, run_id: str, tenant_id: str, text: str) -> SteeringMessage:
@@ -709,24 +764,69 @@ class AgentRuntime:
         credentials: Mapping[str, str] | None = None,
         decided_by: str | None = None,
     ) -> RunState:
-        """Answer a paused run's approval or clarification and continue it.
+        """Answer a paused run's approval or clarification, or give a run awaiting credentials
+        its caller's credentials, and continue it.
 
         The resumed run sees only the ``credentials`` passed here; none from before the pause.
         An approval decision records ``decided_by`` (the approver's user id; the HTTP route passes
         the authenticated principal's) and the payload's ``comment``, or its rejection
         ``reason`` when it has no comment. This method does not check who may decide.
+
+        A run in ``awaiting_credentials`` takes no payload and needs non-empty ``credentials``.
+
+        A ``core.subagent`` parent paused on its child's approval or clarification (its
+        ``pause_payload`` has ``child_run_id``) passes the answer to the child, then follows
+        the child until it ends or pauses again. Answering the child directly continues the
+        parents waiting for it too.
         """
         credentials = read_only_credentials(credentials)
+        state = await self._resume(
+            run_id, tenant_id, payload, credentials=credentials, decided_by=decided_by
+        )
+        await self._wake_waiting_parent(state, credentials)
+        return state
+
+    async def _resume(
+        self,
+        run_id: str,
+        tenant_id: str,
+        payload: Mapping[str, Any],
+        *,
+        credentials: Mapping[str, str],
+        decided_by: str | None,
+    ) -> RunState:
         await self._await_paused_drive(run_id)
         state = await self._require_state(run_id, tenant_id)
-        if state.status == RunStatus.AWAITING_CLARIFICATION:
+        pause = state.pause_payload or {}
+        child_run_id = pause.get("child_run_id") if state.status in _DELEGATED_PAUSES else None
+        # Checkpointed by the transition below: whether this drive has caller credentials.
+        state.caller_credentials = bool(credentials)
+        if child_run_id:
+            await self._answer_child(state, str(child_run_id), payload, credentials, decided_by)
+            self._restore_deadline_after_pause(state)
+            state.pause_payload = None
+            await self._transition(state, RunStatus.PLANNING)
+        elif state.status == RunStatus.AWAITING_CREDENTIALS:
+            if not credentials:
+                raise ConflictError("credentials are required to resume a run awaiting credentials")
+            resume_status = RunStatus(str(pause.get("resume_status", RunStatus.PLANNING.value)))
+            self._restore_deadline_after_pause(state)
+            state.pause_payload = None
+            await self._transition(state, resume_status)
+            await self._emit(state, "run.continued", {"mode": "credentials"})
+        elif state.status == RunStatus.AWAITING_CLARIFICATION:
             clarification = str(payload.get("clarification", "")).strip()
             if not clarification:
                 raise ValueError("clarification is required")
-            state.append_message(Message.text(Role.USER, clarification))
-            self._restore_deadline_after_pause(state)
-            state.pause_payload = None
-            await self._transition(state, RunStatus.BUILDING_CONTEXT)
+            if pause.get("kind") == "ask_user":
+                await self._answer_ask_user(
+                    state, str(pause.get("tool_call_id", "")), clarification
+                )
+            else:
+                state.append_message(Message.text(Role.USER, clarification))
+                self._restore_deadline_after_pause(state)
+                state.pause_payload = None
+                await self._transition(state, RunStatus.BUILDING_CONTEXT)
         elif state.status == RunStatus.AWAITING_APPROVAL:
             pause_payload = state.pause_payload or {}
             approval_id = str(pause_payload.get("approval_id", ""))
@@ -833,6 +933,92 @@ class AgentRuntime:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
         await self._schedule(run_id, tenant_id, credentials)
         return state
+
+    async def _answer_ask_user(self, state: RunState, call_id: str, answer: str) -> None:
+        """Give a ``core.ask_user`` call the user's answer as its result and plan on."""
+        state.append_message(
+            Message(
+                role=Role.TOOL,
+                name=ASK_USER_TOOL,
+                tool_call_id=call_id,
+                content=(TextBlock(text=json.dumps({"answer": answer[:MAX_ANSWER_CHARS]})),),
+            )
+        )
+        state.completed_tool_call_ids.add(call_id)
+        state.pending_tool_calls = [call for call in state.pending_tool_calls if call.id != call_id]
+        state.output_text = None
+        state.summary = state.summary.model_copy(
+            update={"tool_calls": state.summary.tool_calls + 1}
+        )
+        self._restore_deadline_after_pause(state)
+        state.pause_payload = None
+        await self._emit(
+            state,
+            "tool.completed",
+            {"tool": ASK_USER_TOOL, "status": "completed", "side_effect": SideEffect.NONE.value},
+            f"tool-{call_id}",
+        )
+        await self._transition(state, RunStatus.PLANNING)
+
+    async def _answer_child(
+        self,
+        parent: RunState,
+        child_run_id: str,
+        payload: Mapping[str, Any],
+        credentials: Mapping[str, str],
+        decided_by: str | None,
+    ) -> None:
+        """Pass a parent's answer to the child run whose pause it shows.
+
+        A child that is no longer paused (answered directly, cancelled, ended) needs nothing:
+        the parent just follows it. A child paused on something else now is a conflict, so a
+        decision is never applied to an approval its decider did not see.
+        """
+        tenant_id = parent.request.tenant_id
+        child = await self._require_state(child_run_id, tenant_id)
+        pause = parent.pause_payload or {}
+        if child.status not in PAUSED_STATUSES:
+            return
+        child_pause = child.pause_payload or {}
+        same = child.status == parent.status and (
+            child.status != RunStatus.AWAITING_APPROVAL
+            or child_pause.get("approval_id") == pause.get("approval_id")
+        )
+        if not same:
+            raise ConflictError(
+                f"child run {child_run_id!r} now waits in {child.status.value!r}; "
+                "read the run again before answering"
+            )
+        await self._resume(
+            child_run_id, tenant_id, payload, credentials=credentials, decided_by=decided_by
+        )
+
+    async def _wake_waiting_parent(self, child: RunState, credentials: Mapping[str, str]) -> None:
+        """Continue the ``core.subagent`` parents paused on ``child``'s pause, which was just
+        answered on the child itself: each follows its child again."""
+        parent_run_id = delegated_run(child)
+        if parent_run_id is None:
+            return
+        tenant_id = child.request.tenant_id
+        parent = await self.runs.get(parent_run_id, tenant_id)
+        if (
+            parent is None
+            or parent.status not in _DELEGATED_PAUSES
+            or (parent.pause_payload or {}).get("child_run_id") != child.id
+        ):
+            return
+        try:
+            await self._await_paused_drive(parent.id)
+            parent.caller_credentials = bool(credentials)
+            self._restore_deadline_after_pause(parent)
+            parent.pause_payload = None
+            await self._transition(parent, RunStatus.PLANNING)
+            await self._schedule(parent.id, tenant_id, credentials)
+        except ConflictError:
+            # Resumed or cancelled meanwhile by someone else, who has it now.
+            self._logger.warning("parent_run_wake_skipped", run_id=parent.id, child=child.id)
+            return
+        await self._wake_waiting_parent(parent, credentials)
 
     async def _decide_approval(
         self,
@@ -1175,24 +1361,33 @@ class AgentRuntime:
         """The credentials the run's current drive was given, or none."""
         return read_only_credentials(self._credentials.get(run_id))
 
-    async def recover(self, limit: int = 1000) -> int:
+    async def recover(
+        self,
+        limit: int = 1000,
+        *,
+        credentials_provider: RecoveryCredentialsProvider | None = None,
+    ) -> int:
         """Resume non-paused checkpoints after a single-node process restart.
 
         Recovery is single-node: run it (``recover_incomplete_runs``) on one process only.
         A run another process changed meanwhile (its own recovery, a cancel) is skipped
         rather than failing the start; a drive that loses such a race stands down without
         failing the run. Recovery leases for several replicas are planned for 0.3.
+
+        Credentials are never stored, so a run that was acting with its caller's credentials
+        (``RunState.caller_credentials``) does not continue without them: it continues with
+        what ``credentials_provider`` (default ``self.recovery_credentials``) returns for it,
+        or, when there is no provider or it returns nothing, pauses in ``awaiting_credentials``
+        with a ``credentials.required`` event until ``resume(..., credentials=...)``. Returns
+        the number of runs driven again.
         """
+        provider = credentials_provider or self.recovery_credentials
         recovered = 0
         for state in await self.runs.list_active(limit):
             existing = self._tasks.get(state.id)
             if existing and not existing.done():
                 continue
-            if state.status in {
-                RunStatus.AWAITING_APPROVAL,
-                RunStatus.AWAITING_CLARIFICATION,
-                RunStatus.AWAITING_RECONCILIATION,
-            }:
+            if state.status in PAUSED_STATUSES:
                 continue
             try:
                 if state.deadline and state.deadline <= utc_now():
@@ -1204,12 +1399,18 @@ class AgentRuntime:
                     await self.runs.save(state, expected)
                     await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
                     continue
+                credentials: Mapping[str, str] | None = None
+                if state.caller_credentials:
+                    credentials = await self._recovery_credentials(provider, state)
+                    if not credentials:
+                        await self._pause_for_credentials(state)
+                        continue
                 if self._recovery_status(state.status) != state.status:
                     expected = state.version
                     self._rewind_for_recovery(state)
                     state.updated_at = utc_now()
                     await self.runs.save(state, expected)
-                await self._schedule(state.id, state.request.tenant_id)
+                await self._schedule(state.id, state.request.tenant_id, credentials)
             except RunConflictError:
                 # Another process (its own recovery, a cancel) changed the run since it was
                 # listed: that process has it now.
@@ -1222,6 +1423,42 @@ class AgentRuntime:
             recovered += 1
         return recovered
 
+    async def _recovery_credentials(
+        self, provider: RecoveryCredentialsProvider | None, state: RunState
+    ) -> Mapping[str, str] | None:
+        """What ``provider`` supplies for a recovered run, or None (it failed or has none)."""
+        if provider is None:
+            return None
+        try:
+            supplied = await provider(state)
+        except Exception as exc:
+            self._logger.warning(
+                "recovery_credentials_failed", run_id=state.id, error_type=type(exc).__name__
+            )
+            return None
+        return read_only_credentials(supplied) if supplied else None
+
+    async def _pause_for_credentials(self, state: RunState) -> None:
+        """Pause a recovered run that needs its caller's credentials (``awaiting_credentials``);
+        ``resume`` with credentials continues it where its checkpoint left off."""
+        expected = state.version
+        self._rewind_for_recovery(state)
+        now = utc_now()
+        state.pause_payload = {
+            "kind": "credentials",
+            "reason": "recovered",
+            "resume_status": state.status.value,
+            "paused_at": now.isoformat(),
+        }
+        state.status = RunStatus.AWAITING_CREDENTIALS
+        state.updated_at = now
+        await self.runs.save(state, expected)
+        await self._emit(
+            state,
+            "credentials.required",
+            {"kind": "credentials", "reason": "recovered", "paused_at": now.isoformat()},
+        )
+
     async def expire_paused_runs(
         self,
         *,
@@ -1231,7 +1468,8 @@ class AgentRuntime:
         """Time out paused runs that can no longer be resumed or have waited too long.
 
         A run awaiting approval expires once its approval request has expired (or is
-        missing). A run awaiting clarification expires only when a timeout is supplied.
+        missing). A run awaiting clarification, or awaiting credentials, expires only when a
+        timeout is supplied (``clarification_timeout_seconds``).
         Runs resumed concurrently are skipped through the optimistic version check.
         """
         expired = 0
@@ -1252,6 +1490,12 @@ class AgentRuntime:
                 ):
                     continue
                 reason, error = "clarification_expired", "Clarification was not provided in time."
+            elif state.status == RunStatus.AWAITING_CREDENTIALS:
+                if clarification_timeout_seconds is None or (
+                    (now - state.updated_at).total_seconds() < clarification_timeout_seconds
+                ):
+                    continue
+                reason, error = "credentials_expired", "Credentials were not provided in time."
             else:
                 continue
             state.error = error
@@ -1347,6 +1591,10 @@ class AgentRuntime:
                 await self._execute(state, agent)
         except TimeoutError:
             current = await self._require_state(run_id, tenant_id)
+            if self._summarizes_on_limit(current, agent):
+                # The run's time is up: answer once, within limit_answer_timeout_seconds.
+                await self._answer_on_limit_or_fail(current, agent, "time")
+                return
             if current.status not in TERMINAL_STATUSES:
                 await self._transition(current, RunStatus.TIMED_OUT)
                 await self._emit(current, "run.failed", {"reason": "timeout"})
@@ -1373,6 +1621,7 @@ class AgentRuntime:
             trace.get_current_span().set_attribute("budget.refused", True)
             if current.status not in TERMINAL_STATUSES:
                 current.error = self._safe_error(exc)
+                current.error_type = runtime_error_type(exc)
                 # The candidate the router was reserving; never the run's metadata values.
                 refused = {"reason": current.error, "provider": exc.provider, "model": exc.model}
                 await self._emit(current, "budget.refused", refused)
@@ -1389,36 +1638,197 @@ class AgentRuntime:
                 )
         except Exception as exc:
             current = await self._require_state(run_id, tenant_id)
-            self._logger.exception(
-                "agent_run_failed",
-                error_type=type(exc).__name__,
-                run_id=current.id,
-                correlation_id=current.request.correlation_id,
-                session_id=current.session_id,
-                tenant_id=current.request.tenant_id,
-                agent=current.agent_key,
+            limit = exc.limit if isinstance(exc, BudgetExceededError) else None
+            if limit in _SUMMARIZED_LIMITS and self._summarizes_on_limit(current, agent):
+                # A limit reached inside a step (a token or cost ceiling a retry hit).
+                await self._answer_on_limit_or_fail(current, agent, str(limit))
+                return
+            await self._fail_after_error(current, exc)
+
+    async def _fail_after_error(self, current: RunState, exc: Exception) -> None:
+        """End ``current`` failed with ``exc``, which ended its drive."""
+        self._logger.exception(
+            "agent_run_failed",
+            error_type=type(exc).__name__,
+            run_id=current.id,
+            correlation_id=current.request.correlation_id,
+            session_id=current.session_id,
+            tenant_id=current.request.tenant_id,
+            agent=current.agent_key,
+            exc_info=exc,
+        )
+        if current.status in TERMINAL_STATUSES:
+            return
+        current.error = self._safe_error(exc)
+        current.error_type = runtime_error_type(exc)
+        failed: dict[str, Any] = {"error": current.error}
+        limit = exc.limit if isinstance(exc, BudgetExceededError) else None
+        if limit is not None:
+            current.limit_reached = limit
+            failed.update(reason="limit_exceeded", limit=limit)
+            trace.get_current_span().set_attribute("agent.run.limit_exceeded", limit)
+            await self._audit(
+                current,
+                "run.limit_exceeded",
+                "failed",
+                current.id,
+                {
+                    "limit": limit,
+                    "step_count": current.step_count,
+                    "model_calls": current.summary.model_calls,
+                    "total_tokens": current.summary.usage.total_tokens,
+                },
             )
-            if current.status not in TERMINAL_STATUSES:
-                current.error = self._safe_error(exc)
-                failed: dict[str, Any] = {"error": current.error}
-                limit = exc.limit if isinstance(exc, BudgetExceededError) else None
-                if limit is not None:
-                    failed.update(reason="limit_exceeded", limit=limit)
-                    trace.get_current_span().set_attribute("agent.run.limit_exceeded", limit)
-                    await self._audit(
-                        current,
-                        "run.limit_exceeded",
-                        "failed",
-                        current.id,
-                        {
-                            "limit": limit,
-                            "step_count": current.step_count,
-                            "model_calls": current.summary.model_calls,
-                            "total_tokens": current.summary.usage.total_tokens,
-                        },
-                    )
-                await self._transition(current, RunStatus.FAILED)
-                await self._emit(current, "run.failed", failed)
+        await self._transition(current, RunStatus.FAILED)
+        await self._emit(current, "run.failed", failed)
+
+    @staticmethod
+    def _summarizes_on_limit(state: RunState, agent: AgentDefinition) -> bool:
+        """The run answers at its limit instead of failing, and has not tried to yet."""
+        return (
+            agent.budget.on_limit == "summarize"
+            and not agent.continuation_policy.enabled
+            and state.limit_reached is None
+            and state.status in _LIMIT_ANSWER_ROUTES
+        )
+
+    async def _answer_on_limit_or_fail(
+        self, state: RunState, agent: AgentDefinition, limit: str
+    ) -> None:
+        """Answer at ``limit`` outside the run's drive, or fail the run with why it could not."""
+        try:
+            async with asyncio.timeout(agent.budget.limit_answer_timeout_seconds):
+                await self._answer_on_limit(state, agent, limit)
+        except StoreUnavailableError:
+            raise  # _drive_with_credentials keeps the run for a later drive
+        except RunConflictError:
+            # Another drive owns the run now, as in _drive_observed.
+            self._logger.warning(
+                "agent_run_superseded", run_id=state.id, tenant_id=state.request.tenant_id
+            )
+        except Exception as exc:
+            current = await self._require_state(state.id, state.request.tenant_id)
+            if isinstance(exc, TimeoutError):
+                exc = BudgetExceededError(
+                    f"the {limit} limit was reached and the answer at the limit did not finish "
+                    f"within {agent.budget.limit_answer_timeout_seconds} seconds",
+                    limit=limit,
+                )
+            await self._fail_after_error(current, exc)
+
+    async def _answer_on_limit(self, state: RunState, agent: AgentDefinition, limit: str) -> None:
+        """budget.on_limit: summarize. One model call with no tools answers from what the run has.
+
+        The call is capped at limit_answer_max_output_tokens and is not retried, its answer is
+        verified with no repair turn, and the run completes with ``limit_reached`` set, so its
+        result is ``partial``. It is the only spend past the limit.
+        """
+        expected = state.version
+        state.limit_reached = limit
+        # Calls the model asked for and that never ran are not answered: the answer is not
+        # given tools, and its transcript shows only whole tool exchanges.
+        state.pending_tool_calls = []
+        state.output_text = None
+        state.updated_at = utc_now()
+        await self.runs.save(state, expected)
+        trace.get_current_span().set_attribute("agent.run.limit_exceeded", limit)
+        await self._audit(
+            state,
+            "run.limit_exceeded",
+            "summarize",
+            state.id,
+            {
+                "limit": limit,
+                "step_count": state.step_count,
+                "model_calls": state.summary.model_calls,
+                "total_tokens": state.summary.usage.total_tokens,
+            },
+        )
+        for status in _LIMIT_ANSWER_ROUTES[state.status]:
+            await self._transition(state, status)
+        if state.status != RunStatus.INVOKING_MODEL:
+            await self._transition(state, RunStatus.INVOKING_MODEL)
+        step_id = f"limit-answer-{state.step_count + 1}"
+        messages = limit_answer_messages(state.messages, limit)
+        builder = self.contexts.get(agent.context_builder)
+        if isinstance(builder, (DefaultContextBuilder, RetrievalContextBuilder)):
+            messages = list(pack_messages(messages, builder.token_budget(agent)))
+        budget = agent.budget
+        request = ModelRequest(
+            messages=tuple(messages),
+            response_schema=state.request.overrides.response_schema,
+            temperature=state.request.overrides.temperature,
+            max_output_tokens=min(
+                budget.limit_answer_max_output_tokens,
+                state.request.overrides.max_output_tokens or budget.max_output_tokens,
+            ),
+            timeout_seconds=budget.limit_answer_timeout_seconds,
+            stream=state.request.stream,
+        )
+        checked = await self._policy_value(
+            "before_model",
+            request,
+            state,
+            {"agent": agent, "tool_output_schema": self._tool_output_schema},
+        )
+        if isinstance(checked, ModelRequest):
+            if checked.tools:
+                raise ConfigurationError(
+                    "before_model policies must not add tools to the answer at a limit"
+                )
+            request = checked
+        await self._emit(state, "model.started", {"purpose": "limit_answer"}, step_id)
+        # One attempt: a retry would be a second call past the limit.
+        once = agent.model_copy(
+            update={"retry_policy": agent.retry_policy.model_copy(update={"max_attempts": 1})}
+        )
+        profiles = (agent.default_model, *agent.fallback_models)
+        response = await self._model_with_retry(state, once, request, profiles, step_id)
+        text = await self._guard_answer(
+            "after_model", response.message.text_content, state, {"agent": agent, "tool_calls": ()}
+        )
+        state.output_text = text or None
+        if text:
+            state.append_message(Message.text(Role.ASSISTANT, text))
+        self._record_model_usage(state, response)
+        await self._emit(
+            state,
+            "model.completed",
+            {
+                "provider": response.provider,
+                "model": response.model,
+                "finish_reason": response.finish_reason.value,
+                "cache_hit": False,
+                "latency_ms": response.latency_ms,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "cached_tokens": response.usage.cached_tokens,
+                "cache_write_tokens": response.usage.cache_write_tokens,
+                "total_tokens": response.usage.total_tokens,
+                "estimated_cost_usd": response.usage.estimated_cost_usd,
+                "tool_call_count": 0,
+                "tool_names": [],
+                "purpose": "limit_answer",
+                "limit": limit,
+            },
+            step_id,
+        )
+        await self._audit(
+            state,
+            "model.call",
+            "completed",
+            f"{response.provider}/{response.model}",
+            {"step_id": step_id, "usage": response.usage.model_dump(mode="json")},
+        )
+        # Verified like any answer, but with no repair turn: that would be another call.
+        no_repair = agent.model_copy(
+            update={
+                "verification_policy": agent.verification_policy.model_copy(
+                    update={"max_repairs": 0}
+                )
+            }
+        )
+        await self._verify_and_complete(state, no_repair, step_id)
 
     async def _execute(self, state: RunState, agent: AgentDefinition) -> None:
         self._validate_context_policy(agent)
@@ -1436,17 +1846,16 @@ class AgentRuntime:
             if state.request.attachments:
                 await self._validate_attachments(state, agent)
             await self._transition(state, RunStatus.BUILDING_CONTEXT)
-        while state.status not in TERMINAL_STATUSES and state.status not in {
-            RunStatus.AWAITING_APPROVAL,
-            RunStatus.AWAITING_CLARIFICATION,
-            RunStatus.AWAITING_RECONCILIATION,
-        }:
+        while state.status not in TERMINAL_STATUSES and state.status not in PAUSED_STATUSES:
             if state.id in self._event_overflow:
                 raise BudgetExceededError(
                     f"run reached its limit of {agent.budget.max_events} events", limit="events"
                 )
             limit_reason = self._limit_reason(state, agent)
             if limit_reason:
+                if self._summarizes_on_limit(state, agent):
+                    await self._answer_on_limit(state, agent, limit_reason)
+                    return
                 if await self._continue_or_pause(state, agent, limit_reason):
                     continue
                 return
@@ -1484,7 +1893,8 @@ class AgentRuntime:
                     attributes={**self._span_attributes(state), "span.type": "context"},
                 ) as span:
                     span.set_attribute("context.builder", agent.context_builder)
-                    state.messages = list(await builder.build(state, agent))
+                    state.retrieval_screening = None
+                    state.messages = list(await self._build_context(state, agent, builder))
                     span.set_attribute("context.message_count", len(state.messages))
                     span.set_attribute("retrieval.source_count", len(state.citations))
                     if state.citations:
@@ -1500,6 +1910,8 @@ class AgentRuntime:
                             "retrieval.scores",
                             tuple(round(item.score, 4) for item in state.citations[:20]),
                         )
+                if state.retrieval_screening is not None:
+                    await self._report_retrieval_screening(state, state.retrieval_screening)
                 checked_messages = await self._policy_value(
                     "after_retrieval",
                     state.messages,
@@ -1574,6 +1986,143 @@ class AgentRuntime:
                         raise
                     step_span.set_attribute("agent.step.status", state.status.value)
 
+    async def _report_retrieval_screening(
+        self, state: RunState, screening: RetrievalScreening
+    ) -> None:
+        """Report the retrieved chunks the retrieval_injection guardrail flagged or dropped."""
+        details = {
+            "boundary": "after_retrieval",
+            "action": "deny" if screening.action == "drop" else "transform",
+            "reason_code": "retrieval_injection.detected",
+            "chunk_count": len(screening.chunk_ids),
+        }
+        await self._emit(
+            state,
+            "policy.evaluated",
+            {
+                **details,
+                # Chunk ids name the tenant's documents: content-level telemetry only.
+                "chunk_ids": list(screening.chunk_ids) if self.telemetry_include_content else [],
+            },
+        )
+        await self._audit(
+            state,
+            "policy.decision",
+            "dropped" if screening.action == "drop" else "flagged",
+            "retrieval",
+            {**details, "chunk_ids": list(screening.chunk_ids)},
+        )
+        state.retrieval_screening = None
+
+    async def _build_context(
+        self, state: RunState, agent: AgentDefinition, builder: ContextBuilder
+    ) -> Sequence[Message]:
+        """The model's context, from ``builder``.
+
+        When the newest tool results alone do not fit (context_policy.oversized_tool_result
+        ``truncate``), they are offloaded or cut to fit, as a last resort, and the build is
+        tried once more; it fails only when even that does not fit.
+        """
+        try:
+            return await builder.build(state, agent)
+        except BudgetExceededError as exc:
+            if exc.limit is not None or not await self._fit_newest_tool_results(
+                state, agent, builder
+            ):
+                raise
+        return await builder.build(state, agent)
+
+    async def _fit_newest_tool_results(
+        self, state: RunState, agent: AgentDefinition, builder: ContextBuilder
+    ) -> bool:
+        """Offload or cut the newest tool results so that the required context fits.
+
+        It changes the run's history itself, once: later builds and turns see the shortened
+        result. Each one is offloaded to a context artifact when the agent can read it back
+        (core.context_read) and the reference fits; otherwise it is cut to what fits and marked
+        as truncated, keeping the coverage the tool reported, marked capped. ``False`` when it
+        does not apply or nothing would fit.
+        """
+        policy = agent.context_policy
+        if policy.oversized_tool_result != "truncate" or not isinstance(
+            builder, (DefaultContextBuilder, RetrievalContextBuilder)
+        ):
+            return False
+        history = state.context_history
+        if history is None:
+            return False
+        assembled = await builder.assemble(state, agent)
+        budget = max(1, builder.token_budget(agent) - builder.compaction_token_reservation)
+        readable = (
+            self.context_artifacts is not None
+            and CONTEXT_READ_TOOL in agent.enabled_tools
+            and CONTEXT_READ_PERMISSION in agent.tool_permissions
+        )
+        offloaded: dict[str, tuple[str, str]] = {}
+        if readable:
+            assert self.context_artifacts is not None
+            for message in newest_tool_results(assembled):
+                if message.tool_call_id is None or not message.content:
+                    continue
+                first = message.content[0]
+                if not isinstance(first, TextBlock) or len(first.text) <= MIN_OFFLOAD_CHARS:
+                    continue
+                reference, artifact_id = await self.context_artifacts.offload(
+                    first.text,
+                    ToolContext(
+                        run_id=state.id,
+                        step_id=f"tool-{message.tool_call_id}",
+                        tenant_id=state.request.tenant_id,
+                        user_id=state.request.user_id,
+                        permissions=agent.tool_permissions,
+                        idempotency_key=f"{state.id}:oversized:{message.tool_call_id}",
+                    ),
+                    policy,
+                    started_at=state.started_at,
+                    force=True,
+                )
+                assert artifact_id is not None
+                offloaded[message.tool_call_id] = (reference, artifact_id)
+        fitted = fit_newest_tool_results(
+            assembled,
+            budget,
+            replacements={call_id: text for call_id, (text, _) in offloaded.items()},
+        )
+        if fitted is None:
+            return False
+        expected = state.version
+        replaced = {message.tool_call_id: message for message, _ in fitted}
+        for index, message in enumerate(history):
+            if message.role == Role.TOOL and message.tool_call_id in replaced:
+                history[index] = replaced[message.tool_call_id]
+        state.messages = [
+            replaced.get(message.tool_call_id, message) if message.role == Role.TOOL else message
+            for message in state.messages
+        ]
+        for message, report in fitted:
+            call_id = message.tool_call_id or ""
+            if call_id in offloaded and report.offloaded:
+                artifact_id = offloaded[call_id][1]
+                if artifact_id not in state.context_artifact_ids:
+                    state.context_artifact_ids.append(artifact_id)
+                report = report.model_copy(update={"artifact_id": artifact_id})
+            await self._emit(
+                state,
+                "context.tool_result_truncated",
+                report.model_dump(mode="json", exclude_none=True),
+                f"tool-{call_id}",
+            )
+            await self._audit(
+                state,
+                "context.tool_result_truncated",
+                "offloaded" if report.offloaded else "truncated",
+                message.name or "",
+                report.model_dump(mode="json", exclude_none=True),
+            )
+        state.updated_at = utc_now()
+        await self.runs.save(state, expected)
+        return True
+
     async def _compact_context(self, state: RunState, agent: AgentDefinition) -> None:
         if not agent.context_policy.compact_history:
             return
@@ -1603,7 +2152,7 @@ class AgentRuntime:
             assembled = await builder.assemble(state, agent)
             context_tokens = sum(estimate_message(message) for message in assembled)
             request = self._model_request(state, agent, assembled)
-            allowances = [builder.compaction_token_budget]
+            allowances = [builder.token_budget(agent)]
             for profile in profiles:
                 try:
                     allowance = message_token_budget(request, profile)
@@ -2489,6 +3038,11 @@ class AgentRuntime:
     async def _execute_tool(
         self, state: RunState, agent: AgentDefinition, action: PlannedAction
     ) -> None:
+        child_run_id = state.delegated_runs.get(action.id.removeprefix("tool-"))
+        if child_run_id is not None:
+            # A core.subagent call admitted and started before its child paused.
+            await self._follow_delegated_call(state, agent, action, child_run_id)
+            return
         try:
             admitted = await self._admit_tool_call(state, agent, action)
         except _UnknownToolError as exc:
@@ -2509,6 +3063,9 @@ class AgentRuntime:
             return
         # A plan_tool transform may have rewritten the arguments: those are the ones that run.
         tool, action = admitted
+        if tool.definition.name == ASK_USER_TOOL:
+            await self._ask_user(state, agent, action, tool)
+            return
         await self._transition(state, RunStatus.INVOKING_TOOL)
         try:
             outcome = await self._run_tool_call(state, agent, action, tool)
@@ -2519,6 +3076,139 @@ class AgentRuntime:
                 return
             await self._tool_call_failed(state, agent, action, exc)
             return
+        if tool.definition.name == SUBAGENT_TOOL:
+            child = await self._paused_child(state, outcome.result.value)
+            if child is not None:
+                await self._pause_with_child(state, action, child)
+                return
+        await self._record_tool_call(state, agent, action, tool, outcome)
+        await self._transition(state, RunStatus.BUILDING_CONTEXT)
+        await self._announce_tool_updates(state, action, outcome)
+
+    async def _ask_user(
+        self, state: RunState, agent: AgentDefinition, action: PlannedAction, tool: Tool
+    ) -> None:
+        """Pause the run for the user's answer to a ``core.ask_user`` call."""
+        missing = tool.definition.required_permissions - agent.tool_permissions
+        if missing:
+            await self._tool_call_failed(
+                state,
+                agent,
+                action,
+                PolicyDeniedError(f"missing permissions for {ASK_USER_TOOL}: {sorted(missing)}"),
+            )
+            return
+        await self._announce_tool_call(state, action, tool.definition)
+        choices = action.arguments.get("choices") or ()
+        state.pause_payload = {
+            "kind": "ask_user",
+            "tool_call_id": action.id.removeprefix("tool-"),
+            "question": str(action.arguments.get("question", "")).strip(),
+            "choices": [str(choice) for choice in choices],
+            "paused_at": utc_now().isoformat(),
+        }
+        await self._transition(state, RunStatus.AWAITING_CLARIFICATION)
+        await self._emit(state, "clarification.required", state.pause_payload, action.id)
+
+    async def _paused_child(self, state: RunState, value: Any) -> RunState | None:
+        """The child run a ``core.subagent`` result reports paused for an approval or a
+        clarification, or None when it ended (or paused for anything else)."""
+        if not isinstance(value, Mapping) or value.get("status") not in {
+            status.value for status in _DELEGATED_PAUSES
+        }:
+            return None
+        child = await self.runs.get(str(value.get("run_id", "")), state.request.tenant_id)
+        if child is None or child.status not in _DELEGATED_PAUSES:
+            return None
+        if delegated_run(child) != state.id:
+            return None
+        return child
+
+    async def _pause_with_child(
+        self, state: RunState, action: PlannedAction, child: RunState
+    ) -> None:
+        """Pause a ``core.subagent`` parent on its child's pause, showing what the child waits
+        for: its ``approval.required`` or ``clarification.required`` payload, with
+        ``child_run_id`` (the child), ``origin_run_id`` (the run that asked, at any depth),
+        ``child_agent`` and ``subagent_call_id`` (the parent's call that waits)."""
+        call_id = action.id.removeprefix("tool-")
+        state.delegated_runs[call_id] = child.id
+        child_pause = dict(child.pause_payload or {})
+        state.pause_payload = {
+            **child_pause,
+            "child_run_id": child.id,
+            "origin_run_id": child_pause.get("origin_run_id", child.id),
+            "child_agent": child.request.agent,
+            "subagent_call_id": call_id,
+            "paused_at": utc_now().isoformat(),
+        }
+        if child.status == RunStatus.AWAITING_APPROVAL:
+            await self._transition(state, RunStatus.AWAITING_APPROVAL)
+            await self._emit(state, "approval.required", state.pause_payload, action.id)
+        else:
+            await self._transition(state, RunStatus.AWAITING_CLARIFICATION)
+            await self._emit(state, "clarification.required", state.pause_payload, action.id)
+
+    async def _follow_child(self, state: RunState, child_run_id: str) -> RunResult:
+        """Wait until a child run ends or pauses, and return its result.
+
+        A child recovered in ``awaiting_credentials`` is resumed with the parent's credentials,
+        when the parent has some. A child driven by another process is looked at again until it
+        ends or pauses (the parent's deadline bounds the wait).
+        """
+        tenant_id = state.request.tenant_id
+        while True:
+            result = await self.wait(child_run_id, tenant_id)
+            if result.status in TERMINAL_STATUSES:
+                return result
+            if result.status == RunStatus.AWAITING_CREDENTIALS:
+                credentials = self._run_credentials(state.id)
+                if not credentials:
+                    return result
+                await self._resume(
+                    child_run_id, tenant_id, {}, credentials=credentials, decided_by=None
+                )
+                continue
+            if result.status in PAUSED_STATUSES:
+                return result
+            await asyncio.sleep(_CHILD_POLL_SECONDS)
+
+    async def _follow_delegated_call(
+        self, state: RunState, agent: AgentDefinition, action: PlannedAction, child_run_id: str
+    ) -> None:
+        """Finish a ``core.subagent`` call whose child run paused: follow the child after its
+        pause was answered, pause again with it, or give the parent its final result."""
+        call_id = action.id.removeprefix("tool-")
+        await self._transition(state, RunStatus.INVOKING_TOOL)
+        try:
+            tool = self.tools.get(SUBAGENT_TOOL)
+            result = await self._follow_child(state, child_run_id)
+            child = await self._require_state(child_run_id, state.request.tenant_id)
+            if child.status in _DELEGATED_PAUSES:
+                await self._pause_with_child(state, action, child)
+                return
+            state.delegated_runs.pop(call_id, None)
+            context = ToolContext(
+                run_id=state.id,
+                step_id=action.id,
+                tenant_id=state.request.tenant_id,
+                user_id=state.request.user_id,
+                permissions=agent.tool_permissions,
+                idempotency_key=f"{state.id}:{call_id}",
+                session_id=state.request.session_id,
+            )
+            # The after_tool policies and output checks the first call's result went through.
+            value = await self.tool_executor._checked_output(
+                SUBAGENT_TOOL, tool.definition, result.model_dump(mode="json"), context, agent
+            )
+            text = await self._screen_tool_result(
+                state, agent, action, json.dumps(value, default=str)
+            )
+        except Exception as exc:
+            state.delegated_runs.pop(call_id, None)
+            await self._tool_call_failed(state, agent, action, exc)
+            return
+        outcome = _ToolCallOutcome(result=ToolResult(value=value), text=text)
         await self._record_tool_call(state, agent, action, tool, outcome)
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
@@ -3746,7 +4436,15 @@ class AgentRuntime:
                 "after_memory_write", {"items": len(persisted)}, state, {"agent": agent}
             )
         await self._transition(state, RunStatus.COMPLETED)
-        await self._emit(state, "run.completed", {"outcome": "completed"}, step_id)
+        await self._emit(
+            state,
+            "run.completed",
+            # A run that reached a limit answered from what it had (budget.on_limit: summarize).
+            {"outcome": "partial", "limit": state.limit_reached}
+            if state.limit_reached is not None
+            else {"outcome": "completed"},
+            step_id,
+        )
 
     async def _run_verifiers(
         self, state: RunState, agent: AgentDefinition, output: str | None

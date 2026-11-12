@@ -22,6 +22,8 @@ What the Runtime still checks itself:
 
 - **Run attachments.** The type and size checks on files attached to a run do not depend on the
   extractors (see [Attachments](attachments.md)).
+- **Retrieved evidence.** From 0.2.0b3, `guardrail_policy.retrieval_injection` (`flag` or
+  `drop`, off by default) screens retrieved chunks with the same check before the model reads them.
 - **Tool results.** Prompt-injection screening of tool results (`guardrail_policy.tool_result_injection`)
   and the trust marking of what a tool returns stay in the Runtime, so a tool that reads documents
   with the extractors is governed like any other.

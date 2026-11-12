@@ -12,6 +12,7 @@ contain secret-like text, run independent tool calls together, and remember what
 | `approval_policy.on_rejection` | `fail_run` | `continue`: rejecting an approval answers the tool call with `{"declined": true, "message", "reason"?}` and the run continues. Pass `"reason"` beside `"decision": "rejected"` in `resume()`. |
 | `guardrail_policy.tool_policies` | `None` (use `policies`) | The policies applied to tool arguments and results. `()` applies none at tool boundaries, so a file is written exactly as the model wrote it. Messages sent to the model are still screened by `policies`. |
 | `guardrail_policy.tool_result_injection` | `off` | `flag`: a tool result that tries to give the model instructions is wrapped as untrusted data with a warning before the model reads it. `block`: the call fails (combine with `on_error="return_to_model"` to tell the model). |
+| `guardrail_policy.retrieval_injection` | `off` | 0.2.0b3. Retrieved evidence chunks (the retrieval context builder) screened with the same check as `tool_result_injection`. `flag`: a chunk that tries to give the model instructions is kept, preceded by a note that it is data, not instructions. `drop`: the chunk and its citation are left out. Ordinary text that only mentions "ignore" passes. Each match is reported as `policy.evaluated` (`boundary: after_retrieval`, `reason_code: retrieval_injection.detected`) and audited with the chunk ids. Off by default, like tool results: turn it on for corpora that anyone outside the tenant's control can write to. |
 | `guardrail_policy.pii.exempt_entities` | `[]` | The kinds of identifier the `pii` policy leaves alone for this agent, at every boundary: any of `email`, `phone`, `aadhaar`, `card`. For an agent whose job is to handle them, such as a support desk that calls customers back. To exempt one tool field instead, annotate it (see [What the pii guardrail redacts](#what-the-pii-guardrail-redacts)). |
 | `tool_policy.parallel_calls` | `false` | The tool calls one model reply asks for run concurrently, up to `max_parallel_calls` (default 4), and are recorded in the order asked. A reply that includes a call needing approval, or a memory, skill or working-state tool, runs one call at a time. |
 | `memory_policy.store_tool_payloads` | `false` | Session memory keeps the turn's tool calls and results as well as the question and answer, each result capped at `tool_payload_max_chars` (default 4,000). History read back always starts at a whole turn, and a tool call is never kept without its result. |
@@ -111,6 +112,40 @@ inside it, or 16 or more varied characters). A plain word after `secret:`, `pass
 `token:` in a sentence is left alone. `max_tokens` and `token_count` are not credential keys.
 Bearer tokens are redacted as before.
 
+### Reusing the redaction rules
+
+A host that masks PII or credentials itself (in its own logs, exports, admin screens or a tool's
+error messages) calls the guardrails' own rules instead of copying them (since 0.2.0b3):
+
+```python
+from algen_agent_runtime.security import PII_ENTITIES, redact_pii, redact_secrets
+
+redact_pii({"mobile_no": "9876543210", "note": "mail a@b.co"})
+# {'mobile_no': '[REDACTED_PHONE]', 'note': 'mail [REDACTED_EMAIL]'}
+redact_pii(text, entities=["email", "card"])        # only these kinds
+redact_pii(text, exempt=["phone"])                  # as guardrail_policy.pii.exempt_entities
+redact_pii(arguments, schema=tool.input_schema)     # honours "format": "identifier" / "email"
+redact_secrets({"password": "x", "log": log_line})   # log_line holds an api_key=... assignment
+# {"password": "[REDACTED]", "log": "api_key=[REDACTED]"}
+```
+
+- `redact_pii(value, *, entities=None, exempt=(), schema=None)` takes a string, or a dict, list or
+  tuple of them at any depth (a Pydantic model too), and returns a masked copy; other values are
+  returned as they are. The placeholders and rules are the table above: Verhoeff-checked Aadhaar
+  numbers, phone numbers only as phone numbers (with `+91`, `0`, 5-5 grouping, or a phone word
+  nearby or in the field's name), Luhn-checked cards with a network prefix. `entities` limits the
+  kinds (`PII_ENTITIES` lists them), `exempt` leaves kinds alone, and `schema` (the JSON Schema the
+  value follows) keeps fields declared `"format": "identifier"` / `"x-pii": false` or
+  `"format": "email"` as the guardrail does for tool fields. An unknown kind raises `ValueError`.
+- `redact_secrets(value)` masks `[REDACTED]` by the `secrets` policy's rules in text (credential
+  assignments written as code or configuration, bearer tokens; prose such as "The secret:
+  consistency" is left alone) and, in a dict, replaces the whole value of a key that names a
+  credential (`password`, `api_key`, `db.password`, `githubToken`, `authorization`, `cookie`; not
+  `max_tokens`).
+
+Both are the functions the guardrails run, so a fix to a rule reaches the host's masking in the
+same release.
+
 **Prompt injection.** The `prompt_injection` policy (at `input` and steering) and
 `tool_result_injection` refuse an instruction addressed to the assistant that aims at its own
 rules: "ignore all previous instructions", "bypass the safety policy and…", "please disable your
@@ -121,6 +156,32 @@ safety or content policy, filter or rule, the system or developer prompt, or "yo
 instructions or policy. A question that only mentions bypassing ("how do we detect users who try
 to bypass our safety policy?"), a business rule ("can a manager override the leave policy?") and
 the word jailbreak on its own pass. "Ignore previous instructions" is refused wherever it appears.
+
+## Reusing the Runtime's redaction
+
+A host that stores or shows tool results, logs or exports outside a run can mask them with the
+same rules the guardrails use, instead of its own regular expressions:
+
+| Helper | Masks | Since |
+| --- | --- | --- |
+| `PIIRedactionPolicy().redact_value(value)` (`algen_agent_runtime.policies.engine`) | emails, card numbers, Aadhaar and phone numbers, as the `pii` policy does (table above), in a string, a dict, a list or a Pydantic model, at any depth | 0.1.0a18 |
+| `redact(value)` (`algen_agent_runtime.security.redaction`) | values under keys such as `authorization`, `cookie`, `password`, `secret`, `token`, `api_key` or `credential` (any case), bearer tokens, and `key=value` credentials in text, at any depth | 0.1.0a1; `key=value` from 0.1.0a18 |
+| `redact_text(text)` | bearer tokens and `key=value` credentials in one string | 0.1.0a18 |
+| `redact_parameters(arguments)` | tool arguments as an approval shows them: top-level `password`, `secret`, `token`, `api_key` and `authorization` keys, and credentials inside every string | 0.1.0a18 |
+
+```python
+from algen_agent_runtime.policies.engine import PIIRedactionPolicy
+from algen_agent_runtime.security.redaction import redact
+
+pii = PIIRedactionPolicy()
+safe = redact(pii.redact_value(tool_result))  # PII first, then credentials
+```
+
+`redact_value` returns a new value and leaves its input unchanged. Like the guardrail, it treats a
+ten-digit number as a phone number only with phone context, which includes a dict key such as
+`phone` or `mobile_no`: `{"order": "9876543210"}` stays readable. It has no field exemptions
+(those come from tool schemas) and no `exempt_entities`; register your own DLP policy for
+identifiers it does not know.
 
 ## Example: a coding agent
 
@@ -143,6 +204,30 @@ AgentDefinition(
     max_steps=40,
 )
 ```
+
+## Asking the user (`core.ask_user`, 0.2.0b3)
+
+`core.ask_user` lets the model ask the user a question and wait for the answer, under any planner
+(`react` included). Every `AgentRuntime` registers it; an agent offers it with `core.ask_user` in
+`enabled_tools` and `user.ask` in `tool_permissions`. Its side effect is `none` (it never pauses for
+approval), and it is `volatile` and `non_idempotent`: never cached, retried or held back as a
+repeat. Bound how often a model may ask with `tool_policy.max_calls_per_tool`.
+
+```yaml
+agents:
+  - name: support
+    enabled_tools: [core.ask_user, crm.search]
+    tool_permissions: [user.ask, crm.read]
+```
+
+The model calls it with `question` (up to 2,000 characters) and optionally `choices` (up to 20
+suggested answers). The run pauses in `awaiting_clarification` with a `clarification.required`
+event whose payload is `{"kind": "ask_user", "tool_call_id", "question", "choices", "paused_at"}`.
+Answer it like any clarification: `runtime.resume(run_id, tenant_id, {"clarification": "..."})`,
+`POST /v1/runs/{run_id}/clarification`, or a conversation turn's input answer (the turn's
+`pending.choices` carries the choices). The answer is free text, not limited to the choices; the
+model gets `{"answer": "..."}` as the call's result and the run goes on. Outside a run (a workflow
+`tool:` step) the tool raises `ToolExecutionError`.
 
 ## Delegating to another agent
 
@@ -181,6 +266,20 @@ agents:
   `non_idempotent`, so it is never served from the tool-result cache, retried or held back by the
   repeat guard.
 
+- **A child's pause pauses the parent (0.2.0b3).** When the child pauses for an approval or a
+  clarification, the parent pauses too (`awaiting_approval` or `awaiting_clarification`), and its
+  `approval.required` or `clarification.required` carries the child's pause payload (`approval_id`,
+  `tool`, `redacted_parameters`, `question`, ...) plus `child_run_id` (the child), `origin_run_id`
+  (the run that asked, at any depth), `child_agent` and `subagent_call_id`. Decide or answer it on
+  the parent as any pause (`resume`, `POST /v1/runs/{parent}/approval` or `/clarification`, a
+  conversation turn): the child is resumed with the decision, recorded with `decided_by` on the
+  child's approval, and the parent continues with the child's final result once the child ends, or
+  pauses again on its next pause. Answering the child directly continues the waiting parents too.
+  A pause two levels down reaches the root the same way. A parent whose shown pause no longer
+  matches the child's raises `ConflictError` rather than deciding something its decider did not
+  see. Cancelling the parent cancels the waiting child. A child paused for any other reason
+  (`awaiting_reconciliation`) is returned to the parent's model as before.
+
 A host that builds an `AgentRuntime` itself, without `build_container`, registers the tool with
 `runtime.tools.register(subagent_tool(runtime, max_depth=3))` (`algen_agent_runtime.tools.subagent`).
 Do not do both: with `runtime.subagent.enabled` on, registering it again raises `ConflictError`.
@@ -191,8 +290,18 @@ A usage meter is a deployment setting, not an agent one: there is no `agent.yaml
 a `UsageMeter` to `build_container` and every model call the runtime makes, for every agent,
 reserves its most cost before it reaches a provider and settles what the provider reported
 afterwards. That covers agent steps, retries, fallbacks to another model, schema repairs,
-streamed calls and history compaction. A call that fails, or a stream that errors or is
-cancelled before it completes, is released without charge. Without a meter nothing changes.
+streamed calls and history compaction. A call that fails before it delivers anything, or a
+stream that errors or is cancelled before its first delta, is released without charge. Without a
+meter nothing changes.
+
+**A stream stopped part-way is charged an estimate** (since 0.2.0b3). Once a delta or tool call
+has reached the caller the provider bills the call, even when the user presses Stop, the client
+goes away or the provider fails mid-stream. Such a call is settled, not released, with the
+request's input estimate (`estimate_request_tokens`) and about four characters per output token of
+what streamed, priced like a reported call. A meter that wants to tell an estimate from reported
+usage declares `async def settle(self, ticket, usage, *, estimated: bool = False)`: the router then
+passes `estimated=True` for an estimate. A meter without the keyword gets a plain `settle`. The
+router logs `model_stream_settled_with_estimate` with the estimated tokens.
 
 ```python
 from dataclasses import dataclass

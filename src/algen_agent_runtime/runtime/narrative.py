@@ -91,6 +91,13 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
         case "context.compacted":
             kind = "context"
             summary = f"Compacted {data.get('message_count', 0)} earlier messages"
+        case "context.tool_result_truncated":
+            kind = "context"
+            how = "offloaded" if data.get("offloaded") else "cut"
+            summary = (
+                f"{data.get('tool') or 'Tool'} result {how} to fit the context "
+                f"({data.get('original_chars', 0)} chars)"
+            )
         case "context.working_state.updated":
             kind, summary = "context", "Updated its working state"
         case "context.skills.updated":
@@ -176,7 +183,12 @@ def _entry(event: RunEvent) -> NarrativeEntry | None:
         case "memory.learned.updated":
             kind, summary = "memory", "Updated learned memory"
         case "run.completed":
-            kind, summary = "outcome", "Run completed"
+            kind = "outcome"
+            summary = (
+                f"Run completed with a partial answer at its {data.get('limit')} limit"
+                if data.get("outcome") == "partial"
+                else "Run completed"
+            )
         case "run.failed":
             kind = "outcome"
             summary = f"Run failed: {data.get('reason') or data.get('error') or 'error'}"

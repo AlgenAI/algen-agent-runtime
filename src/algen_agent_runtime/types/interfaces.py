@@ -114,6 +114,18 @@ class SessionOwnership(Protocol):
         ...
 
 
+@runtime_checkable
+class SessionDeletion(Protocol):
+    """A memory store that deletes one session outright: its messages, expired ones included,
+    and its owner (``SessionOwnership``). The built-in memory stores implement it; deleting a
+    conversation and erasing a user's data use it. A store without it gets ``delete`` instead.
+    """
+
+    async def delete_session(self, tenant_id: str, session_id: str) -> int:
+        """Delete the session's messages and owner; return how many messages went."""
+        ...
+
+
 class ArtifactStore(Protocol):
     async def put(self, artifact: Artifact) -> None: ...
     async def get(self, artifact_id: str, tenant_id: str) -> Artifact | None: ...

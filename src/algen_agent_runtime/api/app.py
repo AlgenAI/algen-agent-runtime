@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import os
@@ -42,6 +43,7 @@ from algen_agent_runtime.api.rate_limiting import (
     RouteLimitPolicy,
 )
 from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
+from algen_agent_runtime.api.user_data_routes import add_user_data_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
 from algen_agent_runtime.approvals.service import (
     MAX_APPROVAL_OFFSET,
@@ -54,16 +56,23 @@ from algen_agent_runtime.artifacts import ArtifactLifecycleService, BasicArtifac
 from algen_agent_runtime.config.settings import ApiSettings, AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
+    ConversationCredentialsRenewal,
     ConversationEvent,
     ConversationInputAnswer,
     ConversationStatus,
 )
 from algen_agent_runtime.conversations.feedback import FeedbackRating
-from algen_agent_runtime.events.contracts import STREAM_END_EVENT_TYPES, AuditEvent, RunEvent
+from algen_agent_runtime.events.contracts import (
+    RUN_END_EVENT_TYPES,
+    STREAM_END_EVENT_TYPES,
+    AuditEvent,
+    RunEvent,
+)
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     ConfigurationError,
     ConflictError,
+    EventStreamOverflowError,
     NotFoundError,
     QuotaExceededError,
     StoreUnavailableError,
@@ -128,6 +137,8 @@ class ArtifactStatusBody(BaseModel):
 class CreateConversationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent: str = Field(min_length=1)
+    # Other agents a turn may choose with the message's ``agent``.
+    allowed_agents: tuple[str, ...] = Field(default=(), max_length=32)
     handler: str = "runtime"
     title: str = Field(default="New conversation", min_length=1, max_length=160)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -138,6 +149,8 @@ class CreateConversationMessageBody(BaseModel):
     text: str = Field(min_length=1, max_length=100_000)
     metadata: dict[str, Any] = Field(default_factory=dict)
     attachments: tuple[RunAttachment, ...] = Field(default=(), max_length=32)
+    # The agent for this turn: the conversation's or one of its allowed_agents.
+    agent: str | None = Field(default=None, min_length=1)
 
 
 class UpdateConversationBody(BaseModel):
@@ -163,6 +176,17 @@ class ConversationFeedbackBody(BaseModel):
 def _sse(event: RunEvent) -> bytes:
     payload = event.model_dump_json()
     return f"id: {event.sequence}\nevent: {event.type}\ndata: {payload}\n\n".encode()
+
+
+# How often a run event stream that follows a run through its pauses sends a keepalive comment.
+_SSE_KEEPALIVE_SECONDS = 15.0
+
+
+def _sse_overflow(last_sequence: int) -> bytes:
+    """The last frame of a run event stream whose subscriber fell behind: an ``id`` of the last
+    event delivered, so a client reconnecting with Last-Event-ID misses nothing."""
+    payload = json.dumps({"last_sequence": last_sequence, "reconnect": True})
+    return f"id: {last_sequence}\nevent: stream.overflow\ndata: {payload}\nretry: 1000\n\n".encode()
 
 
 def _conversation_sse(event: ConversationEvent) -> bytes:
@@ -193,6 +217,17 @@ def create_app(
     resolved = settings or AppSettings()
     _check_api_settings(resolved.api)
     dependencies = container or build_container(resolved)
+    credential_headers = resolved.api.credential_headers
+
+    def caller_credentials(request: Request) -> dict[str, Any]:
+        """``credentials=`` with the configured headers' values, for the run's tools
+        (``api.credential_headers``), or no keyword at all when none are configured or sent.
+        Memory only, never stored."""
+        values = {
+            name: request.headers[name] for name in credential_headers if name in request.headers
+        }
+        return {"credentials": values} if values else {}
+
     authenticate = principal_dependency(
         resolved.api,
         audits=dependencies.runtime.audits,
@@ -381,6 +416,7 @@ def create_app(
     add_mcp_oauth_routes(app, dependencies, identity_dependency)
     add_auth_routes(app, dependencies, identity_dependency)
     add_tool_execution_routes(app, dependencies, identity_dependency)
+    add_user_data_routes(app, dependencies, identity_dependency)
 
     async def require_conversation_owner(run_id: str, identity: Principal) -> None:
         """A run started for a conversation turn is its owner's, as on the conversation routes:
@@ -430,11 +466,12 @@ def create_app(
 
     @app.post("/v1/runs", status_code=status.HTTP_202_ACCEPTED)
     async def create_run(
-        body: CreateRunBody, identity: Principal = identity_dependency
+        body: CreateRunBody, request: Request, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
         state = await dependencies.runtime.start(
-            RunRequest(**body.model_dump(), tenant_id=identity.tenant_id, user_id=identity.user_id)
+            RunRequest(**body.model_dump(), tenant_id=identity.tenant_id, user_id=identity.user_id),
+            **caller_credentials(request),
         )
         return {"run_id": state.id, "session_id": state.session_id, "status": state.status}
 
@@ -465,12 +502,20 @@ def create_app(
 
     @app.post("/v1/runs/{run_id}/clarification", status_code=202)
     async def clarify_run(
-        run_id: str, body: ClarificationBody, identity: Principal = identity_dependency
+        run_id: str,
+        body: ClarificationBody,
+        request: Request,
+        identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
         # The answer goes to the model as the user's: only the run's user may give it.
         await require_run_user(run_id, identity, "answer")
-        state = await dependencies.runtime.resume(run_id, identity.tenant_id, body.model_dump())
+        state = await dependencies.runtime.resume(
+            run_id,
+            identity.tenant_id,
+            body.model_dump(),
+            **caller_credentials(request),
+        )
         return {"run_id": state.id, "status": state.status}
 
     @app.post("/v1/runs/{run_id}/steer", status_code=202)
@@ -488,7 +533,10 @@ def create_app(
 
     @app.post("/v1/runs/{run_id}/approval", status_code=202)
     async def approve_run(
-        run_id: str, body: ApprovalBody, identity: Principal = identity_dependency
+        run_id: str,
+        body: ApprovalBody,
+        request: Request,
+        identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
         await require_run_user(run_id, identity, "decide", override_scope="approvals:decide")
@@ -497,6 +545,7 @@ def create_app(
             run_id,
             identity.tenant_id,
             body.model_dump(),
+            **caller_credentials(request),
             decided_by=identity.user_id,
         )
         return {"run_id": state.id, "status": state.status}
@@ -545,26 +594,54 @@ def create_app(
     async def stream_events(
         run_id: str,
         request: Request,
+        through_pauses: bool = False,
         identity: Principal = identity_dependency,
     ) -> StreamingResponse:
         require_any_scope(identity, "artifacts:read", "runs:read")
         await require_conversation_owner(run_id, identity)
         last_id = int(request.headers.get("last-event-id", "0") or 0)
+        # By default the stream ends when the run ends or pauses, and after answering a pause
+        # the client reconnects with Last-Event-ID; ?through_pauses=true ends only when the run
+        # ends, sending a keepalive comment while nothing happens (a pause can last hours).
+        ends = RUN_END_EVENT_TYPES if through_pauses else STREAM_END_EVENT_TYPES
+        keepalive = _SSE_KEEPALIVE_SECONDS if through_pauses else None
 
         async def generate() -> AsyncIterator[bytes]:
             delivered = last_id
-            async for event in dependencies.events.subscribe(run_id, after=last_id):
-                if event.sequence <= delivered:
-                    continue
-                delivered = event.sequence
-                yield _sse(event)
-                # The stream ends when the run ends or pauses; after answering a pause, the
-                # client reconnects with Last-Event-ID to follow the resumed run.
-                if event.type in STREAM_END_EVENT_TYPES:
-                    return
+            iterator = dependencies.events.subscribe(run_id, after=last_id).__aiter__()
+            pending: asyncio.Future[RunEvent] = asyncio.ensure_future(iterator.__anext__())
+            try:
+                while True:
+                    done, _ = await asyncio.wait((pending,), timeout=keepalive)
+                    if not done:
+                        yield b": keepalive\n\n"
+                        continue
+                    try:
+                        event = pending.result()
+                    except StopAsyncIteration:
+                        return
+                    except EventStreamOverflowError as exc:
+                        # Too slow for the live queue: tell the client where to reconnect from.
+                        yield _sse_overflow(exc.last_sequence)
+                        return
+                    pending = asyncio.ensure_future(iterator.__anext__())
+                    if event.sequence <= delivered:
+                        continue
+                    delivered = event.sequence
+                    yield _sse(event)
+                    if event.type in ends:
+                        return
+            finally:
+                pending.cancel()
+                close = getattr(iterator, "aclose", None)
+                if close is not None:
+                    with contextlib.suppress(Exception):
+                        await close()
 
         return StreamingResponse(
-            generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     @app.post("/v1/artifacts", status_code=status.HTTP_201_CREATED)
@@ -718,6 +795,7 @@ def create_app(
             handler=body.handler,
             title=body.title,
             metadata=body.metadata,
+            allowed_agents=body.allowed_agents,
         )
         return conversation.model_dump(mode="json")
 
@@ -802,17 +880,23 @@ def create_app(
     async def create_conversation_message(
         conversation_id: str,
         body: CreateConversationMessageBody,
+        request: Request,
         identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
         require_scope(identity, "conversations:write")
-        user_message, assistant_message = await dependencies.conversations.submit(
-            conversation_id,
-            identity.tenant_id,
-            identity.user_id,
-            body.text,
-            body.metadata,
-            attachments=body.attachments,
-        )
+        try:
+            user_message, assistant_message = await dependencies.conversations.submit(
+                conversation_id,
+                identity.tenant_id,
+                identity.user_id,
+                body.text,
+                body.metadata,
+                attachments=body.attachments,
+                **caller_credentials(request),
+                agent=body.agent,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
             "message_id": user_message.id,
             "assistant_message_id": assistant_message.id,
@@ -838,12 +922,18 @@ def create_app(
         conversation_id: str,
         turn_id: str,
         body: ConversationApprovalDecision,
+        request: Request,
         identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
-        # The decider is the authenticated user; credentials are never taken from headers.
+        # The decider is the authenticated user, never a field of the body.
         require_scope(identity, "conversations:write")
         message = await dependencies.conversations.respond(
-            conversation_id, turn_id, identity.tenant_id, identity.user_id, body
+            conversation_id,
+            turn_id,
+            identity.tenant_id,
+            identity.user_id,
+            body,
+            **caller_credentials(request),
         )
         return {"turn_id": turn_id, "assistant_message_id": message.id, "status": message.status}
 
@@ -855,13 +945,62 @@ def create_app(
         conversation_id: str,
         turn_id: str,
         body: ConversationInputAnswer,
+        request: Request,
         identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
         require_scope(identity, "conversations:write")
         message = await dependencies.conversations.respond(
-            conversation_id, turn_id, identity.tenant_id, identity.user_id, body
+            conversation_id,
+            turn_id,
+            identity.tenant_id,
+            identity.user_id,
+            body,
+            **caller_credentials(request),
         )
         return {"turn_id": turn_id, "assistant_message_id": message.id, "status": message.status}
+
+    @app.post(
+        "/v1/conversations/{conversation_id}/turns/{turn_id}/credentials",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def renew_conversation_turn_credentials(
+        conversation_id: str,
+        turn_id: str,
+        request: Request,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        # A turn whose run was recovered without the caller's credentials: they come from the
+        # headers api.credential_headers lists; with none, the service answers 409.
+        require_scope(identity, "conversations:write")
+        message = await dependencies.conversations.respond(
+            conversation_id,
+            turn_id,
+            identity.tenant_id,
+            identity.user_id,
+            ConversationCredentialsRenewal(),
+            **caller_credentials(request),
+        )
+        return {"turn_id": turn_id, "assistant_message_id": message.id, "status": message.status}
+
+    @app.post(
+        "/v1/conversations/{conversation_id}/turns/{turn_id}/steer",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def steer_conversation_turn(
+        conversation_id: str,
+        turn_id: str,
+        body: SteerBody,
+        identity: Principal = identity_dependency,
+    ) -> dict[str, Any]:
+        # Steering puts text in front of the model as the user: only the owner may.
+        require_scope(identity, "conversations:write")
+        try:
+            message = await dependencies.conversations.steer(
+                conversation_id, turn_id, identity.tenant_id, identity.user_id, body.text
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"turn_id": turn_id, "steer_id": message.id, "status": "queued"}
 
     @app.put("/v1/conversations/{conversation_id}/messages/{message_id}/feedback")
     async def put_conversation_feedback(

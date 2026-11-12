@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from algen_agent_runtime.cache import CachePolicy, CacheScope, CacheService, InMemoryCacheStore
-from algen_agent_runtime.exceptions.errors import ToolExecutionError
+from algen_agent_runtime.exceptions.errors import ConflictError, ToolExecutionError
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.observability.traccia_adapter import NoopObservabilityAdapter
 from algen_agent_runtime.observability.trace_levels import TraceLevelTracer
@@ -283,8 +283,9 @@ async def test_clarification_resume_takes_new_credentials() -> None:
     assert runtime._credentials == {}
 
 
-async def test_recovered_run_gives_the_tool_no_credentials() -> None:
-    seen = Seen()
+async def _interrupted_with_credentials(seen: Seen, *responses: Any) -> tuple[AgentRuntime, str]:
+    """A run started with credentials and interrupted mid-model call, recovered by a new
+    process (same durable run store, nothing in memory) that will answer with ``responses``."""
     blocked = asyncio.Event()
 
     class BlockingProvider(MockModelProvider):
@@ -300,15 +301,133 @@ async def test_recovered_run_gives_the_tool_no_credentials() -> None:
     assert first._credentials == {state.id: {"authorization": SECRET}}
     await first.shutdown(grace_seconds=0)
     assert first._credentials == {}
+    second, _ = runtime_with(seen, *responses)
+    second.runs = first.runs
+    second.events = first.events
+    return second, state.id
 
-    # A new process: same durable run store, nothing in memory.
+
+async def test_a_recovered_run_that_had_credentials_waits_for_them() -> None:
+    seen = Seen()
+    second, run_id = await _interrupted_with_credentials(
+        seen, tool_call_response("api.read", {}), "done"
+    )
+    stored = await second.runs.get(run_id, "t")
+    assert stored is not None and stored.caller_credentials
+    assert SECRET not in stored.model_dump_json()
+
+    assert await second.recover() == 0
+
+    paused = await second.status(run_id, "t")
+    assert paused.status == RunStatus.AWAITING_CREDENTIALS
+    assert (paused.pause_payload or {})["kind"] == "credentials"
+    history = await second.events.history(run_id)
+    assert history[-1].type == "credentials.required"
+    assert seen.credentials == []
+    with pytest.raises(ConflictError, match="credentials are required"):
+        await second.resume(run_id, "t", {})
+
+    await second.resume(run_id, "t", {}, credentials={"authorization": NEWER})
+    result = await second.wait(run_id, "t")
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    assert seen.credentials == [{"authorization": NEWER}]
+    assert second._credentials == {}
+
+
+async def test_a_recovery_credentials_provider_continues_the_run() -> None:
+    seen = Seen()
+    second, run_id = await _interrupted_with_credentials(
+        seen, tool_call_response("api.read", {}), "done"
+    )
+    asked: list[str] = []
+
+    async def provider(state: RunState) -> dict[str, str]:
+        asked.append(state.id)
+        return {"authorization": NEWER}
+
+    second.recovery_credentials = provider
+    assert await second.recover() == 1
+    result = await second.wait(run_id, "t")
+
+    assert result.status == RunStatus.COMPLETED, result.error
+    assert asked == [run_id]
+    assert seen.credentials == [{"authorization": NEWER}]
+
+
+async def test_a_provider_with_nothing_to_give_pauses_the_run() -> None:
+    seen = Seen()
+    second, run_id = await _interrupted_with_credentials(seen, "done")
+
+    async def provider(state: RunState) -> None:
+        return None
+
+    assert await second.recover(credentials_provider=provider) == 0
+    assert (await second.status(run_id, "t")).status == RunStatus.AWAITING_CREDENTIALS
+
+
+async def test_a_failing_provider_pauses_the_run_too() -> None:
+    seen = Seen()
+    second, run_id = await _interrupted_with_credentials(seen, "done")
+
+    async def provider(state: RunState) -> dict[str, str]:
+        raise RuntimeError("token service down")
+
+    assert await second.recover(credentials_provider=provider) == 0
+    assert (await second.status(run_id, "t")).status == RunStatus.AWAITING_CREDENTIALS
+
+
+async def test_a_run_waiting_for_credentials_expires_with_the_input_timeout() -> None:
+    seen = Seen()
+    second, run_id = await _interrupted_with_credentials(seen, "done")
+    await second.recover()
+
+    assert await second.expire_paused_runs() == 0
+    assert await second.expire_paused_runs(clarification_timeout_seconds=0) == 1
+    assert (await second.status(run_id, "t")).status == RunStatus.TIMED_OUT
+    assert (await second.events.history(run_id))[-1].data["reason"] == "credentials_expired"
+
+
+async def test_a_recovered_run_without_credentials_continues_as_before() -> None:
+    seen = Seen()
+    blocked = asyncio.Event()
+
+    class BlockingProvider(MockModelProvider):
+        async def generate(self, model_request: Any) -> ModelResponse:
+            blocked.set()
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    first, _ = runtime_with(seen)
+    first.router._providers["mock"] = BlockingProvider([])
+    state = await first.start(request())
+    await asyncio.wait_for(blocked.wait(), 5)
+    await first.shutdown(grace_seconds=0)
     second, _ = runtime_with(seen, tool_call_response("api.read", {}), "done")
     second.runs = first.runs
+
     assert await second.recover() == 1
     result = await second.wait(state.id, "t")
 
     assert result.status == RunStatus.COMPLETED, result.error
     assert seen.credentials == [{}]
+
+
+async def test_a_resume_without_credentials_clears_the_flag() -> None:
+    seen = Seen()
+    runtime, _ = runtime_with(seen, "done")
+    state = RunState(
+        request=request(),
+        status=RunStatus.AWAITING_CLARIFICATION,
+        pause_payload={"question": "Which account?"},
+        caller_credentials=True,
+    )
+    await runtime.runs.create(state)
+
+    await runtime.resume(state.id, "t", {"clarification": "the main one"})
+    await runtime.wait(state.id, "t")
+
+    assert not (await runtime.status(state.id, "t")).caller_credentials
 
 
 async def test_credentials_are_dropped_from_memory_when_the_run_pauses_or_ends() -> None:

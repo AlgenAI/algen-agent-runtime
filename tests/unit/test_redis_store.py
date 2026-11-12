@@ -211,6 +211,28 @@ async def test_redis_run_store_list_active_filters_terminal_states() -> None:
 
 
 @pytest.mark.asyncio
+async def test_redis_run_store_finds_a_conversation_turns_run() -> None:
+    redis = FakeRedis()
+    store = RedisRunStore(redis, prefix="test-algen")
+    turn = _make_run("run-turn").model_copy(deep=True)
+    turn.request = turn.request.model_copy(update={"conversation_id": "conv-1", "turn_id": "t-1"})
+    await store.create(turn)
+    await store.create(_make_run("run-other"))
+
+    found = await store.find_by_turn("tenant-a", "conv-1", "t-1")
+    assert found is not None and found.id == "run-turn"
+    assert await store.find_by_turn("tenant-b", "conv-1", "t-1") is None
+    assert await store.find_by_turn("tenant-a", "conv-1", "t-2") is None
+    # The turn index is not a run key: list_active does not trip over it.
+    assert {state.id for state in await store.list_active()} == {"run-turn", "run-other"}
+
+    # A run created before the index existed is found by scanning the tenant's runs.
+    del redis.data["test-algen:tenant:tenant-a:turn-run:conv-1:t-1"]
+    found = await store.find_by_turn("tenant-a", "conv-1", "t-1")
+    assert found is not None and found.id == "run-turn"
+
+
+@pytest.mark.asyncio
 async def test_redis_memory_store_append_get_delete_and_expiry() -> None:
     redis = FakeRedis()
     store = RedisMemoryStore(redis, prefix="test-algen", retention_seconds=3600)

@@ -340,6 +340,7 @@ def test_stream_end_events_are_the_end_and_pause_events() -> None:
         "approval.required",
         "clarification.required",
         "tool.reconciliation_required",
+        "credentials.required",
     }
 
 

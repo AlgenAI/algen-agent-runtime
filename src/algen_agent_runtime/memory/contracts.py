@@ -59,6 +59,13 @@ class LearnedMemory(StrictModel):
     expires_at: datetime | None
 
 
+class UserMemoryRecord(StrictModel):
+    """A learned-memory record with the agent it belongs to, as a user data export lists it."""
+
+    agent_id: str
+    record: LearnedMemory
+
+
 class MemoryReceipt(StrictModel):
     key: MemoryKey
     revision: int = Field(ge=1)

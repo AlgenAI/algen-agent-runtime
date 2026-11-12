@@ -125,6 +125,16 @@ exclude = [
   "algen_agent_runtime_examples/pattern_text_to_sql",
 ]
 
+# The user-facing Agent Skills, for `algen-agent-runtime skills install`. They live once, in
+# .agents/skills (which the sdist includes); the maintainer-only algen-external-pr-review and
+# algen-runtime-contributor are not shipped. Keep in step with
+# algen_agent_runtime._coding_skills.PACKAGED_SKILLS and scripts/check_dist.py.
+[tool.hatch.build.targets.wheel.force-include]
+".agents/skills/algen-agent-builder" = "algen_agent_runtime/_skills/algen-agent-builder"
+".agents/skills/algen-agent-connector" = "algen_agent_runtime/_skills/algen-agent-connector"
+".agents/skills/algen-runtime-extension" = "algen_agent_runtime/_skills/algen-runtime-extension"
+".agents/skills/algen-runtime-host" = "algen_agent_runtime/_skills/algen-runtime-host"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/.agents/skills",

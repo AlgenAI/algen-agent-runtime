@@ -32,7 +32,18 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         }
     ),
     RunStatus.AWAITING_CLARIFICATION: frozenset(
-        {RunStatus.BUILDING_CONTEXT, RunStatus.CANCELLED, RunStatus.TIMED_OUT}
+        # PLANNING: a core.ask_user answer, or a child run's clarification answered.
+        {RunStatus.BUILDING_CONTEXT, RunStatus.PLANNING, RunStatus.CANCELLED, RunStatus.TIMED_OUT}
+    ),
+    RunStatus.AWAITING_CREDENTIALS: frozenset(
+        {
+            RunStatus.RECEIVED,
+            RunStatus.BUILDING_CONTEXT,
+            RunStatus.PLANNING,
+            RunStatus.CANCELLED,
+            RunStatus.FAILED,
+            RunStatus.TIMED_OUT,
+        }
     ),
     RunStatus.AWAITING_APPROVAL: frozenset(
         {
@@ -63,6 +74,9 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     ),
     RunStatus.INVOKING_TOOL: frozenset(
         {
+            # A core.subagent call whose child run paused for an approval or a clarification.
+            RunStatus.AWAITING_APPROVAL,
+            RunStatus.AWAITING_CLARIFICATION,
             RunStatus.AWAITING_RECONCILIATION,
             RunStatus.BUILDING_CONTEXT,
             RunStatus.PLANNING,

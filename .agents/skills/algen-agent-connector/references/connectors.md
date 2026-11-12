@@ -34,6 +34,9 @@ refuses the call: chat, message and thread ids, order and tracking numbers that 
 strings take `Field(json_schema_extra={"format": "identifier"})` (or `{"x-pii": False}` when the
 field already has a `format`), and address fields take `{"format": "email"}`. Runtimes before
 0.2.0b2 ignore the annotations. See docs/agent-tooling.md, "What the pii guardrail redacts".
+To mask PII or credentials in a tool's own logs or errors, call
+`algen_agent_runtime.security.redact_pii(value, schema=...)` and `redact_secrets(value)` (since
+0.2.0b3) instead of copying the rules: they are the guardrails' own.
 
 Tell the ledger what happened when a call fails. Raise `ToolNotAttemptedError` (or a
 `PolicyDeniedError`) when the tool refused before sending anything, or when the provider
@@ -200,8 +203,9 @@ retries, fallbacks, repairs, streams, compaction) reserves first: `reserve(*, ma
 max_output_tokens, call)` receives a `MeterCall` with the tenant, user, run, agent, step, purpose,
 attempt, provider, model and a read-only copy of the request metadata, so a multi-tenant host
 charges the right account without context variables. Keep `call` in the ticket to weight by model
-in `settle`; raise `MeterRefusedError` to refuse. See docs/agent-tooling.md, "Metering model
-calls".
+in `settle`; raise `MeterRefusedError` to refuse. A stream stopped after output reached the user is
+settled with an estimate (`settle(..., estimated=True)` when the meter's `settle` takes that
+keyword, since 0.2.0b3). See docs/agent-tooling.md, "Metering model calls".
 
 ## Useful combinations
 
