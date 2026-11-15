@@ -221,6 +221,7 @@ def _run_agent(
             for name, data in files:
                 artifact = Artifact(
                     tenant_id=tenant,
+                    user_id=user,
                     name=name,
                     media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
                     data=data,

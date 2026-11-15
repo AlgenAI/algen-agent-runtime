@@ -15,7 +15,14 @@ backend implements `ingest`, tenant-scoped `retrieve`, and tenant-scoped `delete
 
 Persistent backends are populated explicitly through `ingest()`. YAML documents are limited to the
 in-memory backend so startup cannot trigger costly or partially completed indexing jobs. Documents
-should include `tenant_id` metadata.
+should include `tenant_id` metadata. Since 0.2.0b4 the persistent backends (pgvector, Chroma, FAISS,
+Qdrant) require it: `ingest()` raises `ValueError` naming the first document without one, before
+anything is embedded or written. Earlier releases filed such a document under the tenant
+`"default"`, where a tenant of that name could read it. In the in-memory backend a document without
+`tenant_id` is still shared by every tenant.
+
+`connection_url` must be an `env://` reference when it holds a password (since 0.2.0b4), as
+`storage.postgres_dsn` must; a URL without one (`http://qdrant:6333`) may be written literally.
 
 ```yaml
 retrieval:

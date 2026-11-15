@@ -11,7 +11,7 @@ from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.plugins.signing import (
     PluginSettings,
     SignedPackage,
-    plugin_module,
+    resolve_entry_point,
     verify_module,
 )
 
@@ -122,7 +122,8 @@ def is_trusted(reference: str, trusted_prefixes: tuple[str, ...]) -> bool:
 class PluginLoader:
     """Load plugins named by ``module:attribute`` or by an installed entry point name.
 
-    Trust is checked before anything is imported: the module prefix must be trusted and, with
+    Trust is checked before anything is imported: the module prefix must be trusted (for an
+    entry point name, the prefix of the module the entry point imports) and, with
     ``signing`` (``plugins`` settings), the plugin package's signature must verify against a
     trusted publisher's key (see ``algen_agent_runtime.plugins.signing``). Neither is
     sandboxing: a trusted plugin runs with the Runtime's privileges, so untrusted code must
@@ -135,6 +136,7 @@ class PluginLoader:
         self._trusted_prefixes = trusted_prefixes
         self._signing = signing
         self._verified: dict[str, SignedPackage | None] = {}
+        self._entries: dict[str, metadata.EntryPoint] = {}
 
     def load(self, names: tuple[str, ...], context: PluginContext) -> tuple[PluginManifest, ...]:
         self.authorize(names)
@@ -148,26 +150,43 @@ class PluginLoader:
                 "packages plugins may be loaded from"
             )
         for name in names:
-            if not is_trusted(name, self._trusted_prefixes):
-                raise ConfigurationError(
-                    f"plugin {name!r} is not from a trusted namespace; add its package to "
-                    "security.trusted_plugin_prefixes"
-                )
+            self._check_trusted(name)
         for name in names:
             self._verify(name)
+
+    def _entry_point(self, name: str) -> metadata.EntryPoint:
+        """Resolve an entry point name once, so the module checked is the module loaded."""
+        key = name.strip()
+        if key not in self._entries:
+            self._entries[key] = resolve_entry_point(key)
+        return self._entries[key]
+
+    def _module(self, name: str) -> str:
+        if ":" in name:
+            return name.split(":", 1)[0].strip()
+        return self._entry_point(name).module
+
+    def _check_trusted(self, name: str) -> None:
+        module = self._module(name)
+        if not is_trusted(module, self._trusted_prefixes):
+            target = "" if ":" in name else f" (entry point for module {module!r})"
+            raise ConfigurationError(
+                f"plugin {name!r}{target} is not from a trusted namespace; add its package to "
+                "security.trusted_plugin_prefixes"
+            )
 
     def _verify(self, name: str) -> SignedPackage | None:
         if self._signing is None or not self._signing.enabled:
             return None
         if name not in self._verified:
-            self._verified[name] = verify_module(plugin_module(name), self._signing)
+            self._verified[name] = verify_module(self._module(name), self._signing)
         return self._verified[name]
 
     def load_one(self, name: str, context: PluginContext) -> PluginManifest:
-        if not is_trusted(name, self._trusted_prefixes):
-            raise ConfigurationError(f"plugin {name!r} is not from a trusted namespace")
+        self._check_trusted(name)
         signed = self._verify(name)
-        instance = _instantiate(name, _resolve(name))
+        loaded = _resolve(name) if ":" in name else _load_entry(name, self._entry_point(name))
+        instance = _instantiate(name, loaded)
         manifest = getattr(instance, "manifest", None)
         if not isinstance(manifest, PluginManifest) or not callable(
             getattr(instance, "register", None)
@@ -211,13 +230,12 @@ def _resolve(name: str) -> Any:
                 f"plugin module {module_name!r} has no attribute {attribute!r}"
             )
         return getattr(module, attribute)
-    discovered = {entry.name: entry for entry in metadata.entry_points(group=ENTRY_POINT_GROUP)}
-    if name not in discovered:
-        raise ConfigurationError(
-            f"plugin entry point {name!r} was not found in group {ENTRY_POINT_GROUP!r}"
-        )
+    return _load_entry(name, resolve_entry_point(name.strip()))
+
+
+def _load_entry(name: str, entry: metadata.EntryPoint) -> Any:
     try:
-        return discovered[name].load()
+        return entry.load()
     except Exception as exc:
         raise ConfigurationError(f"could not load plugin entry point {name!r}: {exc}") from exc
 

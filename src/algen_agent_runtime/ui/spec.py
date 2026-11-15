@@ -2,17 +2,37 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
-
-import yaml
+from urllib.parse import urlsplit, urlunsplit
 
 from algen_agent_runtime import __version__
 from algen_agent_runtime.config.settings import AppSettings
 from algen_agent_runtime.orchestration.container import Container
 from algen_agent_runtime.types.contracts import AgentDefinition
 from algen_agent_runtime.workflows.contracts import WorkflowManifest, WorkflowNode
+
+# What the page shows for the configuration when no file's text was given to it.
+_NO_RAW_YAML = (
+    "# The configuration is not published by the Runtime. Export the page from the file with\n"
+    "# algen-agent-runtime ui --config agent.yaml to include its text.\n"
+)
+
+
+def _public_url(url: str | None) -> str | None:
+    """``url`` without credentials, query or fragment, which can carry tokens."""
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+    except ValueError:
+        return None
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def _compute_dag_layout(nodes: Sequence[WorkflowNode]) -> dict[str, Any]:
@@ -220,7 +240,7 @@ def extract_agent_manifest_spec(
             {
                 "id": p_id,
                 "type": p.type,
-                "base_url": p.base_url,
+                "base_url": _public_url(p.base_url),
                 "default_model": p.default_model,
                 "api_key_ref": secret_ref,
                 "has_credentials": bool(secret_ref),
@@ -248,7 +268,7 @@ def extract_agent_manifest_spec(
                 "command": cmd,
                 "args": args_list,
                 "env_keys": sorted(list(env_dict.keys())),
-                "url": url_val,
+                "url": _public_url(url_val),
             }
         )
 
@@ -334,32 +354,10 @@ def extract_agent_manifest_spec(
         "conversation_store": settings.storage.conversation_store,
     }
 
-    # Raw YAML generation or normalization
-    yaml_content = raw_yaml
-    if not yaml_content:
-        # Generate clean YAML dump from settings
-        clean_dump = settings.model_dump(mode="json", exclude_none=True)
-        # Drop empty default containers for a readable, clean YAML representation
-        for empty_key in [
-            "distributed_execution",
-            "query_sources",
-            "query_governance",
-            "feature_flags",
-            "conversation_presentation",
-            "conversation_followups",
-            "analytical_execution",
-        ]:
-            if empty_key in clean_dump and not clean_dump[empty_key]:
-                clean_dump.pop(empty_key, None)
-        try:
-            yaml_content = yaml.dump(
-                clean_dump,
-                sort_keys=False,
-                indent=2,
-                allow_unicode=True,
-            )
-        except Exception:
-            yaml_content = json.dumps(clean_dump, indent=2)
+    # The configuration's text only when the caller passes it (a static export of the file
+    # it read): the settings are never dumped, since they can hold DSNs, stdio servers'
+    # environments and other values a reader of the page must not see (0.2.0b4).
+    yaml_content = raw_yaml or _NO_RAW_YAML
 
     # Project title and description
     project_title = title
@@ -408,8 +406,7 @@ def extract_agent_manifest_spec(
         "mcp_servers": serialized_mcp_servers,
         "retrieval": serialized_retrieval,
         "storage": storage_dict,
-        "cache": settings.cache.model_dump(mode="json"),
-        "telemetry": settings.telemetry.model_dump(mode="json"),
-        "security": settings.security.model_dump(mode="json"),
+        # No cache, telemetry or security settings: they can hold DSNs, endpoints with
+        # credentials and keys, and the page does not show them (0.2.0b4).
         "raw_yaml": yaml_content,
     }

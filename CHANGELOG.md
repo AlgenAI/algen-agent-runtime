@@ -13,6 +13,190 @@ host code are listed in the `algen-runtime-host` skill
 
 ## [Unreleased]
 
+## [0.2.0b4] - 2026-11-15
+
+Fixes from a security assessment of 0.2.0b3 (the application and the release pipeline, after the
+2026 LiteLLM supply-chain compromise), the security and correctness part of the framework adapter
+issue ([#146](https://github.com/AlgenAI/algen-agent-runtime/issues/146)), and GA evidence:
+performance baselines, load and noisy-neighbour results, upgrade and rollback drills from both
+0.1.0a23 and 0.2.0b3, an upgrade guide and a support policy. Migration 023 is additive (one
+nullable column and an index). Several security fixes change behaviour: read every upgrade note.
+This is the last beta planned to change behaviour; later 0.2 betas take fixes and additive
+changes only.
+
+### Upgrade notes
+
+1. **Migration 023 (artifact owner).** `023_artifact_owner.sql` adds a nullable `user_id` column
+   and a partial index to `algen_agent_runtime_artifacts`. Hosts that own the schema apply it with
+   `algen-agent-runtime migrations sql --since 22`.
+2. **Artifacts belong to a user (security).** Uploads record the uploader and run outputs the
+   run's user. List, read, download and delete are allowed to the owner, the run's user (the
+   conversation owner for a turn) or a principal with the new `artifacts:admin` scope; anyone
+   else gets 404. A listing without filters returns the caller's own artifacts. Runs, conversation
+   messages and workflow starts refuse an attachment the caller may not use, with the same error
+   as a missing one. Rows written before 0.2.0b4 have no owner and fall back to their run's user;
+   rows with neither need `artifacts:admin`. Grant `artifacts:admin` to operator tools that browse
+   all files. Hosts that store artifacts themselves should set `user_id`.
+3. **Registering agents over HTTP needs `agents:admin` (security).** `POST /v1/agents` required
+   only `agents:write`, and the registry is shared by every tenant, so a user in one tenant could
+   register a higher version of another tenant's agent and take over its runs. It now needs
+   `agents:admin`, records an `agent.registered` audit event, and refuses (409) a version of a
+   name another owner registered: agents from configuration or the host, or another tenant's.
+   Runs keep the agent version they started with when they pause, resume or are recovered.
+4. **Approval decisions are approved, rejected or modified only (security).** A decision of
+   `pending` or `expired` used to approve and run the tool while the record still said `pending`.
+   The HTTP route answers 422, `Runtime.resume` and both approval services raise, and
+   `modified_parameters` are refused unless the decision is `modified`.
+5. **Approvers see a marker for hidden values.** Approval `redacted_parameters` (and the inbox's
+   modified parameters) show `[REDACTED len=N sha256=xxxxxxxx]` instead of `[REDACTED]`, and
+   credential-named keys are hidden at any depth. Inboxes that match the literal `"[REDACTED]"`
+   need updating. An approval-gated call with a credential-named argument the tool's input schema
+   does not declare is refused (`approval.undeclared_secret_parameters`), so a model cannot hide
+   a payload from the approver under a key like `token`.
+6. **Streamed text is redacted.** `model.delta` text now passes the after_model and final_response
+   policies in windows before it is sent: the last 128 characters are held back until more text
+   arrives or the answer ends, so short answers arrive as one delta. When the Runtime withholds
+   or replaces streamed text it emits `model.delta.retracted` (conversations:
+   `assistant.message.delta.retracted`); clients discard what they showed. Set
+   `guardrail_policy.stream_text: off` to send no deltas.
+7. **Delegation cannot widen what a run may do (breaking for some agent configurations).** A
+   coordinator must enable every tool its delegate enables (except `core.working_state_update`,
+   `core.skills_load`, `core.context_read`), or `core.subagent` refuses the delegation. A delegate
+   runs with its parent's approval requirements and guardrails added, so delegated children may
+   pause for approvals they skipped before. A child's usage and tool calls count against its
+   parent's budget, and `runtime.subagent.max_descendants` (default 64) caps a run tree.
+8. **Clarification and `core.ask_user` answers pass the run's `input` policies**, as steering
+   does. A denied answer raises `PolicyDeniedError` and the run stays paused.
+9. **Egress and execution defaults (security).**
+   - `core.http` refuses every call while `security.allowed_http_hosts` is empty, unless the new
+     `security.allow_any_public_host: true` is set.
+   - `core.subprocess` runs only executables listed in the new `security.sandbox.allowed_executables`
+     (absolute paths; empty refuses every call).
+   - Gemini, xAI, Groq and Mistral providers with a `base_url` other than the vendor's need an
+     explicit `api_key`; the default `env://<PROVIDER>_API_KEY` is no longer sent to another host.
+   - HTTP tools stop paginating at a `Link: rel=next` on another origin (scheme, host or port) and
+     return the pages they have with `pagination_stopped`, for every auth type. Caller-auth tools
+     used to raise there.
+   - Outbound connections refuse IPv6 transition addresses (6to4 `2002::/16`, Teredo
+     `2001::/32`, NAT64 `64:ff9b::/96`) whatever IPv4 address they carry; a 6to4 form of a
+     loopback or metadata address passed before on some Python releases.
+10. **MCP OAuth (security).** The callback completes only in the browser that started the flow:
+    `start` sets an HttpOnly, SameSite=Lax binding cookie, and a callback without it consumes
+    nothing and redirects to `success_redirect_url` with `status=confirm` (400
+    `mcp_oauth_unbound` when none is configured), where the host calls the new
+    `POST /v1/mcp/oauth/complete` (`mcp:connect`, same tenant and user as the start). Direct
+    `MCPOAuthManager.complete()` callers pass `browser_binding=` or `tenant_id=`/`user_id=`. A flow
+    started before the upgrade finishes only through `/complete`. A server with
+    `client_secret_ref` needs `issuer` (or both endpoints), so the secret never goes to an
+    authorization server the MCP server advertises.
+11. **Configuration that may hold secrets.** A stdio MCP server's `env` value for a
+    credential-named variable must be an `env://` reference (now resolved before launch), and a
+    retrieval `connection_url` that contains a password must be `env://`. Configuration errors no
+    longer print the offending values.
+12. **Agent UI.** Under `jwt` or `oidc` the UI page and spec need a token with `agents:read`
+    (they stay open under loopback development headers). The spec no longer carries the
+    `security`, `telemetry` or `cache` settings or a generated `raw_yaml`, and page values are
+    HTML-escaped.
+13. **API limits and checks.** A principal may hold 32 open event streams per process
+    (`api.max_streams_per_principal`; 429 with `Retry-After` beyond). A non-numeric
+    `Last-Event-ID` is a 400. CORS `*` together with credentials is refused at startup. A `*` scope
+    in a static `jwt` token is ignored, and `check` warns `JWT_AUDIENCE_MISSING` when an
+    asymmetric `jwt` setup names no audience.
+14. **Plugins.** Trust prefixes are checked against the module an entry point loads, an entry
+    point name declared by two distributions is refused, and a signed plugin with loose `.pyc`
+    files or a bytecode cache that does not match its signed source is refused.
+15. **Generated SQL validation is strict.** `SemanticLayer.validate_generated_sql` now tokenises
+    the query and refuses comments, more than one statement, set operations, `OR` at the top of
+    `WHERE`, and required filters that are not their own conjunct against a constant or parameter.
+    Queries that passed only because a comment or a tautology mentioned the filter are refused.
+16. **Policies.** Mandatory policies always fail closed, whatever `on_error` or
+    `boundary_on_error` say. The secrets guardrail recognises more (token shapes such as `sk-`,
+    `AKIA`, `ghp_`, `xox?-`, JWTs, DSN passwords, PEM keys and quoted JSON values), so a tool call
+    whose arguments it redacts is refused where 0.2.0b3 let it through. Detectors match on
+    Unicode-folded text too (NFKC, format characters removed, Cyrillic and Greek lookalikes).
+17. **Caches and stores.** The `tool_results` cache is user-scoped unless its `scope` is set, and
+    tools of MCP servers with per-user OAuth always key by user. PostgreSQL, Chroma, FAISS and
+    Qdrant vector stores refuse documents without `tenant_id`. The in-memory tool ledger refuses
+    another tenant's idempotency key.
+18. **Framework adapters (#146).**
+    - `invoke` returns `FAILED` (with a redacted `metadata["error"]`) or `CANCELLED` instead of
+      raising the framework's exception.
+    - LangGraph runs on thread `"{tenant}:{session}"`; checkpoints written under a bare
+      `session_id` are no longer found, and a caller-supplied `thread_id` or identity is refused.
+      An interrupted graph reports `AWAITING_INPUT` (it reported `COMPLETED`), with
+      `metadata["interrupts"]`.
+    - OpenAI Agents no longer sends `conversation_id` by default (pass the new `conversation_id=`
+      callable), and `openai_agents_options` may not set `context`, `conversation_id`,
+      `previous_response_id`, `session` or `run_config`.
+    - AutoGen takes a per-request `factory=` (preferred); a shared team is reset before each run
+      and runs one request at a time. AutoGen reports `persistence` and `human_in_the_loop` as
+      false; CrewAI reports `streaming` false and `cancellation` only with native `akickoff`.
+    - `GovernedToolBridge` refuses `write`, `external` and `destructive` tools under its default
+      `ApprovalPolicy()`; pass a permissive `approval_policy` to allow them.
+
+### You can now remove
+
+- **Host-side re-redaction of streamed deltas** before showing them: the Runtime redacts
+  `model.delta` text and retracts it when the answer changes.
+- **Per-user filtering of artifact listings and downloads** in front of `/v1/artifacts`: the
+  routes check the owner.
+- **Token-shape and DSN-password regexes kept next to `redact_secrets`**: the shared rules cover
+  them; `is_sensitive_key` and `redact_secret_text` are public.
+- **Host checks that refuse approval decisions other than approve, reject or modify**: the
+  Runtime refuses them.
+- **Locks or per-tenant team instances around a shared AutoGen team**: pass `factory=` to
+  `AutoGenAdapter`.
+
+### Security
+
+- Application findings fixed (Critical: cross-tenant agent takeover through `POST /v1/agents`;
+  High: `pending`/`expired` approval decisions approving calls, framework tool bridge running
+  side-effecting tools unapproved, streamed text skipping output policies, framework adapters
+  sharing state across tenants and reporting interrupted runs as completed, the unauthenticated
+  agent UI exposing configuration, artifacts readable by every user of a tenant, plugin trust
+  checked on a different package than the one imported, generated-SQL validation bypassable with
+  comments or tautologies; and the Medium and Low findings listed in the upgrade notes).
+- **Release pipeline.** Every GitHub Action is pinned to a full commit SHA; Trivy and Gitleaks
+  run as checksum-verified binaries (the `trivy-action` tag move was the entry point of the 2026
+  LiteLLM compromise). No checkout keeps its token. The release workflow builds in a job of its
+  own with only the hash-locked `requirements/build.txt`, restores no cache, attests the files it
+  uploads (GitHub provenance, plus PEP 740 on PyPI) and attaches `SHA256SUMS`, a CycloneDX SBOM
+  and a license report to the GitHub release. Auto Release starts it with `GITHUB_TOKEN`, so no
+  personal access token is needed. `tests/unit/test_workflow_supply_chain.py` keeps these rules.
+- **Locked dependencies.** CI, the release build, the scanners and the service image install
+  hash-locked requirements (`requirements/*.txt`, `scripts/lock-requirements.sh`); the image's
+  base is pinned by digest.
+
+### Added
+
+- Scopes `artifacts:admin` and `agents:admin`; settings `api.max_streams_per_principal`,
+  `runtime.subagent.max_descendants`, `security.allow_any_public_host`,
+  `security.sandbox.allowed_executables`, `guardrail_policy.stream_text`; event
+  `model.delta.retracted`; route `POST /v1/mcp/oauth/complete`; check code
+  `JWT_AUDIENCE_MISSING`.
+- `algen_agent_runtime.artifacts`: `ARTIFACTS_ADMIN_SCOPE`, `artifact_owned_by`,
+  `list_user_artifacts`; `user_id` on `Artifact` and `ArtifactDescriptor`; optional
+  `list_for_user` on artifact stores.
+- `algen_agent_runtime.security`: `is_sensitive_key`, `redact_secret_text`,
+  `SECRET_TOKEN_PATTERNS`, `hidden_value_marker`, `undeclared_sensitive_parameters`,
+  `fold_text`.
+- `AutoGenAdapter(factory=, input_factory=, handoff_target=)`, `LangGraphAdapter.thread_id`,
+  `OpenAIAgentsAdapter(conversation_id=)`, `GovernedToolBridge(approval_policy=, policies=)`,
+  `MCPOAuthManager.server_for_state`.
+- `scripts/container-smoke.sh` (start, readiness, one run, drain) in CI and `ci-local.sh`;
+  `scripts/sbom.py`; a `perf` test suite (`tests/perf`, run with `-m perf`) for step and tool-call
+  overhead, load and noisy-neighbour behaviour.
+
+### Documentation
+
+- `docs/upgrading.md` (0.1 to 0.2), the support and deprecation policy
+  (`docs/api-stability.md`), the single-node GA scope and framework adapter support decision,
+  measured performance and capacity evidence with proposed SLOs, alerts and runbooks
+  (`docs/operations.md`), release verification and dependency locks (`docs/releasing.md`), the
+  repository settings audit (`docs/repository-settings.md`), and stale version references
+  removed across `docs/*.md`.
+- The upgrade and rollback drills run from both 0.1.0a23 and 0.2.0b3.
+
 ## [0.2.0b3] - 2026-11-12
 
 Conversation turns survive restarts and deploys, pauses can be followed end to end (a delegate's

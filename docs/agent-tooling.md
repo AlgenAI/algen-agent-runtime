@@ -13,6 +13,7 @@ contain secret-like text, run independent tool calls together, and remember what
 | `guardrail_policy.tool_policies` | `None` (use `policies`) | The policies applied to tool arguments and results. `()` applies none at tool boundaries, so a file is written exactly as the model wrote it. Messages sent to the model are still screened by `policies`. |
 | `guardrail_policy.tool_result_injection` | `off` | `flag`: a tool result that tries to give the model instructions is wrapped as untrusted data with a warning before the model reads it. `block`: the call fails (combine with `on_error="return_to_model"` to tell the model). |
 | `guardrail_policy.retrieval_injection` | `off` | 0.2.0b3. Retrieved evidence chunks (the retrieval context builder) screened with the same check as `tool_result_injection`. `flag`: a chunk that tries to give the model instructions is kept, preceded by a note that it is data, not instructions. `drop`: the chunk and its citation are left out. Ordinary text that only mentions "ignore" passes. Each match is reported as `policy.evaluated` (`boundary: after_retrieval`, `reason_code: retrieval_injection.detected`) and audited with the chunk ids. Off by default, like tool results: turn it on for corpora that anyone outside the tenant's control can write to. |
+| `guardrail_policy.stream_text` | `redacted` | 0.2.0b4. What a streamed run records of the model's text as it arrives (`model.delta`, forwarded to conversations as `assistant.message.delta`). `redacted`: the text after the `after_model` and `final_response` policies, with the last 128 characters held back so a secret split across chunks is still masked; text later refused, repaired or retried is withdrawn with `model.delta.retracted`. `off`: no streamed text is recorded, so clients see only the final, verified answer. See [What streamed text shows](conversations.md#following-a-turn). |
 | `guardrail_policy.pii.exempt_entities` | `[]` | The kinds of identifier the `pii` policy leaves alone for this agent, at every boundary: any of `email`, `phone`, `aadhaar`, `card`. For an agent whose job is to handle them, such as a support desk that calls customers back. To exempt one tool field instead, annotate it (see [What the pii guardrail redacts](#what-the-pii-guardrail-redacts)). |
 | `tool_policy.parallel_calls` | `false` | The tool calls one model reply asks for run concurrently, up to `max_parallel_calls` (default 4), and are recorded in the order asked. A reply that includes a call needing approval, or a memory, skill or working-state tool, runs one call at a time. |
 | `memory_policy.store_tool_payloads` | `false` | Session memory keeps the turn's tool calls and results as well as the question and answer, each result capped at `tool_payload_max_chars` (default 4,000). History read back always starts at a whole turn, and a tool call is never kept without its result. |
@@ -112,6 +113,25 @@ inside it, or 16 or more varied characters). A plain word after `secret:`, `pass
 `token:` in a sentence is left alone. `max_tokens` and `token_count` are not credential keys.
 Bearer tokens are redacted as before.
 
+Since 0.2.0b4 the policy also redacts any quoted value after a credential key (`"api_key": "..."`
+inside JSON text), `Authorization: Basic|Digest|Token ...` credentials, the password in a URL
+(`postgresql://user:[REDACTED]@host`), PEM private key blocks, AWS secret keys written after
+"secret key", and tokens recognisable by their shape: `sk-...` (OpenAI, Anthropic), AWS access
+key ids (`AKIA...`, `ASIA...`), GitHub (`ghp_...`, `github_pat_...`), Slack (`xoxb-...`),
+Google API keys (`AIza...`) and JWTs (`eyJ....eyJ....`). At the tool-argument boundaries a
+redaction refuses the call, so a tool call that carries one of these is now refused where 0.2.0b3
+let it through.
+
+**Unicode obfuscation (since 0.2.0b4).** The `secrets`, `pii` and `prompt_injection` policies (and
+`tool_result_injection`) match on the text as written and on a folded copy
+(`algen_agent_runtime.security.redaction.fold_text`): NFKC-normalised (fullwidth forms become
+ASCII), with format characters such as zero-width spaces and bidi controls removed, and Cyrillic
+and Greek letters that look like Latin ones replaced by those. An injection found only in the
+folded copy is refused like any other. A credential or identifier found only in the folded copy
+cannot be mapped back to a span of the original, so the whole string is redacted
+(`[REDACTED]`, or `[REDACTED_EMAIL]` and so on when one kind of identifier was found): the
+guardrail fails closed rather than leaving part of it.
+
 ### Reusing the redaction rules
 
 A host that masks PII or credentials itself (in its own logs, exports, admin screens or a tool's
@@ -141,7 +161,10 @@ redact_secrets({"password": "x", "log": log_line})   # log_line holds an api_key
   assignments written as code or configuration, bearer tokens; prose such as "The secret:
   consistency" is left alone) and, in a dict, replaces the whole value of a key that names a
   credential (`password`, `api_key`, `db.password`, `githubToken`, `authorization`, `cookie`; not
-  `max_tokens`).
+  `max_tokens`). Since 0.2.0b4 it also masks URL passwords, PEM private keys and token shapes
+  (`sk-...`, `AKIA...`, `ghp_...`, `xoxb-...`, JWTs) and recognises a credential key by its
+  normalised name (`access_token`, `client_secret`, `x-api-key`, `OPENAI_API_KEY`, `Api-Key`,
+  `private_key`; see `is_sensitive_key` below).
 
 Both are the functions the guardrails run, so a fix to a rule reaches the host's masking in the
 same release.
@@ -165,9 +188,12 @@ same rules the guardrails use, instead of its own regular expressions:
 | Helper | Masks | Since |
 | --- | --- | --- |
 | `PIIRedactionPolicy().redact_value(value)` (`algen_agent_runtime.policies.engine`) | emails, card numbers, Aadhaar and phone numbers, as the `pii` policy does (table above), in a string, a dict, a list or a Pydantic model, at any depth | 0.1.0a18 |
-| `redact(value)` (`algen_agent_runtime.security.redaction`) | values under keys such as `authorization`, `cookie`, `password`, `secret`, `token`, `api_key` or `credential` (any case), bearer tokens, and `key=value` credentials in text, at any depth | 0.1.0a1; `key=value` from 0.1.0a18 |
-| `redact_text(text)` | bearer tokens and `key=value` credentials in one string | 0.1.0a18 |
-| `redact_parameters(arguments)` | tool arguments as an approval shows them: top-level `password`, `secret`, `token`, `api_key` and `authorization` keys, and credentials inside every string | 0.1.0a18 |
+| `redact(value)` (`algen_agent_runtime.security.redaction`) | at any depth, the value of every key that `is_sensitive_key` accepts, and in every string the credentials `redact_text` finds | 0.1.0a1; `key=value` from 0.1.0a18; the shared key rule and value shapes from 0.2.0b4 (before: exact names `authorization`, `cookie`, `password`, `secret`, `token`, `api_key`, `apikey`, `credential`) |
+| `redact_text(text)` / `redact_secret_text(text)` | credentials in one string, by the `secrets` policy's rules (above); `redact_secret_text` also returns how many it masked | 0.1.0a18; `redact_secret_text` and the shared rules 0.2.0b4 |
+| `is_sensitive_key(key)` | whether a dict key names a credential: its name lower-cased without separators contains `token`, `secret`, `password`/`passwd`, `apikey`, `accesskey`, `authorization`, `cookie`, `credential`, `privatekey`, `signingkey` or `sessionkey`, or is `session`, `pwd` or `auth`; token counts and settings (`max_tokens`, `input_tokens`, `token_count`, `tokenizer`, `token_url`) and `session_id` are not | 0.2.0b4 |
+| `redact_parameters(arguments)` | tool arguments as an approval shows them: at any depth, a key that `is_sensitive_key` accepts becomes `hidden_value_marker(value)`, `[REDACTED len=<n> sha256=<first 8 hex>]`, and credentials inside every string are masked | 0.1.0a18; markers and nested keys 0.2.0b4 (before: top-level `password`, `secret`, `token`, `api_key`, `authorization` became `[REDACTED]`) |
+| `undeclared_sensitive_parameters(arguments, schema)` | the dotted paths of credential-named arguments that a tool's input schema does not declare under `properties` | 0.2.0b4 |
+| `fold_text(text)` | the folded copy the guardrails also match on (NFKC, format characters removed, Cyrillic and Greek lookalikes folded to Latin) | 0.2.0b4 |
 
 ```python
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy
@@ -245,9 +271,10 @@ runtime:
   subagent:
     enabled: true                    # register core.subagent; off by default
     max_depth: 3                     # delegations allowed in one chain (1 to 10)
+    max_descendants: 64              # child runs one delegation tree may start (0.2.0b4)
 agents:
   - name: planner
-    enabled_tools: [core.subagent]
+    enabled_tools: [core.subagent, crm.search]   # a delegate may use only these tools
     tool_permissions: [agents.delegate, crm.read]
     delegates: [researcher]          # the agents it may delegate to; "*" allows any
 ```
@@ -257,6 +284,30 @@ agents:
   refused with `PolicyDeniedError`.
 - **No wider permissions.** The delegate's `tool_permissions` must be within the caller's: a
   planner with `crm.read` cannot reach `crm.write` through a delegate that has it.
+- **No wider tools (0.2.0b4).** The delegate's `enabled_tools` must be within the caller's too,
+  apart from the run-local `core.working_state_update`, `core.skills_load` and
+  `core.context_read`. A call to a delegate that enables another tool is refused with
+  `PolicyDeniedError` ("agent 'researcher' enables tools 'planner' does not: [...]"). Before
+  0.2.0b4 only `tool_permissions` were compared. **Upgrade:** list the delegate's tools in the
+  coordinating agent's `enabled_tools` as well (its own model is then offered them too), or
+  move them to an agent that both may use.
+- **No weaker approvals or guardrails (0.2.0b4).** The child runs with its parent's approval
+  requirements and guardrail policies added to its own: `approval_policy.require_for_side_effects`
+  and `require_for_destructive` hold when either agent sets them, the parent's
+  `guardrail_policy.policies` and `tool_policies` join the child's, `tool_result_injection` and
+  `retrieval_injection` take the stricter of the two, and only the PII kinds both agents exempt
+  stay exempt. The Runtime carries the parent's settings on the child's
+  `RunRequest.metadata["delegation_floor"]` and applies them for runs `core.subagent` started
+  only (`algen_agent_runtime.tools.subagent.delegated_agent`). `on_rejection` stays the child's.
+- **One budget for the tree (0.2.0b4).** When a child ends, its token usage (and cost) and its
+  tool calls are added to its parent's `execution_summary`, and so up to the root run: the
+  parent's `budget.max_tokens` and `max_cost_usd` are checked against what its children used at
+  its next step, and `budget.on_limit` applies as for its own calls. A child still gets its own
+  full budget while it runs. One delegation tree may start at most
+  `runtime.subagent.max_descendants` child runs (default 64, at any depth); past it a call is
+  refused with `PolicyDeniedError`. The count is kept by each Runtime process, so a tree
+  recovered after a restart counts again from zero. Before 0.2.0b4 a parent's usage left its
+  children out, and fan-out was bounded only by `max_depth`, steps and parallel calls.
 - **Depth.** The Runtime counts the nesting from the run's lineage: the child's
   `RunRequest.parent_run_id` is the calling run, and only runs `core.subagent` started count
   (a workflow's node-to-node `parent_run_id` does not). A call at `max_depth` is refused. The
@@ -281,7 +332,8 @@ agents:
   (`awaiting_reconciliation`) is returned to the parent's model as before.
 
 A host that builds an `AgentRuntime` itself, without `build_container`, registers the tool with
-`runtime.tools.register(subagent_tool(runtime, max_depth=3))` (`algen_agent_runtime.tools.subagent`).
+`runtime.tools.register(subagent_tool(runtime, max_depth=3, max_descendants=64))`
+(`algen_agent_runtime.tools.subagent`).
 Do not do both: with `runtime.subagent.enabled` on, registering it again raises `ConflictError`.
 
 ## Metering model calls
@@ -390,10 +442,10 @@ before. A cached model response makes no call, so the meter never sees it. A cal
 `ModelRouter.generate` or `ModelRouter.stream` directly gets a `MeterCall` with only `provider`,
 `model`, `streaming` and `purpose="other"`; pass `meter_call=` to supply the rest.
 
-**The 0.1.0a14 form.** A meter whose `reserve` has no `call` parameter (and no `**kwargs`) still
-works: the router inspects `reserve` once, when it is built, and then calls it without `call`. It
-emits one `DeprecationWarning` per meter, attributed to the meter's module. That form is removed
-in 0.2: add `call: MeterCall` to `reserve`; nothing else changes.
+**The 0.1.0a14 form is gone.** Up to `0.1.0a23`, a meter whose `reserve` had no `call` parameter
+(and no `**kwargs`) still worked, with a `DeprecationWarning`. From `0.2.0b1` the router refuses it
+with `ConfigurationError` when it is built: add `call: MeterCall` to `reserve`; nothing else
+changes.
 
 To refuse, raise `MeterRefusedError`. The runtime does not retry the call, does not try a
 fallback model and does not count it against the provider's health; the run ends `failed` with

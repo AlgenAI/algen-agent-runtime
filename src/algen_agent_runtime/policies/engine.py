@@ -23,6 +23,13 @@ from algen_agent_runtime.policies.contracts import (
     PolicyFailMode,
     PolicyPoint,
 )
+from algen_agent_runtime.security.redaction import (
+    _PROSE_SECRET_KEYS,  # noqa: F401  (re-exported for callers of the old location)
+    _SECRET_KEY,  # noqa: F401
+    _looks_like_credential,  # noqa: F401
+    fold_text,
+    redact_secret_text,
+)
 from algen_agent_runtime.tools.contracts import SideEffect
 from algen_agent_runtime.types.contracts import Message, Role, TextBlock
 
@@ -43,83 +50,28 @@ class Policy(Protocol):
     ) -> PolicyDecision: ...
 
 
-# A key that names a credential: the whole key or its last part (``secret``, ``SECRET_KEY``,
-# ``db.password``, ``githubToken``); ``max_tokens`` or ``token_count`` are not.
-_SECRET_KEY = (
-    r"[A-Za-z0-9_.-]*?"
-    r"(?:api[_-]?key|access[_-]?key|secret(?:[_-]?key)?|password|passwd|private[_-]?key|token)"
-)
-
-# Keys that are also ordinary words: after one of these, ``key: value`` may be prose.
-_PROSE_SECRET_KEYS = frozenset({"secret", "password", "passwd", "token"})
-
-
-def _looks_like_credential(value: str) -> bool:
-    """A value written as prose after ``secret:`` or ``token:`` is redacted only when it reads
-    as a credential: it has a digit, letters in mixed case inside it, or it is long and varied.
-    ``The secret: consistency`` is left alone."""
-    if any(character.isdigit() for character in value):
-        return True
-    if len(value) >= 12 and re.search(r"[a-z][A-Z]|[A-Z]{2}[a-z]", value):
-        return True
-    return len(value) >= 16 and len(set(value)) >= 10
-
-
 class SecretRedactionPolicy:
-    """Redact credentials written as ``key: value`` or ``key=value``, and bearer tokens.
+    """Redact credentials in text: values written as ``key: value`` or ``key=value``, bearer
+    and other ``Authorization`` credentials, URL passwords, PEM private keys and tokens
+    recognisable by shape (``sk-...``, ``AKIA...``, ``ghp_...``, ``xoxb-...``, JWTs).
 
-    A value is redacted when its key is written the way code and configuration write it (an
-    identifier such as ``api_key`` or ``SECRET``, a quoted key, or ``=``), when the value is
-    quoted, or when the value itself reads as a credential (see ``_looks_like_credential``).
-    Prose such as "The secret: consistency" is left alone.
+    The rules are ``algen_agent_runtime.security.redaction.redact_secret_text``'s, shared with
+    log, telemetry and approval redaction. A keyed value is redacted when its key is written the
+    way code and configuration write it (an identifier such as ``api_key`` or ``SECRET``, a
+    quoted key, or ``=``), when the value is quoted, or when the value itself reads as a
+    credential. Prose such as "The secret: consistency" is left alone. Text that hides a
+    credential behind zero-width characters, fullwidth forms or lookalike letters is redacted
+    whole.
     """
 
     name = "secrets"
     category = "input_validation"
     enforcement_mode = "warn"
     applies_to = _CONTENT_BOUNDARIES
-    _pattern = re.compile(
-        r"(?i)(?P<kq>[\"']?)(?<![A-Za-z0-9_.-])(?P<key>" + _SECRET_KEY + r")(?![A-Za-z0-9_])"
-        r"(?P=kq)\s*(?P<op>[:=])\s*(?P<vq>[\"']?)(?P<value>[A-Za-z0-9_\-/.]{8,})"
-    )
-    # ``Authorization: Bearer <token>``: a token has a digit or a separator, so prose such as
-    # "bearer instruments" is left alone.
-    _bearer = re.compile(
-        r"(?i)\bbearer\s+((?=[A-Za-z0-9._~+/-]*[0-9._~+/-])[A-Za-z0-9._~+/-]{8,}=*)"
-    )
-
-    @staticmethod
-    def _is_secret(match: re.Match[str]) -> bool:
-        key = match.group("key")
-        return bool(
-            match.group("op") == "="
-            or match.group("kq")
-            or match.group("vq")
-            # An identifier (api_key, SECRET, githubToken), not a word in a sentence.
-            or key.lower() not in _PROSE_SECRET_KEYS
-            or key.isupper()
-            or _looks_like_credential(match.group("value"))
-        )
 
     @classmethod
     def _redact_text(cls, text: str) -> tuple[str, int]:
-        count = 0
-
-        def keyed(match: re.Match[str]) -> str:
-            nonlocal count
-            if not cls._is_secret(match):
-                return match.group(0)
-            count += 1
-            start, end = match.span("value")
-            offset = match.start()
-            whole = match.group(0)
-            return whole[: start - offset] + "[REDACTED]" + whole[end - offset :]
-
-        transformed = cls._pattern.sub(keyed, text)
-        transformed, found = cls._bearer.subn(
-            lambda match: match.group(0).replace(match.group(1), "[REDACTED]"), transformed
-        )
-        return transformed, count + found
+        return redact_secret_text(text)
 
     async def evaluate(
         self, point: str, payload: Any, context: Mapping[str, Any]
@@ -503,6 +455,22 @@ class PIIRedactionPolicy:
             transformed = _AADHAAR.sub(aadhaar, transformed)
         return transformed, labels
 
+    @classmethod
+    def _redact_folded(cls, text: str, exempt: frozenset[str], field: str) -> tuple[str, set[str]]:
+        """``_redact_text``, and the same rules on ``fold_text(text)``: an identifier hidden by
+        zero-width characters, fullwidth digits or lookalike letters cannot be mapped back to
+        a span of the original, so the whole value is redacted instead (fail closed)."""
+        transformed, labels = cls._redact_text(text, exempt, field)
+        folded = fold_text(text)
+        if folded == text:
+            return transformed, labels
+        folded_text, folded_labels = cls._redact_text(folded, exempt, fold_text(field))
+        if folded_text.count("[REDACTED_") <= transformed.count("[REDACTED_"):
+            return transformed, labels
+        kinds = labels | folded_labels
+        placeholder = f"[REDACTED_{next(iter(kinds)).upper()}]" if len(kinds) == 1 else "[REDACTED]"
+        return placeholder, kinds
+
     def _redact(
         self,
         value: Any,
@@ -519,7 +487,7 @@ class PIIRedactionPolicy:
                 or (schema.is_identifier() and _SINGLE_TOKEN.fullmatch(value))
             ):
                 return value, set()
-            return self._redact_text(value, exempt, field)
+            return self._redact_folded(value, exempt, field)
         if (
             tool_schemas is not None
             and isinstance(value, Message)
@@ -715,8 +683,15 @@ INSTRUCTION_OVERRIDE_PATTERNS = (
 
 
 def looks_like_instruction_override(text: str) -> bool:
-    """High-signal attempts to override or disclose privileged instructions."""
-    return any(pattern.search(text) for pattern in INSTRUCTION_OVERRIDE_PATTERNS)
+    """High-signal attempts to override or disclose privileged instructions, in the text as
+    written or once zero-width characters, fullwidth forms and lookalike letters are folded
+    (``fold_text``)."""
+    folded = fold_text(text)
+    return any(
+        pattern.search(candidate)
+        for candidate in ((text,) if folded == text else (text, folded))
+        for pattern in INSTRUCTION_OVERRIDE_PATTERNS
+    )
 
 
 class PromptInjectionPolicy:
@@ -742,7 +717,9 @@ class PromptInjectionPolicy:
                 reason_code="prompt_injection.not_applicable",
                 reason="Prompt-injection scan is not applicable at this boundary.",
             )
-        if any(pattern.search(payload) for pattern in self._patterns):
+        folded = fold_text(payload)
+        candidates = (payload,) if folded == payload else (payload, folded)
+        if any(pattern.search(text) for text in candidates for pattern in self._patterns):
             return PolicyDecision(
                 action=PolicyAction.DENY,
                 reason_code="prompt_injection.detected",
@@ -1003,7 +980,14 @@ class CompositePolicyEngine:
                     # A policy that raises a denial has decided; it is not a policy error.
                     raise
                 except Exception as exc:
-                    mode = self.error_handling.mode(policy_point)
+                    # A mandatory policy (authorization, side-effect approval, or one registered
+                    # mandatory) is a security invariant: it never fails open, whatever
+                    # policy_error_handling says for the boundary.
+                    mode = (
+                        PolicyFailMode.CLOSED
+                        if policy.name in self._mandatory
+                        else self.error_handling.mode(policy_point)
+                    )
                     failure = {
                         "boundary": policy_point.value,
                         "policy": policy.name,

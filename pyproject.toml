@@ -160,6 +160,7 @@ markers = [
   "redis: tests targeting Redis cache/run stores",
   "drill: persistence drills against live stores (tests/drills; restart, outage, backup)",
   "soak: the bounded soak drill; off unless ALGEN_DRILL_SOAK_RUNS is set",
+  "perf: the performance suite (tests/perf); skipped unless selected with -m perf",
 ]
 
 [tool.ruff]

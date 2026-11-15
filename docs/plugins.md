@@ -141,7 +141,11 @@ unregistered or misspelt policy silently did not run. It now fails the build.
 Plugins load only from packages listed in `security.trusted_plugin_prefixes`. The whole set of
 plugin references is checked before any module is imported; an unlisted one fails the build with a
 `ConfigurationError`. Prefixes match on module boundaries: `crm_agent` trusts `crm_agent.plugin`
-but not `crm_agent_extra`. Trust is an application-level check, not a sandbox: a trusted plugin runs
+but not `crm_agent_extra`. For an entry point name the prefix is checked against the module the
+entry point imports (since 0.2.0b4; before, against the entry point's name), and an entry point
+name declared by more than one installed distribution is refused with both distributions named:
+the entry point is resolved once, so the module trusted and verified is the one loaded. Name a
+plugin as `module:attribute` to avoid entry point lookup altogether. Trust is an application-level check, not a sandbox: a trusted plugin runs
 in the Runtime's process with its authority. Run untrusted code in an isolated process.
 
 Plugin packages can also be signed with Ed25519 and verified before import:

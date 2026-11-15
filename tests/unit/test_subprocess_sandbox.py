@@ -27,6 +27,7 @@ from algen_agent_runtime.tools.builtin import subprocess_tool
 from algen_agent_runtime.tools.contracts import ToolContext
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX process sandboxing")
+ECHO = "/bin/echo"
 
 REPORT = """
 import json, os, resource
@@ -136,13 +137,18 @@ def _wrapper(tmp_path: Path) -> Path:
 
 
 async def test_subprocess_tool_requires_a_wrapper_when_configured(tmp_path: Path) -> None:
-    tool = subprocess_tool(enabled=True, sandbox=SandboxSettings(required=True))
+    tool = subprocess_tool(
+        enabled=True, sandbox=SandboxSettings(required=True, allowed_executables=(ECHO,))
+    )
     with pytest.raises(PolicyDeniedError, match="no sandbox wrapper"):
         await tool.execute({"executable": "/bin/echo", "arguments": ["hi"]}, _context())
 
     wrapper = _wrapper(tmp_path)
     tool = subprocess_tool(
-        enabled=True, sandbox=SandboxSettings(required=True, wrapper=(str(wrapper),))
+        enabled=True,
+        sandbox=SandboxSettings(
+            required=True, wrapper=(str(wrapper),), allowed_executables=(ECHO,)
+        ),
     )
     result = await tool.execute({"executable": "/bin/echo", "arguments": ["hi"]}, _context())
     assert result["exit_code"] == 0 and result["stdout"].strip() == "hi"
@@ -153,13 +159,20 @@ async def test_subprocess_tool_inherits_nothing_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SANDBOX_TEST_SECRET", "do-not-leak")
-    tool = subprocess_tool(enabled=True)
+    tool = subprocess_tool(
+        enabled=True, sandbox=SandboxSettings(allowed_executables=("/usr/bin/env",))
+    )
     result = await tool.execute({"executable": "/usr/bin/env"}, _context())
     assert "SANDBOX_TEST_SECRET" not in result["stdout"]
 
 
 async def test_subprocess_tool_times_out() -> None:
-    tool = subprocess_tool(enabled=True, sandbox=SandboxSettings(subprocess_timeout_seconds=0.5))
+    tool = subprocess_tool(
+        enabled=True,
+        sandbox=SandboxSettings(
+            subprocess_timeout_seconds=0.5, allowed_executables=("/bin/sleep",)
+        ),
+    )
     with pytest.raises(ToolExecutionError, match="timed out"):
         await tool.execute({"executable": "/bin/sleep", "arguments": ["30"]}, _context())
 
@@ -235,3 +248,33 @@ async def test_stdio_mcp_server_runs_inside_the_sandbox(
     assert "SERVER_SETTING" in report["env"]
     assert report["files"] == 128
     assert (tmp_path / "wrapped").exists()
+
+
+async def test_subprocess_tool_runs_only_allowed_executables() -> None:
+    # Enabled but with no allowlist: every executable is refused, before anything starts.
+    tool = subprocess_tool(enabled=True)
+    with pytest.raises(PolicyDeniedError, match="no allowed executables"):
+        await tool.execute({"executable": ECHO, "arguments": ["hi"]}, _context())
+    tool = subprocess_tool(enabled=True, sandbox=SandboxSettings(allowed_executables=(ECHO,)))
+    for executable in ("/bin/sh", "echo", "/bin/../bin/echo", ""):
+        with pytest.raises(PolicyDeniedError, match="may not run"):
+            await tool.execute({"executable": executable, "arguments": ["hi"]}, _context())
+    result = await tool.execute({"executable": ECHO, "arguments": ["hi"]}, _context())
+    assert result["stdout"].strip() == "hi"
+
+
+@pytest.mark.parametrize("path", ["bin/echo", "/bin/../bin/echo", "echo"])
+def test_allowed_executables_must_be_absolute_and_normalized(path: str) -> None:
+    with pytest.raises(ValueError, match="normalized absolute"):
+        SandboxSettings(allowed_executables=(path,))
+
+
+async def test_runaway_output_is_capped_and_the_process_killed() -> None:
+    script = "import sys\nwhile True:\n    sys.stdout.write('x' * 65536)\n"
+    prepared = prepare_command(
+        sys.executable, ["-c", script], policy=SubprocessSandbox(), required=False, label="t"
+    )
+    started = time.monotonic()
+    with pytest.raises(ToolExecutionError, match="more than 100000 bytes to stdout"):
+        await run_sandboxed(prepared, timeout_seconds=30, max_output_bytes=100_000)
+    assert time.monotonic() - started < 10

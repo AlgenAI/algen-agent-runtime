@@ -28,9 +28,10 @@ from algen_agent_runtime.approvals.service import (
     ApprovalRequest,
     ApprovalService,
     ApprovalStatus,
+    check_decision,
 )
 from algen_agent_runtime.cache import CacheContext, CacheService
-from algen_agent_runtime.config.registry import InMemoryAgentRegistry
+from algen_agent_runtime.config.registry import InMemoryAgentRegistry, pinned_agent
 from algen_agent_runtime.context.artifacts import (
     CONTEXT_READ_PERMISSION,
     CONTEXT_READ_TOOL,
@@ -137,7 +138,13 @@ from algen_agent_runtime.runtime.guards import (
 from algen_agent_runtime.runtime.narrative import RunNarrative, build_narrative
 from algen_agent_runtime.runtime.reconciliation import RUNTIME_ACTOR, ToolReconciliation
 from algen_agent_runtime.runtime.state_machine import validate_transition
-from algen_agent_runtime.security.redaction import redact, redact_parameters, redact_text
+from algen_agent_runtime.runtime.stream_guard import StreamTextGuard
+from algen_agent_runtime.security.redaction import (
+    redact,
+    redact_parameters,
+    redact_text,
+    undeclared_sensitive_parameters,
+)
 from algen_agent_runtime.tools.ask_user import (
     ASK_USER_TOOL,
     MAX_ANSWER_CHARS,
@@ -163,7 +170,7 @@ from algen_agent_runtime.tools.contracts import (
 )
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
-from algen_agent_runtime.tools.subagent import SUBAGENT_TOOL, delegated_run
+from algen_agent_runtime.tools.subagent import SUBAGENT_TOOL, delegated_agent, delegated_run
 from algen_agent_runtime.types.contracts import (
     MAX_PENDING_STEERING,
     MAX_STEERING_CHARS,
@@ -519,6 +526,9 @@ class AgentRuntime:
         self.stream_delta_interval_seconds = max(0.0, stream_delta_interval_seconds)
         # Runs in this process that reached Budget.max_events: they fail at their next step.
         self._event_overflow: set[str] = set()
+        # The step whose streamed response last sent model.delta text, by run id, until the
+        # answer is delivered or that text is retracted (model.delta.retracted).
+        self._streamed_steps: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
@@ -539,6 +549,8 @@ class AgentRuntime:
         self._logger = structlog.get_logger("algen_agent_runtime.runtime")
         # Custom approval services whose decide() takes no decided_by or comment (warned once).
         self._unattributed_approval_services: set[str] = set()
+        # Runs whose pinned agent version is no longer registered (warned once per run).
+        self._unpinned_agent_runs: set[str] = set()
 
     def _validate_context_policy(self, agent: AgentDefinition) -> None:
         memory_tools = agent.enabled_tools.intersection(MEMORY_PERMISSIONS)
@@ -666,7 +678,7 @@ class AgentRuntime:
             else:
                 break
         current = await self._require_state(run_id, tenant_id)
-        agent = self.agents.get(current.request.agent, current.request.agent_version)
+        agent = self._run_agent(current)
         composer = self.composers.get(agent.response_composer)
         result = await composer.compose(current)
         if (
@@ -818,6 +830,9 @@ class AgentRuntime:
             clarification = str(payload.get("clarification", "")).strip()
             if not clarification:
                 raise ValueError("clarification is required")
+            # Checked like the run's input and steering: it is the same user speaking. A denied
+            # answer raises PolicyDeniedError here and the run stays paused for another answer.
+            clarification = await self._checked_user_answer(state, clarification)
             if pause.get("kind") == "ask_user":
                 await self._answer_ask_user(
                     state, str(pause.get("tool_call_id", "")), clarification
@@ -830,11 +845,11 @@ class AgentRuntime:
         elif state.status == RunStatus.AWAITING_APPROVAL:
             pause_payload = state.pause_payload or {}
             approval_id = str(pause_payload.get("approval_id", ""))
-            raw_decision = str(payload.get("decision", ""))
-            try:
-                decision = ApprovalStatus(raw_decision)
-            except ValueError as exc:
-                raise ValueError("decision must be approved, rejected, or modified") from exc
+            # Only approved, rejected and modified decide a request: "pending" or "expired"
+            # must never fall through to approving the call (check_decision).
+            decision = check_decision(
+                str(payload.get("decision", "")), payload.get("modified_parameters")
+            )
             approval = await self._decide_approval(
                 approval_id,
                 tenant_id,
@@ -845,7 +860,7 @@ class AgentRuntime:
             )
             call_id = str((state.pause_payload or {}).get("tool_call_id", ""))
             if approval.status == ApprovalStatus.REJECTED:
-                agent = self.agents.get(state.request.agent, state.request.agent_version)
+                agent = self._run_agent(state)
                 if pause_payload.get("kind") == "execution_continuation":
                     # A declined budget extension has no tool call to report back to the
                     # model, so the run ends at its saved checkpoint.
@@ -896,6 +911,9 @@ class AgentRuntime:
                 await self._transition(state, RunStatus.PLANNING)
                 await self._schedule(run_id, tenant_id, credentials)
                 return state
+            if approval.status not in (ApprovalStatus.APPROVED, ApprovalStatus.MODIFIED):
+                # A custom approval service that recorded something else approves nothing.
+                raise ConflictError(f"approval request is {approval.status.value}, not approved")
             if pause_payload.get("kind") == "execution_continuation":
                 state.continuation_count += 1
                 self._restore_deadline_after_pause(state)
@@ -933,6 +951,15 @@ class AgentRuntime:
             raise ConflictError(f"run in {state.status.value!r} cannot be resumed")
         await self._schedule(run_id, tenant_id, credentials)
         return state
+
+    async def _checked_user_answer(self, state: RunState, answer: str) -> str:
+        """``answer`` (a clarification or a ``core.ask_user`` answer) after the run's ``input``
+        policies, as steering messages are checked; a denial raises ``PolicyDeniedError``."""
+        agent = delegated_agent(self._run_agent(state), state)
+        checked = await self._policy_value(
+            "input", answer, state, {"agent": agent, "operation": "clarification"}
+        )
+        return checked if isinstance(checked, str) else answer
 
     async def _answer_ask_user(self, state: RunState, call_id: str, answer: str) -> None:
         """Give a ``core.ask_user`` call the user's answer as its result and plan on."""
@@ -1529,7 +1556,9 @@ class AgentRuntime:
 
     async def _drive(self, run_id: str, tenant_id: str) -> None:
         state = await self._require_state(run_id, tenant_id)
-        agent = self.agents.get(state.request.agent, state.request.agent_version)
+        agent = self._run_agent(state)
+        # A core.subagent child runs with its parent's approvals and guardrails added.
+        agent = delegated_agent(agent, state)
         with self.observability.run_scope(
             agent_id=agent.logical_id,
             agent_name=agent.name,
@@ -2469,12 +2498,17 @@ class AgentRuntime:
                     "gen_ai.output.message",
                     self._telemetry_content(response.message.model_dump(mode="json")),
                 )
-        checked_output = await self._guard_answer(
-            "after_model",
-            response.message.text_content,
-            state,
-            {"agent": agent, "tool_calls": response.tool_calls},
-        )
+        try:
+            checked_output = await self._guard_answer(
+                "after_model",
+                response.message.text_content,
+                state,
+                {"agent": agent, "tool_calls": response.tool_calls},
+            )
+        except PolicyDeniedError:
+            # The streamed text of an answer the policies refuse is withdrawn too.
+            await self._retract_stream(state, "policy")
+            raise
         if checked_output != response.message.text_content:
             response = response.model_copy(
                 update={"message": Message.text(Role.ASSISTANT, str(checked_output))}
@@ -2601,7 +2635,9 @@ class AgentRuntime:
             )
             # Files travel by reference until here: the bytes are loaded onto this copy only,
             # for this attempt (a retry may have changed the request).
-            wire = await run_attachments.resolve(request, state.request.tenant_id, self.artifacts)
+            wire = await run_attachments.resolve(
+                request, state.request.tenant_id, self.artifacts, user_id=state.request.user_id
+            )
             try:
                 if request.stream:
                     text_parts: list[str] = []
@@ -2609,8 +2645,11 @@ class AgentRuntime:
                     stream_started = time.monotonic()
                     first_chunk = True
                     streamed_chars = 0
-                    unsent: list[str] = []
                     last_delta: float | None = None
+                    # Streamed text reaches model.delta only through the run's output policies,
+                    # held back so a secret split across chunks is still masked (stream_guard).
+                    guard = self._stream_guard(state, agent)
+                    self._streamed_steps.pop(state.id, None)
                     # Closing the stream on every exit lets the router release a metered call
                     # that an error or cancellation interrupted here, not only in the provider.
                     async with aclosing(
@@ -2630,22 +2669,18 @@ class AgentRuntime:
                                 streamed_chars += len(event.delta)
                                 if streamed_chars > agent.budget.max_response_chars:
                                     raise self._response_too_large(agent, streamed_chars)
-                                unsent.append(event.delta)
+                                if guard is not None:
+                                    guard.add(event.delta)
                                 now = time.monotonic()
-                                if (
+                                if guard is not None and (
                                     last_delta is None
                                     or now - last_delta >= self.stream_delta_interval_seconds
                                 ):
                                     # Chunks that arrive within the interval share one event.
-                                    await self._emit(
-                                        state, "model.delta", {"delta": "".join(unsent)}, step_id
-                                    )
-                                    unsent.clear()
-                                    last_delta = now
+                                    if await self._emit_stream_text(state, guard, step_id):
+                                        last_delta = now
                             if event.response:
                                 completed = event.response
-                    if unsent:
-                        await self._emit(state, "model.delta", {"delta": "".join(unsent)}, step_id)
                     if completed is None:
                         raise ProviderError(
                             "stream ended without a completed response", retryable=True
@@ -2656,10 +2691,14 @@ class AgentRuntime:
                         )
                     await self._check_response_size(state, agent, completed)
                     try:
-                        return self._validate_model_completion(completed, request)
+                        validated = self._validate_model_completion(completed, request)
                     except ProviderError:
                         self._record_model_usage(state, completed)
                         raise
+                    if guard is not None:
+                        # The text held back until the end of the response.
+                        await self._emit_stream_text(state, guard, step_id, final=True)
+                    return validated
                 response = await self.router.generate(
                     wire, profiles, agent.model_allowlist, meter_call=meter_call
                 )
@@ -2671,6 +2710,8 @@ class AgentRuntime:
                     raise
             except ProviderError as exc:
                 last_error = exc
+                # Text this attempt streamed is not the answer: a retry streams its own.
+                await self._retract_stream(state, "model_error")
                 if isinstance(exc, InvalidToolCallError):
                     await self._invalid_tool_call(state, exc, profiles[0], step_id, attempt)
                 if not exc.retryable or attempt + 1 >= agent.retry_policy.max_attempts:
@@ -2959,17 +3000,33 @@ class AgentRuntime:
         if paused_duration.total_seconds() > 0:
             state.deadline += paused_duration
 
+    def _run_agent(self, state: RunState) -> AgentDefinition:
+        """The definition the run started with (``pinned_agent``), so an agent version
+        registered later (a higher version of the same name, say) never takes over a run that
+        is paused, recovered or resumed. A run stored without ``agent_key``, or whose pinned
+        version is no longer registered (the host deployed a new version and removed the old
+        one), resolves its request's agent and version as before."""
+        pinned = pinned_agent(self.agents, state)
+        if pinned is not None:
+            return pinned
+        if state.agent_key and state.id not in self._unpinned_agent_runs:
+            self._unpinned_agent_runs.add(state.id)
+            self._logger.warning(
+                "run_agent_version_not_registered", run_id=state.id, agent_key=state.agent_key
+            )
+        return self.agents.get(state.request.agent, state.request.agent_version)
+
     async def _memory_context(self, context: ToolContext) -> tuple[RunState, AgentDefinition]:
         state = await self.runs.get(context.run_id, context.tenant_id)
         if state is None or state.request.user_id != context.user_id:
             raise PolicyDeniedError("memory access requires the originating run, tenant, and user")
-        return state, self.agents.get(state.request.agent, state.request.agent_version)
+        return state, self._run_agent(state)
 
     async def _skill_agent(self, context: ToolContext) -> AgentDefinition:
         state = await self.runs.get(context.run_id, context.tenant_id)
         if state is None or state.request.user_id != context.user_id:
             raise PolicyDeniedError("skill access requires the originating run, tenant, and user")
-        return self.agents.get(state.request.agent, state.request.agent_version)
+        return self._run_agent(state)
 
     async def _prepare_loaded_skills(
         self, state: RunState, agent: AgentDefinition, value: Any, arguments: dict[str, Any]
@@ -3081,6 +3138,9 @@ class AgentRuntime:
             if child is not None:
                 await self._pause_with_child(state, action, child)
                 return
+            value = outcome.result.value
+            if isinstance(value, Mapping):
+                await self._charge_child(state, str(value.get("run_id", "")))
         await self._record_tool_call(state, agent, action, tool, outcome)
         await self._transition(state, RunStatus.BUILDING_CONTEXT)
         await self._announce_tool_updates(state, action, outcome)
@@ -3149,6 +3209,29 @@ class AgentRuntime:
             await self._transition(state, RunStatus.AWAITING_CLARIFICATION)
             await self._emit(state, "clarification.required", state.pause_payload, action.id)
 
+    async def _charge_child(self, state: RunState, child_run_id: str) -> None:
+        """Add an ended ``core.subagent`` child's token usage and tool calls to its parent's.
+
+        A child's own summary already holds what its children used, so the root run's usage is
+        the whole delegation tree's, and the parent's budget (``max_tokens``,
+        ``max_cost_usd``) is checked against it at its next step.
+        """
+        if not child_run_id:
+            return
+        child = await self.runs.get(child_run_id, state.request.tenant_id)
+        if (
+            child is None
+            or child.status not in TERMINAL_STATUSES
+            or delegated_run(child) != state.id
+        ):
+            return
+        state.summary = state.summary.model_copy(
+            update={
+                "usage": self._add_usage(state.summary.usage, child.summary.usage),
+                "tool_calls": state.summary.tool_calls + child.summary.tool_calls,
+            }
+        )
+
     async def _follow_child(self, state: RunState, child_run_id: str) -> RunResult:
         """Wait until a child run ends or pauses, and return its result.
 
@@ -3188,6 +3271,7 @@ class AgentRuntime:
                 await self._pause_with_child(state, action, child)
                 return
             state.delegated_runs.pop(call_id, None)
+            await self._charge_child(state, child_run_id)
             context = ToolContext(
                 run_id=state.id,
                 step_id=action.id,
@@ -3337,6 +3421,15 @@ class AgentRuntime:
                 await self._hold_tool_call(state, agent, action, held)
                 return None
         if decision.action == PolicyAction.REQUIRE_APPROVAL and not approved:
+            hidden = undeclared_sensitive_parameters(action.arguments, tool.definition.input_schema)
+            if hidden:
+                # The approver would see these only as a length and hash: a credential the tool
+                # does not declare is not something a person can approve.
+                raise PolicyDeniedError(
+                    f"approval.undeclared_secret_parameters: tool {tool.definition.name!r} was "
+                    f"called with credential-named arguments its input schema does not declare "
+                    f"({', '.join(hidden)}); they cannot be shown to an approver"
+                )
             rationale = self._call_rationale(state, call_id)
             if rationale is not None and self.telemetry_include_content:
                 trace.get_current_span().set_attribute(
@@ -4311,6 +4404,8 @@ class AgentRuntime:
         )
         if not passed:
             if state.attempt_count < agent.verification_policy.max_repairs:
+                # The streamed answer failed verification: the repaired one replaces it.
+                await self._retract_stream(state, "verification")
                 state.attempt_count += 1
                 state.output_text = None
                 # A user turn, not a system one: providers that refuse assistant prefill reject
@@ -4324,7 +4419,13 @@ class AgentRuntime:
                 return
             await self._reject_output(state, "final output failed verification")
         verified = state.output_text or ""
-        delivered = await self._guard_answer("final_response", verified, state, {"agent": agent})
+        try:
+            delivered = await self._guard_answer(
+                "final_response", verified, state, {"agent": agent}
+            )
+        except PolicyDeniedError:
+            await self._retract_stream(state, "policy")
+            raise
         if delivered != verified and self._structured_answer(state, verified) is not None:
             # A guardrail changed verified structured output: verify what is delivered, and
             # fail rather than deliver an answer that no longer matches its contract.
@@ -4471,6 +4572,7 @@ class AgentRuntime:
 
     async def _reject_output(self, state: RunState, message: str) -> None:
         """Keep the rejected answer for diagnostics only, then fail the run with ``message``."""
+        await self._retract_stream(state, "rejected")
         expected = state.version
         state.rejected_output = state.output_text
         state.output_text = None
@@ -4489,6 +4591,59 @@ class AgentRuntime:
         except ValueError:
             return None
         return value if isinstance(value, (dict, list)) else None
+
+    def _stream_guard(self, state: RunState, agent: AgentDefinition) -> StreamTextGuard | None:
+        """The guard a streamed response's text passes before it is recorded as
+        ``model.delta``, or None when the agent records no streamed text
+        (``guardrail_policy.stream_text: off``)."""
+        if agent.guardrail_policy.stream_text == "off":
+            return None
+        context = {
+            "agent": agent,
+            "run_id": state.id,
+            "tenant_id": state.request.tenant_id,
+            "user_id": state.request.user_id,
+            "usage": state.summary.usage,
+            "step_count": state.step_count,
+            "streaming": True,
+        }
+
+        async def check(text: str) -> str | None:
+            # The policies the answer meets after the model and before delivery. Not recorded
+            # as policy.evaluated or audited per piece: the whole answer is, once it is complete.
+            value: Any = text
+            for point in ("after_model", "final_response"):
+                decision = await self.policies.evaluate(point, value, context)
+                if decision.action in {PolicyAction.REDACT, PolicyAction.TRANSFORM}:
+                    value = decision.value
+                elif decision.action != PolicyAction.ALLOW:
+                    return None
+            return value if isinstance(value, str) else None
+
+        return StreamTextGuard(check)
+
+    async def _emit_stream_text(
+        self, state: RunState, guard: StreamTextGuard, step_id: str, *, final: bool = False
+    ) -> bool:
+        """Record the text ``guard`` releases now as ``model.delta``; whether there was any."""
+        was_withheld = guard.withheld
+        text = await guard.release(final=final)
+        if text:
+            self._streamed_steps[state.id] = step_id
+            await self._emit(state, "model.delta", {"delta": text}, step_id)
+            return True
+        if guard.withheld and not was_withheld:
+            # A policy refused the streamed text: nothing more is sent, and what was sent is
+            # withdrawn. The run's after_model check decides what happens to the answer.
+            await self._retract_stream(state, "policy")
+        return False
+
+    async def _retract_stream(self, state: RunState, reason: str) -> None:
+        """Tell clients to discard the text the run's last streamed response sent as
+        ``model.delta`` (``model.delta.retracted``), when it is not the answer they will get."""
+        step_id = self._streamed_steps.pop(state.id, None)
+        if step_id is not None:
+            await self._emit(state, "model.delta.retracted", {"reason": reason}, step_id)
 
     async def _guard_answer(
         self, point: str, text: str, state: RunState, context: Mapping[str, Any]
@@ -4527,6 +4682,7 @@ class AgentRuntime:
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
+            self._streamed_steps.pop(state.id, None)
         if target in TERMINAL_STATUSES:
             self._event_overflow.discard(state.id)
         if target in TERMINAL_STATUSES and state.pending_steering:
@@ -4569,7 +4725,7 @@ class AgentRuntime:
 
     def _event_limit(self, state: RunState) -> int:
         try:
-            agent = self.agents.get(state.request.agent, state.request.agent_version)
+            agent = self._run_agent(state)
         except NotFoundError:
             return Budget().max_events
         return agent.budget.max_events
@@ -4679,7 +4835,7 @@ class AgentRuntime:
     def _span_attributes(
         self, state: RunState, step_id: str | None = None, *, root: bool = False
     ) -> dict[str, str]:
-        agent = self.agents.get(state.request.agent, state.request.agent_version)
+        agent = self._run_agent(state)
         agent_id = agent.logical_id
         agent_name = agent.name
         attributes = {

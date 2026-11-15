@@ -92,6 +92,7 @@ preserves correlation, lineage, checkpoints, pause/approval propagation, and rec
 | HTTP API | Available; secure deployment configuration is operator-owned |
 | Persistence | In-memory, PostgreSQL, and Redis adapters |
 | Artifact storage | Memory, PostgreSQL, and encrypted S3-compatible object storage |
+| Deployment scope | Single node (one Runtime process per database); see [deployment scope](docs/production-readiness.md#deployment-scope) |
 | Distributed execution | Experimental; see the production-readiness roadmap |
 | Public API compatibility | Experimental during `0.x`; see the [API stability policy](docs/api-stability.md) |
 | Community support | Best effort; see [SUPPORT.md](SUPPORT.md) |
@@ -341,6 +342,11 @@ api:
   agent_ui_enabled: true
 ```
 
+The page shows every agent's definition, so with `jwt` or `oidc` authentication it needs a bearer
+token with `agents:read` (from 0.2.0b4); with `development_headers` on loopback a browser opens it
+as before. The live page never includes the server's settings (DSNs, stdio environments, telemetry
+endpoints); a static export shows the configuration file it was given.
+
 **Generate standalone static HTML from CLI:**
 Generate a completely self-contained, offline-compatible static HTML documentation file:
 ```bash
@@ -418,7 +424,7 @@ See the full [architecture guide](docs/architecture.md) for the state machine, c
 | Analytics | Typed analytical DAGs, application-registered nodes, secret-safe query sources, semantic layers, governance and evaluation gates |
 | Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, exact-version child composition, durable clarification and approval pause/resume, explicit crash recovery, typed resources, correlation, and lifecycle events |
 | Observability | Structured logs, OpenTelemetry, optional Traccia integration |
-| Frameworks | Optional LangGraph, OpenAI Agents, AutoGen, and CrewAI adapters. The Runtime governs the adapter call (tenancy, timeout, cancellation, tracing); model and tool calls inside the framework stay framework-owned unless they use Runtime tools. See the [governance matrix](docs/framework-adapters.md#honest-capability--governance-matrix) |
+| Frameworks | Optional adapters: LangGraph and OpenAI Agents (supported), AutoGen (experimental, frozen: archived upstream) and CrewAI (experimental). The Runtime governs the adapter call (tenancy, timeout, cancellation, tracing); model and tool calls inside the framework stay framework-owned unless they use Runtime tools. See the [governance matrix](docs/framework-adapters.md#honest-capability--governance-matrix) |
 
 Provider and integration dependencies remain optional. See the [provider compatibility matrix](docs/provider-compatibility.md), [MCP guide](docs/mcp.md), and [framework adapter guide](docs/framework-adapters.md).
 
@@ -444,8 +450,9 @@ Provider and integration dependencies remain optional. See the [provider compati
 | Analytical agents | [Analytical runtime](docs/analytical-runtime.md) and [semantic layer](docs/semantic-layer.md) |
 | Multi-agent workflows | [Workflow manifests and executor](docs/multi-agent-workflows.md) |
 | Security | [Threat model](docs/threat-model.md) and [security policy](SECURITY.md) |
-| Production limitations | [Production readiness](docs/production-readiness.md) and the [road to 0.2](docs/ga-criteria.md) |
-| Compatibility promises | [API stability](docs/api-stability.md) |
+| Production limitations | [Production readiness](docs/production-readiness.md) and the [road to 1.0](docs/ga-criteria.md) |
+| Compatibility promises | [API stability and support policy](docs/api-stability.md) |
+| Upgrading | [Upgrading from 0.1 to 0.2](docs/upgrading.md) |
 | Releases | [Release process](docs/releasing.md) and [changelog](CHANGELOG.md) |
 | Repository operators | [Public repository settings](docs/repository-settings.md) |
 

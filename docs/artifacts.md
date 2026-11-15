@@ -35,6 +35,78 @@ To give an agent a file to read (vision or PDF input), pass the artifact's id in
 arrive. `ArtifactLifecycleService.scan` records the `artifact.scan` audit event before it changes
 the status, so no artifact is available without scan evidence.
 
+## Who may use an artifact (0.2.0b4)
+
+From 0.2.0b4 an artifact belongs to a **user** of its tenant, not to the whole tenant. Its
+`user_id` (on `Artifact` and `ArtifactDescriptor`) is the owner:
+
+- an upload (`POST /v1/artifacts`) is the uploading principal's;
+- an artifact the Runtime writes for a run (offloaded tool results, compaction archives) is the
+  run's user's;
+- a host that stores an `Artifact` itself sets `user_id` (leave it `None` only for files no user
+  owns).
+
+Over HTTP, an artifact is visible to its owner, to the user of its run (the conversation's owner
+for a conversation turn), and to a principal with the **`artifacts:admin`** scope. Anyone else in
+the tenant gets the same 404 as for a missing artifact, on `GET /v1/artifacts/{id}`,
+`/metadata` and `DELETE /v1/artifacts/{id}`:
+
+| Request | Caller | Result |
+| --- | --- | --- |
+| `GET /v1/artifacts` (no `run_id`) | any | the caller's own artifacts; the tenant's with `artifacts:admin` |
+| `GET /v1/artifacts?run_id=...` | the run's user, or `artifacts:admin` | every artifact of the run |
+| `GET /v1/artifacts?run_id=...` | anyone else | only the caller's own artifacts of that run |
+| `POST /v1/artifacts?run_id=...` | not the run's user and not `artifacts:admin` | 404 `run not found` |
+| read, download, delete | owner, run's user, `artifacts:admin` | as before |
+| read, download, delete | anyone else | 404 `artifact not found` |
+
+`artifacts:admin` does not replace `artifacts:read` / `artifacts:write` (or the `runs:` scopes):
+the route's scope is still required. `PATCH /v1/artifacts/{id}/status` stays tenant-wide with
+`artifacts:scan`.
+
+**Artifacts stored before 0.2.0b4** have no owner (`user_id` is `None`; migration
+`023_artifact_owner.sql` adds the column without backfilling it). One with a `run_id` is visible
+to the user of that run; one without is visible only with `artifacts:admin`. They do not appear in
+a user's unfiltered listing. To hand old uploads back to their users, set
+`algen_agent_runtime_artifacts.user_id` from your own records.
+
+**Attachments.** A run, conversation message or workflow start may attach only files its caller
+may use; another user's file is refused exactly like a missing one (`attachment '...' was not
+found`), so the refusal does not reveal that the id exists. In process, `Runtime.start` refuses a
+file whose owner is not the request's `user_id`, and a model call shows such a file as no longer
+available; ownerless files stay usable by any run of the tenant, so a host that serves uploads
+itself checks them (see below).
+
+**Erasure and export.** `UserDataService` finds a user's artifacts by owner too, so an upload that
+was never attached is exported and erased with the user. A file another user owns is left alone,
+even when one of the erased user's runs named it.
+
+**Hosts that serve artifacts themselves** use the same rule from `algen_agent_runtime.artifacts`:
+
+```python
+from algen_agent_runtime.artifacts import (
+    ARTIFACTS_ADMIN_SCOPE,
+    artifact_owned_by,
+    list_user_artifacts,
+)
+
+descriptor = await store.describe(artifact_id, tenant_id)
+run_user = ...  # the user of descriptor.run_id, when it has one (None otherwise)
+if descriptor is None or not (
+    is_admin or artifact_owned_by(descriptor, user_id, run_user_id=run_user)
+):
+    raise NotFound()
+mine = await list_user_artifacts(store, tenant_id, user_id, limit=100)
+```
+
+The memory, PostgreSQL and S3 stores have `list_for_user(tenant_id, user_id, *, run_id=None,
+status=None, limit=100)`. It is not part of the `ArtifactStore` protocol, so a custom store keeps
+working without it: `list_user_artifacts` then filters the tenant listing by `user_id` (which may
+return fewer than `limit`), and erasure finds the store's artifacts through runs and messages
+only, as before. Add `list_for_user` (and keep `user_id`) to a custom store to get both.
+
+## Workflow inputs
+
 Use an artifact ID in typed workflow inputs instead of base64 data. JSON Schema can identify these
 fields with `format: artifact` and constrain the accepted type with `contentMediaType`; Runtime
 treats those annotations as portable UI/host hints while the application hook resolves and validates

@@ -45,7 +45,10 @@ class MCPStdioServerConfig(MCPServerConfigBase):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(
         default_factory=dict,
-        description="Explicit environment variables passed to the child process. Ambient process secrets are never leaked.",
+        description="Explicit environment variables passed to the child process. Ambient "
+        "process secrets are never leaked. A value may be an env:// reference, resolved when the "
+        "server starts; a variable whose name names a credential (GITHUB_TOKEN, API_KEY, "
+        "DB_PASSWORD) must be one.",
     )
     cwd: str | None = None
     sandbox: SubprocessSandbox | None = Field(
@@ -53,6 +56,11 @@ class MCPStdioServerConfig(MCPServerConfigBase):
         description="This server's sandbox policy, replacing security.sandbox (whose 'required' "
         "still applies).",
     )
+
+    @model_validator(mode="after")
+    def _validate_env(self) -> MCPStdioServerConfig:
+        _validate_stdio_env(self.env)
+        return self
 
 
 SENSITIVE_HEADER_NAMES = frozenset(
@@ -80,6 +88,23 @@ def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
                 f"use auth_token_ref or secret_headers with env:// references"
             )
     return headers
+
+
+def _validate_stdio_env(env: dict[str, str]) -> dict[str, str]:
+    """A stdio server's ``env``: a credential (by its variable's name, as ``redact_secrets``
+    names one) only as an ``env://`` reference, so configuration, ``describe`` output and
+    settings dumps never hold its value (0.2.0b4)."""
+    from algen_agent_runtime.security.redaction import is_sensitive_key
+
+    for key, value in env.items():
+        if value.startswith("env://"):
+            if not value.removeprefix("env://"):
+                raise ValueError(f"env value for {key!r} names no environment variable")
+        elif is_sensitive_key(key):
+            raise ValueError(
+                f"env value for {key!r} looks like a credential and must be an env:// reference"
+            )
+    return env
 
 
 def _validate_secret_headers(secret_headers: dict[str, str]) -> dict[str, str]:
@@ -179,8 +204,9 @@ class OAuthClientAuth(StrictModel):
     )
     issuer: str | None = Field(
         default=None,
-        description="The authorization server to discover metadata from when the MCP server "
-        "publishes no protected resource metadata. Defaults to the MCP server's origin.",
+        description="The authorization server to discover metadata from. Unset, the one the MCP "
+        "server's protected resource metadata names, else the MCP server's origin. Required "
+        "with client_secret_ref unless both endpoints are set.",
     )
     send_resource: bool = Field(
         default=True,
@@ -233,6 +259,18 @@ class OAuthClientAuth(StrictModel):
         secure_url(self.redirect_uri, "redirect_uri")
         if (self.authorization_endpoint is None) != (self.token_endpoint is None):
             raise ValueError("set authorization_endpoint and token_endpoint together, or neither")
+        if (
+            self.client_secret_ref is not None
+            and self.issuer is None
+            and self.token_endpoint is None
+        ):
+            # Discovery would otherwise trust the authorization server the MCP server
+            # advertises and send it the client secret.
+            raise ValueError(
+                "a confidential client (client_secret_ref) needs issuer, or explicit "
+                "authorization_endpoint and token_endpoint, so the client secret is only sent "
+                "to an authorization server you chose"
+            )
         for name in (
             "authorization_endpoint",
             "token_endpoint",

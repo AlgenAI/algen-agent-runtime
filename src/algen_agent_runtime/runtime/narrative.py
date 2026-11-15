@@ -31,7 +31,9 @@ EntryKind = Literal[
 ]
 
 # Events that add nothing to the story: streamed text, and the assessment before each compaction.
-_SKIPPED = frozenset({"model.delta", "model.started", "context.compaction.assessed"})
+_SKIPPED = frozenset(
+    {"model.delta", "model.delta.retracted", "model.started", "context.compaction.assessed"}
+)
 
 
 class NarrativeEntry(BaseModel):

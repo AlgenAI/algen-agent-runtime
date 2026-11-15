@@ -238,6 +238,29 @@ class InMemoryArtifactStore:
             artifacts.sort(key=lambda artifact: artifact.created_at, reverse=True)
             return tuple(artifact.descriptor() for artifact in artifacts[:limit])
 
+    async def list_for_user(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        run_id: str | None = None,
+        status: ArtifactStatus | None = None,
+        limit: int = 100,
+    ) -> Sequence[ArtifactDescriptor]:
+        """The artifacts ``user_id`` owns in the tenant, newest first (expired ones left out)."""
+        async with self._lock:
+            artifacts = [
+                artifact
+                for artifact in self._artifacts.values()
+                if artifact.tenant_id == tenant_id
+                and artifact.user_id == user_id
+                and (artifact.expires_at is None or artifact.expires_at > utc_now())
+                and (run_id is None or artifact.run_id == run_id)
+                and (status is None or artifact.status == status)
+            ]
+            artifacts.sort(key=lambda artifact: artifact.created_at, reverse=True)
+            return tuple(artifact.descriptor() for artifact in artifacts[:limit])
+
     async def set_status(
         self,
         artifact_id: str,

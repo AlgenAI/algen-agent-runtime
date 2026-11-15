@@ -3,6 +3,8 @@
 Prepared on 2026-10-19. Version `0.1.0a7` is a release candidate on
 `feat/context-management`; it has not been tagged or published by this preparation.
 
+> Historical: `0.1.0a7` was later released (tag `v0.1.0a7`); see [CHANGELOG-0.1.md](../CHANGELOG-0.1.md).
+
 ## Verified locally
 
 - Runtime formatting, lint, and typing pass (136 typed source files).

@@ -2,7 +2,9 @@
 
 ``UserDataService`` works across the stores a deployment configures (in memory, Redis or
 PostgreSQL, mixed as the settings choose): runs and their events, approvals, tool executions
-and artifacts (files attached to them included), session memory and session owners, learned
+and artifacts (the user's own uploads and run outputs, through the artifact store's
+``list_for_user``, and the files their runs and messages name, unless another user owns them),
+session memory and session owners, learned
 memory, conversations with their messages, events and feedback, workflow runs, and the user's
 MCP OAuth connections. ``build_container`` builds one as ``container.user_data``; the
 ``algen-agent-runtime users`` command and the ``/v1/admin/users/{user_id}`` routes use it.
@@ -58,6 +60,7 @@ _BUSY_MESSAGE_STATUSES = frozenset(
 _FINISHED_WORKFLOW_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _PAGE = 200
 _MEMORY_LIMIT = 1_000_000
+_ARTIFACT_LIMIT = 10_000
 
 
 class UserDataReport(BaseModel):
@@ -221,13 +224,24 @@ class UserDataService:
                     f"{record.status}: resolve it first (docs/operations.md"
                     "#resolving-indeterminate-tool-calls)"
                 )
-        for run_id in run_ids:
-            for descriptor in await self._artifacts.list(tenant_id, run_id=run_id, limit=10_000):
+        # The user's own artifacts (uploads, run outputs; 0.2.0b4 records the owner), including
+        # uploads never attached to anything. A store without list_for_user is skipped here.
+        if hasattr(self._artifacts, "list_for_user"):
+            for descriptor in await self._artifacts.list_for_user(
+                tenant_id, user_id, limit=_ARTIFACT_LIMIT
+            ):
                 found.artifacts[descriptor.id] = descriptor
+        for run_id in run_ids:
+            for descriptor in await self._artifacts.list(
+                tenant_id, run_id=run_id, limit=_ARTIFACT_LIMIT
+            ):
+                if descriptor.user_id in (None, user_id):
+                    found.artifacts[descriptor.id] = descriptor
         for artifact_id in dict.fromkeys(artifact_ids):
             if artifact_id not in found.artifacts:
                 descriptor = await self._artifacts.describe(artifact_id, tenant_id)
-                if descriptor is not None:
+                # A file another user owns stays theirs, even when this user's run named it.
+                if descriptor is not None and descriptor.user_id in (None, user_id):
                     found.artifacts[artifact_id] = descriptor
         found.owned_sessions = set(await self._memory.sessions_for_user(tenant_id, user_id))
         for session_id in dict.fromkeys([*sorted(found.owned_sessions), *sessions]):

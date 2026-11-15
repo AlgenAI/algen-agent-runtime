@@ -2,7 +2,7 @@
 
 Owner: AlgenAI Maintainers
 
-Status: Action required
+Status: Historical: an audit against Runtime `0.1.0a3` (2026-09); version ranges below are from then, not current requirements
 
 Last reviewed: 2026-09-24
 

@@ -167,6 +167,15 @@ def check_project(
                     suggestion=suggestion,
                 )
             )
+    if (audience := settings.api.jwt_audience_warning) is not None:
+        found.append(
+            CheckIssue(
+                severity="warning",
+                code="JWT_AUDIENCE_MISSING",
+                message=audience,
+                field="api.jwt_audience",
+            )
+        )
     found.extend(workflow_approval_issues(settings.workflows, inventory.tools))
     found.extend(
         hook_provider_issues(

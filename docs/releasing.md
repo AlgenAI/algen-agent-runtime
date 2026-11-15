@@ -69,12 +69,24 @@ in the Studio documentation sync.
 
 1. Merge a release pull request updating the version and changelog.
 2. The Auto Release workflow creates a missing `v<package-version>` tag and GitHub release on a
-   push to `main`. Merging the version bump is therefore a release action: review required quality
-   and security results before merging. If maintainers create the release manually, use that exact
-   tag and do not duplicate an existing release.
-3. The release workflow verifies the tag, runs tests, builds the wheel and source distribution, generates `SHA256SUMS`, inspects contents (including learned-memory migration 011), tests a clean installation and all six offline context examples outside the repository checkout, and uploads artifacts.
+   push to `main`, then starts the Release workflow for that tag (`gh workflow run`, with the
+   workflow's own `GITHUB_TOKEN`; no personal access token is involved). Merging the version bump
+   is therefore a release action: review required quality and security results before merging. To
+   publish an existing tag by hand, run the Release workflow from `main` with that tag; creating a
+   GitHub release in the web UI publishes nothing.
+3. The Release workflow, from `main`, checks out the tag and runs separate jobs:
+   - `verify`: the tag format and version, lint, mypy and the unit suite, from the hash-locked
+     `requirements/ci.txt`;
+   - `build`: the sdist and wheel with only the hash-locked `requirements/build.txt` installed
+     (`python -m build --no-isolation`), `twine check`, `SHA256SUMS`, `scripts/check_dist.py`;
+   - `smoke`: a clean install outside the checkout (`scripts/smoke-install.sh`);
+   - `sbom`: a CycloneDX SBOM and license report for the wheel plus the locked service
+     dependencies (`scripts/sbom.py`, which fails on a license outside its allowed list).
+   No job restores a cache, and every action is pinned to a commit SHA.
 4. An authorized reviewer approves the protected `pypi` environment.
-5. Trusted Publishing uploads the exact artifacts built by the workflow.
+5. The `publish` job attests the exact files (GitHub build provenance) and uploads them with
+   Trusted Publishing, which adds PEP 740 attestations on PyPI. `release-assets` then attaches
+   `SHA256SUMS`, `sbom.cdx.json` and `licenses.md` to the GitHub release.
 6. Verify the PyPI metadata, provenance, clean installation, CLI, and offline mock run:
    ```bash
    python -m venv /tmp/test-venv
@@ -91,11 +103,26 @@ in the Studio documentation sync.
 Users and participants can verify the integrity of downloaded distribution artifacts before installation:
 
 ```bash
-# Verify checksums
+# Checksums (SHA256SUMS is attached to the GitHub release)
 sha256sum -c SHA256SUMS
+
+# GitHub build provenance: the file was built by this repository's release workflow
+gh attestation verify algen_agent_runtime-<version>-py3-none-any.whl --repo AlgenAI/algen-agent-runtime
 ```
 
-The SHA256 checksums are produced in the CI build step directly from the generated wheel and source archive.
+PyPI shows the PEP 740 provenance of each file under "Verified details", and
+`https://pypi.org/integrity/algen-agent-runtime/<version>/<file>/provenance` returns it. The SBOM
+(`sbom.cdx.json`) and license report (`licenses.md`) on the GitHub release list what a deployment
+of the release installs with the `service` and `postgres` extras.
+
+### Dependency locks
+
+`requirements/*.txt` are hash-locked (`pip-compile --generate-hashes`) on Linux by
+`scripts/lock-requirements.sh`, from `pyproject.toml` and `requirements/*.in`: `build.txt` (the
+release build), `ci.txt` (lint, type check, tests), `service.txt` (the container image) and
+`security.txt` (the scanners). Regenerate them after changing dependencies; Dependabot proposes
+updates between releases. The package's own dependency ranges in `pyproject.toml` stay open, so
+applications resolve them with their other dependencies.
 
 ## Failure, rollback, and yanking procedure
 

@@ -32,7 +32,7 @@ from algen_agent_runtime.conversations.stores import (
 from algen_agent_runtime.models.providers.mock import MockModelProvider, tool_call_response
 from algen_agent_runtime.orchestration.container import Container
 from algen_agent_runtime.persistence.memory import InMemoryArtifactStore
-from algen_agent_runtime.security.redaction import redact_parameters
+from algen_agent_runtime.security.redaction import hidden_value_marker, redact_parameters
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolContext, ToolDefinition
 from algen_agent_runtime.types.contracts import RunRequest, RunStatus, utc_now
 
@@ -383,10 +383,16 @@ async def test_postgres_store_writes_json_that_0_1_0a17_can_read() -> None:
     _A17ApprovalRequest.model_validate_json(table.rows[legacy.id]["approval"])
 
 
-def test_redact_parameters_redacts_sensitive_top_level_keys() -> None:
+def test_redact_parameters_redacts_sensitive_keys_at_any_depth() -> None:
     assert redact_parameters(
         {"value": "x", "API_KEY": "k", "token": "t", "nested": {"password": "p"}}
-    ) == {"value": "x", "API_KEY": "[REDACTED]", "token": "[REDACTED]", "nested": {"password": "p"}}
+    ) == {
+        "value": "x",
+        "API_KEY": hidden_value_marker("k"),
+        "token": hidden_value_marker("t"),
+        "nested": {"password": hidden_value_marker("p")},
+    }
+    assert hidden_value_marker("k").startswith("[REDACTED len=1 sha256=")
 
 
 async def _await_pending(container: Container, run_id: str | None = None) -> ApprovalRequest:
@@ -426,7 +432,10 @@ async def test_http_routes_redact_modified_parameters() -> None:
             assert "sk-live-123" not in response.text
         [item] = listed.json()
         assert item["status"] == "modified"
-        assert item["modified_parameters"] == {"value": "x", "api_key": "[REDACTED]"}
+        assert item["modified_parameters"] == {
+            "value": "x",
+            "api_key": hidden_value_marker("sk-live-123"),
+        }
         assert read.json()["modified_parameters"] == item["modified_parameters"]
         await container.runtime.shutdown(grace_seconds=5)
 

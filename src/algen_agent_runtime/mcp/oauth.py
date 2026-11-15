@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -30,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
@@ -70,6 +71,8 @@ if TYPE_CHECKING:
 
 MCP_OAUTH_START_PATH = "/v1/mcp/servers/{server}/oauth/start"
 MCP_OAUTH_CALLBACK_PATH = "/v1/mcp/oauth/callback"
+MCP_OAUTH_COMPLETE_PATH = "/v1/mcp/oauth/complete"
+MCP_OAUTH_BINDING_COOKIE_PREFIX = "algen_mcp_oauth_"
 _MAX_METADATA_BYTES = 262_144
 _MAX_TOKEN_CHARS = 16_384
 _ERROR_CODE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -122,6 +125,10 @@ class MCPOAuthStart(BaseModel):
     token_scope: MCPOAuthTokenScope
     authorize_url: str
     expires_at: datetime
+    # The browser-binding nonce and the cookie the callback reads it from. The start route
+    # sets the cookie itself; a host on the Runtime's site may set it instead.
+    binding_cookie: str = ""
+    browser_binding: str = Field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -143,6 +150,24 @@ def _b64url(data: bytes) -> str:
 
 def state_hash(state: str) -> str:
     return hashlib.sha256(state.encode()).hexdigest()
+
+
+def binding_cookie_name(state: str) -> str:
+    """The cookie that carries one authorization's browser-binding nonce."""
+    return f"{MCP_OAUTH_BINDING_COOKIE_PREFIX}{state_hash(state)[:16]}"
+
+
+async def _read_capped(response: httpx.Response, limit: int) -> bytes | None:
+    """The body of a streamed response, or None once it exceeds ``limit`` bytes."""
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        return None
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > limit:
+            return None
+    return bytes(body)
 
 
 def _safe_code(value: Any) -> str | None:
@@ -233,6 +258,13 @@ class MCPOAuthManager:
             return MCPTokenKey(tenant_id, user_id, server)
         return MCPTokenKey(tenant_id, None, server)
 
+    def server_for_state(self, state: str | None) -> str | None:
+        """The configured server a state names (unverified: use it only to pick a page)."""
+        if not state or "." not in state:
+            return None
+        server = state.split(".", 1)[1]
+        return server if server in self._servers else None
+
     def discovery_principal(self, server: str) -> tuple[str, str | None] | None:
         auth = self.auth(server)
         if auth.discovery_tenant_id is None:
@@ -259,7 +291,10 @@ class MCPOAuthManager:
         key = self.key_for(server, tenant_id, user_id)
         endpoints = await self.endpoints(server)
         client_id, _ = self._client_credentials(server, auth)
-        state = secrets.token_urlsafe(32)
+        # The server name after the random part lets an unbound callback pick the server's
+        # page without reading the pending record; the hash still covers the whole state.
+        state = f"{secrets.token_urlsafe(32)}.{server}"
+        binding = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(64)
         expires_at = self._clock() + timedelta(seconds=auth.state_ttl_seconds)
         params = {
@@ -285,6 +320,7 @@ class MCPOAuthManager:
                 code_verifier=SecretStr(verifier),
                 redirect_uri=auth.redirect_uri,
                 expires_at=expires_at,
+                binding_hash=state_hash(binding),
             )
         )
         return MCPOAuthStart(
@@ -292,20 +328,56 @@ class MCPOAuthManager:
             token_scope=auth.token_scope,
             authorize_url=_with_query(endpoints.authorization_endpoint, params),
             expires_at=expires_at,
+            binding_cookie=binding_cookie_name(state),
+            browser_binding=binding,
         )
 
     async def complete(
-        self, state: str | None, code: str | None, error: str | None = None
+        self,
+        state: str | None,
+        code: str | None,
+        error: str | None = None,
+        *,
+        browser_binding: str | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> MCPOAuthCompletion:
-        """Finish an authorization from the callback: check the state, exchange the code."""
+        """Finish an authorization: check the state and who finishes it, exchange the code.
+
+        The state alone is not enough: whoever holds an authorize URL could otherwise connect
+        their own provider account to the starter's principal, or the starter could have a
+        victim connect theirs. Pass ``browser_binding`` (the nonce from the cookie the start
+        route set in the starter's browser) or the authenticated ``tenant_id`` and ``user_id``
+        of the caller finishing it, which must be the ones that started it.
+        """
         if not state or len(state) > 512:
             raise MCPOAuthStateError("the callback has no valid state")
+        if browser_binding is None and (tenant_id is None or user_id is None):
+            raise MCPOAuthStateError(
+                "an authorization completes only with its browser binding or the principal "
+                "that started it"
+            )
         # Taking the pending record deletes it, so a replayed callback finds nothing.
         pending = await self.store.take_pending(state_hash(state))
         if pending is None:
             raise MCPOAuthStateError("unknown, expired or already used authorization state")
         if pending.expires_at <= self._clock():
             raise MCPOAuthStateError("the authorization expired; start it again")
+        if browser_binding is not None:
+            bound = pending.binding_hash is not None and secrets.compare_digest(
+                state_hash(browser_binding), pending.binding_hash
+            )
+            if not bound:
+                raise MCPOAuthStateError(
+                    "the callback did not come from the browser that started the authorization"
+                )
+        elif not (
+            secrets.compare_digest(str(tenant_id).encode(), pending.tenant_id.encode())
+            and secrets.compare_digest(str(user_id).encode(), pending.initiated_by.encode())
+        ):
+            raise MCPOAuthStateError(
+                "the authorization was started by another user; start it again"
+            )
         try:
             auth = self.auth(pending.server)
         except NotFoundError as exc:
@@ -420,10 +492,12 @@ class MCPOAuthManager:
                 "token_type_hint": "access_token",
             }
         try:
-            response = await self._post_form(server, auth, endpoints.revocation_endpoint, data)
+            status_code, _ = await self._post_form(
+                server, auth, endpoints.revocation_endpoint, data
+            )
         except httpx.HTTPError:
             return MCPOAuthRevocation(removed=removed, provider_revoked=False)
-        return MCPOAuthRevocation(removed=removed, provider_revoked=response.status_code == 200)
+        return MCPOAuthRevocation(removed=removed, provider_revoked=status_code == 200)
 
     # -- metadata ---------------------------------------------------------------------------
 
@@ -494,19 +568,25 @@ class MCPOAuthManager:
         client = self._client()
         for url in urls:
             try:
-                response = await client.get(url, headers={"Accept": "application/json"})
+                async with client.stream(
+                    "GET", url, headers={"Accept": "application/json"}
+                ) as response:
+                    status_code = response.status_code
+                    content = (
+                        await _read_capped(response, _MAX_METADATA_BYTES)
+                        if status_code == 200
+                        else None
+                    )
             except httpx.HTTPError as exc:
                 raise MCPOAuthError(
                     f"OAuth metadata discovery failed ({type(exc).__name__})"
                 ) from None
-            if response.status_code >= 500 or response.status_code == 429:
-                raise MCPOAuthError(
-                    f"OAuth metadata discovery failed (HTTP {response.status_code})"
-                )
-            if response.status_code != 200 or len(response.content) > _MAX_METADATA_BYTES:
+            if status_code >= 500 or status_code == 429:
+                raise MCPOAuthError(f"OAuth metadata discovery failed (HTTP {status_code})")
+            if content is None:
                 continue
             try:
-                body = response.json()
+                body = json.loads(content)
             except ValueError:
                 continue
             if isinstance(body, dict):
@@ -564,21 +644,21 @@ class MCPOAuthManager:
         previous: MCPOAuthTokenSet | None,
     ) -> MCPOAuthTokenSet:
         endpoints = await self.endpoints(server)
-        response = await self._post_form(server, auth, endpoints.token_endpoint, data)
+        status_code, content = await self._post_form(server, auth, endpoints.token_endpoint, data)
         try:
-            body = response.json() if len(response.content) <= _MAX_METADATA_BYTES else None
+            body = json.loads(content) if content is not None else None
         except ValueError:
             body = None
         if not isinstance(body, dict):
             body = {}
         access_token = body.get("access_token")
-        if response.status_code != 200 or body.get("ok") is False:
-            raise _TokenEndpointError(response.status_code, _safe_code(body.get("error")))
+        if status_code != 200 or body.get("ok") is False:
+            raise _TokenEndpointError(status_code, _safe_code(body.get("error")))
         if not isinstance(access_token, str) or not 0 < len(access_token) <= _MAX_TOKEN_CHARS:
-            raise _TokenEndpointError(response.status_code, "invalid_token_response")
+            raise _TokenEndpointError(status_code, "invalid_token_response")
         token_type = body.get("token_type", "Bearer")
         if not isinstance(token_type, str) or token_type.lower() != "bearer":
-            raise _TokenEndpointError(response.status_code, "unsupported_token_type")
+            raise _TokenEndpointError(status_code, "unsupported_token_type")
         refresh_token = body.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             refresh_token = (
@@ -611,7 +691,8 @@ class MCPOAuthManager:
 
     async def _post_form(
         self, server: str, auth: OAuthClientAuth, url: str, data: dict[str, str]
-    ) -> httpx.Response:
+    ) -> tuple[int, bytes | None]:
+        """POST a form; the status code and the body (None when larger than the cap)."""
         client_id, client_secret = self._client_credentials(server, auth)
         form = dict(data)
         headers = {"Accept": "application/json"}
@@ -622,7 +703,8 @@ class MCPOAuthManager:
             form["client_id"] = client_id
             if client_secret is not None:
                 form["client_secret"] = client_secret
-        return await self._client().post(url, data=form, headers=headers)
+        async with self._client().stream("POST", url, data=form, headers=headers) as response:
+            return response.status_code, await _read_capped(response, _MAX_METADATA_BYTES)
 
     # -- helpers ----------------------------------------------------------------------------
 

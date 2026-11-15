@@ -13,6 +13,7 @@ check who acts.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, status
@@ -82,7 +83,19 @@ def require_workflow_user(
         )
 
 
-def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -> None:
+AttachmentCheck = Callable[[Sequence[RunAttachment], Principal], Awaitable[None]]
+
+
+def add_workflow_routes(
+    app: FastAPI,
+    service: WorkflowService,
+    identity: Any,
+    *,
+    attachment_check: AttachmentCheck | None = None,
+) -> None:
+    """``attachment_check`` refuses files the caller may not use (another user's upload) before
+    a workflow run starts; the API app passes its artifact ownership check."""
+
     def output_key(name: str) -> str | None:
         manifest = service.manifest_or_none(name)
         return manifest.output_key if manifest else None
@@ -97,6 +110,8 @@ def add_workflow_routes(app: FastAPI, service: WorkflowService, identity: Any) -
         name: str, body: StartWorkflowBody, caller: Principal = identity
     ) -> dict[str, Any]:
         require_scope(caller, "runs:write")
+        if attachment_check is not None:
+            await attachment_check(body.attachments, caller)
         if body.workflow_id is not None:
             found = await service.find(body.workflow_id, caller.tenant_id)
             if found is not None:

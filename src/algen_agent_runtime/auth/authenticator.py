@@ -4,6 +4,7 @@ optional revocation, and authentication audit. Framework-neutral; the FastAPI de
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -20,6 +21,8 @@ from algen_agent_runtime.config.settings import ApiSettings
 from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.security.network import OutboundNetwork
 from algen_agent_runtime.types.interfaces import AuditLog
+
+logger = logging.getLogger(__name__)
 
 
 class _StaticJwtVerifier:
@@ -41,6 +44,8 @@ class _StaticJwtVerifier:
         self._jwt = jwt
         self._key = key
         self._settings = settings
+        if (warning := settings.jwt_audience_warning) is not None:
+            logger.warning(warning)
 
     def _key_id(self, token: str) -> Any:
         header_reader = getattr(self._jwt, "get_unverified_header", None)
@@ -75,11 +80,12 @@ class _StaticJwtVerifier:
         tenant_id = str(claims.get(settings.tenant_claim, "")).strip()
         user_id = str(claims.get("sub", "")).strip()
         raw_scopes = claims.get(settings.scopes_claim, "")
+        # "*" (every scope) is never taken from a token, as with OIDC (0.2.0b4).
         scopes = (
             frozenset(str(item) for item in raw_scopes)
             if isinstance(raw_scopes, list)
             else frozenset(str(raw_scopes).split())
-        )
+        ) - {"*"}
         if not tenant_id or not user_id:
             raise AuthenticationFailure(
                 "missing_tenant" if not tenant_id else "missing_subject",

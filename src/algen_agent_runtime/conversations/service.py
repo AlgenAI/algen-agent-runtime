@@ -51,6 +51,7 @@ from algen_agent_runtime.conversations.followups import FollowupSuggestionProvid
 from algen_agent_runtime.conversations.presentation import ConversationPresentation
 from algen_agent_runtime.conversations.streaming import (
     DELTA_EVENT,
+    DELTA_RETRACTED_EVENT,
     DETACH_SIGNAL,
     RUN_STARTED_EVENT,
     DeltaCoalescer,
@@ -1710,7 +1711,7 @@ class ConversationService:
         async def emit(event_type: str, data: dict[str, Any] | None = None) -> None:
             nonlocal streaming
             payload = dict(data or {})
-            if event_type == DELTA_EVENT:
+            if event_type in (DELTA_EVENT, DELTA_RETRACTED_EVENT):
                 payload = {"message_id": assistant_message.id, **payload}
             elif event_type == RUN_STARTED_EVENT and payload.get("run_id"):
                 # Stored at once, so a restarted service follows this run instead of failing

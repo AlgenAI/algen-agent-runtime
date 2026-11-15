@@ -130,6 +130,7 @@ class ContextArtifactService:
                 id=artifact_id,
                 tenant_id=context.tenant_id,
                 run_id=context.run_id,
+                user_id=context.user_id,
                 name="history.json" if purpose == "context_history" else "tool-result.json",
                 media_type="application/json",
                 data=data,

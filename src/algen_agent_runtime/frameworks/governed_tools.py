@@ -7,9 +7,11 @@ idempotency, the execution ledger and tool spans apply exactly as they do in a R
 
 Two things do not carry over:
 
-- **Approvals.** A foreign framework cannot pause a Runtime run, so a tool that
-  ``requires_approval`` is refused through the bridge. Keep such tools in a Runtime agent or
-  workflow, or use the framework's own human-in-the-loop for them.
+- **Approvals.** A foreign framework cannot pause a Runtime run, so a call that would need an
+  approval in a Runtime run is refused through the bridge: a tool that ``requires_approval`` and,
+  under the default :class:`ApprovalPolicy`, every tool with ``write``, ``external`` or
+  ``destructive`` side effects. Keep such tools in a Runtime agent or workflow, use the
+  framework's own human-in-the-loop for them, or pass an ``approval_policy`` that allows them.
 - **Model metering.** The bridge governs tool calls. The framework's model calls are not
   metered or routed by the Runtime.
 """
@@ -19,16 +21,26 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from itertools import count
 from typing import Any
+from uuid import uuid4
 
-from algen_agent_runtime.exceptions.errors import AlgenAgentRuntimeError
+from opentelemetry import trace
+
+from algen_agent_runtime.exceptions.errors import (
+    AlgenAgentRuntimeError,
+    PolicyDeniedError,
+    ToolExecutionError,
+)
 from algen_agent_runtime.frameworks.contracts import FrameworkRunRequest
-from algen_agent_runtime.tools.contracts import ToolContext, ToolDefinition
+from algen_agent_runtime.policies.contracts import PolicyAction
+from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
+from algen_agent_runtime.tools.contracts import SideEffect, ToolContext, ToolDefinition
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
+from algen_agent_runtime.types.contracts import ApprovalPolicy
 
 _FRAMEWORK_NAME = re.compile(r"[^A-Za-z0-9_-]")
+_STATE_CHANGING = frozenset({SideEffect.WRITE, SideEffect.EXTERNAL, SideEffect.DESTRUCTIVE})
 
 
 def framework_tool_name(name: str) -> str:
@@ -36,13 +48,39 @@ def framework_tool_name(name: str) -> str:
     return _FRAMEWORK_NAME.sub("_", name)
 
 
+def _approval_reason(definition: ToolDefinition, policy: ApprovalPolicy) -> str | None:
+    """Why a Runtime run would ask for an approval before this call, or None: the rule the
+    mandatory ``side_effects`` policy applies at ``plan_tool``."""
+    if definition.requires_approval:
+        return "the tool requires_approval"
+    side_effect = definition.side_effect
+    if policy.require_for_destructive and side_effect == SideEffect.DESTRUCTIVE:
+        return "it has destructive side effects"
+    if policy.require_for_side_effects and side_effect in _STATE_CHANGING:
+        return f"it has {side_effect.value} side effects"
+    return None
+
+
 class GovernedToolBridge:
     """Runtime tools for one framework run, each call executed by the Runtime.
 
     ``permissions`` are what the caller may do in this run, as for a Runtime run; a tool whose
     ``required_permissions`` they lack is refused. Calls get the run's identity from ``request``
-    and an idempotency key per call. In a host built with ``build_container``, pass
-    ``container.runtime.tool_executor`` and ``container.tools``.
+    and a unique idempotency key per call. In a host built with ``build_container``, pass
+    ``container.runtime.tool_executor``, ``container.tools`` and, to apply the deployment's
+    ``plan_tool`` policies, ``policies=container.runtime.policies``.
+
+    Each call is first checked as a Runtime run checks it at ``plan_tool``, since a framework
+    cannot pause for a Runtime approval:
+
+    - ``approval_policy`` (default ``ApprovalPolicy()``, which asks for an approval before any
+      ``write``, ``external`` or ``destructive`` call) decides which calls would need an approval;
+      the bridge refuses those with ``PolicyDeniedError``. Pass a policy that allows them, such as
+      ``ApprovalPolicy(require_for_side_effects=False, require_for_destructive=False)``, only when
+      something else gates them. A tool that ``requires_approval`` is always refused.
+    - ``policies``, when given, is evaluated at ``plan_tool``: ``deny``, ``require_approval``,
+      ``redact`` and ``require_clarification`` refuse the call, and ``transform`` rewrites its
+      arguments (the executor then validates them against the input schema).
     """
 
     def __init__(
@@ -53,37 +91,95 @@ class GovernedToolBridge:
         *,
         permissions: Iterable[str] = (),
         secrets: Mapping[str, str] | None = None,
+        approval_policy: ApprovalPolicy | None = None,
+        policies: Any = None,
     ) -> None:
         self._executor = executor
         self._registry = registry
         self._request = request
         self._permissions = frozenset(permissions)
         self._secrets = dict(secrets or {})
-        self._calls = count(1)
+        self._approval_policy = approval_policy or ApprovalPolicy()
+        self._policies = policies
+        self._tracer = trace.get_tracer("algen_agent_runtime.frameworks")
 
     def definition(self, name: str) -> ToolDefinition:
         return self._registry.get(name).definition
 
     def _context(self, name: str) -> ToolContext:
-        number = next(self._calls)
+        # A random call id, not a per-bridge counter: a second bridge for the same run must never
+        # be handed the recorded result of another call that happened to get the same number.
+        call_id = uuid4().hex
         return ToolContext(
             run_id=self._request.run_id,
-            step_id=f"framework:{number}",
+            step_id=f"framework:{call_id}",
             tenant_id=self._request.tenant_id,
             user_id=self._request.user_id,
             session_id=self._request.session_id,
             permissions=self._permissions,
-            idempotency_key=f"{self._request.run_id}:framework:{number}:{name}",
+            idempotency_key=f"{self._request.run_id}:framework:{call_id}:{name}",
             secrets=self._secrets,
         )
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Run one call through the executor and return the tool's value.
+    async def _plan(
+        self, name: str, arguments: dict[str, Any], context: ToolContext
+    ) -> dict[str, Any]:
+        """The arguments the call runs with after the ``plan_tool`` checks. Raises
+        ``PolicyDeniedError`` for a call a Runtime run would refuse or pause for an approval."""
+        definition = self.definition(name)
+        reason = _approval_reason(definition, self._approval_policy)
+        if reason is not None:
+            raise PolicyDeniedError(
+                f"tool {name} requires an approval for this call ({reason}), and a framework "
+                "run cannot pause for one; run it from a Runtime agent or workflow, or pass "
+                "GovernedToolBridge an approval_policy that allows it"
+            )
+        if self._policies is None:
+            return arguments
+        decision = await evaluate_policy_observed(
+            tracer=self._tracer,
+            engine=self._policies,
+            point="plan_tool",
+            payload=arguments,
+            context={
+                "tool": definition,
+                "context": context,
+                "approval_policy": self._approval_policy,
+                "run_id": context.run_id,
+                "tenant_id": context.tenant_id,
+                "user_id": context.user_id,
+            },
+            attributes={
+                "run.id": context.run_id,
+                "tenant.id": context.tenant_id,
+                "user.id": context.user_id,
+                "tool.name": name,
+            },
+        )
+        action = decision.action
+        if action == PolicyAction.ALLOW:
+            return arguments
+        if action == PolicyAction.REQUIRE_APPROVAL:
+            raise PolicyDeniedError(
+                f"tool {name} requires an approval for this call ({decision.reason_code}), and "
+                "a framework run cannot pause for one"
+            )
+        if action == PolicyAction.TRANSFORM:
+            if not isinstance(decision.value, dict):
+                raise ToolExecutionError(f"policy-transformed input for {name} is not an object")
+            return decision.value
+        # deny, redact (the tool is never sent masked arguments), require_clarification.
+        raise PolicyDeniedError(f"{decision.reason_code}: {decision.reason}")
 
-        Raises what the executor raises: ``PolicyDeniedError`` for a refused call (including a
-        tool that requires approval), ``ToolExecutionError`` for invalid input or a failed tool.
+    async def call(self, name: str, arguments: dict[str, Any]) -> Any:
+        """Run one call through the ``plan_tool`` checks and the executor; return its value.
+
+        Raises ``PolicyDeniedError`` for a refused call (including one that would need an
+        approval), ``ToolExecutionError`` for invalid input or a failed tool.
         """
-        result = await self._executor.execute(name, arguments, self._context(name))
+        context = self._context(name)
+        arguments = await self._plan(name, arguments, context)
+        result = await self._executor.execute(name, arguments, context)
         return result.value
 
     async def call_for_model(self, name: str, arguments: dict[str, Any]) -> str:

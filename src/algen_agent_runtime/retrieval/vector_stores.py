@@ -30,6 +30,24 @@ def _check_identifier(value: str) -> str:
     return value
 
 
+def _tenant(document: SourceDocument | RetrievedDocument) -> str:
+    """The tenant a document belongs to: its ``tenant_id`` metadata, which a persistent store
+    requires (since 0.2.0b4; earlier releases filed a document without one under the tenant
+    ``"default"``, where a tenant named ``default`` could read it)."""
+    tenant_id = document.metadata.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise ValueError(
+            f"document {document.id!r} has no tenant_id metadata; a persistent vector store "
+            "files every document under the tenant that may read it"
+        )
+    return tenant_id
+
+
+def _require_tenants(documents: Sequence[SourceDocument]) -> None:
+    for document in documents:
+        _tenant(document)
+
+
 def _storage_id(tenant_id: str, chunk_id: str) -> str:
     return hashlib.sha256(f"{tenant_id}\0{chunk_id}".encode()).hexdigest()
 
@@ -204,13 +222,12 @@ class PgVectorRetriever(_VectorStoreBase):
             self._ready = True
 
     async def ingest(self, documents: Sequence[SourceDocument]) -> int:
+        _require_tenants(documents)
         await self._ensure_ready()
         assert self._pool is not None
         chunks, vectors = await self._chunks_and_vectors(documents)
         self._validate_dimensions(vectors, self._dimensions)
-        owners = {
-            (str(chunk.metadata.get("tenant_id", "default")), chunk.document_id) for chunk in chunks
-        }
+        owners = {(_tenant(chunk), chunk.document_id) for chunk in chunks}
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 for tenant_id, document_id in owners:
@@ -226,7 +243,7 @@ class PgVectorRetriever(_VectorStoreBase):
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::vector)""",
                     [
                         (
-                            str(chunk.metadata.get("tenant_id", "default")),
+                            _tenant(chunk),
                             chunk.id,
                             chunk.document_id or chunk.id,
                             chunk.text,
@@ -308,25 +325,21 @@ class ChromaRetriever(_VectorStoreBase):
         )
 
     async def ingest(self, documents: Sequence[SourceDocument]) -> int:
+        _require_tenants(documents)
         chunks, vectors = await self._chunks_and_vectors(documents)
         for document in documents:
-            await self.delete(str(document.metadata.get("tenant_id", "default")), document.id)
+            await self.delete(_tenant(document), document.id)
         if chunks:
             await asyncio.to_thread(
                 self._collection.upsert,
-                ids=[
-                    _storage_id(str(chunk.metadata.get("tenant_id", "default")), chunk.id)
-                    for chunk in chunks
-                ],
+                ids=[_storage_id(_tenant(chunk), chunk.id) for chunk in chunks],
                 embeddings=vectors,
                 documents=[chunk.text for chunk in chunks],
                 metadatas=[
                     {
-                        "tenant_id": str(chunk.metadata.get("tenant_id", "default")),
+                        "tenant_id": _tenant(chunk),
                         "document_id": chunk.document_id or chunk.id,
-                        "payload": json.dumps(
-                            _payload(chunk, str(chunk.metadata.get("tenant_id", "default")))
-                        ),
+                        "payload": json.dumps(_payload(chunk, _tenant(chunk))),
                         **{
                             f"filter__{key}": value
                             for key, value in chunk.metadata.items()
@@ -423,19 +436,18 @@ class FaissRetriever(_VectorStoreBase):
             self._index.add(array)
 
     async def ingest(self, documents: Sequence[SourceDocument]) -> int:
+        _require_tenants(documents)
         chunks, vectors = await self._chunks_and_vectors(documents)
         self._validate_dimensions(vectors, self._dimensions)
         async with self._lock:
-            owners = {
-                (str(item.metadata.get("tenant_id", "default")), item.id) for item in documents
-            }
+            owners = {(_tenant(item), item.id) for item in documents}
             retained = []
             for record in self._records:
                 if (record["tenant_id"], record["document_id"]) not in owners:
                     retained.append(record)
             self._records = retained
             for chunk, vector in zip(chunks, vectors, strict=True):
-                record = _payload(chunk, str(chunk.metadata.get("tenant_id", "default")))
+                record = _payload(chunk, _tenant(chunk))
                 record["_vector"] = vector
                 self._records.append(record)
             self._rebuild()
@@ -538,11 +550,12 @@ class QdrantRetriever(_VectorStoreBase):
         return self._models.Filter(must=conditions)
 
     async def ingest(self, documents: Sequence[SourceDocument]) -> int:
+        _require_tenants(documents)
         await self._ensure_ready()
         chunks, vectors = await self._chunks_and_vectors(documents)
         self._validate_dimensions(vectors, self._dimensions)
         for document in documents:
-            await self.delete(str(document.metadata.get("tenant_id", "default")), document.id)
+            await self.delete(_tenant(document), document.id)
         if chunks:
             await self._client.upsert(
                 collection_name=self._collection,
@@ -551,11 +564,11 @@ class QdrantRetriever(_VectorStoreBase):
                         id=str(
                             uuid5(
                                 _QDRANT_NAMESPACE,
-                                f"{chunk.metadata.get('tenant_id', 'default')}:{chunk.id}",
+                                f"{_tenant(chunk)}:{chunk.id}",
                             )
                         ),
                         vector=vector,
-                        payload=_payload(chunk, str(chunk.metadata.get("tenant_id", "default"))),
+                        payload=_payload(chunk, _tenant(chunk)),
                     )
                     for chunk, vector in zip(chunks, vectors, strict=True)
                 ],

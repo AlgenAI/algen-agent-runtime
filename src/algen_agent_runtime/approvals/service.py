@@ -112,6 +112,29 @@ def _decision(decided_by: str | None, comment: str | None) -> dict[str, Any]:
     return {"decided_by": decided_by, "decided_at": utc_now(), "comment": comment}
 
 
+# The decisions ``decide`` records: an approver approves, rejects, or approves with changed
+# arguments. ``pending`` and ``expired`` are states a request is in, never a decision.
+DECISIONS = frozenset({ApprovalStatus.APPROVED, ApprovalStatus.REJECTED, ApprovalStatus.MODIFIED})
+
+
+def check_decision(decision: Any, modified_parameters: dict[str, Any] | None) -> ApprovalStatus:
+    """``decision`` as an ``ApprovalStatus`` once checked: ``approved``, ``rejected`` or
+    ``modified``, with ``modified_parameters`` required for ``modified`` and refused otherwise.
+    ``ValueError`` for anything else (``pending`` and ``expired`` included), so a decision can
+    never approve a call by naming a state the request is in."""
+    try:
+        status: ApprovalStatus | None = ApprovalStatus(decision)
+    except ValueError:
+        status = None
+    if status is None or status not in DECISIONS:
+        raise ValueError("decision must be approved, rejected, or modified")
+    if status == ApprovalStatus.MODIFIED and modified_parameters is None:
+        raise ValueError("modified decision requires modified_parameters")
+    if status != ApprovalStatus.MODIFIED and modified_parameters is not None:
+        raise ValueError("modified_parameters are only allowed with a modified decision")
+    return status
+
+
 def _check_page(limit: int, offset: int) -> None:
     if not 1 <= limit <= MAX_APPROVAL_PAGE:
         raise ValueError(f"limit must be between 1 and {MAX_APPROVAL_PAGE}")
@@ -154,7 +177,9 @@ class ApprovalService(Protocol):
     ) -> ApprovalRequest:
         """Decide a pending request, recording ``decided_by`` (the approver's user id),
         ``comment`` and the time as ``decided_at``. ``NotFoundError`` for an unknown request,
-        ``ConflictError`` for one that is not pending or has expired.
+        ``ConflictError`` for one that is not pending or has expired. ``decision`` is
+        ``approved``, ``rejected`` or ``modified`` (``check_decision``): any other value, and
+        ``modified_parameters`` without ``modified``, is a ``ValueError``.
 
         An implementation written before 0.2, without the two keywords, keeps working: the
         Runtime passes them only to a ``decide`` that accepts them, and such an implementation
@@ -248,6 +273,7 @@ class InMemoryApprovalService:
         decided_by: str | None = None,
         comment: str | None = None,
     ) -> ApprovalRequest:
+        decision = check_decision(decision, modified_parameters)
         recorded = _decision(decided_by, comment)
         async with self._lock:
             item = self._items.get(approval_id)
@@ -258,8 +284,6 @@ class InMemoryApprovalService:
             if item.expires_at <= utc_now():
                 item.status = ApprovalStatus.EXPIRED
                 raise ConflictError("approval request expired")
-            if decision == ApprovalStatus.MODIFIED and modified_parameters is None:
-                raise ValueError("modified decision requires modified_parameters")
             item.status = decision
             item.modified_parameters = modified_parameters
             item.decided_by = recorded["decided_by"]
@@ -409,6 +433,7 @@ class PostgresApprovalService:
         decided_by: str | None = None,
         comment: str | None = None,
     ) -> ApprovalRequest:
+        decision = check_decision(decision, modified_parameters)
         recorded = _decision(decided_by, comment)
         item = await self.get(approval_id, tenant_id)
         if item is None:
@@ -419,8 +444,6 @@ class PostgresApprovalService:
             updated = item.model_copy(update={"status": ApprovalStatus.EXPIRED})
             await self._save(updated, expected=ApprovalStatus.PENDING)
             raise ConflictError("approval request expired")
-        if decision == ApprovalStatus.MODIFIED and modified_parameters is None:
-            raise ValueError("modified decision requires modified_parameters")
         updated = item.model_copy(
             update={"status": decision, "modified_parameters": modified_parameters, **recorded}
         )

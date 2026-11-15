@@ -135,7 +135,10 @@ A tenant's users share its agents, not each other's data:
 - **Delegation.** `core.subagent` is registered only when the deployment sets
   `runtime.subagent.enabled`, and offered only to agents that list it in `enabled_tools`. It
   delegates only to the agents the calling agent lists in `delegates`, only to an agent whose
-  `tool_permissions` are within the caller's, for the same tenant and user. The nesting depth is counted from the run's lineage (`parent_run_id`), never
+  `tool_permissions` and (0.2.0b4) `enabled_tools` are within the caller's, for the same tenant
+  and user. The child runs with the caller's approval requirements and guardrail policies added
+  to its own, its usage is charged to the caller's budget when it ends, and one delegation tree
+  starts at most `runtime.subagent.max_descendants` child runs. The nesting depth is counted from the run's lineage (`parent_run_id`), never
   from the model's arguments, and a delegation is never cached, retried or held back as a repeat.
 
 ### API authentication

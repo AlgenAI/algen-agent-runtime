@@ -473,9 +473,101 @@ async def test_caller_auth_never_follows_a_link_to_another_origin() -> None:
     result = await _tool(paged, same).handler({}, _caller_context(authorization=USER_TOKEN))
     assert result["data"] == [1, 2]
     assert [r.headers["authorization"] for r in same.requests] == [USER_TOKEN] * 2
-    with pytest.raises(ToolExecutionError, match="another origin"):
-        await _tool(paged, other).handler({}, _caller_context(authorization=USER_TOKEN))
+    stopped = await _tool(paged, other).handler({}, _caller_context(authorization=USER_TOKEN))
+    assert stopped["data"] == [1] and "another origin" in stopped["pagination_stopped"]
     assert len(other.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"type": "bearer", "token": "env://API_TOKEN"},
+        {"type": "basic", "username": "env://API_USER", "password": "env://API_TOKEN"},
+        {"type": "header", "header_name": "X-Api-Key", "token": "env://API_TOKEN"},
+    ],
+)
+@pytest.mark.parametrize(
+    "next_link",
+    [
+        "https://attacker.example.com/steal",  # another host
+        "http://api.example.com/items?c=2",  # a scheme downgrade
+        "https://api.example.com:8443/items?c=2",  # another port
+    ],
+)
+async def test_static_secrets_never_follow_a_link_to_another_origin(
+    auth: dict[str, Any], next_link: str
+) -> None:
+    config = {
+        "name": "crm.items",
+        "description": "Items",
+        "url": "https://api.example.com/items",
+        "auth": auth,
+        "pagination": {"type": "link_header", "items_pointer": "/items"},
+    }
+    server = Server(
+        _json({"items": [1]}, headers={"link": f'<{next_link}>; rel="next"'}),
+        _json({"items": [2]}),
+    )
+    secrets = {"API_TOKEN": "static-secret", "API_USER": "user"}
+    result = await _tool(config, server, secrets).handler({}, CONTEXT)
+    assert result["ok"] and result["data"] == [1]
+    assert "another origin" in result["pagination_stopped"]
+    assert [str(request.url) for request in server.requests] == ["https://api.example.com/items"]
+
+
+async def test_a_relative_next_link_stays_on_the_origin() -> None:
+    config = {
+        "name": "crm.items",
+        "description": "Items",
+        "url": "https://api.example.com/items",
+        "pagination": {"type": "link_header", "items_pointer": "/items"},
+    }
+    server = Server(
+        _json({"items": [1]}, headers={"link": '</items?c=2>; rel="next"'}),
+        _json({"items": [2]}),
+    )
+    result = await _tool(config, server).handler({}, CONTEXT)
+    assert result["data"] == [1, 2] and "pagination_stopped" not in result
+    assert str(server.requests[1].url) == "https://api.example.com/items?c=2"
+
+
+def test_link_header_parsing_is_linear() -> None:
+    import time
+
+    started = time.perf_counter()
+    assert http_api._next_link("<" * 8000, "https://api.example.com/") is None
+    assert http_api._LINK_NEXT.search("<" * 200_000) is None
+    assert time.perf_counter() - started < 1.0
+    assert http_api._next_link("<" * 9000, "https://api.example.com/") is None  # over the cap
+
+
+async def test_an_oversized_body_is_refused_without_reading_it_all() -> None:
+    sent: list[int] = []
+
+    async def body() -> Any:
+        for _ in range(1000):
+            sent.append(1)
+            yield b"x" * 1024
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body(), headers={"content-type": "text/plain"})
+
+    tool = http_api_tool(
+        HttpToolConfig.model_validate(
+            {
+                "name": "crm.big",
+                "description": "Big",
+                "url": "https://api.example.com/big",
+                "max_result_bytes": 4096,
+            }
+        ),
+        allowed_hosts=HOSTS,
+        secrets=lambda reference: None,  # type: ignore[arg-type,return-value]
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ToolExecutionError, match="larger than 4096 bytes"):
+        await tool.handler({}, CONTEXT)
+    assert len(sent) < 10
 
 
 @pytest.mark.parametrize(

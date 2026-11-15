@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from algen_agent_runtime.exceptions.errors import (
     ConfigurationError,
@@ -90,6 +90,26 @@ class SandboxSettings(SubprocessSandbox):
     subprocess_timeout_seconds: float = Field(
         default=60, gt=0, le=3_600, description="core.subprocess wall-clock limit"
     )
+    allowed_executables: tuple[str, ...] = Field(
+        default=(),
+        description="Absolute paths of the executables core.subprocess may run; the model "
+        "names one of them exactly. Empty (the default) refuses every call, even with "
+        "allow_subprocess_tools.",
+    )
+
+    @field_validator("allowed_executables")
+    @classmethod
+    def _absolute_executables(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for path in value:
+            if not os.path.isabs(path) or os.path.normpath(path) != path:
+                raise ValueError(
+                    f"allowed_executables must be normalized absolute paths, not {path!r}"
+                )
+        return value
+
+    def executable_allowed(self, executable: str) -> bool:
+        """Whether ``executable`` is exactly one of ``allowed_executables``."""
+        return bool(executable) and executable in self.allowed_executables
 
 
 @dataclass(frozen=True)
@@ -163,7 +183,11 @@ def kill_process_group(process: asyncio.subprocess.Process) -> None:
 async def run_sandboxed(
     prepared: PreparedCommand, *, timeout_seconds: float, max_output_bytes: int = 1_000_000
 ) -> tuple[int, bytes, bytes]:
-    """Run to completion with no stdin; kill the process group on timeout or cancellation."""
+    """Run to completion with no stdin; kill the process group on timeout or cancellation.
+
+    Output is read as it arrives. When stdout or stderr passes ``max_output_bytes`` the
+    process group is killed and the call fails, so a chatty child cannot fill memory.
+    """
     process = await asyncio.create_subprocess_exec(
         prepared.command,
         *prepared.args,
@@ -174,9 +198,25 @@ async def run_sandboxed(
         cwd=prepared.cwd,
         start_new_session=POSIX,
     )
+    stdout, stderr = bytearray(), bytearray()
+    exceeded: list[str] = []
+
+    async def drain(stream: asyncio.StreamReader | None, buffer: bytearray, name: str) -> None:
+        if stream is None:
+            return
+        while chunk := await stream.read(65_536):
+            buffer.extend(chunk)
+            if len(buffer) > max_output_bytes:
+                exceeded.append(name)
+                kill_process_group(process)
+                return
+
     try:
         async with asyncio.timeout(timeout_seconds):
-            stdout, stderr = await process.communicate()
+            await asyncio.gather(
+                drain(process.stdout, stdout, "stdout"), drain(process.stderr, stderr, "stderr")
+            )
+            await process.wait()
     except TimeoutError:
         kill_process_group(process)
         await process.wait()
@@ -192,5 +232,9 @@ async def run_sandboxed(
     if POSIX:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
+    if exceeded:
+        raise ToolExecutionError(
+            f"the process wrote more than {max_output_bytes} bytes to {exceeded[0]} and was killed"
+        )
     assert process.returncode is not None
-    return process.returncode, stdout[:max_output_bytes], stderr[:max_output_bytes]
+    return process.returncode, bytes(stdout), bytes(stderr)

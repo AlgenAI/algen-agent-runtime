@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import structlog
 
+from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -25,6 +26,9 @@ class InMemoryToolExecutionStore:
     async def begin(self, context: ToolContext, tool_name: str) -> tuple[ToolExecutionRecord, bool]:
         async with self._lock:
             current = self._records.get(context.idempotency_key)
+            if current is not None and current.tenant_id != context.tenant_id:
+                # As the PostgreSQL store: another tenant's record is never returned or replaced.
+                raise ConflictError("tool execution record is not accessible to this tenant")
             if current and current.status not in {ToolExecutionStatus.FAILED}:
                 return current.model_copy(deep=True), False
             now = utc_now()

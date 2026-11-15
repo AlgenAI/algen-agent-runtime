@@ -9,6 +9,7 @@ import pytest
 from conftest import make_runtime
 
 from algen_agent_runtime.orchestration.check import workflow_approval_issues
+from algen_agent_runtime.security.redaction import hidden_value_marker
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition, canonical_digest
 from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor, WorkflowHookRegistry
 from algen_agent_runtime.workflows.contracts import (
@@ -139,7 +140,11 @@ async def test_the_approver_is_shown_the_resolved_call_including_literals() -> N
     assert call["node_id"] == "pay"
     assert (call["tool"], call["tool_version"]) == ("payments.send", "1")
     # Literals are shown too; sensitive keys are redacted like approval parameters.
-    assert call["arguments"] == {"to": "acme", "amount": 100, "token": "[REDACTED]"}
+    assert call["arguments"] == {
+        "to": "acme",
+        "amount": 100,
+        "token": hidden_value_marker("secret"),
+    }
     assert call["arguments_sha256"] == canonical_digest(
         {"to": "acme", "amount": 100, "token": "secret"}
     )

@@ -1,0 +1,3 @@
+# Scanners the Security workflow runs. Hash-locked in security.txt (scripts/lock-requirements.sh).
+bandit
+pip-audit

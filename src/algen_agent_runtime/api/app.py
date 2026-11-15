@@ -5,11 +5,12 @@ import contextlib
 import json
 import math
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
+from urllib.parse import quote
 
 from algen_agent_runtime.extras import MissingExtraError
 
@@ -52,7 +53,13 @@ from algen_agent_runtime.approvals.service import (
     ApprovalRequest,
     ApprovalStatus,
 )
-from algen_agent_runtime.artifacts import ArtifactLifecycleService, BasicArtifactScanner
+from algen_agent_runtime.artifacts import (
+    ARTIFACTS_ADMIN_SCOPE,
+    ArtifactLifecycleService,
+    BasicArtifactScanner,
+    artifact_owned_by,
+    list_user_artifacts,
+)
 from algen_agent_runtime.config.settings import ApiSettings, AppSettings, load_settings
 from algen_agent_runtime.conversations.contracts import (
     ConversationApprovalDecision,
@@ -70,6 +77,7 @@ from algen_agent_runtime.events.contracts import (
 )
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
+    CapabilityError,
     ConfigurationError,
     ConflictError,
     EventStreamOverflowError,
@@ -88,6 +96,7 @@ from algen_agent_runtime.types.contracts import (
     MAX_STEERING_CHARS,
     AgentDefinition,
     Artifact,
+    ArtifactDescriptor,
     ArtifactStatus,
     RequestOverrides,
     RunAttachment,
@@ -123,10 +132,20 @@ class SteerBody(BaseModel):
 
 class ApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decision: str
+    # A decision, never a request state: "pending" and "expired" are refused (422).
+    decision: Literal["approved", "rejected", "modified"]
+    # The arguments to use instead: required for "modified" and only allowed with it.
     modified_parameters: dict[str, Any] | None = None
     # The approver's note, recorded on the approval request with who decided and when.
     comment: str | None = Field(default=None, max_length=MAX_COMMENT_CHARS)
+
+    @model_validator(mode="after")
+    def _modified_needs_parameters(self) -> ApprovalBody:
+        if self.decision == "modified" and self.modified_parameters is None:
+            raise ValueError("a modified decision requires modified_parameters")
+        if self.decision != "modified" and self.modified_parameters is not None:
+            raise ValueError("modified_parameters are only allowed with a modified decision")
+        return self
 
 
 class ArtifactStatusBody(BaseModel):
@@ -173,6 +192,13 @@ class ConversationFeedbackBody(BaseModel):
     tags: tuple[str, ...] = Field(default=(), max_length=20)
 
 
+def http_agent_owner(tenant_id: str) -> str:
+    """The owner ``POST /v1/agents`` registers under (``InMemoryAgentRegistry.register``): a
+    tenant's administrators may add versions of the names they registered, never of the agents
+    the host defined or another tenant registered."""
+    return f"http:{tenant_id}"
+
+
 def _sse(event: RunEvent) -> bytes:
     payload = event.model_dump_json()
     return f"id: {event.sequence}\nevent: {event.type}\ndata: {payload}\n\n".encode()
@@ -193,6 +219,83 @@ def _conversation_sse(event: ConversationEvent) -> bytes:
     return (
         f"id: {event.sequence}\nevent: {event.type}\ndata: {event.model_dump_json()}\n\n"
     ).encode()
+
+
+def _last_event_id(request: Request) -> int:
+    """The ``Last-Event-ID`` a reconnecting client sends: 0 when absent, 400 when it is not a
+    non-negative integer (an event's ``sequence``)."""
+    raw = request.headers.get("last-event-id", "").strip()
+    if not raw:
+        return 0
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 19:
+        raise HTTPException(status_code=400, detail="Last-Event-ID must be an event sequence")
+    return int(raw)
+
+
+def _content_disposition(name: str) -> str:
+    """``attachment`` naming ``name`` (RFC 6266): an ASCII fallback without quotes,
+    backslashes or control characters, and the exact name as ``filename*``."""
+    fallback = "".join(
+        char if 0x20 <= ord(char) < 0x7F and char not in '"\\;' else "_" for char in name
+    )
+    return f"attachment; filename=\"{fallback or 'download'}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+class _StreamSlots:
+    """The event streams each principal holds open in this process
+    (``api.max_streams_per_principal``)."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._held: dict[tuple[str, str], int] = {}
+
+    def acquire(self, tenant_id: str, user_id: str) -> Callable[[], None]:
+        """A slot for one stream, or 429 when the principal holds the most it may. The returned
+        function releases it (once, however often it is called)."""
+        key = (tenant_id, user_id)
+        if self._held.get(key, 0) >= self._limit:
+            raise HTTPException(
+                status_code=429,
+                detail=f"at most {self._limit} event streams may be open at once",
+                headers={"Retry-After": "5"},
+            )
+        self._held[key] = self._held.get(key, 0) + 1
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            remaining = self._held.get(key, 1) - 1
+            if remaining > 0:
+                self._held[key] = remaining
+            else:
+                self._held.pop(key, None)
+
+        return release
+
+    def held(self, tenant_id: str, user_id: str) -> int:
+        return self._held.get((tenant_id, user_id), 0)
+
+
+class _HeldStreamingResponse(StreamingResponse):
+    """An event stream that releases its principal's slot when it ends, however it ends
+    (finished, client gone, cancelled), including when its body was never iterated."""
+
+    def __init__(self, content: AsyncIterator[bytes], release: Callable[[], None]) -> None:
+        super().__init__(
+            content,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+        self._release = release
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._release()
 
 
 def _check_api_settings(api: ApiSettings) -> None:
@@ -238,6 +341,7 @@ def create_app(
     identity_dependency = Depends(authenticate)
     configure_logging()
 
+    stream_slots = _StreamSlots(resolved.api.max_streams_per_principal)
     workflows = WorkflowService(resolved, dependencies)
     # The container recovers, expires and drains the runs this service starts.
     dependencies.attach_workflows(workflows)
@@ -258,6 +362,7 @@ def create_app(
 
     app = FastAPI(title="Algen Agent Runtime", version=__version__, lifespan=lifespan)
     app.state.container = dependencies
+    app.state.stream_slots = stream_slots
     if resolved.api.cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -412,7 +517,12 @@ def create_app(
             status_code=400, content={"detail": str(exc), "kind": exc.error_kind.value}
         )
 
-    add_workflow_routes(app, workflows, identity_dependency)
+    add_workflow_routes(
+        app,
+        workflows,
+        identity_dependency,
+        attachment_check=lambda items, caller: require_attachable(items, caller),
+    )
     add_mcp_oauth_routes(app, dependencies, identity_dependency)
     add_auth_routes(app, dependencies, identity_dependency)
     add_tool_execution_routes(app, dependencies, identity_dependency)
@@ -469,6 +579,7 @@ def create_app(
         body: CreateRunBody, request: Request, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_scope(identity, "runs:write")
+        await require_attachable(body.attachments, identity)
         state = await dependencies.runtime.start(
             RunRequest(**body.model_dump(), tenant_id=identity.tenant_id, user_id=identity.user_id),
             **caller_credentials(request),
@@ -599,7 +710,7 @@ def create_app(
     ) -> StreamingResponse:
         require_any_scope(identity, "artifacts:read", "runs:read")
         await require_conversation_owner(run_id, identity)
-        last_id = int(request.headers.get("last-event-id", "0") or 0)
+        last_id = _last_event_id(request)
         # By default the stream ends when the run ends or pauses, and after answering a pause
         # the client reconnects with Last-Event-ID; ?through_pauses=true ends only when the run
         # ends, sending a keepalive comment while nothing happens (a pause can last hours).
@@ -638,11 +749,55 @@ def create_app(
                     with contextlib.suppress(Exception):
                         await close()
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        release = stream_slots.acquire(identity.tenant_id, identity.user_id)
+        return _HeldStreamingResponse(generate(), release)
+
+    # Artifacts are their owner's (the uploader, or the user of the run that produced them), as
+    # conversations are: another user of the tenant gets the same 404 as for a missing one.
+    # ``artifacts:admin`` reads, lists and deletes any artifact of the tenant.
+    def artifacts_admin(identity: Principal) -> bool:
+        return ARTIFACTS_ADMIN_SCOPE in identity.scopes or "*" in identity.scopes
+
+    async def run_user(run_id: str, tenant_id: str) -> str | None:
+        """The user a run belongs to (the conversation's owner for a conversation turn), or
+        None when the run is not found."""
+        try:
+            state = await dependencies.runtime.status(run_id, tenant_id)
+        except NotFoundError:
+            return None
+        if state.request.conversation_id is not None:
+            try:
+                conversation = await dependencies.conversations.get(
+                    state.request.conversation_id, tenant_id
+                )
+                return conversation.user_id
+            except NotFoundError:  # the conversation was deleted; the run keeps its user
+                pass
+        return state.request.user_id
+
+    async def may_use_artifact(
+        artifact: Artifact | ArtifactDescriptor, identity: Principal
+    ) -> bool:
+        if artifacts_admin(identity):
+            return True
+        if artifact.user_id is not None and artifact.user_id == identity.user_id:
+            return True
+        owner = await run_user(artifact.run_id, identity.tenant_id) if artifact.run_id else None
+        return artifact_owned_by(artifact, identity.user_id, run_user_id=owner)
+
+    async def visible_artifact(artifact_id: str, identity: Principal) -> ArtifactDescriptor:
+        descriptor = await dependencies.artifacts.describe(artifact_id, identity.tenant_id)
+        if descriptor is None or not await may_use_artifact(descriptor, identity):
+            raise HTTPException(status_code=404, detail="artifact not found")
+        return descriptor
+
+    async def require_attachable(attachments: Sequence[RunAttachment], identity: Principal) -> None:
+        """A run or conversation turn takes only files its caller may use; another user's file
+        is refused with the error of a missing one, so the refusal tells nothing."""
+        for item in attachments:
+            descriptor = await dependencies.artifacts.describe(item.artifact_id, identity.tenant_id)
+            if descriptor is None or not await may_use_artifact(descriptor, identity):
+                raise CapabilityError(f"attachment {item.artifact_id!r} was not found")
 
     @app.post("/v1/artifacts", status_code=status.HTTP_201_CREATED)
     async def create_artifact(
@@ -677,9 +832,14 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail="artifact metadata must be a string-to-string object"
             )
+        if run_id is not None and not artifacts_admin(identity):
+            # Only the run's user files an upload under a run (its owner may read it).
+            if await run_user(run_id, identity.tenant_id) != identity.user_id:
+                raise HTTPException(status_code=404, detail="run not found")
         artifact = Artifact(
             tenant_id=identity.tenant_id,
             run_id=run_id,
+            user_id=identity.user_id,
             name=name.strip(),
             media_type=media_type,
             data=bytes(data),
@@ -711,9 +871,22 @@ def create_app(
         require_any_scope(identity, "artifacts:read", "runs:read")
         if not 1 <= limit <= 1000:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
-        artifacts = await dependencies.artifacts.list(
-            identity.tenant_id, run_id=run_id, status=artifact_status, limit=limit
-        )
+        # The tenant's artifacts for artifacts:admin, a run's for its user, else the caller's own.
+        if artifacts_admin(identity) or (
+            run_id is not None and await run_user(run_id, identity.tenant_id) == identity.user_id
+        ):
+            artifacts = await dependencies.artifacts.list(
+                identity.tenant_id, run_id=run_id, status=artifact_status, limit=limit
+            )
+        else:
+            artifacts = await list_user_artifacts(
+                dependencies.artifacts,
+                identity.tenant_id,
+                identity.user_id,
+                run_id=run_id,
+                status=artifact_status,
+                limit=limit,
+            )
         return [artifact.model_dump(mode="json") for artifact in artifacts]
 
     @app.get("/v1/artifacts/{artifact_id}/metadata")
@@ -721,10 +894,7 @@ def create_app(
         artifact_id: str, identity: Principal = identity_dependency
     ) -> dict[str, Any]:
         require_any_scope(identity, "artifacts:read", "runs:read")
-        artifact = await dependencies.artifacts.describe(artifact_id, identity.tenant_id)
-        if artifact is None:
-            raise HTTPException(status_code=404, detail="artifact not found")
-        return artifact.model_dump(mode="json")
+        return (await visible_artifact(artifact_id, identity)).model_dump(mode="json")
 
     @app.patch("/v1/artifacts/{artifact_id}/status")
     async def update_artifact_status(
@@ -755,6 +925,7 @@ def create_app(
         artifact_id: str, identity: Principal = identity_dependency
     ) -> Response:
         require_any_scope(identity, "artifacts:write", "runs:write")
+        await visible_artifact(artifact_id, identity)
         if not await dependencies.artifacts.delete(artifact_id, identity.tenant_id):
             raise HTTPException(status_code=404, detail="artifact not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -765,7 +936,7 @@ def create_app(
     ) -> Response:
         require_any_scope(identity, "artifacts:read", "runs:read")
         artifact = await dependencies.artifacts.get(artifact_id, identity.tenant_id)
-        if artifact is None:
+        if artifact is None or not await may_use_artifact(artifact, identity):
             raise HTTPException(status_code=404, detail="artifact not found")
         if artifact.status is not ArtifactStatus.AVAILABLE:
             raise HTTPException(
@@ -777,7 +948,8 @@ def create_app(
             artifact.data,
             media_type=artifact.media_type,
             headers={
-                "Content-Disposition": f'attachment; filename="{artifact.name}"',
+                "Content-Disposition": _content_disposition(artifact.name),
+                "X-Content-Type-Options": "nosniff",
                 "X-Artifact-Sha256": descriptor.sha256,
                 "X-Artifact-Status": artifact.status.value,
             },
@@ -884,6 +1056,7 @@ def create_app(
         identity: Principal = identity_dependency,
     ) -> dict[str, Any]:
         require_scope(identity, "conversations:write")
+        await require_attachable(body.attachments, identity)
         try:
             user_message, assistant_message = await dependencies.conversations.submit(
                 conversation_id,
@@ -1044,7 +1217,7 @@ def create_app(
         conversation = await dependencies.conversations.get(conversation_id, identity.tenant_id)
         if conversation.user_id != identity.user_id:
             raise NotFoundError(f"conversation {conversation_id!r} not found")
-        last_id = int(request.headers.get("last-event-id", "0") or 0)
+        last_id = _last_event_id(request)
 
         async def generate_conversation_events() -> AsyncIterator[bytes]:
             delivered = last_id
@@ -1070,11 +1243,8 @@ def create_app(
             finally:
                 pending.cancel()
 
-        return StreamingResponse(
-            generate_conversation_events(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        release = stream_slots.acquire(identity.tenant_id, identity.user_id)
+        return _HeldStreamingResponse(generate_conversation_events(), release)
 
     @app.get("/v1/agents")
     async def list_agents(identity: Principal = identity_dependency) -> list[dict[str, Any]]:
@@ -1085,8 +1255,22 @@ def create_app(
     async def register_agent(
         definition: AgentDefinition, identity: Principal = identity_dependency
     ) -> dict[str, str]:
-        require_scope(identity, "agents:write")
-        dependencies.agents.register(definition)
+        # The agent catalog is shared by every tenant: registering into it is a platform
+        # operation (agents:admin), never a tenant's agents:write. A registration adds a new
+        # name, or a version of a name the tenant registered over HTTP; a version of an agent
+        # the host defined (configuration or code) or another tenant registered is refused, so
+        # it cannot take over that agent's runs.
+        require_scope(identity, "agents:admin")
+        dependencies.agents.register(definition, owner=http_agent_owner(identity.tenant_id))
+        await dependencies.runtime.audits.append(
+            AuditEvent(
+                action="agent.registered",
+                outcome="registered",
+                tenant_id=identity.tenant_id,
+                actor_id=identity.user_id,
+                resource_id=definition.key,
+            )
+        )
         return {"key": definition.key}
 
     @app.get("/v1/semantic-layers")
@@ -1139,9 +1323,21 @@ def create_app(
         from algen_agent_runtime.ui.generator import generate_agent_ui_html
         from algen_agent_runtime.ui.spec import extract_agent_manifest_spec
 
+        ui_headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+        async def authorize_ui(request: Request) -> None:
+            """The agent UI shows every agent's definition, as ``GET /v1/agents`` does: with
+            ``jwt`` or ``oidc`` it needs an authenticated principal with ``agents:read``
+            (0.2.0b4). With ``development_headers`` (loopback only, where any local caller can
+            already name any identity) a browser, which sends no identity headers, opens it."""
+            if resolved.api.auth_mode == "development_headers":
+                return
+            require_scope(await authenticate(request), "agents:read")
+
         @app.get(ui_path, response_class=HTMLResponse, include_in_schema=False)
         @app.get(f"{ui_path}/", response_class=HTMLResponse, include_in_schema=False)
         async def agent_ui_page(request: Request) -> HTMLResponse:
+            await authorize_ui(request)
             base_url = str(request.base_url).rstrip("/")
             content = generate_agent_ui_html(
                 settings=resolved,
@@ -1149,10 +1345,11 @@ def create_app(
                 live_server=True,
                 api_base_url=base_url,
             )
-            return HTMLResponse(content=content)
+            return HTMLResponse(content=content, headers=ui_headers)
 
         @app.get(f"{ui_path}/spec", response_class=JSONResponse, include_in_schema=False)
         async def agent_ui_spec(request: Request) -> JSONResponse:
+            await authorize_ui(request)
             base_url = str(request.base_url).rstrip("/")
             spec_data = extract_agent_manifest_spec(
                 settings=resolved,
@@ -1160,7 +1357,7 @@ def create_app(
                 live_server=True,
                 api_base_url=base_url,
             )
-            return JSONResponse(content=spec_data)
+            return JSONResponse(content=spec_data, headers=ui_headers)
 
         if ui_path != "/ui":
 

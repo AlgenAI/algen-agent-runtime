@@ -43,10 +43,11 @@ from algen_agent_runtime.cache import (
     NullCacheStore,
     RedisCacheStore,
 )
-from algen_agent_runtime.cache.contracts import CacheStore
+from algen_agent_runtime.cache.contracts import CacheScope, CacheStore
 from algen_agent_runtime.config.registry import InMemoryAgentRegistry
 from algen_agent_runtime.config.settings import (
     AppSettings,
+    CachePolicySettings,
     EnvironmentSecretProvider,
     StorageSettings,
 )
@@ -91,6 +92,9 @@ from algen_agent_runtime.model_services import ModelServiceRegistry
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.models.metering import UsageMeter
 from algen_agent_runtime.models.providers.adapters import (
+    GEMINI_BASE_URL,
+    GROQ_BASE_URL,
+    XAI_BASE_URL,
     AnthropicProvider,
     AzureOpenAIProvider,
     DeepSeekProvider,
@@ -373,6 +377,16 @@ class Container:
         self.lifecycle.phase = "stopped"
 
 
+def _cache_policy(name: str, policy: CachePolicySettings) -> CachePolicy:
+    """A configured cache policy. ``tool_results`` without an explicit ``scope`` is scoped to
+    the user (since 0.2.0b4): a tool that reads ``context.user_id`` without declaring
+    ``cache_context`` must not serve one user's result to another."""
+    values = policy.model_dump()
+    if name == "tool_results" and "scope" not in policy.model_fields_set:
+        values["scope"] = CacheScope.USER
+    return CachePolicy.model_validate(values)
+
+
 def _redis_timeouts(storage: StorageSettings) -> dict[str, Any]:
     """Bounds on an unresponsive Redis: without them a command waits on the network forever."""
     timeout = storage.redis_socket_timeout_seconds
@@ -432,6 +446,33 @@ DEFAULT_PROVIDER_API_KEYS: dict[str, str] = {
 }
 """The secret a provider type reads when its ``api_key`` is not configured."""
 
+_HOSTED_BASE_URLS: dict[str, str] = {
+    "mistral": "https://api.mistral.ai/v1",
+    "gemini": GEMINI_BASE_URL,
+    "xai": XAI_BASE_URL,
+    "groq": GROQ_BASE_URL,
+}
+
+
+def _hosted_api_key(
+    name: str, provider_type: str, api_key: str | None, base_url: str | None
+) -> str:
+    """The configured key, or the provider's default secret only for its own endpoint.
+
+    A ``base_url`` that points elsewhere (a proxy, a compatible server, or a host a manifest
+    chose) never receives the default ``env://<PROVIDER>_API_KEY``: it needs its own api_key.
+    """
+    if api_key:
+        return api_key
+    if base_url and base_url.rstrip("/") != _HOSTED_BASE_URLS[provider_type]:
+        raise ConfigurationError(
+            f"providers.{name}: base_url is not the {provider_type} endpoint, so the default "
+            f"{DEFAULT_PROVIDER_API_KEYS[provider_type]} is not sent there; set api_key "
+            "explicitly"
+        )
+    return DEFAULT_PROVIDER_API_KEYS[provider_type]
+
+
 SUPPORTED_PROVIDER_TYPES: frozenset[str] = frozenset(
     {
         *DEFAULT_PROVIDER_API_KEYS,
@@ -455,6 +496,7 @@ def base_tools(
         http_tool(
             allowed_hosts=settings.security.allowed_http_hosts,
             allow_private_networks=settings.security.allow_private_networks,
+            allow_any_public_host=settings.security.allow_any_public_host,
             client=http_client,
             outbound=outbound,
         ),
@@ -636,10 +678,7 @@ def build_container(
     )
     cache = CacheService(
         cache_store,
-        {
-            name: CachePolicy.model_validate(policy.model_dump())
-            for name, policy in settings.cache.policies.items()
-        },
+        {name: _cache_policy(name, policy) for name, policy in settings.cache.policies.items()},
         key_secret=cache_secret,
         telemetry_trace_level=settings.telemetry.trace_level,
     )
@@ -786,7 +825,7 @@ def build_container(
             )
         elif provider_config.type == "mistral":
             provider = MistralProvider(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["mistral"],
+                _hosted_api_key(name, "mistral", provider_config.api_key, provider_config.base_url),
                 base_url=provider_config.base_url or "https://api.mistral.ai/v1",
                 capabilities=(
                     provider_config.capabilities
@@ -808,7 +847,9 @@ def build_container(
             if provider_config.base_url:
                 hosted_kwargs["base_url"] = provider_config.base_url
             provider = provider_class(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS[provider_config.type],
+                _hosted_api_key(
+                    name, provider_config.type, provider_config.api_key, provider_config.base_url
+                ),
                 capabilities=(
                     provider_config.capabilities
                     if "capabilities" in provider_config.model_fields_set
@@ -1064,7 +1105,13 @@ def build_container(
     )
     runtime.recovery_credentials = recovery_credentials
     if settings.runtime.subagent.enabled:
-        tools.register(subagent_tool(runtime, max_depth=settings.runtime.subagent.max_depth))
+        tools.register(
+            subagent_tool(
+                runtime,
+                max_depth=settings.runtime.subagent.max_depth,
+                max_descendants=settings.runtime.subagent.max_descendants,
+            )
+        )
     _report_unknown_components(
         unknown_agent_components(
             settings.agents,

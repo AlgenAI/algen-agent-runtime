@@ -172,10 +172,12 @@ async def test_a_workflow_that_does_not_accept_files_refuses_them() -> None:
     )
     app = create_app(settings)
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        # The caller's own upload (another user's, or a missing one, is "not found" first).
+        image = await _upload(client, PNG, "passport.png", "image/png")
         refused = await client.post(
             "/v1/workflows/plain/runs",
             headers=HEADERS,
-            json={"input": "x", "attachments": [{"artifact_id": "a-1"}]},
+            json={"input": "x", "attachments": [{"artifact_id": image["id"]}]},
         )
         assert refused.status_code >= 400
         assert "does not accept attachments" in refused.text

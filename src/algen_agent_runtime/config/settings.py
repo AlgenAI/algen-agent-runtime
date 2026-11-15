@@ -10,7 +10,15 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from algen_agent_runtime.cache.contracts import CacheScope
 from algen_agent_runtime.config.authentication import (
@@ -286,6 +294,17 @@ class RetrievalSettings(StrictSettings):
             raise ValueError(f"{self.type} currently supports vector retrieval mode only")
         if self.api_key and not self.api_key.startswith("env://"):
             raise ValueError("retrieval api_key must be an env:// reference")
+        if self.connection_url and not self.connection_url.startswith("env://"):
+            # A DSN with a password is a secret: it must come from the environment, as
+            # storage.postgres_dsn does. A URL without one (http://qdrant:6333) may be literal.
+            try:
+                password = urlparse(self.connection_url).password
+            except ValueError:
+                password = None
+            if password:
+                raise ValueError(
+                    "retrieval connection_url contains a password; use an env:// reference"
+                )
         return self
 
 
@@ -355,6 +374,11 @@ class SecuritySettings(StrictSettings):
     max_request_bytes: int = Field(default=1_048_576, ge=1024)
     max_artifact_bytes: int = Field(default=10_485_760, ge=1024)
     allowed_http_hosts: tuple[str, ...] = ()
+    allow_any_public_host: bool = Field(
+        default=False,
+        description="Let core.http reach any public host when allowed_http_hosts is empty. "
+        "Off, core.http refuses every call until allowed_http_hosts lists hosts.",
+    )
     allow_private_networks: bool = False
     allow_subprocess_tools: bool = False
     trusted_plugin_prefixes: tuple[str, ...] = ()
@@ -482,6 +506,16 @@ class ApiSettings(StrictSettings):
         "X-Artifact-Metadata",
     )
     rate_limiting: ApiRateLimitSettings = Field(default_factory=ApiRateLimitSettings)
+    max_streams_per_principal: int = Field(
+        default=32,
+        ge=1,
+        le=100_000,
+        description=(
+            "Event streams (GET /v1/runs/{id}/events, GET /v1/conversations/{id}/events) one "
+            "principal (tenant and user) may hold open at once in this process; another answers "
+            "429 until one closes. Applies whether or not rate_limiting is enabled"
+        ),
+    )
     credential_headers: tuple[str, ...] = Field(
         default=(),
         max_length=16,
@@ -525,6 +559,11 @@ class ApiSettings(StrictSettings):
             raise ValueError("jwt_key must be an env:// secret reference")
         if any(algorithm.lower() == "none" for algorithm in self.jwt_algorithms):
             raise ValueError("jwt_algorithms may not include 'none'")
+        if "*" in self.cors_allowed_origins and self.cors_allow_credentials:
+            raise ValueError(
+                "cors_allowed_origins ['*'] may not be combined with cors_allow_credentials: "
+                "list the origins that may send credentials"
+            )
         if self.auth_mode == "oidc" and not self.oidc.issuers:
             raise ValueError("oidc authentication requires at least one oidc issuer")
         if self.auth_mode == "development_headers" and (
@@ -534,6 +573,30 @@ class ApiSettings(StrictSettings):
                 "token_revocation and trusted_proxy_identity require jwt or oidc authentication"
             )
         return self
+
+    @property
+    def jwt_audience_warning(self) -> str | None:
+        """Why this ``jwt`` configuration accepts tokens meant for other services, or None.
+
+        A public verification key (``RS*``, ``PS*``, ``ES*``, ``EdDSA``) is usually an identity
+        provider's, which signs tokens for every service it serves: without ``jwt_audience``
+        the Runtime accepts all of them. Reported at startup and by ``check`` (0.2.0b4); not
+        refused, so configurations from earlier releases keep starting.
+        """
+        if self.auth_mode != "jwt" or self.jwt_audience:
+            return None
+        asymmetric = [
+            algorithm
+            for algorithm in self.jwt_algorithms
+            if algorithm.upper().startswith(("RS", "PS", "ES")) or algorithm == "EdDSA"
+        ]
+        if not asymmetric:
+            return None
+        return (
+            f"api.jwt_audience is not set while jwt_algorithms includes {asymmetric[0]}: "
+            "any token the key's issuer signed, for any service, is accepted; set "
+            "api.jwt_audience (and api.jwt_issuer) to this Runtime's"
+        )
 
 
 READINESS_DEPENDENCY_KINDS = (
@@ -632,6 +695,14 @@ class SubagentSettings(StrictSettings):
         le=10,
         description="Delegations allowed in a chain, counted from the run's lineage; a call at "
         "this depth is refused.",
+    )
+    max_descendants: int = Field(
+        default=64,
+        ge=1,
+        le=10_000,
+        description="Child runs one delegation tree (a root run and all its descendants) may "
+        "start, counted by each Runtime process; past it a core.subagent call is refused. "
+        "Bounds fan-out, which max_depth alone does not.",
     )
 
 
@@ -1084,8 +1155,23 @@ def load_settings(
         if ignore_extensions:
             data.pop("extensions", None)
         return AppSettings.model_validate(data)
+    except ValidationError as exc:
+        # Never the rejected values: a misplaced field can hold a literal key or DSN.
+        raise ConfigurationError(f"invalid configuration: {_validation_summary(exc)}") from None
     except (OSError, yaml.YAMLError, ValueError) as exc:
         raise ConfigurationError(f"invalid configuration: {exc}") from exc
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    """A validation error as ``N validation errors: <loc>: <msg>; ...``, without the input
+    values pydantic would print."""
+    errors = exc.errors(include_input=False, include_url=False, include_context=False)
+    lines = [
+        f"{'.'.join(str(part) for part in error['loc']) or '(root)'}: {error['msg']}"
+        for error in errors
+    ]
+    noun = "error" if len(errors) == 1 else "errors"
+    return f"{len(errors)} validation {noun} for AppSettings: " + "; ".join(lines)
 
 
 class EnvironmentSecretProvider:
