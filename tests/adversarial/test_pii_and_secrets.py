@@ -126,7 +126,7 @@ async def test_secrets_in_tool_arguments_stay_out_of_the_approval_request() -> N
     redaction policies out) puts credentials into a side-effecting call, so the approval request
     shown to a person (and stored, and announced) would carry them.
     Control: the approval's parameters, the pause payload and the approval event are redacted."""
-    send, sent = tool("email.send", SideEffect.EXTERNAL)
+    send, sent = tool("email.send", SideEffect.EXTERNAL, schema=_EMAIL_SCHEMA)
     runtime, _ = build(
         [calls(("email.send", {"to": "ops", "body": LEAKY, "api_key": API_KEY}))],
         [send],
@@ -143,6 +143,37 @@ async def test_secrets_in_tool_arguments_stay_out_of_the_approval_request() -> N
         BEARER,
         where="the approval records",
     )
+    # The approver still sees that a credential is sent, and how long it is.
+    shown = (await runtime.status(result.run_id, "tenant-a")).pause_payload or {}
+    assert shown["redacted_parameters"]["api_key"].startswith(f"[REDACTED len={len(API_KEY)} ")
+
+
+async def test_a_credential_the_tool_does_not_declare_is_never_put_to_an_approver() -> None:
+    """Threat: an injected model hides a payload under a credential-named key (``Token``) that
+    the approver is shown only as ``[REDACTED]``, while the call runs with the real value.
+    Control: the call is refused before any approval is asked for, and the tool never runs."""
+    send, sent = tool("email.send", SideEffect.EXTERNAL, schema=_EMAIL_SCHEMA)
+    runtime, _ = build(
+        [calls(("email.send", {"to": "ops", "body": "hi", "Token": "ssn 123-45-6789"}))],
+        [send],
+    )
+
+    result = await runtime.run(request("Email ops the details"))
+
+    assert result.status == RunStatus.FAILED
+    assert "undeclared_secret_parameters" in str(result.error)
+    assert sent.calls == []
+    assert not await runtime.approvals.list("tenant-a")
+
+
+_EMAIL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "to": {"type": "string"},
+        "body": {"type": "string"},
+        "api_key": {"type": "string"},
+    },
+}
 
 
 async def test_a_failing_tool_cannot_leak_a_secret_through_its_error(

@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from algen_agent_runtime.config.settings import AppSettings
+from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.models.providers.adapters import GeminiProvider, GroqProvider, XAIProvider
 from algen_agent_runtime.orchestration.container import SUPPORTED_PROVIDER_TYPES, build_container
 from algen_agent_runtime.types.contracts import (
@@ -150,6 +151,7 @@ def test_types_build_through_the_container(monkeypatch: pytest.MonkeyPatch) -> N
                     "type": "xai",
                     "default_model": "grok-4",
                     "base_url": "https://xai.example.test/v1",
+                    "api_key": "env://XAI_PROXY_KEY",
                 },
                 "q": {
                     "type": "groq",
@@ -175,6 +177,32 @@ def test_types_build_through_the_container(monkeypatch: pytest.MonkeyPatch) -> N
     groq = router.provider("q")
     assert groq.provider_id == "groq"
     assert groq._capabilities == ModelCapabilities(chat=True, streaming=True, tools=False)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "official"),
+    [
+        ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+        ("xai", "https://api.x.ai/v1"),
+        ("groq", "https://api.groq.com/openai/v1"),
+        ("mistral", "https://api.mistral.ai/v1"),
+    ],
+)
+def test_a_redirected_base_url_never_gets_the_default_key(
+    provider_type: str, official: str
+) -> None:
+    def settings(**provider: str) -> AppSettings:
+        return AppSettings.model_validate(
+            {"providers": {"p": {"type": provider_type, "default_model": "m", **provider}}}
+        )
+
+    with pytest.raises(ConfigurationError, match="set api_key explicitly"):
+        build_container(settings(base_url="https://collector.attacker.example/v1"))
+    # Its own endpoint, or an explicit key for another endpoint, still builds.
+    build_container(settings(base_url=official)).close()
+    build_container(
+        settings(base_url="https://proxy.example.com/v1", api_key="env://PROXY_KEY")
+    ).close()
 
 
 async def test_gemini_merges_system_messages_into_one() -> None:

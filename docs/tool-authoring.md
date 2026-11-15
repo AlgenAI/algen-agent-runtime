@@ -193,7 +193,8 @@ the parameters, not instead of them.
 
 With `cache.policies.tool_results` enabled, the result of an idempotent `none` or `read` call
 of a tool that is not `volatile` is cached, keyed on the tool's name, version and arguments within
-the policy's `scope` (`tenant` by default; see [Scoped caching](operations.md#scoped-caching)). A
+the policy's `scope` (`user` by default since 0.2.0b4, `tenant` before; see
+[Scoped caching](operations.md#scoped-caching)). A
 tool whose result also depends on the call's `ToolContext`, beyond that scope, must say so with
 `cache_context`, or one user can be served another's cached result:
 

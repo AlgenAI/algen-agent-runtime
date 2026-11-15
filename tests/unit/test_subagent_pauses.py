@@ -25,7 +25,8 @@ from algen_agent_runtime.types.contracts import (
 )
 
 DELEGATE = {
-    "enabled_tools": frozenset({"core.subagent"}),
+    # A delegate may enable only tools its delegating agent has (0.2.0b4).
+    "enabled_tools": frozenset({"core.subagent", "mail.send", "core.ask_user"}),
     "tool_permissions": frozenset({"agents.delegate", "user.ask"}),
 }
 SEND = tool_call_response("mail.send", {"to": "bob"})

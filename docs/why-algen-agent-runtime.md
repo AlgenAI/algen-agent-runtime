@@ -2,7 +2,7 @@
 
 Owner: AlgenAI Maintainers  
 Status: Informational  
-Last reviewed: 2026-11-01 (Runtime `0.1.0a21`)  
+Last reviewed: 2026-11-15 (Runtime `0.2.0b3`; competitor capabilities as of 2026-10-28)  
 
 ## Short answer
 
@@ -91,6 +91,14 @@ vendor's own documentation and release notes (see [Sources](#sources)); they are
 benchmarks, and absence from a vendor's docs is not proof that a feature is missing. These projects
 change monthly: refresh this section at least quarterly and before using it in external material.
 
+On 2026-11-15 only the latest versions were re-checked on PyPI and npm (the capability rows were
+not): `langgraph` 1.2.22, `openai-agents` 0.24.0, `agent-framework` 1.26.0, `google-adk` 2.14.1,
+`crewai` 1.15.41, `temporalio` 1.36.1, `strands-agents` 1.65.0, `@mastra/core` 1.83.0,
+`claude-agent-sdk` 0.2.182, `nemoguardrails` 0.24.1, `guardrails-ai` 0.11.0. AutoGen's README now
+says the project is archived and no longer maintained (the last `autogen-agentchat` release is
+`0.7.5`, 2025-09-30). Algen itself is at `0.2.0b3`, a beta whose public API is a candidate for
+`1.0`; the Algen column below still describes `0.1.0a21` and is a lower bound.
+
 ### Where each product sits
 
 | Product | Latest (2026-10) | Category | Relationship to Algen |
@@ -169,7 +177,7 @@ Use these claims only with their qualification:
 - **Managed hosting.** LangSmith Deployment, Google Cloud Agent Runtime, Microsoft Foundry and
   CrewAI AMP offer managed platforms. Algen is self-hosted only.
 - **Maturity signals.** LangGraph, Pydantic AI, Microsoft Agent Framework, Google ADK and Strands are
-  GA; Algen is a `0.1.0` pre-alpha with experimental public APIs.
+  GA; Algen is a `0.2` beta (`0.2.0b3`) whose public API is a `1.0` candidate, not yet GA.
 - **Language reach.** Microsoft Agent Framework (.NET, Python, and Go in preview) and Mastra
   (TypeScript) reach beyond Python; Algen is Python only.
 
@@ -227,9 +235,10 @@ Every P0 item in [production readiness](production-readiness.md) is done for a s
 `0.1.0a18`: reconciliation of indeterminate tool calls, OIDC authentication, signed policy bundles,
 sandbox options for stdio MCP servers and subprocess tools, per-tenant quotas and resource bounds,
 and persistence drills against PostgreSQL and Redis. The main open gaps are multi-worker execution
-(distributed claims, fencing, leader election) and load, soak and failover evidence at scale. Among adapters,
+(distributed claims, fencing, leader election) and failover evidence at scale; single-node load,
+noisy-neighbour and soak results are published in [operations](operations.md#performance-and-capacity-evidence). Among adapters,
 LangGraph and the OpenAI Agents SDK are supported; AutoGen and CrewAI remain experimental, and
-AutoGen itself is now in maintenance mode upstream.
+AutoGen itself is archived upstream, so its adapter is frozen.
 
 ## Sources
 

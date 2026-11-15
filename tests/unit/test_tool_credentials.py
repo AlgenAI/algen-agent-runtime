@@ -647,7 +647,7 @@ async def test_child_run_sees_the_parents_credentials() -> None:
     runtime = make_runtime(
         provider,
         make_agent(
-            enabled_tools=frozenset({"core.subagent"}),
+            enabled_tools=frozenset({"core.subagent", "api.read"}),
             tool_permissions=frozenset({"agents.delegate"}),
             delegates=frozenset({"child-agent"}),
         ),

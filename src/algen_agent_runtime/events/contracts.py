@@ -19,6 +19,7 @@ EventType = Literal[
     "context.skills.updated",
     "model.started",
     "model.delta",
+    "model.delta.retracted",
     "model.completed",
     "model.retrying",
     "budget.refused",

@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError, ConflictError, NotFoundError
+from algen_agent_runtime.semantics import _generated_sql as generated_sql
 from algen_agent_runtime.semantics.contracts import (
     Certification,
     DimensionDefinition,
@@ -29,6 +30,7 @@ _SENSITIVITY_RANK: dict[Sensitivity, int] = {
     "confidential": 2,
     "restricted": 3,
 }
+_SIMPLE_COLUMN = re.compile(r"[a-z_][a-z0-9_]*")
 
 
 def _key(value: str) -> str:
@@ -199,22 +201,43 @@ class SemanticLayer:
         dimensions: tuple[str, ...],
         sql: str,
     ) -> None:
-        """Enforce model source and filter invariants on externally generated SQL."""
+        """Enforce model source and filter invariants on externally generated SQL.
+
+        A conservative structural check, not a SQL parser, that fails closed: the statement
+        must be one ``SELECT`` without comments, read each model's table exactly once in the
+        top-level query (no set operations), and have a top-level ``WHERE`` clause that is an
+        AND-only conjunction containing, for every required filter dimension, a
+        ``column <comparison|IN|BETWEEN> <constant or parameter>`` predicate and, for every
+        default filter, ``column = <boolean>``. It does not make generated SQL safe on its own:
+        enforce tenant isolation with database row-level security.
+        """
         resolved_metrics, resolved_dimensions = self.validate_references(metrics, dimensions)
         model_names = {model for model, _ in (*resolved_metrics, *resolved_dimensions)}
-        normalized = re.sub(r'"', "", sql.lower())
+        tokens = generated_sql.tokenize(sql)
+        conjuncts: list[list[generated_sql.Token]] | None = None
         for model in self.definition.models:
             if model.name not in model_names:
                 continue
-            if not re.search(rf"\b{re.escape(model.table.lower())}\b", normalized):
+            try:
+                reference = generated_sql.table_reference(tokens, model.table)
+            except ConfigurationError as exc:
                 raise ConfigurationError(
                     f"generated SQL for semantic model {model.name!r} must reference "
-                    f"{model.table!r}"
-                )
+                    f"{model.table!r}: {exc}"
+                ) from exc
             dimensions_by_name = {item.name: item for item in model.dimensions}
+            needs_where = bool(model.required_filter_dimensions or model.default_filters)
+            if needs_where and conjuncts is None:
+                conjuncts = generated_sql.where_conjuncts(tokens)
             for required in model.required_filter_dimensions:
-                expression = dimensions_by_name[required].expression
-                if not self._has_filter_predicate(normalized, expression):
+                expression = dimensions_by_name[required].expression.lower()
+                if (
+                    conjuncts is None
+                    or not _SIMPLE_COLUMN.fullmatch(expression)
+                    or not generated_sql.has_constant_predicate(
+                        conjuncts, expression, reference.qualifiers
+                    )
+                ):
                     raise ConfigurationError(
                         f"generated SQL for semantic model {model.name!r} requires a "
                         f"predicate on {required!r}"
@@ -226,8 +249,13 @@ class SemanticLayer:
                         f"generated-SQL validation supports boolean equality defaults only; "
                         f"model {model.name!r} must use the semantic compiler for other defaults"
                     )
-                if not self._has_boolean_filter(
-                    normalized, dimension.expression, governed_filter.value
+                expression = dimension.expression.lower()
+                if (
+                    conjuncts is None
+                    or not _SIMPLE_COLUMN.fullmatch(expression)
+                    or not generated_sql.has_boolean_predicate(
+                        conjuncts, expression, reference.qualifiers, governed_filter.value
+                    )
                 ):
                     raise ConfigurationError(
                         f"generated SQL for semantic model {model.name!r} must enforce "
@@ -261,22 +289,6 @@ class SemanticLayer:
                 }
             )
         return {"models": policies}
-
-    @staticmethod
-    def _has_filter_predicate(sql: str, expression: str) -> bool:
-        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", expression):
-            return False
-        field = rf"(?:\b[a-z_][a-z0-9_]*\.)?\b{re.escape(expression.lower())}\b"
-        operator = r"(?:=|<>|!=|<=|>=|<|>|\bbetween\b|\bin\b|\bis\b)"
-        return re.search(field + r"\s*" + operator, sql) is not None
-
-    @staticmethod
-    def _has_boolean_filter(sql: str, expression: str, value: bool) -> bool:
-        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", expression):
-            return False
-        field = rf"(?:\b[a-z_][a-z0-9_]*\.)?\b{re.escape(expression.lower())}\b"
-        literal = "true" if value else "false"
-        return re.search(field + rf"\s*(?:=|\bis\b)\s*{literal}\b", sql) is not None
 
     @staticmethod
     def _validate_governance(

@@ -1,7 +1,7 @@
 # Open-Source and PyPI Readiness Plan
 
 Owner: AlgenAI Maintainers  
-Status: Active (0.1.0a1 pre-alpha)  
+Status: Historical: the plan for the first `0.1.0a1` publication (2026-09); current status is in [GA criteria](ga-criteria.md)  
 Last reviewed: 2026-09-22  
 
 ## Implementation status — 2026-09-19

@@ -1,8 +1,8 @@
 # Operations guide
 
 Owner: AlgenAI Maintainers  
-Status: Active (0.1.x)  
-Last reviewed: 2026-10-29  
+Status: Active (`0.2` beta line; single-node scope)  
+Last reviewed: 2026-11-15  
 
 Run `algen-agent-runtime` with `ALGEN_AGENT_RUNTIME_CONFIG` set to one or more OS-path-separated YAML files. Put secrets in referenced environment variables. PostgreSQL can persist run and multi-agent workflow checkpoints, conversation memory, events, audits, approvals, bounded artifact payloads, analytical graphs, worker leases, and the tool-execution ledger. Redis can alternatively store run checkpoints, expiring conversation memory, and scoped cache entries. See the [artifact lifecycle](artifacts.md), [production-readiness roadmap](production-readiness.md), and [Analytical Runtime](analytical-runtime.md) for their respective contracts and limits.
 
@@ -80,7 +80,7 @@ query_governance:
   maximum_rows: 10000
   maximum_bytes_scanned: 1000000000
   maximum_compute_seconds: 30
-distributed_execution:
+distributed_execution:     # experimental; see "Distributed Worker Operations" below
   enabled: true
   queue_backend: postgres
   lease_seconds: 30
@@ -99,6 +99,14 @@ api:
   # Defaults also allow Authorization, Content-Type, Last-Event-ID,
   # X-Tenant-ID, X-User-ID, and X-Scopes.
 ```
+
+`cors_allowed_origins: ["*"]` with `cors_allow_credentials: true` is refused when the settings
+load (from 0.2.0b4): list the origins that may send credentials.
+
+A download (`GET /v1/artifacts/{id}`) is sent with `X-Content-Type-Options: nosniff` and, from
+0.2.0b4, a `Content-Disposition` that names the file twice (RFC 6266): `filename` with an ASCII
+fallback (quotes, backslashes, semicolons and other characters replaced by `_`) and `filename*`
+with the exact name, percent-encoded as UTF-8.
 
 The default API bind is `127.0.0.1`. Development-header authentication has no
 implicit scopes and is rejected on a non-loopback host unless
@@ -477,13 +485,18 @@ constraints, never drops or rewrites what an earlier release reads. Stored JSON 
 results, approval requests) is written so the previous release can read it, so:
 
 - **Upgrade:** start the new release. It applies the missing migrations under an advisory lock
-  (concurrent starts wait for one another) and carries on what the previous release left; the drill
-  starts the previous release (`0.1.0a23`, migrated through `016`) on an empty database, pauses a
-  run, then starts the current code, which applies `017` and `018` and resumes the run.
+  (concurrent starts wait for one another) and carries on what the previous release left. The
+  drills do this for two previous releases: the last `0.1` release (`0.1.0a23`, migrated through
+  `016`) and the release before this one (`0.2.0b3`, through `022`). Each starts on an empty
+  database and pauses a run; the current code then applies the newer migrations and resumes the
+  run.
 - **Rollback:** stop the new release and start the previous one on the same database. Leave the
   newer migrations in place: the previous release ignores migration rows it does not know and does
-  not read the new columns or tables. The drill rolls back to `0.1.0a23` after the current code has
-  migrated and written, and reads, lists and resumes the current code's runs there.
+  not read the new columns or tables. The drills roll back to `0.1.0a23` and to `0.2.0b3` after
+  the current code has migrated and written, and read, list and resume the current code's runs
+  there.
+
+The upgrade guide for each release line is [Upgrading](upgrading.md).
 
 | Migration | Since | Change | Safe to leave on rollback |
 | --- | --- | --- | --- |
@@ -526,7 +539,189 @@ round trip or a conversation turn per item):
 | 1000 | 53.7 | 18.6 | 1.05 s | 1.39 s | 1.63 s | 10 of 10 | 1.17 MB |
 
 Every item ended completed with its effect once, the pool waited at its maximum without errors and
-was released, and no task was left. The item latency is mostly the drill's own polling.
+was released, and no task was left. The item latency is mostly the drill's own polling. A longer
+run is under [Soak](#soak).
+
+## Performance and capacity evidence
+
+The performance suite (`tests/perf`, marker `perf`) measures the Runtime itself: a deterministic
+model that answers at once (or after a fixed simulated latency) and a no-op tool, so what is left
+is the Runtime's own work (planning, policy, the tool executor and ledger, events, checkpoints,
+audit and the stores). It is skipped unless selected:
+
+```bash
+scripts/integration-tests.sh tests/perf -m perf -s        # overhead, load, noisy neighbour
+ALGEN_DRILL_SOAK_RUNS=5000 scripts/integration-tests.sh tests/drills -m soak -s
+```
+
+Each test prints one `PERF {json}` line (and appends it to `ALGEN_PERF_RESULTS` when set). Knobs:
+`ALGEN_PERF_ITERATIONS` (overhead runs per shape, default 300), `ALGEN_PERF_MODEL_DELAY_MS`
+(simulated model latency in the load and noisy-neighbour tests, default 50),
+`ALGEN_PERF_LOAD_RUNS_PER_CLIENT` (default 10), `ALGEN_PERF_POOL_MAX` (default 20),
+`ALGEN_PERF_B_RATE`, `ALGEN_PERF_A_CLIENTS` and `ALGEN_PERF_NOISY_SECONDS`.
+
+**Measured on 2026-11-15** at `0.2.0b3` (`3576a0a`) plus the suite, on one laptop: Mac17,3 (Apple
+M5, 10 cores, 16 GB), macOS 27.0.1, Python 3.12.0, one Runtime process on the host; PostgreSQL
+17.11 and Redis 7.4.12 (`postgres:17-alpine`, `redis:7-alpine`) in podman 6.0.2, whose VM has 2
+CPUs and 3.8 GB shared by both stores (and, at times, other test containers). PostgreSQL is
+reached over the VM's port forwarding, so its round trips are slower than on a dedicated server.
+These are baselines to compare releases against and a starting point for sizing, not a benchmark
+of production hardware: run the suite on yours.
+
+### Overhead per step and per tool call
+
+Runs one at a time through `runtime.run` (in process, no HTTP), 300 per shape after 30 warm-up
+runs. Run time in milliseconds, p50 / p95:
+
+| Stores | Direct answer (1 model call) | 1 tool step | 5 tool steps | 1 step, 8 parallel tool calls | Per step | Per extra parallel tool call |
+| --- | --- | --- | --- | --- | --- | --- |
+| In memory | 1.85 / 3.03 | 3.60 / 4.01 | 11.23 / 13.34 | 17.09 / 37.09 | **1.88 / 2.06** | **1.93 / 4.73** |
+| PostgreSQL (every store) | 50.44 / 72.81 | 83.85 / 111.95 | 194.07 / 247.38 | 224.96 / 375.57 | **28.73 / 34.91** | **20.16 / 37.66** |
+
+A step is a model call that asks for a tool, the tool call, and their checkpoints, events, ledger
+and audit records: per step = (5 tool steps - direct answer) / 5. Per extra parallel tool call =
+(8 calls - 1 call) / 7. Calling the same model and tool directly, without the Runtime, takes
+0.006 ms and 0.0001 ms. The Runtime's overhead is therefore about 2 ms per step in memory and
+about 30 ms per step on PostgreSQL, almost all of it durable writes; a real model call (typically
+0.5 to 5 s) dominates either.
+
+### Throughput and memory under load
+
+`concurrency` clients each create a run with `POST /v1/runs` and wait for it, back to back, on
+PostgreSQL (every store) with session memory on Redis, a pool of 20 and a simulated model latency
+of 50 ms. Each run is a tool step and an answer: two model calls and one tool call.
+
+| Concurrency | Runs | Seconds | Runs/s | p50 | p95 | p99 | Errors | Pool peak | Peak RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 50 | 500 | 11.1 | 45.0 | 1.06 s | 1.54 s | 1.61 s | 0 | 20 of 20 | 95 → 113 MB |
+| 200 | 2000 | 50.6 | 39.5 | 4.70 s | 7.22 s | 7.67 s | 0 | 20 of 20 | 113 → 119 MB |
+
+Throughput levels off at about 40 to 45 such runs a second (about 90 model calls and 45 tool calls
+a second) with the pool at its maximum: PostgreSQL writes are the limit on this setup. More
+concurrency then adds queueing, not throughput (200 in flight / 40 a second is about 5 s per run).
+Every run completed, and the process's peak memory grew by under 25 MB from 50 to 200 runs in
+flight.
+
+### Noisy neighbour
+
+Tenant B creates five runs a second for 20 seconds and waits for each; tenant A runs 150 clients
+that create runs back to back and, when refused, retry after 100 ms whatever `Retry-After` says.
+Same stores and run shape as the load test; the model provider keeps its default
+`max_concurrency` of 20 calls, shared by all tenants. Each phase starts a fresh process.
+
+| Phase | B p50 | B p95 | B p99 | B errors | A accepted | A refused (429) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline: B alone | 207 ms | 276 ms | 278 ms | 0 | – | – |
+| A floods, no admission limits | 3,686 ms | 5,618 ms | 5,751 ms | 0 | 1,051 | 0 |
+| A floods, per-tenant admission limits | 230 ms | 316 ms | 336 ms | 0 | 241 | 31,725 |
+
+The limits in the third phase are the [API admission limits](#api-admission-rate-limiting-and-concurrency-quotas):
+
+```yaml
+api:
+  rate_limiting:
+    enabled: true
+    default_rate_per_minute: 6000
+    default_burst: 200
+    max_concurrent_run_requests_per_tenant: 10
+    route_overrides:
+      run_create: {rate_per_minute: 600, burst: 20}
+```
+
+Without them, A's runs take the provider's 20 call slots, the pool and the event loop, and B's
+latency grows about twentyfold (no errors: B's runs wait). With them, A gets 10 runs a second and a
+429 for the rest, and B's p95 stays within 15 % of its baseline (the test's bound is twice the
+baseline p95 or the baseline plus 200 ms, whichever is larger). Admission limits are the Runtime's
+per-tenant control: there is no per-tenant cap on runs already executing, and provider
+`max_concurrency` and the PostgreSQL pool are shared. In a multi-tenant deployment, enable
+`api.rate_limiting` with a `run_create` rate per tenant below the process's sustained capacity.
+
+### Soak
+
+The soak drill ([Running the drills](#running-the-drills)) with `ALGEN_DRILL_SOAK_RUNS=5000`, on
+PostgreSQL (every store), a pool of 10 and concurrency 20; 4,000 runs (3,000 with a tool call,
+1,000 approval round trips) and 1,000 conversation turns:
+
+| Items | Seconds | Items/s | p50 | p95 | Max | Pool peak | Traced growth |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5000 | 292.9 | 17.1 | 1.11 s | 1.69 s | 5.34 s | 10 of 10 | 4.07 MB |
+
+Every item completed with its effect exactly once, no run was left active, the pool stayed within
+its maximum and was released, and no task was left behind. Traced Python memory grew by 4 MB over
+about 4,500 items after the warm-up. This is minutes; a soak of hours on a production-like
+deployment remains open ([production readiness](production-readiness.md#release-confidence-and-operability)),
+and the production window in the [stability evidence](ga-criteria.md#stability-evidence) is the
+longer test.
+
+### Capacity guidance (single node)
+
+- **Runs in flight** = arrival rate x run duration, and run duration is mostly model time: 5 runs
+  a second of 20 s each is 100 runs in flight. The measured memory cost of a run in flight is
+  small (above); what limits concurrency is the shared provider slots
+  (`providers.<name>.max_concurrency`, default 20 calls per provider), the PostgreSQL pool
+  (`storage.postgres_max_pool_size`, default 10) and the model provider's own rate limits.
+- **Durable write budget.** On PostgreSQL, budget about 30 ms of Runtime time per step and expect
+  a ceiling of roughly 40 two-step runs a second per process with a pool of 20 on hardware like the
+  above. Plan to run at no more than half of the ceiling you measure on your own hardware.
+- **Pool size.** Raise `postgres_max_pool_size` to 20 or 30 for more than about 50 runs in flight,
+  and keep PostgreSQL `max_connections` above the pool size plus maintenance and admin
+  connections. A pool that sits at its maximum for minutes means writes are queueing.
+- **Provider concurrency.** Set `max_concurrency` per provider to what the provider account
+  allows; runs beyond it wait for a slot, whichever tenant they belong to.
+- **Tenants.** Enable `api.rate_limiting` (above) and storage quotas
+  ([Storage quotas](#storage-quotas)) whenever tenants do not trust each other.
+- **Scaling.** Scale the one process vertically and move PostgreSQL to a dedicated server before
+  anything else; more than one Runtime process per database is experimental
+  ([deployment scope](production-readiness.md#deployment-scope)).
+
+## SLOs, alerts and runbooks (single node)
+
+Proposed service objectives for a single-node deployment, measured monthly. They cover what the
+Runtime controls; model provider latency and errors are reported separately.
+
+| Objective | Target | Signal |
+| --- | --- | --- |
+| Readiness | `/health/ready` answers 200 for 99.9 % of one-minute probes, outside announced maintenance | Readiness probe |
+| Run admission | 99.9 % of `POST /v1/runs` answered without a 5xx (429 and 413 are excluded: they are the limits working); p95 under 250 ms | Proxy or ASGI access logs |
+| Runtime overhead | p95 of Runtime time per step (run time minus model and tool time) under 100 ms on PostgreSQL; the measured baseline above is 35 ms | `agent.run` and model/tool spans (OTLP), or the overhead benchmark per release |
+| Runs not lost | Every run that was started ends, pauses or is recovered after a restart; no paused run or approval lost | `run.started` vs end and pause events; persistence drills per release |
+| Recovery | Incomplete runs driven again within 60 s of a restart | Run events and checkpoints after the start (`updated_at` of non-terminal runs); the restart drills per release |
+
+Alert on:
+
+- readiness failing for more than 2 minutes (page);
+- `StoreUnavailableError` / HTTP 503 answers for more than 1 minute (page): see
+  [Database outages](#database-outages);
+- the PostgreSQL pool at its maximum for more than 5 minutes, or PostgreSQL connections near
+  `max_connections` (ticket): add pool or database capacity;
+- runs left in `running` for longer than the agents' `budget.max_latency_seconds` (ticket);
+- any `tool.reconciliation_required` event, or `indeterminate` calls in `GET /v1/tool-executions`
+  (ticket): see [the reconciliation runbook](#runbook);
+- a rising rate of `run.limit_exceeded` audit records or `run.failed` with
+  `reason: limit_exceeded` (ticket): a looping agent or hostile input;
+- a tenant's sustained 429 rate, or `storage.quota_exceeded` audit records (ticket);
+- `ToolCapacityError` (the synchronous tool pool is full) and `EventStreamOverflowError` (ticket);
+- the maintenance sweep failing, or the database growing faster than retention removes (ticket);
+- `algen_agent_runtime.auth.attempts` with `outcome` failed rising sharply (security).
+
+The Runtime exports OpenTelemetry spans and some counters (cache, governance, auth, tool ledger,
+maintenance) when an OTLP endpoint is configured ([Traccia](#traccia)); there is no run-level
+metric yet, so derive run counts and durations from `agent.run` spans or run events. No dashboards
+are shipped.
+
+Runbooks for the single-node scope:
+
+| Situation | Runbook |
+| --- | --- |
+| Process crash or restart | Start it again (one process per database): it recovers incomplete runs, keeps paused ones paused and turns interrupted side-effecting calls into indeterminate calls. [Restart recovery](#restart-recovery) |
+| PostgreSQL or Redis down | Readiness goes down and new work gets 503; work in flight is kept. Restore the store; the process carries on without a restart. [Database outages](#database-outages) and [Failover](#failover) |
+| Indeterminate tool calls | Reconcile, resolve or compensate each call. [Runbook](#runbook) |
+| Latency rising with load | Check the pool (at its maximum?), provider `max_concurrency` (all slots busy?) and the process CPU; then add pool, database or provider capacity, or lower admission limits. [Capacity guidance](#capacity-guidance-single-node) |
+| One tenant crowding out others | Enable or lower that tenant's `api.rate_limiting` and storage quotas. [Noisy neighbour](#noisy-neighbour) |
+| Upgrade, or rollback after a bad upgrade | Back up, start the new release; to roll back, start the previous release on the same database. [Upgrades and rollback](#upgrades-and-rollback) and [Upgrading](upgrading.md) |
+| Restore from backup | [Backup and restore](#backup-and-restore) |
+| Erase or export one user's data | [Erasing or exporting one user's data](#erasing-or-exporting-one-users-data) |
+| Database growing | Enable the maintenance sweep and retention windows. [Maintenance and data retention](#maintenance-and-data-retention) |
 
 ## Scopes by route
 
@@ -541,31 +736,55 @@ grants every scope; reserve it for development.
 | `runs:write` | `POST /v1/runs`, `DELETE /v1/runs/{id}`, `POST /v1/runs/{id}/approval`, `/clarification`, `/steer`; `POST /v1/workflows/{name}/runs`, `POST /v1/workflows/runs/{id}/approval`, `/input`; artifact upload and delete (or `artifacts:write`) |
 | `artifacts:read`, `artifacts:write` | `GET /v1/artifacts...`; `POST /v1/artifacts`, `DELETE /v1/artifacts/{id}` (each accepts the matching `runs:` scope instead) |
 | `artifacts:scan` | `PATCH /v1/artifacts/{id}/status` (a scanner's verdict) |
+| `artifacts:admin` | from 0.2.0b4, with the read or write scope above: list, read, download and delete another user's artifacts of the tenant, and file uploads under another user's run. Without it a user sees only their own artifacts and those of their runs (see [who may use an artifact](artifacts.md#who-may-use-an-artifact-020b4)) |
 | `conversations:read` | `GET /v1/conversations...` (list, one, messages, events, suggestions) |
 | `conversations:write` | `POST /v1/conversations`, `PATCH`/`DELETE /v1/conversations/{id}`, `POST .../messages`, `DELETE .../active-response`, `POST .../turns/{turn}/approval`, `/input`, `/credentials`, `/steer` |
 | `feedback:read`, `feedback:write` | `GET`, `PUT /v1/conversations/{id}/messages/{message}/feedback` |
 | `approvals:read` | `GET /v1/approvals`, `GET /v1/approvals/{id}` (the approval inbox) |
 | `approvals:decide` | `POST /v1/runs/{id}/approval` on another user's run, and from 0.2.0b3 `POST /v1/workflows/runs/{id}/approval` on another user's workflow run (with `runs:write`) |
 | `runs:admin` | `DELETE /v1/runs/{id}` on another user's run (with `runs:write`) |
-| `agents:read` | `GET /v1/agents`, `GET /v1/semantic-layers...` |
-| `agents:write` | `POST /v1/agents` |
+| `agents:read` | `GET /v1/agents`, `GET /v1/semantic-layers...`; from 0.2.0b4 the agent UI (`GET /agent-ui`, `/agent-ui/spec`, `/ui`) with `jwt` or `oidc` |
+| `agents:admin` | `POST /v1/agents` (from 0.2.0b4; `agents:write` before). A platform scope: the agent catalog is shared by every tenant |
 | `tools:reconcile` | every `/v1/tool-executions` route (list, read, reconcile, resolve, resume, compensate) |
 | `mcp:read` or `mcp:connect` | `GET /v1/mcp/oauth/servers`, `GET /v1/mcp/servers/{server}/oauth/status` |
 | `mcp:connect` (plus `mcp:admin` for a tenant-wide server) | `POST /v1/mcp/servers/{server}/oauth/start`, `DELETE /v1/mcp/servers/{server}/oauth` |
+| `mcp:connect`, as the user who started the flow | `POST /v1/mcp/oauth/complete` (since 0.2.0b4) |
 | `usage:read` | `GET /v1/storage/usage` |
 | `auth:revoke` | `POST /v1/auth/revocations/tokens`, `/subjects` |
 | `users:admin` | `GET`, `DELETE /v1/admin/users/{user_id}/data` (export or erase one user's data; see [Erasing or exporting one user's data](#erasing-or-exporting-one-users-data)) |
 
-`/health/live`, `/health/ready` and the agent UI need no scope. A missing scope answers 403 and
-names it. Development headers are accepted only when the API binds to a loopback address, unless
+`/health/live` and `/health/ready` need no scope, and neither does the agent UI with
+`development_headers` (a browser sends no identity headers, and on loopback any caller can already
+name any identity). A missing scope answers 403 and names it. Development headers are accepted
+only when the API binds to a loopback address, unless
 `allow_insecure_development_auth: true`. The check covers the host the server really binds:
 `algen-agent-runtime serve --host` (and `--port`) re-validates the API settings and exits naming the
 setting, and `create_app` refuses API settings that skipped validation (`model_copy(update=...)`).
 
+**Registering agents (`POST /v1/agents`).** The agent registry is one catalog for every tenant:
+`GET /v1/agents` lists every agent, and a run resolves an agent by name, taking the highest
+version when the request names none. From 0.2.0b4 registering needs `agents:admin` (grant it to
+platform operators only), and a registration may add a new name or a version of a name the same
+tenant registered over HTTP; a version of an agent the host defined (configuration or
+`build_container`) or another tenant registered answers 409. Each registration is audited
+(`agent.registered`, the agent's key as `resource_id`). Before 0.2.0b4 any principal with
+`agents:write` could register `support@99.0.0` and take over every tenant's `support` runs. In code,
+`InMemoryAgentRegistry.register(definition, owner=...)` applies the same rule: the owner of a
+name's first registration (None for the host) owns every version of it.
+
+**Runs keep their agent version.** A run records the definition it started with
+(`RunState.agent_key`, `name@version`), and from 0.2.0b4 resuming, recovering, composing and
+delegating from it use that definition, never a higher version registered since. A run stored
+without `agent_key`, or whose version is no longer registered (a deploy replaced it), resolves its
+request's `agent` and `agent_version` as before and logs `run_agent_version_not_registered` once.
+
 **Who may act on a run.** `runs:write` lets a user start runs, but acting on a run is its user's:
 
 - `POST /v1/runs/{id}/approval`: the run's user, or a principal with `approvals:decide` (an
-  approver working from the `/v1/approvals` inbox).
+  approver working from the `/v1/approvals` inbox). The body's `decision` is `approved`,
+  `rejected` or `modified`; `modified_parameters` is required with `modified` and refused
+  otherwise (422). From 0.2.0b4 `Runtime.resume` and both approval services refuse any other
+  decision with `ValueError` (`check_decision`): before, `pending` or `expired` approved the call.
 - `POST /v1/workflows/runs/{id}/approval` (from 0.2.0b3): the user who started the workflow run,
   or a principal with `approvals:decide`; another user, including a service token that only holds
   `runs:write`, gets 403. The workflow decision's `decided_by` is the authenticated principal's
@@ -614,7 +833,7 @@ run; Redis: a `...:session:{id}:owner` key with the memory's TTL). A custom `Mem
 | Mode | Use | Verification |
 | --- | --- | --- |
 | `development_headers` (default) | local development only | Trusts `X-Tenant-ID`, `X-User-ID`, `X-Scopes`. Refused on a non-loopback host unless `allow_insecure_development_auth: true`. |
-| `jwt` | one signing key you manage | Bearer JWT verified with the static `env://` `jwt_key`, `jwt_algorithms`, `jwt_issuer` and `jwt_audience`; tenant from `tenant_claim`, scopes from `scopes_claim`. Unchanged from earlier releases, except that `none` is refused in `jwt_algorithms`. |
+| `jwt` | one signing key you manage | Bearer JWT verified with the static `env://` `jwt_key`, `jwt_algorithms`, `jwt_issuer` and `jwt_audience`; tenant from `tenant_claim`, scopes from `scopes_claim`. `none` is refused in `jwt_algorithms`. From 0.2.0b4 a token's `*` scope is ignored, as with OIDC, and an asymmetric algorithm (`RS*`, `PS*`, `ES*`, `EdDSA`, the default `RS256` included) without `jwt_audience` logs a warning at startup and is a `JWT_AUDIENCE_MISSING` warning from `check`: the key's issuer may sign tokens for other services, and all of them are accepted. Set `jwt_audience` (and `jwt_issuer`). |
 | `oidc` | an OpenID Connect identity provider | Bearer JWT verified against the issuer's published JWKS, with key rotation, claim mapping and the options below. |
 
 `jwt` and `oidc` need the `auth` extra (`PyJWT[crypto]`).
@@ -918,7 +1137,7 @@ either mode.
 
 | Boundary | Evaluated on | A refusal (deny or `closed` error) | Default |
 | --- | --- | --- | --- |
-| `input` | the run's input; each steering message before it is delivered | the run fails | `closed` |
+| `input` | the run's input; each steering message before it is delivered; (0.2.0b4) each clarification or `core.ask_user` answer, in `resume` | the run fails; a refused answer raises `PolicyDeniedError` from `resume` and the run keeps waiting | `closed` |
 | `before_retrieval` | the request text before context is built | the run fails | `closed` |
 | `after_retrieval` | loaded conversation history; the built context messages | the run fails | `closed` |
 | `before_model` | every model request, compaction included | the run fails | `closed` |
@@ -929,6 +1148,10 @@ either mode.
 | `final_response` | the verified answer (parsed, with a `response_schema`) | the run fails | `closed` |
 | `before_memory_write` | conversation memory, learned-memory proposals, working state, loaded skills, compaction archives | the run (or the memory tool call) fails | `closed` |
 | `after_memory_write` | the count of messages just written | the run fails (the memory is already written) | `closed` |
+
+A mandatory policy (`authorization`, `side_effects` and any registered with `mandatory=True`)
+fails closed whatever `on_error` or `boundary_on_error` says, since 0.2.0b4: an `open` boundary
+skips only the other policies that fail.
 
 Every default is `closed`, which is what each boundary already did before fail modes were
 configurable: an exception from a policy failed the run or the call. What changed is the shape of
@@ -1102,7 +1325,7 @@ uses, so existing agents are unaffected; lower them for agents that face untrust
 | `budget.max_events` | 100,000 (at least 100) | Run events recorded for the run. | Further events are dropped, except those that end or pause the run (`run.completed`, `run.failed`, `run.cancelled`, `approval.required`, `clarification.required`, `tool.reconciliation_required`, `mcp.auth_required`, `budget.refused`, `steer.undelivered`), and the run fails at its next step. |
 | `budget.on_limit` | `fail` | What a run does at its step, model-call, token, cost or time limit when `continuation_policy` does not extend it. | `fail` ends it failed. `summarize` (0.2.0b3) makes one last model call with no tools, from a transcript of what the run gathered, and completes the run with `RunResult.partial: true` and `limit_reached`; see [Partial answers at a limit](#partial-answers-at-a-limit). |
 | `budget.limit_answer_max_output_tokens` · `limit_answer_timeout_seconds` | 1,024 · 30 | The output-token cap (16 to 32,768) and time (up to 600 s) of that last call. | The call is not retried and its answer gets no repair turn. Past the time, the run fails with `BudgetExceededError`. |
-| `runtime.stream_delta_interval_ms` | 50 (0 to 5,000) | How often streamed text is recorded. | Chunks that arrive within the interval are joined into one `model.delta` event (the first is sent at once, the rest at the end of the stream at the latest), so a long stream does not use up `max_events`. `0` records every chunk, as `AgentRuntime` does when constructed directly. |
+| `runtime.stream_delta_interval_ms` | 50 (0 to 5,000) | How often streamed text is recorded. | Chunks that arrive within the interval are joined into one `model.delta` event (the first is sent at once, the rest at the end of the stream at the latest), so a long stream does not use up `max_events`. `0` records every chunk, as `AgentRuntime` does when constructed directly. From 0.2.0b4 a chunk is recorded only after the agent's `after_model` and `final_response` policies have seen it, and the last 128 characters are held back until more text arrives or the stream ends, so a secret split across chunks is still masked; text later refused, repaired or retried is withdrawn with `model.delta.retracted` (`{reason}`). `guardrail_policy.stream_text: off` records none. |
 
 A run that ends at a limit fails with `RunState.error` naming it and a `run.failed` event with
 `reason: limit_exceeded` and `limit` (`model_calls`, `response_chars`, `events`, or the existing
@@ -1359,8 +1582,20 @@ Each item is the stored `ApprovalRequest`: `id`, `run_id`, `step_id`, `tenant_id
 `proposed_action`, `side_effect_summary`, `redacted_parameters` (redacted before they were stored,
 the same values as the run's `pause_payload`), `risk`, `created_at`, `expires_at`, `status` and, after
 a `modified` decision, `modified_parameters`. The approver's `modified_parameters` are stored as
-sent; the inbox routes return them with the same redaction as `redacted_parameters` (top-level
-`password`, `secret`, `token`, `api_key` and `authorization` keys, any case, become `[REDACTED]`).
+sent; the inbox routes return them with the same redaction as `redacted_parameters`. Since
+0.2.0b4 a key that names a credential, at any depth (`token`, `access_token`, `client_secret`,
+`x-api-key`, `headers.Authorization`; see `is_sensitive_key` in
+[agent-tooling.md](agent-tooling.md#reusing-the-runtimes-redaction)), becomes
+`[REDACTED len=<n> sha256=<first 8 hex of its SHA-256>]`, so an approver can tell a 40-character
+key from a 4 KB payload, or compare it with a value they know, without seeing it; credentials
+inside other strings are masked as `[REDACTED]`. Before 0.2.0b4, top-level `password`, `secret`,
+`token`, `api_key` and `authorization` keys (any case) became `[REDACTED]`. An agent run also
+refuses (`PolicyDeniedError` with `approval.undeclared_secret_parameters`, handled by
+`tool_policy.on_error`) a call needing approval whose credential-named arguments its tool's input
+schema does not declare under `properties`: a model could otherwise hide a payload from the
+approver under a key such as `Token`. Declare every credential argument a tool takes. Workflow
+tool steps show the same markers but are not refused, since their arguments come from the
+manifest.
 A pending request past `expires_at` is reported as `expired`: `status=pending` leaves it out and
 `status=expired` includes it. Reading never changes the stored request; it moves to `expired` when
 someone tries to decide it, as before.
@@ -1589,7 +1824,7 @@ counts). Both need the `users:admin` scope and act only in the caller's tenant.
 | Kind (`counts` key) | What |
 | --- | --- |
 | `runs`, `run_events`, `approvals`, `tool_executions` | The user's runs (state, checkpointed messages and working state) and what references them. |
-| `artifacts` | Files the user's runs wrote, files attached to them or to their workflow runs and conversation messages, and context artifacts. Expired artifacts are left to the artifact purge. |
+| `artifacts` | From 0.2.0b4, every artifact the user owns (`user_id`), uploads never attached included (through the store's `list_for_user`); and, as before, files the user's runs wrote, files attached to them or to their workflow runs and conversation messages, and context artifacts, except a file another user owns. Expired artifacts are left to the artifact purge. |
 | `session_memory`, `session_owners` | The sessions the user owns, the sessions of their runs and conversations (unless another user owns one), expired messages included. |
 | `learned_memory` | Every learned-memory record of the user, for every agent, with its vectors and operation receipts. |
 | `conversations`, `conversation_messages`, `conversation_events`, `conversation_feedback` | The user's conversations and everything in them. |
@@ -1639,6 +1874,13 @@ cache:
 Set both referenced values through a secret manager. `key_secret` is optional but recommended; it
 HMACs already opaque key material. Tenant, user, session, request content, prompts, SQL, and arguments
 never appear in Redis keys or telemetry.
+
+`tool_results` without a `scope` is scoped to the `user` since 0.2.0b4 (the other policies, and
+`tool_results` before 0.2.0b4, default to `tenant`): a tool that reads `context.user_id` without
+declaring `cache_context` no longer serves one user's result to another. Set `scope: tenant`
+explicitly to share results across a tenant's users again. Tools of an MCP server whose OAuth
+connection is per user (`token_scope: user`) declare `cache_context: {user_id}`, so their results
+are keyed on the user whatever the scope.
 
 Use tenant scope only when authorization and results are identical for every user in that tenant.
 Use user scope for RLS- or role-dependent data, session scope for conversation-dependent outputs, run
@@ -1804,7 +2046,10 @@ passing credentials to a handler that does not is a `ConfigurationError`.
 | `cancelled` | cancelled by the user or with its run | `assistant.message.cancelled` |
 | `expired` | the approval or answer did not come in time | `assistant.message.expired` |
 
-`assistant.message.delta` data is `{message_id, delta}`. `assistant.message.resumed` data is
+`assistant.message.delta` data is `{message_id, delta}`: text the agent's output policies have
+already seen (0.2.0b4). `assistant.message.delta.retracted` (`{message_id, reason}`, 0.2.0b4)
+tells the client to discard the deltas shown so far (docs/conversations.md, "What streamed text
+shows"). `assistant.message.resumed` data is
 `{turn_id, kind, decided_by}` plus `approval_id` and `decision` for approvals or the answer `text`
 for input. The awaiting, completed, failed and expired events carry the assistant message, with
 `turn_id` on awaiting events. A resumed turn opens a new `conversation.turn` span with
@@ -2046,10 +2291,12 @@ Outbound HTTP requests from tools (`core.http`, `remote_tool`) and remote model 
    - Private networks (RFC 1918 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), and cloud metadata IP addresses (`169.254.169.254`, `169.254.170.2`, `[fd00:ec2::254]`, `100.100.100.200`) are blocked by default.
    - If a host resolves to multiple IP records (e.g. dual-homed or round-robin), resolution **fails closed** if any record is private or forbidden.
    - Schemes are restricted strictly to `http` and `https`, and URLs with embedded user credentials (`user:pass@`) are denied.
+   - IPv6 transition addresses are refused (since 0.2.0b4): 6to4 (`2002::/16`), Teredo (`2001::/32`) and NAT64 (`64:ff9b::/96`), whatever IPv4 address they carry; use the IPv4 address. Before, a 6to4 address such as `2002:7f00:1::` (loopback) passed on Python releases that call `2002::/16` global.
 
 3. **Allowlist Configuration & Overrides:**
    - Configure explicit `allowed_hosts` tuples on tools and model services to restrict outbound destinations to known, approved domains or domain suffixes (e.g. `allowed_hosts=("api.partner.com", ".internal.example.com")`).
    - `allow_private_networks=True` can be passed to tools or `create_safe_http_client` when operating in internal VPCs or running local test harnesses. Never enable this flag on tools exposed to untrusted tenant prompts.
+   - `core.http` (since 0.2.0b4) refuses every call while `security.allowed_http_hosts` is empty, unless `security.allow_any_public_host: true` says the model may reach any public host. Before, an empty list let it call any public host. **Upgrade:** list the hosts the agent needs in `allowed_http_hosts` (preferred), or set `allow_any_public_host: true` to keep the old behaviour. Declared `http_tools`, MCP and the other clients are unchanged. Its response body is read up to 200,000 bytes as it streams; a longer body is cut and the result has `truncated: true`.
 
 4. **Production Defense in Depth:**
    - Application-layer IP pinning protects runtime execution, but a deployment-level egress firewall (e.g., Kubernetes `NetworkPolicy`, AWS Security Groups) or dedicated forward egress proxy (e.g., Envoy, Squid) remains the recommended defense-in-depth boundary for production deployments.
@@ -2142,6 +2389,16 @@ controls them:
 | `wrapper` | none | A command prefix that isolates the child's filesystem and network: `bwrap`, `nsjail`, `firejail`, `sandbox-exec`. The command and its arguments follow it. |
 | `required` | `false` | Refuse to start any stdio server or `core.subprocess` call without a `wrapper` (checked before the MCP package is imported). |
 | `subprocess_timeout_seconds` | 60 | `core.subprocess` wall-clock limit. |
+| `allowed_executables` | `[]` | Since 0.2.0b4: normalized absolute paths of the executables `core.subprocess` may run. The model's `executable` must equal one of them exactly; anything else, and every call while the list is empty, is refused before a process starts. |
+
+**Upgrade (0.2.0b4).** Before, `core.subprocess` (with `security.allow_subprocess_tools: true`)
+ran any executable the model named, although its description said "explicitly configured". It
+now runs only `security.sandbox.allowed_executables`; a deployment that enables the tool lists
+the absolute paths it relies on, for example `allowed_executables: [/usr/bin/git, /usr/bin/jq]`.
+Arguments are still the model's: allow only executables whose arguments cannot run other
+programs (not shells, interpreters, `find -exec` or `env`), and keep a `wrapper`.
+A child that writes more than 1,000,000 bytes to stdout or stderr is killed and the call fails;
+output is read as it arrives rather than buffered whole first.
 
 Children always start in a new session. On timeout or cancellation `core.subprocess` kills
 the whole process group (with any background processes the command started); on shutdown the
@@ -2150,6 +2407,24 @@ With limits, an `env_allowlist` or a wrapper set, the child is started through a
 standard-library launcher (`python -I -S .../_sandbox_exec.py`) that applies the limits,
 removes every variable not on the list and then `exec`s the wrapper or command, so the limits
 hold for everything the child starts. The defaults change nothing for existing configurations.
+
+**A stdio server's `env`.** A value may be an `env://NAME` reference, resolved from the Runtime's
+environment when the server starts (before the MCP package is imported); a missing variable is a
+`ConfigurationError`. From 0.2.0b4 a variable whose name names a credential (`GITHUB_TOKEN`,
+`API_KEY`, `DB_PASSWORD`, as `redact_secrets` names one; not `MAX_TOKENS`) must be an `env://`
+reference: a literal value is refused when the settings load, so it never sits in configuration,
+`describe` output or a settings dump. Before 0.2.0b4 `env` values were passed literally, including
+an `env://` text.
+
+```yaml
+mcp_servers:
+  - name: github
+    transport: stdio
+    command: github-mcp-server
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: env://GITHUB_TOKEN   # resolved at start
+      LOG_LEVEL: info                                    # not a credential: literal is fine
+```
 
 Limits and a scrubbed environment are not isolation: without a wrapper a child reads every
 file and reaches every host the Runtime's user can. A Linux example with bubblewrap, which
@@ -2225,8 +2500,12 @@ plugins:
 
 `plugin sign` writes `algen-plugin-signature.json` into the package directory. It signs the
 publisher, the bound name and version, the package name and the SHA-256 of every file in the
-package (not `__pycache__` or `.pyc`), so any changed, added or removed module, data file or
-extension module fails verification. Sign as the last build step, after anything that writes
+package (not `__pycache__`), so any changed, added or removed module, data file or extension
+module fails verification. Since 0.2.0b4 a loose `.pyc`/`.pyo` outside `__pycache__` refuses the
+package (Python imports one when its source is missing), and a `__pycache__` file that Python
+would load in place of a signed source file (matching size and mtime, matching source hash, or an
+unchecked hash-based `.pyc`) must compile to the same code as that source; stale caches Python
+ignores are ignored. Sign as the last build step, after anything that writes
 into the package, and keep the private key in CI secrets.
 
 At load time the package is located with the import finders, without executing it, and
@@ -2235,8 +2514,8 @@ verified. With `require_signed: true` an unsigned package or one from a publishe
 workflow `hook_provider` modules alike; after import the plugin's manifest must match the
 signed publisher, name and version. Without `require_signed`, signatures from trusted
 publishers are still verified and a bad one refuses the plugin; unsigned plugins load as
-before. The signature does not cover the plugin's dependencies or bytecode in `__pycache__`,
-and does not stop a file being replaced after verification, so install plugin packages
+before. The signature does not cover the plugin's dependencies, and does not stop a file being
+replaced after verification, so install plugin packages
 read-only (for example in the container image). `PluginManifest.signature` is not used.
 
 
@@ -2260,6 +2539,17 @@ the store and keeps another worker's newer token; only when none has been stored
 on a rotating refresh token disconnect the user, who then connects again.
 
 ## API Admission Rate Limiting and Concurrency Quotas
+
+**Event streams per principal (from 0.2.0b4).** Whatever `rate_limiting` says, one principal
+(tenant and user) may hold at most `api.max_streams_per_principal` (default 32) event streams open
+at once in a process: `GET /v1/runs/{id}/events` and `GET /v1/conversations/{id}/events`. Another
+answers 429 with `Retry-After: 5` until one closes; a stream frees its slot when it ends, when the
+client goes away or when it is cancelled. The limit is per process, so with several workers a
+principal may hold that many in each. A `Last-Event-ID` that is not an event sequence (a
+non-negative integer) answers 400.
+
+Rate limiting itself is off by default (`api.rate_limiting.enabled: false`): turn it on for any
+deployment reachable by untrusted callers.
 
 To prevent run, approval, artifact, and conversation floods, the runtime supports tenant-aware admission rate limiting and in-flight concurrency quotas:
 
@@ -2333,6 +2623,12 @@ Semantics:
 5. **Decompression:** Wire limits apply to raw incoming bytes. If decompression middleware is introduced in the future, it must enforce separate post-decompression size limits.
 
 ## Distributed Worker Operations and Storage Validation
+
+> **Experimental.** Distributed execution (`distributed_execution`, `DistributedWorker`, the work
+> queues and leases) and any deployment with more than one Runtime process per database are
+> outside the supported single-node scope and the compatibility promise
+> ([deployment scope](production-readiness.md#deployment-scope),
+> [experimental interfaces](api-stability.md#experimental-interfaces)).
 
 Distributed execution allows scaling background analytical graphs and long-running agent tasks across worker pools:
 

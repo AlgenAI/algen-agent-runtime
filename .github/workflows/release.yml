@@ -1,82 +1,175 @@
 name: Release
 
+# Started by auto-release.yml (gh workflow run) after it creates the tag and the GitHub release, or
+# by a maintainer for an existing tag. Hardening against a poisoned build (the 2026 LiteLLM
+# compromise came through an unpinned CI action that read the PyPI token):
+# - PyPI trusted publishing (OIDC): there is no PyPI token to steal; the `pypi` environment
+#   requires a maintainer's approval and accepts deployments from `main` only.
+# - Every action is pinned to a full commit SHA; nothing is cached between runs.
+# - Tests run in their own job. The artifacts are built in a separate job that installs only the
+#   hash-locked requirements/build.txt and runs nothing else.
+# - The publish job attests the exact files it uploads (GitHub provenance, and PEP 740 on PyPI);
+#   the GitHub release carries SHA256SUMS, the CycloneDX SBOM and the license report.
+
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish (e.g. v0.1.0a1). The tag must already exist."
+        description: "Tag to publish (e.g. v0.2.0b4). The tag must already exist."
         required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check the tag format
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$'; then
+            echo "::error::not a release tag: $TAG"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # On workflow_dispatch use the provided tag; on release event use the release ref.
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-python@v5
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-          cache: pip
-      - run: python -m pip install --upgrade pip build twine
-      - name: Verify release tag matches package version
+      - name: Verify the tag matches the package version
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           version=$(python -c 'import pathlib, re; text = pathlib.Path("src/algen_agent_runtime/__init__.py").read_text(); print(re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE).group(1))')
-          ref_name="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          test "v${version}" = "${ref_name}"
-      - run: python -m pip install -e '.[dev]'
+          test "v${version}" = "${TAG}"
+      - run: python -m pip install --require-hashes --no-deps -r requirements/ci.txt -r requirements/build.txt
+      - run: python -m pip install --no-deps --no-build-isolation -e .
       - run: ruff format --check src tests algen_agent_runtime_examples
       - run: ruff check src tests algen_agent_runtime_examples
       - run: mypy src/algen_agent_runtime
       - run: pytest -q -p no:cacheprovider
-      - run: python -m build
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --no-deps -r requirements/build.txt
+      - run: python -m build --no-isolation
       - run: python -m twine check dist/*
       - name: Generate and verify artifact checksums
         run: |
-          python - <<'PY'
-          import hashlib
-          from pathlib import Path
-          dist = Path("dist")
-          sums = []
-          for p in sorted(dist.iterdir()):
-              if p.suffix in (".whl", ".gz"):
-                  digest = hashlib.sha256(p.read_bytes()).hexdigest()
-                  sums.append(f"{digest}  {p.name}\n")
-          Path("dist/SHA256SUMS").write_text("".join(sums))
-          PY
           cd dist
+          sha256sum -- *.whl *.tar.gz > SHA256SUMS
           sha256sum -c SHA256SUMS
       - name: Inspect release artifacts
         run: python scripts/check_dist.py dist
-      - name: Install wheel and verify CLI and scaffolding outside checkout
-        run: scripts/smoke-install.sh dist python
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: python-distributions
           path: dist/
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  smoke:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-distributions
+          path: dist/
+      - run: cd dist && sha256sum -c SHA256SUMS
+      - name: Install wheel and verify CLI and scaffolding outside checkout
+        run: scripts/smoke-install.sh dist python
+
+  sbom:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-distributions
+          path: dist/
+      # What a deployment of this release installs: the wheel and the locked service dependencies.
+      - name: CycloneDX SBOM and license report
+        run: |
+          python -m venv "$RUNNER_TEMP/sbom-env"
+          "$RUNNER_TEMP/sbom-env/bin/pip" install --require-hashes --no-deps -r requirements/service.txt
+          "$RUNNER_TEMP/sbom-env/bin/pip" install --no-deps dist/*.whl
+          "$RUNNER_TEMP/sbom-env/bin/python" scripts/sbom.py sbom
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: sbom/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build, smoke, sbom]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: python-distributions
           path: dist/
-      - name: Remove non-distribution assets before PyPI publish
-        run: rm -f dist/SHA256SUMS
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - run: cd dist && sha256sum -c SHA256SUMS && rm SHA256SUMS
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/*
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
+  release-assets:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-distributions
+          path: dist/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sbom
+          path: sbom/
+      - name: Attach checksums, SBOM and license report to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" dist/SHA256SUMS sbom/sbom.cdx.json sbom/licenses.md --repo "$REPO" --clobber

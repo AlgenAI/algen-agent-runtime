@@ -154,6 +154,31 @@ certification, maximum sensitivity, and authorization tags accepted for a query.
 SQL outside the compiler, call `validate_generated_sql(metrics, dimensions, sql)` after the ordinary
 read-only SQL validator to enforce source-table, default-filter, and required-filter invariants.
 
+What `validate_generated_sql` enforces (since 0.2.0b4; before, it was a regular-expression search
+that a comment or an `OR true` defeated). It tokenizes the statement, without a SQL parser, and
+raises `ConfigurationError` on anything it cannot read unambiguously:
+
+- one `SELECT` (or `WITH ... SELECT`) statement; a trailing `;` is allowed, a second statement is
+  not;
+- no comments (`--`, `/* */`, `#`), no dollar-quoted strings and no backslashes in string literals;
+- each queried model's table is read exactly once, by the top-level query (not in a subquery or
+  CTE), and there is no `UNION`, `INTERSECT` or `EXCEPT` at the top level;
+- the top-level `WHERE` clause is a conjunction: `OR` is refused at its top level (it is allowed
+  inside parentheses, in a conjunct that is not one of the predicates below);
+- every required filter dimension appears as its own conjunct `column <op> <value>` where `<op>` is
+  `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, `IN (...)` or `BETWEEN ... AND ...`, and `<value>` is made
+  of literals, parameters (`$1`, `:name`, `?`), casts, arithmetic and constant words such as
+  `current_date` and `interval`, never a column (`tenant_id = tenant_id` is refused);
+- every default filter appears as its own conjunct `column = true|false` or `column IS true|false`;
+- a qualified column (`o.tenant_id`) must be qualified with the model table's alias or name.
+
+The check is deliberately conservative: valid SQL such as a filter inside a CTE, a reversed
+comparison (`'acme' = tenant_id`) or a function call on the column is refused, so ask the model for
+the plain form. It is a guard against a model forgetting or talking its way around a filter, not a
+security boundary on its own: for tenant isolation, also enforce the tenant in the database with
+row-level security (`CREATE POLICY ... USING (tenant_id = current_setting('app.tenant_id'))`) or a
+per-tenant view, and run generated SQL as a role that cannot bypass it.
+
 ## Compiler choices
 
 `SemanticQueryCompiler` remains the compact, backwards-compatible one-model compiler.

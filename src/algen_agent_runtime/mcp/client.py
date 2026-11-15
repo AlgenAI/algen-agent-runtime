@@ -21,6 +21,7 @@ from algen_agent_runtime.exceptions.errors import (
     ToolExecutionError,
 )
 from algen_agent_runtime.mcp.contracts import (
+    MCPOAuthTokenScope,
     MCPServerConfigBase,
     MCPSseServerConfig,
     MCPStdioServerConfig,
@@ -244,7 +245,15 @@ class MCPClientManager:
                     config.args,
                     policy=config.sandbox or sandbox,
                     required=sandbox.required,
-                    explicit_env=config.env,
+                    # env:// values resolve here, before the optional package is imported.
+                    explicit_env={
+                        key: (
+                            _resolve_secret(value, self._environment)
+                            if value.startswith("env://")
+                            else value
+                        )
+                        for key, value in config.env.items()
+                    },
                     cwd=config.cwd,
                     default_env=MCP_DEFAULT_ENV,
                     label=f"MCP server {config.name!r}",
@@ -548,6 +557,7 @@ class MCPClientManager:
                     else config.max_result_bytes
                 )
 
+                per_user = self._per_user_oauth(config)
                 tool_def = ToolDefinition(
                     name=registered_name,
                     version="1.0.0",
@@ -559,6 +569,9 @@ class MCPClientManager:
                     idempotency=idempotency,
                     timeout_seconds=effective_timeout,
                     max_result_bytes=effective_max_bytes,
+                    # A per-user OAuth connection answers as that user: a cached result is
+                    # keyed on the user, whatever the cache policy's scope.
+                    cache_context=frozenset({"user_id"}) if per_user else frozenset(),
                     audit_metadata={
                         "classification_source": classification_source,
                         "mcp_server": config.name,
@@ -572,6 +585,19 @@ class MCPClientManager:
             self._discovered_servers.add(name)
 
         return tuple(discovered)
+
+    def _per_user_oauth(self, config: MCPServerConfigBase) -> bool:
+        """Whether the server's OAuth connection is kept per user (``token_scope: user``), as
+        the OAuth manager (which picks the connection) or else the server's config says."""
+        auth = oauth_config(config)
+        if auth is None:
+            return False
+        if self.oauth is not None:
+            try:
+                auth = self.oauth.auth(config.name)
+            except Exception:
+                pass
+        return auth.token_scope is MCPOAuthTokenScope.USER
 
     async def _caller_session(self, config: MCPServerConfigBase, context: ToolContext) -> Any:
         """The session of the calling tenant (or user) for an OAuth server."""

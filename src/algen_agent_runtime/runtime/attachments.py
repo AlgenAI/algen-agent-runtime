@@ -30,6 +30,7 @@ from algen_agent_runtime.types.contracts import (
     TEXT_ATTACHMENT_TYPES,
     TOOL_READ_ATTACHMENT_TYPES,
     AgentDefinition,
+    Artifact,
     ArtifactDescriptor,
     ArtifactStatus,
     AttachmentPolicy,
@@ -358,8 +359,8 @@ async def validate(
     total = 0
     for item in attachments:
         artifact = await artifacts.get(item.artifact_id, request.tenant_id)
-        # Another tenant's artifact is reported exactly like a missing one.
-        if artifact is None:
+        # Another tenant's artifact, or another user's, is reported exactly like a missing one.
+        if artifact is None or not _usable_by(artifact, request.user_id):
             raise CapabilityError(f"attachment {item.artifact_id!r} was not found")
         if artifact.status is not ArtifactStatus.AVAILABLE:
             raise CapabilityError(
@@ -393,7 +394,11 @@ async def validate(
 
 
 async def resolve(
-    request: ModelRequest, tenant_id: str, artifacts: ArtifactStore | None
+    request: ModelRequest,
+    tenant_id: str,
+    artifacts: ArtifactStore | None,
+    *,
+    user_id: str | None = None,
 ) -> ModelRequest:
     """A copy of the request with each file's bytes loaded, for this one provider call.
 
@@ -401,6 +406,7 @@ async def resolve(
     been deleted or stopped being available becomes a short text note instead of failing the
     run. A file a tool reads becomes its ``[attachment: name, type, id=...]`` placeholder, and
     its bytes are not loaded. A note that files are data, not instructions, follows them.
+    With ``user_id`` (the run's user), a file another user owns is treated as unavailable.
     """
     if not has_files(request.messages):
         return request
@@ -412,7 +418,7 @@ async def resolve(
         blocks: list[ContentBlock] = []
         for block in message.content:
             if isinstance(block, FileBlock):
-                blocks.append(await _resolved(block, tenant_id, artifacts))
+                blocks.append(await _resolved(block, tenant_id, artifacts, user_id))
             else:
                 blocks.append(block)
         blocks.append(TextBlock(text=DATA_NOTE))
@@ -420,16 +426,27 @@ async def resolve(
     return request.model_copy(update={"messages": tuple(messages)})
 
 
+def _usable_by(artifact: Artifact | ArtifactDescriptor, user_id: str | None) -> bool:
+    """A run reads only its own user's files. An artifact without an owner (stored before
+    0.2.0b4, or by a host that names none) stays usable by any run of its tenant; the API routes
+    check those before a run starts."""
+    return user_id is None or artifact.user_id is None or artifact.user_id == user_id
+
+
 async def _resolved(
-    block: FileBlock, tenant_id: str, artifacts: ArtifactStore | None
+    block: FileBlock, tenant_id: str, artifacts: ArtifactStore | None, user_id: str | None = None
 ) -> ContentBlock:
     if is_tool_read(block.media_type):
         described = await artifacts.describe(block.artifact_id, tenant_id) if artifacts else None
+        if described is not None and not _usable_by(described, user_id):
+            described = None
         if described is None or described.status is not ArtifactStatus.AVAILABLE:
             name = described.name if described is not None else block.artifact_id
             return TextBlock(text=f"[attachment {name} is no longer available]")
         return TextBlock(text=placeholder(block.artifact_id, described.name, block.media_type))
     artifact = await artifacts.get(block.artifact_id, tenant_id) if artifacts else None
+    if artifact is not None and not _usable_by(artifact, user_id):
+        artifact = None
     if artifact is None or artifact.status is not ArtifactStatus.AVAILABLE:
         name = artifact.name if artifact is not None else block.artifact_id
         return TextBlock(text=f"[attachment {name} is no longer available]")

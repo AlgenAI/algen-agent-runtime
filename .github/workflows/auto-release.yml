@@ -3,8 +3,12 @@ name: Auto Release
 # Triggered on every push to main.
 # Reads __version__ from src/algen_agent_runtime/__init__.py.
 # If the corresponding tag already exists the job exits cleanly (idempotent).
-# Otherwise it extracts the matching section from CHANGELOG.md and creates a
-# GitHub Release, which triggers release.yml → PyPI publish.
+# Otherwise it extracts the matching section from CHANGELOG.md, creates the tag and GitHub Release,
+# and starts release.yml for that tag (build, attest, publish to PyPI after a maintainer approves).
+#
+# It uses the workflow's own GITHUB_TOKEN. Events that token creates do not start other workflows,
+# except workflow_dispatch, so release.yml is started explicitly with `gh workflow run` and no
+# personal access token is needed.
 
 on:
   push:
@@ -12,22 +16,25 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Force release even if tag already exists (use to re-trigger after adding RELEASE_TOKEN)"
+        description: "Create the release and start release.yml even if the tag already exists"
         required: false
         default: "false"
         type: choice
         options: ["false", "true"]
 
 permissions:
-  contents: write   # needed to create tags and releases
+  contents: read
 
 jobs:
   auto-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the tag and the release
+      actions: write    # start release.yml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0   # full history so we can push tags
+          persist-credentials: false
 
       # ── 1. Read the package version ────────────────────────────────────────
       - name: Read version
@@ -42,6 +49,10 @@ jobs:
           print(match.group(1))
           PY
           )
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$'; then
+            echo "::error::unexpected version: $version"
+            exit 1
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved version: ${version}"
@@ -49,83 +60,65 @@ jobs:
       # ── 2. Skip if the tag already exists (idempotent) ───────────────────
       - name: Check if tag already exists
         id: tag_check
+        env:
+          FORCE: ${{ inputs.force || 'false' }}
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          force="${{ inputs.force || 'false' }}"
-          if [ "$force" = "true" ]; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Force flag set — proceeding even if tag exists."
-          elif git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
+          if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            if [ "$FORCE" = "true" ]; then
+              echo "exists=forced" >> "$GITHUB_OUTPUT"
+              echo "Tag $TAG exists; force set, release.yml will be started again."
+            else
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "Tag $TAG already exists — skipping release."
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag ${{ steps.version.outputs.tag }} does not exist — will create release."
+            echo "Tag $TAG does not exist — will create release."
           fi
 
       # ── 3. Extract changelog section for this version ────────────────────
-      # Looks for the first versioned section header (## [X.Y.Z]) in
-      # CHANGELOG.md and extracts its content as the release notes body.
       - name: Extract changelog
-        id: changelog
         if: steps.tag_check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version="${{ steps.version.outputs.version }}"
-          python3 - "$version" <<'PY'
-          import sys, pathlib, re
+          python3 - "$VERSION" > "$RUNNER_TEMP/algen-release-notes.md" <<'PY'
+          import pathlib, re, sys
 
           version = sys.argv[1]
           text = pathlib.Path("CHANGELOG.md").read_text()
-
-          # Match the section for this exact version: ## [0.1.0a1] or ## [0.1.0a1] - date
+          # Match the section for this exact version: ## [0.2.0b4] or ## [0.2.0b4] - date
           pattern = rf"^##\s+\[{re.escape(version)}\].*?\n(.*?)(?=\n##\s+\[|\Z)"
           match = re.search(pattern, text, re.DOTALL | re.MULTILINE)
-          if not match:
-              # Fall back: extract the first versioned section that is not [Unreleased]
-              pattern_any = r"^##\s+\[(?!Unreleased).*?\n(.*?)(?=\n##\s+\[|\Z)"
-              match = re.search(pattern_any, text, re.DOTALL | re.MULTILINE)
-
-          if match:
-              body = match.group(1).strip()
-          else:
-              body = f"Release {version}."
-
-          # Write to GITHUB_OUTPUT using multiline delimiter
-          import os
-          env_file = os.environ["GITHUB_OUTPUT"]
-          with open(env_file, "a") as f:
-              delimiter = "EOF_CHANGELOG"
-              f.write(f"body<<{delimiter}\n{body}\n{delimiter}\n")
-
-          print("Changelog body extracted successfully.")
+          print(match.group(1).strip() if match else f"Release {version}.")
           PY
 
       # ── 4. Create tag and GitHub Release ─────────────────────────────────
-      # IMPORTANT: Must use a PAT (RELEASE_TOKEN), not github.token.
-      # GitHub blocks event cascading from GITHUB_TOKEN, so release.yml
-      # (triggered by release:published) would never fire if we used github.token.
       - name: Create GitHub Release
         if: steps.tag_check.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          RELEASE_NOTES: ${{ steps.changelog.outputs.body }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          tag="${{ steps.version.outputs.tag }}"
-          version="${{ steps.version.outputs.version }}"
-
-          # Determine pre-release flag: any version with a/b/rc suffix is pre-release
           prerelease_flag=""
-          if echo "$version" | grep -qE '(a|b|rc)[0-9]+$'; then
+          if echo "$VERSION" | grep -qE '(a|b|rc)[0-9]+$'; then
             prerelease_flag="--prerelease"
-            echo "Marking as pre-release (version contains alpha/beta/rc suffix)."
           fi
-
-          notes_file="${RUNNER_TEMP}/algen-release-notes.md"
-          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
-          gh release create "$tag" \
-            --title "algen-agent-runtime ${tag}" \
-            --notes-file "$notes_file" \
+          gh release create "$TAG" \
+            --title "algen-agent-runtime ${TAG}" \
+            --notes-file "$RUNNER_TEMP/algen-release-notes.md" \
             $prerelease_flag \
             --target "$GITHUB_SHA"
 
-          echo "GitHub Release ${tag} created successfully."
-          echo "release.yml will now be triggered by the release:published event."
+      # ── 5. Build, attest and publish ──────────────────────────────────────
+      - name: Start release.yml
+        if: steps.tag_check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run release.yml --repo "$REPO" --ref main -f tag="$TAG"

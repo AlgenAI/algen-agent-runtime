@@ -82,6 +82,23 @@ def _files(source: Traversable, prefix: Path = Path()) -> Iterator[tuple[Path, T
             yield prefix / item.name, item
 
 
+def _refuse_symlinked_directories(project: Path, target: Path) -> None:
+    """Refuse a skills directory reached through a symlink below the project.
+
+    An untrusted checkout could link ``.agents`` (or ``.agents/skills``) anywhere, such as a
+    home directory, and turn an install (and its ``--force`` replace) into writes outside it.
+    """
+    try:
+        parts = target.relative_to(project).parts
+    except ValueError:
+        return  # an explicit directory outside the project is the user's own choice
+    current = project
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"{current} is a symbolic link; refusing to install skills through it")
+
+
 def install_skills(
     project: Path,
     names: Sequence[str] = (),
@@ -104,6 +121,7 @@ def install_skills(
         )
     selected = [skills[name] for name in dict.fromkeys(names)] if names else list(skills.values())
     target = project / skills_dir
+    _refuse_symlinked_directories(project, target)
     existing = [str(target / skill.name) for skill in selected if (target / skill.name).exists()]
     if existing and not force:
         raise FileExistsError(

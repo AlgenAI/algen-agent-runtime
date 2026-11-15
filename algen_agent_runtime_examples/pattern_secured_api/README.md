@@ -13,7 +13,7 @@ Three users of tenant `acme`: alice and bob (role `member`) and carol (role `app
    signed by another key under the provider's key id, gets 401.
 2. **An approval pause and the approval inbox.** alice starts a run whose tool,
    `webhooks.register` (`tools.py`, registered by `WebhookPlugin`), needs approval. `GET /v1/approvals` needs `approvals:read`: alice gets 403,
-   carol sees the pending request with the proposed `secret` shown as `[REDACTED]`. carol approves
+   carol sees the pending request with the proposed `secret` shown as `[REDACTED len=24 sha256=…]` (its length and a digest prefix, so carol can tell it was changed without seeing it). carol approves
    with `modified_parameters` carrying a new secret; the inbox shows it redacted too.
 3. **Conversation ownership.** alice's conversation turn runs as a run. alice can read it; bob,
    in the same tenant, gets 404 for the run and the conversation.
@@ -60,9 +60,9 @@ token signed by another key -> 401
 == 2. An approval pause and the approval inbox ==
 alice starts a run -> awaiting_approval
 alice GET /v1/approvals -> 403 (missing scope approvals:read)
-carol GET /v1/approvals -> 1 pending: Execute webhooks.register {'url': 'https://hooks.acme.example/billing', 'secret': '[REDACTED]'}
+carol GET /v1/approvals -> 1 pending: Execute webhooks.register {'url': 'https://hooks.acme.example/billing', 'secret': '[REDACTED len=24 sha256=16cd199d]'}
 carol modifies and approves -> 202; run completed
-inbox shows modified with {'url': 'https://hooks.acme.example/billing', 'secret': '[REDACTED]'}
+inbox shows modified with {'url': 'https://hooks.acme.example/billing', 'secret': '[REDACTED len=24 sha256=f03d220e]'}
 
 == 3. Conversation ownership ==
 alice GET /v1/runs/<her turn's run> -> 200

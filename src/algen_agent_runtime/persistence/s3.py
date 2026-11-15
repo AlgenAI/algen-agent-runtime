@@ -92,9 +92,9 @@ class S3ArtifactStore:
             await connection.execute(
                 "INSERT INTO algen_agent_runtime_artifacts "
                 "(id, tenant_id, run_id, name, media_type, data, size_bytes, sha256, status, "
-                "metadata, expires_at, created_at, storage_backend, storage_key) "
+                "metadata, expires_at, created_at, storage_backend, storage_key, user_id) "
                 "VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9::jsonb, $10, $11, "
-                "'s3', $12)",
+                "'s3', $12, $13)",
                 artifact.id,
                 artifact.tenant_id,
                 artifact.run_id,
@@ -107,6 +107,7 @@ class S3ArtifactStore:
                 artifact.expires_at,
                 artifact.created_at,
                 key,
+                artifact.user_id,
             )
 
         try:
@@ -174,6 +175,30 @@ class S3ArtifactStore:
             "AND (expires_at IS NULL OR expires_at > now()) "
             "ORDER BY created_at DESC LIMIT $4",
             tenant_id,
+            run_id,
+            status.value if status else None,
+            limit,
+        )
+        return tuple(self._descriptor(row) for row in rows)
+
+    async def list_for_user(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        run_id: str | None = None,
+        status: ArtifactStatus | None = None,
+        limit: int = 100,
+    ) -> Sequence[ArtifactDescriptor]:
+        """The artifacts ``user_id`` owns in the tenant, newest first (expired ones left out)."""
+        rows = await self._database.fetch(
+            self._select() + " WHERE tenant_id=$1 AND user_id=$2 AND storage_backend='s3' "
+            "AND ($3::text IS NULL OR run_id=$3) "
+            "AND ($4::text IS NULL OR status=$4) "
+            "AND (expires_at IS NULL OR expires_at > now()) "
+            "ORDER BY created_at DESC LIMIT $5",
+            tenant_id,
+            user_id,
             run_id,
             status.value if status else None,
             limit,
@@ -258,7 +283,7 @@ class S3ArtifactStore:
     def _columns() -> str:
         return (
             "id, tenant_id, run_id, name, media_type, size_bytes, sha256, status, "
-            "metadata, expires_at, created_at"
+            "metadata, expires_at, created_at, user_id"
         )
 
     @classmethod

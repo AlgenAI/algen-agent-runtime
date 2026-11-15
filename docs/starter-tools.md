@@ -2,7 +2,7 @@
 
 Algen Agent Runtime provides a safe, opt-in starter tool pack under `algen_agent_runtime.tools.starter` for common local operations (calculation, structured data query, workspace file inspection, and clock/date evaluation).
 
-Starter tools are **never registered by default**. Standard runtime initialization (`build_container(settings)`) only exposes `core.http` and disabled `core.subprocess`, ensuring that the default attack surface and authority of the runtime remain strictly minimal.
+Starter tools are **never registered by default**. Standard runtime initialization (`build_container(settings)`) only exposes `core.http` (which, since 0.2.0b4, refuses every call until `security.allowed_http_hosts` lists hosts or `security.allow_any_public_host` is set) and disabled `core.subprocess` (which runs only `security.sandbox.allowed_executables`), ensuring that the default attack surface and authority of the runtime remain strictly minimal.
 
 ## Available tools
 

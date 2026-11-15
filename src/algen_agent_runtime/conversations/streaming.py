@@ -13,6 +13,10 @@ from algen_agent_runtime.types.contracts import RunResult
 from algen_agent_runtime.types.interfaces import Runtime
 
 DELTA_EVENT = "assistant.message.delta"
+DELTA_RETRACTED_EVENT = "assistant.message.delta.retracted"
+"""(0.2.0b4) Discard the text this turn's ``assistant.message.delta`` events have sent so far:
+the model's streamed response was refused by a policy, failed verification or is being retried.
+Text streamed after it starts again from empty; the completed message is the answer."""
 
 DETACH_SIGNAL: ContextVar[asyncio.Event | None] = ContextVar(
     "algen_agent_runtime_conversation_detach", default=None
@@ -113,6 +117,13 @@ class DeltaCoalescer:
             return None
         return max(0.0, self._interval - (time.monotonic() - self._last_flush))
 
+    async def retract(self, reason: str) -> None:
+        """Drop buffered text and tell the client to discard what was sent
+        (``assistant.message.delta.retracted``)."""
+        self._parts.clear()
+        self._size = 0
+        await self._emit(DELTA_RETRACTED_EVENT, {"reason": reason})
+
     async def flush(self) -> None:
         if not self._parts:
             return
@@ -172,6 +183,9 @@ async def follow_run(
         if event.type == "model.delta":
             if coalescer is not None:
                 await coalescer.add(str(event.data.get("delta", "")))
+        elif event.type == "model.delta.retracted":
+            if coalescer is not None:
+                await coalescer.retract(str(event.data.get("reason", "")))
         elif steps is not None and (
             (step := steering_step(event)) is not None
             or (tool_steps and (step := tool_step(event)) is not None)

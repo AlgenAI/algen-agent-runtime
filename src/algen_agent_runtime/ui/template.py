@@ -6,7 +6,9 @@ vector SVG icons so exported pages remain self-contained.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from typing import Any
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -2543,39 +2545,45 @@ print(result.output)`;
 </html>"""
 
 
-def render_agent_ui(spec: dict[str, Any]) -> str:
-    """Render a fully self-contained, standalone HTML document for the Agent Manifest UI."""
-    spec_json = json.dumps(spec).replace("</script>", "<\\/script>")
+def _script_json(value: Any) -> str:
+    """``value`` as JSON safe inside an inline ``<script>``: ``<``, ``>`` and ``&`` are
+    escaped, so no value (an agent's description, say) can close the script or open a tag."""
+    # ensure_ascii (the default) already escapes U+2028 and U+2029.
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
+
+_PLACEHOLDER = re.compile(r"__[A-Z_]+__")
+
+
+def render_agent_ui(spec: dict[str, Any]) -> str:
+    """Render a fully self-contained, standalone HTML document for the Agent Manifest UI.
+
+    Every value is substituted once and HTML-escaped (the spec as script-safe JSON), so text
+    from a definition or a request's Host header is never markup (0.2.0b4).
+    """
     stats = spec.get("stats", {})
     live_server = bool(spec.get("live_server", False))
+    text = {
+        "__PAGE_TITLE__": spec.get("title", "Algen Agent UI"),
+        "__PAGE_VERSION__": spec.get("version", "1.0.0"),
+        "__PAGE_DESC__": spec.get("description")
+        or "Declared Algen Agent Runtime project specification.",
+        "__RUNTIME_VERSION__": spec.get("runtime_version", "1.0.0"),
+        "__LIVE_STATUS_CLASS__": "status-badge-live" if live_server else "status-badge-static",
+        "__LIVE_STATUS_TEXT__": "LIVE ENDPOINT" if live_server else "STATIC MANIFEST",
+        "__EXECUTION_MODE__": "Workflow DAG" if spec.get("workflows") else "Single-Agent",
+        "__API_ENDPOINT__": spec.get("api_endpoint", "/v1/runs"),
+        "__STAT_AGENTS__": stats.get("agent_count", 0),
+        "__STAT_WORKFLOWS__": stats.get("workflow_count", 0),
+        "__STAT_PROVIDERS__": stats.get("provider_count", 0),
+        "__STAT_TOOLS__": stats.get("tool_count", 0),
+        "__STAT_RAG__": stats.get("retrieval_count", 0),
+        "__STAT_STORAGE__": stats.get("storage_backend", "memory"),
+    }
+    values = {key: html.escape(str(value), quote=True) for key, value in text.items()}
+    values["__SPEC_JSON__"] = _script_json(spec)
 
-    output = HTML_TEMPLATE
-    output = output.replace("__SPEC_JSON__", spec_json)
-    output = output.replace("__PAGE_TITLE__", str(spec.get("title", "Algen Agent UI")))
-    output = output.replace("__PAGE_VERSION__", str(spec.get("version", "1.0.0")))
-    output = output.replace(
-        "__PAGE_DESC__",
-        str(spec.get("description") or "Declared Algen Agent Runtime project specification."),
-    )
-    output = output.replace("__RUNTIME_VERSION__", str(spec.get("runtime_version", "1.0.0")))
-    output = output.replace(
-        "__LIVE_STATUS_CLASS__", "status-badge-live" if live_server else "status-badge-static"
-    )
-    output = output.replace(
-        "__LIVE_STATUS_TEXT__", "LIVE ENDPOINT" if live_server else "STATIC MANIFEST"
-    )
-    output = output.replace(
-        "__EXECUTION_MODE__",
-        "Workflow DAG" if spec.get("workflows") else "Single-Agent",
-    )
-    output = output.replace("__API_ENDPOINT__", str(spec.get("api_endpoint", "/v1/runs")))
+    def substitute(match: re.Match[str]) -> str:
+        return values.get(match.group(0), match.group(0))
 
-    output = output.replace("__STAT_AGENTS__", str(stats.get("agent_count", 0)))
-    output = output.replace("__STAT_WORKFLOWS__", str(stats.get("workflow_count", 0)))
-    output = output.replace("__STAT_PROVIDERS__", str(stats.get("provider_count", 0)))
-    output = output.replace("__STAT_TOOLS__", str(stats.get("tool_count", 0)))
-    output = output.replace("__STAT_RAG__", str(stats.get("retrieval_count", 0)))
-    output = output.replace("__STAT_STORAGE__", str(stats.get("storage_backend", "memory")))
-
-    return output
+    return _PLACEHOLDER.sub(substitute, HTML_TEMPLATE)

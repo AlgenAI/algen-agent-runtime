@@ -21,7 +21,8 @@
     "019_session_owners.sql",
     "020_approval_decided_by.sql",
     "021_user_data_indexes.sql",
-    "022_run_turn_index.sql"
+    "022_run_turn_index.sql",
+    "023_artifact_owner.sql"
   ],
   "tables": {
     "algen_agent_runtime_analytical_graphs": {
@@ -231,13 +232,19 @@
           "has_default": false,
           "not_null": true,
           "type": "text"
+        },
+        "user_id": {
+          "has_default": false,
+          "not_null": false,
+          "type": "text"
         }
       },
       "indexes": [
         "algen_agent_runtime_artifacts_expiry_idx",
         "algen_agent_runtime_artifacts_pkey",
         "algen_agent_runtime_artifacts_storage_idx",
-        "algen_agent_runtime_artifacts_tenant_idx"
+        "algen_agent_runtime_artifacts_tenant_idx",
+        "algen_agent_runtime_artifacts_user_idx"
       ],
       "triggers": [
         "algen_agent_runtime_artifact_usage"

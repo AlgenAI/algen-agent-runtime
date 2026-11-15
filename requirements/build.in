@@ -1,0 +1,9 @@
+# Tools that build and check the release artifacts. Hash-locked in build.txt (scripts/lock-requirements.sh).
+build
+hatchling
+twine
+# hatchling asks for it to build editable installs (CI's `pip install --no-build-isolation -e .`).
+editables
+# keyring (from twine) needs these on Linux only; listed so a lock made on any platform has them.
+jeepney
+secretstorage

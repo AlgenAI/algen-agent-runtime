@@ -27,6 +27,7 @@ FORBIDDEN_METADATA_IPS: frozenset[ipaddress.IPv4Address | ipaddress.IPv6Address]
 )
 
 DNSResolver = Callable[[str, int], list[tuple[Any, ...]]]
+_NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 
 
 def is_ip_allowed(
@@ -44,6 +45,15 @@ def is_ip_allowed(
     # Unpack IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) and evaluate mapped IPv4
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         return is_ip_allowed(ip.ipv4_mapped, allow_private_networks=False)
+
+    # Transition addresses carry an IPv4 address a relay or gateway may deliver to: 6to4
+    # (2002::/16), Teredo (2001::/32) and NAT64 (64:ff9b::/96). Python releases disagree on
+    # whether some of these ranges are global, so all three are refused outright; connect to the
+    # IPv4 address instead.
+    if isinstance(ip, ipaddress.IPv6Address) and (
+        ip.sixtofour is not None or ip.teredo is not None or ip in _NAT64_PREFIX
+    ):
+        return False
 
     if ip in FORBIDDEN_METADATA_IPS:
         return False

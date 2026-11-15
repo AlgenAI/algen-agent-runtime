@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from typing import Any
 
 import pytest
@@ -73,3 +75,18 @@ def make_runtime(
 @pytest.fixture
 def runtime() -> AgentRuntime:
     return make_runtime()
+
+
+# The performance suite (tests/perf, marker ``perf``) runs only when asked for: ``-m perf`` (or
+# ALGEN_PERF=1). A plain ``pytest``, and every CI job, collects and skips it.
+_PERF_SELECTED = re.compile(r"(?<!not )\bperf\b")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    expression = str(config.getoption("markexpr") or "")
+    if os.environ.get("ALGEN_PERF") == "1" or _PERF_SELECTED.search(expression):
+        return
+    skip = pytest.mark.skip(reason="the performance suite runs with -m perf")
+    for item in items:
+        if item.get_closest_marker("perf") is not None:
+            item.add_marker(skip)

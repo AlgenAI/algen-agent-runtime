@@ -8,19 +8,21 @@ on:
     - cron: "17 3 * * 1"
 
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
+# Third-party scanners are installed as pinned, checksum-verified binaries rather than as actions:
+# a moved action tag (the aquasecurity/trivy-action compromise behind the 2026 LiteLLM incident)
+# then cannot change what runs. Change a version together with its SHA-256 from the release's
+# checksums file, and prefer releases at least two weeks old.
 jobs:
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
 
@@ -31,71 +33,85 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3
         with:
-          languages: python
-      - uses: github/codeql-action/analyze@v3
+          languages: python, actions
+      - uses: github/codeql-action/analyze@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3
 
   python-security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e . pip-audit bandit
-      - run: python -m pip_audit
+      - run: python -m pip install --require-hashes --no-deps -r requirements/security.txt
+      # Audit what deployments and CI install: the locked service image and test dependencies.
+      - run: python -m pip_audit --require-hashes --disable-pip -r requirements/service.txt
+      - run: python -m pip_audit --require-hashes --disable-pip -r requirements/ci.txt
       # Fail the release gate on high-severity findings. Medium and low findings
       # remain visible in the job log and are triaged before a public release.
       - run: bandit -q -lll -r src/algen_agent_runtime
 
   secrets:
     runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz from the v8.30.1 release's checksums file.
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install and run Gitleaks CLI
         run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
-          gitleaks detect --verbose --redact
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect --verbose --redact
 
   container:
     runs-on: ubuntu-latest
+    env:
+      TRIVY_VERSION: "0.76.1"
+      # SHA-256 of trivy_0.76.1_Linux-64bit.tar.gz from the v0.76.1 release's checksums file.
+      TRIVY_SHA256: "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: docker build -t algen-agent-runtime:scan .
-
-      # 1. Print human-readable vulnerability table in GitHub Actions log
-      - name: Scan container image (console output)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: algen-agent-runtime:scan
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-      # 2. (Optional) Save SARIF report as a downloadable artifact if the repo is private without GHAS
-      - name: Generate SARIF report
+      - name: Install Trivy
+        run: |
+          archive="$RUNNER_TEMP/trivy.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" --version
+      - name: Scan container image
+        run: >-
+          "$RUNNER_TEMP/trivy" image --no-progress --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 algen-agent-runtime:scan
+      - name: Write SARIF report
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: algen-agent-runtime:scan
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-
+        run: >-
+          "$RUNNER_TEMP/trivy" image --no-progress --severity HIGH,CRITICAL --ignore-unfixed
+          --format sarif --output trivy-results.sarif algen-agent-runtime:scan
       - name: Archive Trivy results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: trivy-results
           path: trivy-results.sarif

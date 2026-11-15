@@ -37,6 +37,13 @@ field already has a `format`), and address fields take `{"format": "email"}`. Ru
 To mask PII or credentials in a tool's own logs or errors, call
 `algen_agent_runtime.security.redact_pii(value, schema=...)` and `redact_secrets(value)` (since
 0.2.0b3) instead of copying the rules: they are the guardrails' own.
+Since 0.2.0b4 an approval-gated tool must declare every credential argument it takes (a key such
+as `token`, `api_key` or `client_secret`) under its input schema's `properties`: an agent run
+refuses to put an undeclared one to an approver. The `secrets` guardrail now also redacts token
+shapes (`sk-...`, `AKIA...`, `ghp_...`, JWTs) and URL passwords, which refuses a tool call that
+carries one in its arguments. The tool-result cache defaults to `user` scope (since 0.2.0b4);
+still declare `cache_context` for every context value a result reads. A persistent vector store
+refuses documents without `tenant_id` metadata (since 0.2.0b4).
 
 Tell the ledger what happened when a call fails. Raise `ToolNotAttemptedError` (or a
 `PolicyDeniedError`) when the tool refused before sending anything, or when the provider
@@ -84,13 +91,22 @@ Runtime provides first-class client connectivity through `algen_agent_runtime.mc
   `MCPNotConnected` to the model and emits `mcp.auth_required`, so the UI can show a Connect
   button. Durable or multi-worker deployments need `storage.mcp_oauth_token_store: postgres`, an
   `env://` encryption key and the `encryption` extra. A `client_id` registered with the provider
-  is required (no dynamic client registration). See docs/mcp.md, "OAuth for remote MCP servers".
+  is required (no dynamic client registration). Since 0.2.0b4 a confidential client
+  (`client_secret_ref`) must set `issuer` (or both endpoints), and the callback completes only in
+  the browser that called start (binding cookie) or through `POST /v1/mcp/oauth/complete` as the
+  user who started it: a host whose backend calls start sets `success_redirect_url` and forwards
+  the `status=confirm` redirect's `state` and `code`. See docs/mcp.md, "OAuth for remote MCP
+  servers".
 - Automated discovery and schema conversion from MCP tool descriptors into Runtime `ToolDefinition`.
 - Namespaced registration: `mcp.<server_name>.<tool_name>`.
 - Security boundaries:
   - Child environment sanitization (`SAFE_ENV_PASSTHROUGH` allowlist; secrets are never inherited).
   - Explicit tool allowlists per server (`allowed_tools`).
-  - Secret reference resolution (`env://`) for remote HTTP/SSE authorization headers.
+  - Secret reference resolution (`env://`) for remote HTTP/SSE authorization headers, and from
+    0.2.0b4 for a stdio server's `env` values (resolved at start). A stdio `env` variable whose
+    name names a credential (`GITHUB_TOKEN`, `API_KEY`, `DB_PASSWORD`) must be `env://NAME`; a
+    literal is refused when the settings load. Non-credential values (`LOG_LEVEL: info`) stay
+    literal.
   - Enforced per-call timeouts (`timeout_seconds`), byte caps (`max_result_bytes`), and redacted error outputs.
 - Integration: Declare servers under `mcp_servers` in `agent.yaml`, or register them from a declared
   plugin (`context.mcp_servers.register(config)`), for automated discovery and managed session
@@ -106,7 +122,9 @@ Configure a fixed endpoint or an allowlisted host (`allowed_hosts`), deny privat
 by default (loopback, RFC 1918, link-local, carrier-grade NAT, multicast), protect against DNS
 rebinding via IP-pinned sockets, avoid unvalidated redirects across trust boundaries, propagate the
 idempotency key, and bound response size and time. `core.http` refuses private addresses unless the
-`network` settings allow them; corporate egress goes through `network.egress_proxy`, and per-host
+`network` settings allow them, and since 0.2.0b4 refuses every call while
+`security.allowed_http_hosts` is empty unless `security.allow_any_public_host: true`;
+`core.subprocess` runs only `security.sandbox.allowed_executables` (absolute paths); corporate egress goes through `network.egress_proxy`, and per-host
 CA bundles and mTLS through `network.remotes`.
 
 ## Email

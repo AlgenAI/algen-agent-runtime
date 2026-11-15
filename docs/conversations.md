@@ -84,7 +84,29 @@ async for event in service.events.subscribe(conversation.id, after=last_sequence
 The subscription does not end by itself: a conversation has many turns. Over HTTP,
 `GET /v1/conversations/{id}/events` is server-sent events; reconnect with `Last-Event-ID` set to
 the last sequence received and nothing is lost or repeated. The stored message is the record:
-deltas are provisional, and the completed message replaces them. To follow the agent run behind a
+deltas are provisional, and the completed message replaces them.
+
+**What streamed text shows (0.2.0b4).** Streamed text passes the agent's `after_model` and
+`final_response` policies before it becomes a delta, as the final answer does: a secret or a
+personal identifier the `secrets` or `pii` guardrail masks in the answer is masked in the deltas
+too, even when it arrives split across chunks. To do that the Runtime holds the last 128
+characters back until more text arrives or the response ends (`STREAM_HOLDBACK_CHARS` in
+`algen_agent_runtime.runtime.stream_guard`), so the first delta comes a little later and a short
+answer arrives as one delta at the end. Policies see the text in windows (the held-back text plus
+256 characters before it); a policy that needs the whole answer still runs on it before delivery.
+Before 0.2.0b4 deltas carried the model's raw text, which the completed message then masked.
+
+Deltas can still be withdrawn. `assistant.message.delta.retracted` (`{message_id, reason}`,
+0.2.0b4) means: discard the text this turn's deltas have sent so far. It comes when a policy
+refuses the streamed answer (`reason: policy`), it fails verification and is repaired
+(`verification`) or rejected (`rejected`), or the model call is retried after part of it streamed
+(`model_error`). Text streamed after it starts from empty; the completed message is still the
+answer. A client that ignores the event shows withdrawn text until the turn completes or fails.
+An agent whose streamed text must never be shown before verification sets
+`guardrail_policy.stream_text: off`: its runs record no streamed text, and the turn shows only the
+completed message.
+
+To follow the agent run behind a
 turn rather than the conversation, see [following a run from a host](operations.md#following-a-run-from-a-host).
 
 ## Turns that wait for an approval or an answer
@@ -98,7 +120,10 @@ its suggested `choices` (0.2.0b3). Show it from the message; do not keep a copy.
 
 - **The agent asks.** An agent with `core.ask_user` (and `user.ask` in its `tool_permissions`)
   pauses the turn as `awaiting_input` with the model's `question` and `choices`; the answer is
-  free text (`ConversationInputAnswer`).
+  free text (`ConversationInputAnswer`). From 0.2.0b4 the answer goes through the agent's `input`
+  policies, as the turn's message and steering do: a redacting policy masks it before the model
+  sees it, and an answer a policy denies is refused with `PolicyDeniedError` while the turn
+  keeps waiting for another.
 - **A delegate pauses.** When the turn's run waits for a delegated `core.subagent` run, the
   child's approval or question becomes the turn's `pending` with `child_run_id` set. Answer the
   turn as usual: the child resumes, then the parent, into the same message.

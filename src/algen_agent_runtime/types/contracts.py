@@ -431,6 +431,16 @@ class GuardrailPolicy(StrictModel):
         "out of the context. Off by default, like tool_result_injection.",
     )
     pii: PIIGuardrail = Field(default_factory=PIIGuardrail)
+    stream_text: Literal["redacted", "off"] = Field(
+        default="redacted",
+        description="What a streamed run records of the model's text as it arrives "
+        "(model.delta, forwarded to conversations as assistant.message.delta). ``redacted`` "
+        "(0.2.0b4) sends it after the after_model and final_response policies, holding the "
+        "last characters back so a secret split across chunks is still masked; text the "
+        "policies, verification or a retry later reject is withdrawn with "
+        "model.delta.retracted. ``off`` records no streamed text: clients see only the final, "
+        "verified answer.",
+    )
 
     @model_serializer(mode="wrap")
     def _omit_default_pii(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -442,6 +452,9 @@ class GuardrailPolicy(StrictModel):
         # retrieval_injection (0.2.0b3) likewise, while it is off.
         if isinstance(data, dict) and self.retrieval_injection == "off":
             data.pop("retrieval_injection", None)
+        # stream_text (0.2.0b4) likewise, while it is the default.
+        if isinstance(data, dict) and self.stream_text == "redacted":
+            data.pop("stream_text", None)
         return data
 
 
@@ -878,6 +891,9 @@ class ArtifactDescriptor(StrictModel):
     id: str
     tenant_id: str
     run_id: str | None = None
+    # The user who owns it: the uploader, or the user of the run that produced it. ``None`` for
+    # artifacts stored before 0.2.0b4 and for ones a host stores without naming a user.
+    user_id: str | None = None
     name: str
     media_type: str
     size_bytes: int = Field(ge=0)
@@ -892,6 +908,9 @@ class Artifact(StrictModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     tenant_id: str
     run_id: str | None = None
+    # The owner (see ArtifactDescriptor.user_id); the API routes let only the owner, the user of
+    # the artifact's run, or a principal with ``artifacts:admin`` read or delete it.
+    user_id: str | None = None
     name: str
     media_type: str
     data: bytes

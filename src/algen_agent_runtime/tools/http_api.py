@@ -16,7 +16,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
-from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -38,7 +38,9 @@ from algen_agent_runtime.tools.contracts import (
 SecretResolver = Callable[[str], Awaitable[str]]
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _WHOLE_PLACEHOLDER = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
-_LINK_NEXT = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?', re.IGNORECASE)
+# Linear: the URL cannot contain '<' or '>', so a run of '<' is not re-scanned per start.
+_LINK_NEXT = re.compile(r'<([^<>]*)>\s*;\s*rel="?next"?', re.IGNORECASE)
+_MAX_LINK_HEADER = 8192
 _KEPT_HEADERS = frozenset({"content-type", "etag", "x-ratelimit-remaining", "retry-after"})
 # Headers a caller credential may never be sent as.
 _RESERVED_HEADERS = frozenset(
@@ -238,30 +240,45 @@ def http_api_tool(
         response_headers: dict[str, str] = {}
         page_number = config.pagination.start_page
         next_url: str | None = url
+        stopped: str | None = None
         while next_url is not None and pages < config.pagination.max_pages:
             page_query = list(query)
             if config.pagination.type == "page_param":
                 page_param = config.pagination.page_param
                 page_query = [pair for pair in page_query if pair[0] != page_param]
                 page_query.append((page_param, str(page_number)))
-            await validate_outbound_url(next_url, allowed_hosts, allow_private_networks)
             # A Link header's next URL already carries its own query.
             following_link = config.pagination.type == "link_header" and next_url != url
-            if caller_auth and following_link and _origin(next_url) != origin:
-                # The user's credential goes only to the declared origin, never to another host
-                # a response points at, even an allowlisted one.
-                raise ToolExecutionError(
-                    f"{config.name}: the next page is on another origin; the caller's credential "
-                    "is not sent there"
-                )
-            response = await http_client.request(
+            if following_link and _origin(next_url) != origin:
+                # Credentials (static secrets or the caller's) go only to the declared origin
+                # and scheme, never to another host a response points at, even an allowlisted
+                # one, and never downgraded to http. Stop and return what was collected.
+                stopped = "the next page is on another origin; pagination stopped there"
+                break
+            await validate_outbound_url(next_url, allowed_hosts, allow_private_networks)
+            async with http_client.stream(
                 config.method,
                 next_url,
                 params=None if following_link else tuple(page_query),
                 headers=headers,
                 json=body,
                 timeout=config.timeout_seconds,
-            )
+            ) as streamed:
+                content = await _read_limited(
+                    streamed, config.max_result_bytes - total_bytes, config.name, config
+                )
+                # The body is already decoded: keep the headers that describe it, not its
+                # transfer.
+                response = httpx.Response(
+                    streamed.status_code,
+                    headers=[
+                        (key, value)
+                        for key, value in streamed.headers.multi_items()
+                        if key.lower()
+                        not in {"content-encoding", "content-length", "transfer-encoding"}
+                    ],
+                    content=content,
+                )
             pages += 1
             status = response.status_code
             response_headers = {
@@ -269,11 +286,7 @@ def http_api_tool(
                 for key, value in response.headers.items()
                 if key.lower() in _KEPT_HEADERS
             }
-            total_bytes += len(response.content)
-            if total_bytes > config.max_result_bytes:
-                raise ToolExecutionError(
-                    f"the response from {config.name} is larger than {config.max_result_bytes} bytes"
-                )
+            total_bytes += len(content)
             parsed = _parse_body(response)
             if not response.is_success:
                 return {
@@ -293,8 +306,7 @@ def http_api_tool(
                 )
             collected.extend(items)
             if config.pagination.type == "link_header":
-                found = _LINK_NEXT.search(response.headers.get("link", ""))
-                next_url = found.group(1) if found else None
+                next_url = _next_link(response.headers.get("link", ""), next_url)
             else:
                 page_number += 1
                 next_url = url if items else None
@@ -305,13 +317,16 @@ def http_api_tool(
             if config.response.select and config.pagination.type == "none"
             else data
         )
-        return {
+        result = {
             "ok": True,
             "status": status,
             "headers": response_headers,
             "data": selected,
             "pages": pages,
         }
+        if stopped is not None:
+            result["pagination_stopped"] = stopped
+        return result
 
     side_effect = config.side_effect or (
         SideEffect.READ if config.method == "GET" else SideEffect.EXTERNAL
@@ -326,6 +341,7 @@ def http_api_tool(
             "status": {"type": "integer"},
             "headers": {"type": "object"},
             "pages": {"type": "integer"},
+            "pagination_stopped": {"type": "string"},
             "data": config.response.output_schema or {},
         },
         "required": ["ok", "status", "data"],
@@ -465,6 +481,32 @@ _MISSING: Any = object()
 
 def _as_text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
+
+
+async def _read_limited(
+    response: httpx.Response, limit: int, name: str, config: HttpToolConfig
+) -> bytes:
+    """Read a streamed body, refusing it as soon as it passes ``limit`` bytes."""
+    declared = response.headers.get("content-length", "")
+    body = bytearray()
+    if not (declared.isdigit() and int(declared) > limit):
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > limit:
+                break
+        else:
+            return bytes(body)
+    raise ToolExecutionError(
+        f"the response from {name} is larger than {config.max_result_bytes} bytes"
+    )
+
+
+def _next_link(header: str, current: str) -> str | None:
+    """The ``rel="next"`` URL of a Link header, resolved against the current page."""
+    if not header or len(header) > _MAX_LINK_HEADER:
+        return None
+    found = _LINK_NEXT.search(header)
+    return urljoin(current, found.group(1).strip()) if found else None
 
 
 def _parse_body(response: httpx.Response) -> Any:

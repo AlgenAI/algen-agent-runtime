@@ -74,6 +74,9 @@ class MCPOAuthPendingAuthorization(StrictModel):
     code_verifier: SecretStr
     redirect_uri: str
     expires_at: datetime
+    # SHA-256 of the browser-binding nonce the start route set as a cookie; None for an
+    # authorization started before 0.2.0b4, which only an authenticated completion can finish.
+    binding_hash: str | None = None
 
     def to_plain_json(self) -> str:
         return json.dumps(

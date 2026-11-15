@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — beta (`0.2.0b3`)  
-Last reviewed: 2026-11-12
+Status: Active tracking — beta (`0.2.0b3`; `0.2.0b4` in preparation)  
+Last reviewed: 2026-11-15
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -28,7 +28,8 @@ production evidence rather than for the feature list.
 | `0.2.0b1` | Beta: deprecated APIs removed; optional `server`/`otlp` extras and the namespaced examples package ([#115](https://github.com/AlgenAI/algen-agent-runtime/issues/115)); strict approval binding ([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109), [#117](https://github.com/AlgenAI/algen-agent-runtime/issues/117), [#127](https://github.com/AlgenAI/algen-agent-runtime/issues/127)) and the other open issues | Released; entry criteria met or waived |
 | `0.2.0b2` | Fixes from an independent review of 0.2.0b1 (session ownership, run actors, delegation allowlist, output integrity, policy false positives); approval attribution, client credentials, `core.subagent` from settings. Additive surface; behaviour changes listed in the upgrade notes | Released |
 | `0.2.0b3` | Conversation turns survive restarts and deploys; pauses followed end to end (delegated pauses, `core.ask_user`, credentials after recovery); `budget.on_limit: summarize`; typed run errors; migration SQL, `check_schema`, user data export and erasure; public redaction helpers; settable context budget; workflow approval and input routes follow the run actor rule; the host skill and skills installed from the package. Additive surface; behaviour changes listed in the upgrade notes | Released |
-| `0.2.0b4` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
+| `0.2.0b4` | Security assessment fixes; framework adapter fixes ([#146](https://github.com/AlgenAI/algen-agent-runtime/issues/146)); GA evidence: the deployment scope and adapter support decided, upgrade and rollback drills against `0.1.0a23` and `0.2.0b3`, the [upgrade guide](upgrading.md), the [support and deprecation policy](api-stability.md#support-and-deprecation-policy-1x), and the performance suite with published results ([#118](https://github.com/AlgenAI/algen-agent-runtime/issues/118)) | Public API candidate frozen; only fixes and additive changes |
+| `0.2.0b5` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
 | `1.0.0` | General availability | Every box below is checked |
@@ -50,14 +51,19 @@ A breaking change after `0.2.0b1` restarts the stability window.
 
 ## Scope decision
 
-- [ ] Decide and document the GA deployment scope. The recommended scope is **single node**: one
+- [x] Decide and document the GA deployment scope. **Decided on 2026-11-15: single node**, one
       Runtime process per deployment with PostgreSQL (and optionally Redis) stores. Horizontal
       scaling stays experimental in `1.0` unless every item under "Remaining for hardened multi-worker
       or horizontally scaled use" in [production readiness](production-readiness.md) is complete, or
       durable distributed execution is provided through an integration (for example Temporal).
-- [ ] Decide the supported framework adapters. LangGraph and the OpenAI Agents SDK are supported
-      today; AutoGen is archived upstream and should be removed or frozen; CrewAI stays experimental
-      unless it gains real-SDK evidence.
+      Documented in [production readiness](production-readiness.md#deployment-scope),
+      [operations](operations.md) and [API stability](api-stability.md#experimental-interfaces).
+- [x] Decide the supported framework adapters. **Decided on 2026-11-15:** LangGraph and the OpenAI
+      Agents SDK are supported; AutoGen is experimental and frozen (its upstream README says the
+      project is archived and gets no bug or security fixes; the last `autogen-agentchat` release
+      is `0.7.5`, 2025-09-30; the GitHub repository is not yet flagged archived); CrewAI stays
+      experimental until it gains real-SDK evidence
+      ([framework adapters](framework-adapters.md#support-status)).
 
 ## P0: hardened single-node production
 
@@ -71,9 +77,11 @@ A breaking change after `0.2.0b1` restarts the stability window.
   - [x] 7. Resource bounds and retention (`0.1.0a18`).
 - [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated
-      process failure. Schema upgrade and rollback (against `0.1.0a23`), restart-safe approvals and
-      tool execution, and recovery under repeated process failure have evidence in the persistence
-      drills (`tests/drills`); the rest of the gate does not yet.
+      process failure. Schema upgrade and rollback (against `0.1.0a23` and `0.2.0b3`), restart-safe
+      approvals and tool execution, and recovery under repeated process failure have evidence in
+      the persistence drills (`tests/drills`); bounded resource use under load and between tenants
+      in the performance suite (`tests/perf`). Provider cancellation and redacted telemetry do not
+      yet.
 
 ## Public API
 
@@ -86,22 +94,31 @@ A breaking change after `0.2.0b1` restarts the stability window.
       `tools.adapters.database_tool`, the `0.1.0a14` `UsageMeter.reserve` form without `call`, and
       the document extractors in `algen_agent_runtime.security` (`0.2.0b1`).
 - [ ] Experimental interfaces that are not ready are moved out of the public surface or marked
-      experimental in code and docs.
-- [ ] A long-term support and deprecation policy is published: how long a deprecated interface keeps
-      working in `1.x`, which Python versions are supported, and how security fixes are backported.
+      experimental in code and docs. Listed and marked in the docs on 2026-11-15
+      ([experimental interfaces](api-stability.md#experimental-interfaces): horizontal scaling and
+      distributed execution, the AutoGen and CrewAI adapters); not yet marked in code (docstrings,
+      `surface.json`).
+- [x] A long-term support and deprecation policy is published: how long a deprecated interface keeps
+      working in `1.x`, which Python versions are supported, and how security fixes are backported
+      ([support and deprecation policy](api-stability.md#support-and-deprecation-policy-1x):
+      two minor releases and six months; Python 3.12 and 3.13; the latest minor plus the previous
+      minor for six months). `SECURITY.md` adopts its supported-versions table at `1.0.0`.
 - [x] An API-diff check runs in CI and fails on an unannounced change to the public surface:
       `tests/unit/test_api_surface.py`, in the base test job, prints what changed.
 
 ## Upgrades and data
 
-- [ ] Every migration has an upgrade test from the previous minor release and a documented rollback
-      or restore procedure. The drills test upgrade from and rollback to the previous release's tag
-      (`ALGEN_DRILL_PREVIOUS_RELEASE`, today `v0.1.0a23`); the procedures are in
-      [operations](operations.md#upgrades-and-rollback). Pointing them at the previous minor
-      release is left for `0.2`.
-- [ ] Checkpoints written by the previous minor release resume on the new one (tested). A run
-      `0.1.0a23` paused resumes on the current code in the upgrade drill.
-- [ ] An upgrade guide covers each `0.x` minor release up to `1.0`.
+- [x] Every migration has an upgrade test from the previous minor release and a documented rollback
+      or restore procedure. The drills (`tests/drills/test_upgrade_rollback.py`) upgrade from and
+      roll back to two tags, `v0.1.0a23` (the previous minor's last release, so every `0.2`
+      migration from `017` on is applied in the test) and `v0.2.0b3` (the previous release); the
+      procedures and a per-migration rollback table are in
+      [operations](operations.md#upgrades-and-rollback).
+- [x] Checkpoints written by the previous minor release resume on the new one (tested). A run
+      `0.1.0a23` (and `0.2.0b3`) paused, in that release's own code, resumes on the current code in
+      the upgrade drill, with its approval, ledger and one external effect.
+- [x] An upgrade guide covers each `0.x` minor release up to `1.0`: [upgrading](upgrading.md)
+      covers `0.1` to `0.2` (each `0.2` beta); a section is added for each later minor.
 
 ## Release engineering
 
@@ -112,20 +129,30 @@ A breaking change after `0.2.0b1` restarts the stability window.
 
 ## Operations
 
-- [ ] Load, soak, fault-injection, crash-recovery and noisy-neighbor tests with published results.
-      Crash-recovery, store fault-injection and a bounded soak exist as persistence drills, with a
-      first local result in [operations](operations.md#running-the-drills); load and
-      noisy-neighbor tests and a published long soak do not.
+- [x] Load, soak, fault-injection, crash-recovery and noisy-neighbor tests with published results.
+      Crash-recovery and store fault-injection run as persistence drills (`tests/drills`); the
+      load and noisy-neighbour tests are in the performance suite (`tests/perf`, marker `perf`);
+      the soak drill ran 5,000 items. Results, machine and commit are in
+      [operations](operations.md#performance-and-capacity-evidence) (2026-11-15, `0.2.0b3`). A
+      soak of hours on a production-like deployment remains open.
 - [ ] Golden telemetry and redaction tests across model, tool, retrieval, approval, verification and
       failure paths.
 - [ ] Published SLOs, capacity guidance, dashboards, alerts and runbooks for the single-node scope.
-- [ ] Benchmark baselines for latency overhead per step and per tool call.
+      Proposed SLOs, capacity guidance, alerts and runbooks are published
+      ([operations](operations.md#slos-alerts-and-runbooks-single-node)); no dashboards are
+      shipped, and there is no run-level metric to build them on yet.
+- [x] Benchmark baselines for latency overhead per step and per tool call
+      (`tests/perf/test_overhead.py`; [results](operations.md#overhead-per-step-and-per-tool-call):
+      p95 per step 2.1 ms in memory and 34.9 ms on PostgreSQL).
 
 ## Documentation
 
-- [ ] Every doc page reviewed for the `1.0` scope; stale version references removed.
+- [ ] Every doc page reviewed for the `1.0` scope; stale version references removed. Stale version
+      references in `docs/*.md` were fixed on 2026-11-15 (historical pages marked as such); the
+      full review for the `1.0` scope is still to do.
 - [ ] The comparison in [Who should use it](why-algen-agent-runtime.md) refreshed within the quarter
-      before release.
+      before release. Competitor versions re-checked on 2026-11-15; the capability rows are from
+      2026-10-28 and the Algen column from `0.1.0a21`.
 - [ ] Studio's Runtime documentation synced for `1.0`.
 
 ## Stability evidence

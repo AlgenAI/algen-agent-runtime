@@ -85,7 +85,8 @@ def _runtime(
     runtime = make_runtime(
         MockModelProvider(list(responses)),
         make_agent(
-            enabled_tools=frozenset({"core.subagent", "core.ask_user", "api.read"}),
+            # A delegate may use only tools its delegating agent enables (0.2.0b4).
+            enabled_tools=frozenset({"core.subagent", "core.ask_user", "api.read", "mail.send"}),
             tool_permissions=frozenset({"agents.delegate", "user.ask"}),
             delegates=frozenset({"child-agent"}),
         ),

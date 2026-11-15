@@ -78,7 +78,10 @@ The same `attachments` list is accepted by:
 The run is refused (it fails with a clear error, and no model is called) when:
 
 - the agent did not opt in;
-- an artifact is missing, belongs to another tenant (reported as missing), or is not `available`;
+- an artifact is missing, belongs to another tenant or (from 0.2.0b4) to another user of the
+  tenant (both reported as missing), or is not `available`. Over HTTP, an artifact stored before
+  0.2.0b4 without an owner is accepted only from the user of its run or a principal with
+  `artifacts:admin`; see [who may use an artifact](artifacts.md#who-may-use-an-artifact-020b4);
 - its **real** type, read from the bytes (magic numbers), is not allowed by the agent and by
   `security.allowed_attachment_types`, or differs from the declared `media_type`. Formats models do
   not read, such as HEIC, are refused unless a tool reads them (section 10); the Runtime does not
@@ -228,8 +231,9 @@ artifact store (`store` below; the host hands the tool that store):
 from algen_agent_runtime.tools.contracts import ToolFile, ToolResult
 
 async def render_pages(arguments, context):
-    artifact = await store.put(Artifact(tenant_id=context.tenant_id, name="page-1.png",
-                                        media_type="image/png", data=png))
+    artifact = Artifact(tenant_id=context.tenant_id, user_id=context.user_id,
+                        name="page-1.png", media_type="image/png", data=png)
+    await store.put(artifact)
     return ToolResult(
         value={"pages": 1, "coverage": "none"},
         files=(ToolFile(artifact_id=artifact.id, media_type="image/png", name="page 1"),),

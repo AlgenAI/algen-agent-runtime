@@ -141,16 +141,21 @@ class RedisRunStore:
             run_id = await self._redis.get(self._turn_key(tenant_id, conversation_id, turn_id))
             if run_id:
                 value = await self._redis.get(self._key(tenant_id, _text(run_id)))
-                return RunState.model_validate_json(value) if value else None
+                if not value:
+                    return None
+                indexed = RunState.model_validate_json(value)
+                return indexed if indexed.request.tenant_id == tenant_id else None
             latest: RunState | None = None
-            pattern = f"{self._prefix}:tenant:{tenant_id}:run:*"
+            # Escaped: a tenant id holding ``*`` or ``:`` must not match another tenant's keys.
+            pattern = f"{_glob_escape(self._prefix)}:tenant:{_glob_escape(tenant_id)}:run:*"
             async for key in self._redis.scan_iter(match=pattern, count=1000):
                 value = await self._redis.get(key)
                 if not value:
                     continue
                 state = RunState.model_validate_json(value)
                 if (
-                    state.request.conversation_id == conversation_id
+                    state.request.tenant_id == tenant_id
+                    and state.request.conversation_id == conversation_id
                     and state.request.turn_id == turn_id
                     and (latest is None or state.updated_at > latest.updated_at)
                 ):

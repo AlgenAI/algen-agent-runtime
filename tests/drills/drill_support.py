@@ -186,17 +186,47 @@ async def apply_migrations(dsn: str, through: str) -> list[str]:
     return names
 
 
-# --- The previous release ----------------------------------------------------------------------
+# --- The previous releases ---------------------------------------------------------------------
 
-# The release before this one, and the last migration it applies. Move both together when a
-# release ships; test_the_previous_release_matches_its_tag checks them against the tag.
-PREVIOUS_RELEASE = os.environ.get("ALGEN_DRILL_PREVIOUS_RELEASE", "v0.1.0a23")
-PREVIOUS_LAST_MIGRATION = os.environ.get("ALGEN_DRILL_PREVIOUS_LAST_MIGRATION", "016")
+
+@dataclass(frozen=True)
+class Release:
+    """A released version the upgrade and rollback drills run against, and the last migration
+    (its number prefix, such as ``"016"``) that release applies."""
+
+    tag: str
+    last_migration: str
+
+
+def _previous_releases() -> tuple[Release, ...]:
+    tag = os.environ.get("ALGEN_DRILL_PREVIOUS_RELEASE")
+    if tag:
+        return (Release(tag, os.environ.get("ALGEN_DRILL_PREVIOUS_LAST_MIGRATION", "016")),)
+    return (Release("v0.1.0a23", "016"), Release("v0.2.0b3", "022"))
+
+
+# The drills upgrade from and roll back to each of these: the previous minor line's last release
+# (0.1.0a23) and the release before this one (0.2.0b3). When a release ships, replace the second
+# with it; when a minor line ends, its last release becomes the first.
+# test_the_previous_release_matches_its_tag checks each against its tag.
+# ALGEN_DRILL_PREVIOUS_RELEASE (with ALGEN_DRILL_PREVIOUS_LAST_MIGRATION) runs one release only.
+PREVIOUS_RELEASES = _previous_releases()
 _previous_source: dict[str, Path] = {}
 
 
-def previous_release_migrations() -> list[str]:
-    """The migration files the previous release ships, from its git tag; skips without the tag."""
+def _require_tag(tag: str) -> None:
+    found = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet", tag],
+        capture_output=True,
+        check=False,
+    )
+    if found.returncode != 0:
+        pytest.skip(f"the previous release's tag {tag} is not in this checkout")
+
+
+def previous_release_migrations(tag: str) -> list[str]:
+    """The migration files a previous release ships, from its git tag; skips without the tag."""
+    _require_tag(tag)
     found = subprocess.run(
         [
             "git",
@@ -204,39 +234,30 @@ def previous_release_migrations() -> list[str]:
             str(ROOT),
             "ls-tree",
             "--name-only",
-            PREVIOUS_RELEASE,
+            tag,
             "src/algen_agent_runtime/persistence/migrations/",
         ],
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
     )
-    if found.returncode != 0:
-        pytest.skip(f"the previous release's tag {PREVIOUS_RELEASE} is not in this checkout")
     return sorted(Path(line).name for line in found.stdout.splitlines() if line.endswith(".sql"))
 
 
-def previous_release_source() -> Path:
-    """The previous release's ``src`` directory, from its git tag; skips without the tag (CI
+def previous_release_source(tag: str) -> Path:
+    """A previous release's ``src`` directory, from its git tag; skips without the tag (CI
     checks out with ``fetch-depth: 0`` for the drills)."""
-    if PREVIOUS_RELEASE in _previous_source:
-        return _previous_source[PREVIOUS_RELEASE]
-    repository = ROOT
-    found = subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "--verify", "--quiet", PREVIOUS_RELEASE],
-        capture_output=True,
-        check=False,
-    )
-    if found.returncode != 0:
-        pytest.skip(f"the previous release's tag {PREVIOUS_RELEASE} is not in this checkout")
+    if tag in _previous_source:
+        return _previous_source[tag]
+    _require_tag(tag)
     target = Path(tempfile.mkdtemp(prefix="algen-previous-release-"))
     archive = subprocess.run(
-        ["git", "-C", str(repository), "archive", PREVIOUS_RELEASE, "src/algen_agent_runtime"],
+        ["git", "-C", str(ROOT), "archive", tag, "src/algen_agent_runtime"],
         capture_output=True,
         check=True,
     )
     subprocess.run(["tar", "-x", "-C", str(target)], input=archive.stdout, check=True)
-    _previous_source[PREVIOUS_RELEASE] = target / "src"
+    _previous_source[tag] = target / "src"
     return target / "src"
 
 

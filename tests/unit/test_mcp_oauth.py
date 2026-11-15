@@ -165,6 +165,7 @@ def server_config(**auth: Any) -> MCPStreamableHttpServerConfig:
             **{
                 "client_id": "slack-client",
                 "client_secret_ref": "env://SLACK_CLIENT_SECRET",
+                "issuer": ISSUER,
                 "scopes": ("channels:read", "chat:write"),
                 "redirect_uri": REDIRECT,
                 **auth,
@@ -196,7 +197,7 @@ async def connect(
 ) -> None:
     started = await manager.start("slack", tenant, user)
     code, state = provider.consent(started.authorize_url)
-    await manager.complete(state, code)
+    await manager.complete(state, code, tenant_id=tenant, user_id=user)
 
 
 class FakeSession:
@@ -269,6 +270,8 @@ def test_old_configs_without_auth_are_unchanged() -> None:
         ({"discovery_user_id": "u1"}, "token_scope 'user'"),
         ({"token_scope": "user", "discovery_tenant_id": "t1"}, "discovery_user_id"),
         ({"scopes": ("two words",)}, "whitespace"),
+        # The client secret only goes to an authorization server the operator chose.
+        ({"issuer": None}, "confidential client"),
         ({"surprise": True}, "Extra inputs"),
     ],
 )
@@ -307,6 +310,7 @@ mcp_servers:
       type: oauth
       client_id_ref: env://LINEAR_CLIENT_ID
       client_secret_ref: env://LINEAR_CLIENT_SECRET
+      issuer: https://mcp.linear.app
       scopes: [read, write]
       token_scope: user
       redirect_uri: https://runtime.example.com/v1/mcp/oauth/callback
@@ -352,7 +356,7 @@ async def test_happy_path_authorizes_with_pkce_and_stores_the_tokens() -> None:
     assert "client_secret" not in started.authorize_url
 
     code, state = provider.consent(started.authorize_url)
-    completion = await manager.complete(state, code)
+    completion = await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
     assert completion.key == MCPTokenKey("tenant-a", None, "slack")
     assert completion.status.connected and completion.status.refreshable
     exchange = provider.token_requests[0]
@@ -390,7 +394,7 @@ async def test_explicit_endpoints_and_public_clients_skip_discovery_and_secret()
     started = await manager.start("slack", "tenant-a", "alice")
     assert "resource=" not in started.authorize_url
     state = parse_qs(urlsplit(started.authorize_url).query)["state"][0]
-    await manager.complete(state, "code")
+    await manager.complete(state, "code", tenant_id="tenant-a", user_id="alice")
     assert seen == ["https://slack.example.com/oauth/token"]
     assert await manager.access_token("slack", "tenant-a", "alice") == "public-access"
 
@@ -416,10 +420,10 @@ async def test_state_replay_unknown_state_and_expiry_are_rejected() -> None:
     manager, provider = make_manager(clock=clock)
     started = await manager.start("slack", "tenant-a", "alice")
     code, state = provider.consent(started.authorize_url)
-    await manager.complete(state, code)
+    await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
     # Replaying the provider's redirect finds no state: it was used once and deleted.
     with pytest.raises(MCPOAuthStateError, match="already used"):
-        await manager.complete(state, code)
+        await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
     # A forged callback (CSRF) has a state the Runtime never issued, or none.
     with pytest.raises(MCPOAuthStateError):
         await manager.complete("forged-state", "attacker-code")
@@ -429,12 +433,12 @@ async def test_state_replay_unknown_state_and_expiry_are_rejected() -> None:
     code, state = provider.consent(started.authorize_url)
     clock.advance(601)
     with pytest.raises(MCPOAuthStateError, match="expired"):
-        await manager.complete(state, code)
+        await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
     # The provider's own refusal consumes the state and stores nothing.
     started = await manager.start("slack", "tenant-b", "carol")
     _, state = provider.consent(started.authorize_url)
     with pytest.raises(MCPOAuthError, match="access_denied") as refused:
-        await manager.complete(state, None, "access_denied")
+        await manager.complete(state, None, "access_denied", tenant_id="tenant-b", user_id="carol")
     assert refused.value.server == "slack"
     assert not (await manager.status("slack", "tenant-b", "carol")).connected
 
@@ -471,6 +475,8 @@ async def test_user_scope_keeps_one_connection_per_user_and_fails_closed_without
     mcp, opened = client_manager(manager)
     await mcp.discover_tools("slack", tenant_id="tenant-a", user_id="alice")
     tool = mcp._discovered_tools["mcp.slack.post_message"]
+    # A per-user connection answers as that user: a cached result is keyed on the user.
+    assert tool.definition.cache_context == frozenset({"user_id"})
     with pytest.raises(PolicyDeniedError):
         await tool.execute(
             {"text": "hi"}, fake_tool_context(tool, tenant_id="tenant-a", user_id="")
@@ -564,6 +570,8 @@ async def test_not_connected_reaches_the_model_as_a_clean_tool_error(
     await connect(manager, provider, "tenant-a", "alice")
     mcp, _ = client_manager(manager)
     tools = await mcp.discover_tools("slack", tenant_id="tenant-a")
+    # A tenant-wide connection keeps the cache policy's own scope.
+    assert all(tool.definition.cache_context == frozenset() for tool in tools)
     agent = make_agent(
         enabled_tools={"mcp.slack.post_message"},
         tool_permissions={"mcp.slack"},
@@ -775,7 +783,7 @@ async def test_postgres_store_encrypts_and_binds_rows_to_their_tenant() -> None:
     stored_state = next(iter(database.states.values()))[0]
     assert "alice" not in stored_state and started.authorize_url not in stored_state
     code, state = provider.consent(started.authorize_url)
-    await manager.complete(state, code)
+    await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
     assert database.states == {}
     ciphertext = database.tokens[("tenant-a", "", "slack")]
     assert ciphertext.startswith("v1.")
@@ -788,7 +796,7 @@ async def test_postgres_store_encrypts_and_binds_rows_to_their_tenant() -> None:
     # Revoke still removes a row it cannot read.
     assert (await manager.revoke("slack", "tenant-b", "bob")).removed
     with pytest.raises(MCPOAuthStateError):
-        await manager.complete(state, code)
+        await manager.complete(state, code, tenant_id="tenant-a", user_id="alice")
 
 
 def test_container_selects_the_encrypted_store_without_importing_the_driver(
@@ -853,9 +861,17 @@ async def test_routes_run_the_flow_and_never_return_a_token() -> None:
         assert callback.headers["cache-control"] == "no-store"
         assert callback.json()["connected"] is True and callback.json()["tools_ready"] is True
         assert "mcp.slack.post_message" in {tool.definition.name for tool in container.tools.list()}
+        # The binding cookie was deleted with the first callback.
+        replay = await client.get("/v1/mcp/oauth/callback", params={"state": state, "code": code})
+        assert replay.status_code == 400
+        assert replay.json()["code"] == "mcp_oauth_unbound"
+        # Replayed with the cookie, the state is gone.
+        cookie = {started.json()["binding_cookie"]: started.json()["browser_binding"]}
+        client.cookies.update(cookie)
         replay = await client.get("/v1/mcp/oauth/callback", params={"state": state, "code": code})
         assert replay.status_code == 400
         assert replay.json()["code"] == "mcp_oauth_invalid_state"
+        client.cookies.clear()
 
         status = await client.get(
             "/v1/mcp/servers/slack/oauth/status", headers=headers(scopes="mcp:read")
@@ -908,3 +924,115 @@ async def test_callback_redirects_to_the_configured_page() -> None:
         )
         assert refused.status_code == 303
         assert "status=error" in refused.headers["location"]
+
+
+def _app_with(manager: MCPOAuthManager) -> Any:
+    settings = AppSettings.model_validate(
+        {"mcp_servers": [server_config().model_dump(mode="json")]}
+    )
+    container = build_container(settings, environment=ENV)
+    container = dataclasses.replace(container, mcp=client_manager(manager)[0])
+    return create_app(settings, container), container
+
+
+async def test_an_authorize_url_given_to_another_browser_does_not_connect_their_account() -> None:
+    """Login CSRF: the attacker starts, the victim consents; the victim's account must not end
+    up connected under the attacker's principal."""
+    manager, provider = make_manager()
+    app, _ = _app_with(manager)
+    transport = httpx.ASGITransport(app=app)
+    base = "https://runtime.example.com"
+    async with (
+        httpx.AsyncClient(transport=transport, base_url=base) as attacker,
+        httpx.AsyncClient(transport=transport, base_url=base) as victim,
+    ):
+        started = await attacker.post(
+            "/v1/mcp/servers/slack/oauth/start", headers=headers("tenant-a", "mallory")
+        )
+        assert "httponly" in started.headers["set-cookie"].lower()
+        assert "samesite=lax" in started.headers["set-cookie"].lower()
+        code, state = provider.consent(started.json()["authorize_url"])
+        # The victim's browser follows the provider's redirect: it has no binding cookie.
+        unbound = await victim.get("/v1/mcp/oauth/callback", params={"state": state, "code": code})
+        assert unbound.status_code == 400 and unbound.json()["code"] == "mcp_oauth_unbound"
+        # A host finishing it as the signed-in victim is refused too.
+        other = await victim.post(
+            "/v1/mcp/oauth/complete",
+            json={"state": state, "code": code},
+            headers=headers("tenant-a", "victim"),
+        )
+        assert other.status_code == 400 and other.json()["code"] == "mcp_oauth_invalid_state"
+        # A forged binding cookie does not help either.
+        started = await attacker.post(
+            "/v1/mcp/servers/slack/oauth/start", headers=headers("tenant-a", "mallory")
+        )
+        code, state = provider.consent(started.json()["authorize_url"])
+        victim.cookies.set(started.json()["binding_cookie"], "guessed")
+        forged = await victim.get("/v1/mcp/oauth/callback", params={"state": state, "code": code})
+        assert forged.status_code == 400 and forged.json()["code"] == "mcp_oauth_invalid_state"
+    assert not (await manager.status("slack", "tenant-a", "mallory")).connected
+    assert provider.token_requests == []
+
+
+async def test_a_host_finishes_an_unbound_callback_as_the_user_who_started_it() -> None:
+    target = "https://studio.example.com/connections"
+    manager, provider = make_manager(success_redirect_url=target)
+    app, _ = _app_with(manager)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://runtime.example.com"
+    ) as client:
+        # The host's backend called start, so the browser has no binding cookie.
+        started = await client.post("/v1/mcp/servers/slack/oauth/start", headers=headers())
+        client.cookies.clear()
+        code, state = provider.consent(started.json()["authorize_url"])
+        forwarded = await client.get(
+            "/v1/mcp/oauth/callback", params={"state": state, "code": code}
+        )
+        assert forwarded.status_code == 303
+        query = parse_qs(urlsplit(forwarded.headers["location"]).query)
+        assert query["status"] == ["confirm"] and query["mcp_server"] == ["slack"]
+        assert query["state"] == [state] and query["code"] == [code]
+        assert provider.token_requests == []  # nothing was exchanged or consumed yet
+        finished = await client.post(
+            "/v1/mcp/oauth/complete",
+            json={"state": query["state"][0], "code": query["code"][0]},
+            headers=headers(),
+        )
+        assert finished.status_code == 200 and finished.json()["connected"] is True
+        assert finished.headers["cache-control"] == "no-store"
+        unauthenticated = await client.post(
+            "/v1/mcp/oauth/complete", json={"state": state, "code": code}
+        )
+        assert unauthenticated.status_code in {401, 403}
+    assert (await manager.status("slack", "tenant-a", "alice")).connected
+
+
+async def test_completing_needs_a_binding_or_the_starting_principal() -> None:
+    manager, provider = make_manager()
+    started = await manager.start("slack", "tenant-a", "alice")
+    code, state = provider.consent(started.authorize_url)
+    with pytest.raises(MCPOAuthStateError, match="browser binding or the principal"):
+        await manager.complete(state, code)
+    with pytest.raises(MCPOAuthStateError, match="another user"):
+        await manager.complete(state, code, tenant_id="tenant-b", user_id="alice")
+    started = await manager.start("slack", "tenant-a", "alice")
+    code, state = provider.consent(started.authorize_url)
+    completion = await manager.complete(state, code, browser_binding=started.browser_binding)
+    assert completion.status.connected
+    assert started.browser_binding not in repr(started)
+
+
+async def test_oversized_metadata_and_token_responses_are_not_buffered() -> None:
+    huge = b"{" + b" " * (2 * 1024 * 1024) + b"}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=huge, headers={"content-type": "application/json"})
+
+    manager = MCPOAuthManager(
+        [server_config()],
+        InMemoryMCPTokenStore(),
+        environment=ENV,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(MCPOAuthError, match="no OAuth metadata"):
+        await manager.start("slack", "tenant-a", "alice")

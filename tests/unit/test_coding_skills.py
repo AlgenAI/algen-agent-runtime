@@ -158,6 +158,24 @@ def test_force_replaces_the_folder(tmp_path: Path, capsys: pytest.CaptureFixture
     assert (host / "SKILL.md").is_file()
 
 
+@pytest.mark.parametrize("linked", [".agents", ".agents/skills"])
+def test_install_refuses_a_symlinked_skills_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], linked: str
+) -> None:
+    project, elsewhere = tmp_path / "checkout", tmp_path / "home"
+    project.mkdir()
+    elsewhere.mkdir()
+    link = project / linked
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(elsewhere, target_is_directory=True)
+
+    code, out, err = _skills(capsys, "install", "--path", str(project), "--force")
+
+    assert code == 1 and out == ""
+    assert "symbolic link" in err
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_unknown_skill_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code, _, err = _skills(
         capsys, "install", "--path", str(tmp_path), "--skill", "algen-runtime-contributor"

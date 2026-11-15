@@ -35,6 +35,13 @@ providers:
   xai: {type: xai, default_model: grok-4}                           # env://XAI_API_KEY
 ```
 
+The default secret is sent only to the vendor's own endpoint. Since 0.2.0b4, a `gemini`, `xai`,
+`groq` or `mistral` provider whose `base_url` points anywhere else (a gateway, a proxy, a
+compatible server) needs an explicit `api_key`; without one the container refuses to build
+(`ConfigurationError`, "set api_key explicitly") instead of sending, say, `env://GEMINI_API_KEY`
+to a host the configuration names. **Upgrade:** add `api_key: env://<THAT_HOST_KEY>` (it may be
+the same variable as before, written out) to each such provider.
+
 ## When the router falls back
 
 A model call that fails moves on to the next candidate (by rank, or by declaration order with
@@ -160,7 +167,7 @@ At settings load time, `AppSettings` validates that all provider references reso
 - `agents[*].fallback_models[*].provider`
 - `retrieval[*].embedding_provider` (when non-empty)
 
-If any reference points to an unregistered provider, `load_settings()` fails immediately with a `ConfigurationError` identifying the exact configuration path and candidate providers. Typographical errors never survive configuration loading to become runtime routing failures.
+If any reference points to an unregistered provider, `load_settings()` fails immediately with a `ConfigurationError` identifying the exact configuration path and candidate providers. Typographical errors never survive configuration loading to become runtime routing failures. Since 0.2.0b4 a `ConfigurationError` from validation names each field and the rule it broke, never the rejected value, so a literal key in the wrong place is not echoed into logs.
 
 ## Model context budgets
 

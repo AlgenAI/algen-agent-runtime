@@ -4,12 +4,39 @@ Owner: AlgenAI Architecture & Security
 
 Status: Active tracking — pre-production
 
-Last reviewed: 2026-11-12 (Runtime `0.2.0b3`)
+Last reviewed: 2026-11-15 (Runtime `0.2.0b3`, preparing `0.2.0b4`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
 repository, but their presence does not by itself establish a hardened production service. Release
 status and unreleased changes are tracked separately in `CHANGELOG.md`.
+
+## Deployment scope
+
+Decided on 2026-11-15 for `1.0` ([GA criteria](ga-criteria.md#scope-decision)):
+
+- **Supported: single node.** One Runtime process per deployment (per database), with every
+  durable store on one PostgreSQL database and, optionally, Redis for session memory and scoped
+  caching. That process runs startup recovery
+  (`runtime.recover_incomplete_runs`), the maintenance sweep and the in-process admission limits.
+  Scale it vertically (CPU, pool size, provider concurrency) and run a standby that starts only
+  when the active process is gone (stop, then start; never both at once). Capacity guidance and
+  measured numbers are in [operations](operations.md#performance-and-capacity-evidence).
+- **Experimental: horizontal scaling.** More than one Runtime process on one database, the
+  `distributed_execution` worker pool and `DistributedWorker`, and any active-active layout stay
+  experimental in `1.0` ([API stability](api-stability.md#experimental-interfaces)), unless every
+  item under [Remaining for hardened multi-worker or horizontally scaled
+  use](#remaining-for-hardened-multi-worker-or-horizontally-scaled-use) is complete, or durable
+  distributed execution comes through an integration (for example Temporal).
+
+Framework adapters ([framework adapters](framework-adapters.md#support-status)):
+
+| Adapter | Status in `1.0` | Why |
+| --- | --- | --- |
+| LangGraph | Supported | Tested with the real SDK (execution, streaming, cancellation) |
+| OpenAI Agents SDK | Supported | Tested with the real SDK through a credential-free scripted model |
+| AutoGen AgentChat | Experimental, frozen | Archived upstream: the `microsoft/autogen` README (checked 2026-11-15) says the project "has been archived and is no longer actively maintained", with no bug or security fixes, and points to Microsoft Agent Framework; the last `autogen-agentchat` release on PyPI is `0.7.5` (2025-09-30). The GitHub repository itself is not flagged archived yet. The adapter takes fixes only and may be removed in a minor release |
+| CrewAI | Experimental | Tested only with mock crews; supported once it has real-SDK evidence |
 
 ## Implemented and verified baseline
 
@@ -104,8 +131,9 @@ of `0.1.0a18`; each lists what is left for later. No P0 item remains open.
    timeouts, the run in flight kept and driven again once the store is back, no restart); a
    database restart as a single-node failover with no committed state lost; `pg_dump` of a live
    database restored into a new one where the paused run resumes with its approvals, ledger and
-   events; schema upgrade from the `0.1.0a17` migration set and from data `0.1.0a17` itself wrote,
-   and rollback to `0.1.0a17` on a database the current code migrated and wrote; and a bounded soak
+   events; schema upgrade from a previous release's migration set and from data that release
+   itself wrote, and rollback to it on a database the current code migrated and wrote (`0.1.0a17`
+   then; `0.1.0a23` from `0.2.0b1`; `0.1.0a23` and `0.2.0b3` from `0.2.0b4`); and a bounded soak
    (marker `soak`, off by default) of runs, approvals and turns at concurrency. Fixed on the way:
    unbounded PostgreSQL/Redis calls (connect and command timeouts), raw driver errors (now
    `StoreUnavailableError`, HTTP 503), runs failed by a transient outage (now kept and resumed), one
@@ -254,13 +282,17 @@ Remaining release and operational gates:
 
 - Reproducible dependency lock files, SBOM and license reports, signed tags/releases or equivalent
   provenance attestations, and a container runtime smoke test rather than build/scan alone.
-- Provider sandbox contracts plus load and noisy-neighbor tests. Crash-recovery, store
-  fault-injection (outage, failover) and a bounded soak run as persistence drills (`tests/drills`);
-  a long-running published soak remains.
+- Provider sandbox contracts. Crash-recovery, store fault-injection (outage, failover) and a
+  bounded soak run as persistence drills (`tests/drills`); overhead benchmarks, a load test, a
+  noisy-neighbour test and a longer soak run in the performance suite (`tests/perf`, marker
+  `perf`), with results in [operations](operations.md#performance-and-capacity-evidence). A soak
+  of hours or weeks on a production-like deployment remains.
 - Golden telemetry/redaction tests across model, tool, retrieval, approval, verification, and failures.
-- SLOs, capacity guidance, dashboards, alerts, runbooks, profiling, and benchmark baselines.
-- Stable extension APIs and explicit compatibility levels for framework adapters; observation
-  compatibility is not equivalent to lifecycle control.
+- Dashboards and profiling. Proposed SLOs, capacity guidance, alerts and runbooks for the
+  single-node scope are in [operations](operations.md#slos-alerts-and-runbooks-single-node).
+- Stable extension APIs. Framework adapter compatibility levels are decided (see
+  [Deployment scope](#deployment-scope)); observation compatibility is not equivalent to lifecycle
+  control.
 
 ## Production gate
 
@@ -270,5 +302,9 @@ cancellation, schema upgrade and rollback, redacted telemetry, and recovery unde
 failure.
 
 Evidence so far: restart-safe approvals and tool execution, schema upgrade and rollback (against
-`0.1.0a17`) and recovery under repeated process failure are covered by the persistence drills in
-`tests/drills` on live PostgreSQL and Redis.
+`0.1.0a23`, the last `0.1` release, and `0.2.0b3`, the previous release) and recovery under
+repeated process failure are covered by the persistence drills in `tests/drills` on live
+PostgreSQL and Redis. Bounded resource use under load and between tenants has measured results
+from the performance suite ([operations](operations.md#performance-and-capacity-evidence)).
+Provider cancellation and redacted telemetry across every path do not yet have this kind of
+evidence.

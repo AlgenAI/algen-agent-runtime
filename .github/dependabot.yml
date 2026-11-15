@@ -9,10 +9,22 @@ updates:
         dependency-type: production
       python-development:
         dependency-type: development
+  # The hash-locked requirements/*.txt (pip-compile files with their requirements/*.in).
+  - package-ecosystem: pip
+    directory: /requirements
+    schedule:
+      interval: weekly
+    groups:
+      locked:
+        patterns: ["*"]
+  # Actions are pinned to commit SHAs; Dependabot updates the SHA and the version comment.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # Wait before adopting a new action release, so a compromised one is caught upstream first.
+    cooldown:
+      default-days: 14
   - package-ecosystem: docker
     directory: /
     schedule:

@@ -21,7 +21,9 @@ Protect `main` with a ruleset that:
 - blocks force pushes and branch deletion;
 - limits bypass permission to named maintainers and records every bypass.
 
-Protect tags matching `v*` so only release maintainers can create or delete them. Require signed tags or organization-approved provenance when available.
+Protect tags matching `v*` with a tag ruleset: block updates and deletion, and restrict creation to
+release maintainers and GitHub Actions (the Auto Release workflow creates the tag). Release
+artifacts carry GitHub build provenance and PEP 740 attestations (see [releasing](releasing.md)).
 
 ## Security features
 
@@ -29,16 +31,22 @@ Protect tags matching `v*` so only release maintainers can create or delete them
 - Enable private vulnerability reporting and repository security advisories.
 - Enable secret scanning and push protection, including generic-secret detection when available.
 - Enable code scanning and make high-severity CodeQL findings merge-blocking.
-- Review Actions allowed-action policy and grant the default workflow token read-only permissions.
+- Grant the default workflow token read-only permissions, and require actions to be pinned to a
+  full-length commit SHA (Settings → Actions → General). Every workflow already pins SHAs, and
+  `tests/unit/test_workflow_supply_chain.py` fails on a tag-pinned action.
+- Store no personal access tokens or other long-lived credentials in repository secrets; the
+  workflows need only `GITHUB_TOKEN` and the `pypi` environment's OIDC token.
 - Treat changes to `.github/workflows/release.yml`, `SECURITY.md`, `GOVERNANCE.md`, and CODEOWNERS as security-sensitive.
 
 ## PyPI publishing
 
 - Reserve or verify ownership of the `algen-agent-runtime` PyPI project.
-- Create a protected GitHub environment named `pypi` with required reviewers and disallow administrator bypass where supported.
+- Create a protected GitHub environment named `pypi` with required reviewers, prevent
+  self-review, disallow administrator bypass where supported, and limit deployment branches to
+  `main` (the Release workflow always runs from `main`, with the tag as an input).
 - Configure PyPI Trusted Publishing for repository `AlgenAI/algen-agent-runtime`, workflow `release.yml`, and environment `pypi`.
 - Do not store a long-lived PyPI API token in repository secrets.
-- Publish only through a GitHub release whose tag matches the package version.
+- Publish only through the Release workflow for a tag that matches the package version.
 - Verify PyPI provenance and clean installation after every release.
 
 ## Community features
@@ -47,5 +55,22 @@ Protect tags matching `v*` so only release maintainers can create or delete them
 - Enable Discussions if maintainers want a separate channel for usage questions and design exploration.
 - Confirm the private security-reporting link and public support links while signed out.
 - Review the GitHub community profile after launch and resolve any missing-file warnings.
+
+## Audit
+
+Check these settings with the GitHub API before every release line and after any change of
+maintainers:
+
+```bash
+gh api repos/AlgenAI/algen-agent-runtime/environments --jq '.environments[] | {name, protection_rules, deployment_branch_policy}'
+gh api repos/AlgenAI/algen-agent-runtime/rulesets --jq '.[] | {name, target, enforcement}'
+gh api repos/AlgenAI/algen-agent-runtime/actions/permissions
+gh api repos/AlgenAI/algen-agent-runtime/actions/secrets --jq '.secrets[].name'
+```
+
+The 2026-11-15 security assessment found the `pypi` environment without required reviewers or a
+branch policy, no `v*` tag ruleset, SHA pinning not required, Dependabot security updates off and
+a `RELEASE_TOKEN` personal access token in the repository secrets; 0.2.0b4 removes the workflows'
+use of that token.
 
 Record completion of this checklist in the launch or release issue so the public-readiness decision is auditable.

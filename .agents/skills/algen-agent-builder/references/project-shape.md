@@ -150,8 +150,13 @@ agents:
   `tool_permissions`, and the agents it may call in `delegates` (`"*"` for any; empty, the
   default, allows none). The deployment registers the tool with `runtime.subagent.enabled: true`
   (`max_depth`, default 3, bounds a chain); it is off by default. A delegate's
-  `tool_permissions` must be within the caller's, and the Runtime counts the nesting depth itself
-  (docs/agent-tooling.md, "Delegating to another agent"). A child's approval or question pauses
+  `tool_permissions` must be within the caller's, and from 0.2.0b4 so must its `enabled_tools`
+  (apart from `core.working_state_update`, `core.skills_load`, `core.context_read`): list the
+  delegate's tools on the coordinator too, or the call is refused. The child runs with the
+  parent's approval requirements and guardrail policies added to its own, its token usage and
+  tool calls count against the parent's budget when it ends, and one tree starts at most
+  `runtime.subagent.max_descendants` (default 64) children. The Runtime counts the nesting depth
+  itself (docs/agent-tooling.md, "Delegating to another agent"). A child's approval or question pauses
   the parent with the child's payload and `child_run_id`; decide it on the parent as usual and
   both continue.
 - A `session_id` belongs to the user who first used it: a run naming another user's session is

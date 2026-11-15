@@ -15,10 +15,20 @@ package on the plugin's module path; it is found with import finders, without im
 anything, so an unsigned or tampered plugin is refused before any of its code runs. The
 publisher must be listed in ``plugins.trusted_publishers`` with its Ed25519 public key.
 
-What a signature does not cover: the plugin's dependencies (other installed packages), and
-bytecode in ``__pycache__``, which Python may load in place of a source file whose size and
-modification time it records. Install signed plugins read-only (or from an image built in CI)
-so nobody can replace files between verification and import.
+Bytecode is not signed but is checked: a loose ``.pyc``/``.pyo`` outside ``__pycache__`` (which
+Python imports when no source file exists) refuses the package, and every ``__pycache__`` file
+for the running interpreter that Python would load in place of a signed source file (its
+recorded size and modification time, or source hash, match, or it is an unchecked hash-based
+file) must hold the same code as that source compiles to. Stale caches, which Python ignores,
+are ignored too.
+
+What a signature does not cover: the plugin's dependencies (other installed packages). Install
+signed plugins read-only (or from an image built in CI) so nobody can replace files between
+verification and import.
+
+An entry point name is resolved once: a name that more than one installed distribution
+declares in the plugin group is refused, and the module that is verified is the module that
+is imported (see ``resolve_entry_point``).
 
 ``PluginManifest.signature`` predates this format and is not used: a module cannot hold a
 signature over its own bytes, and the manifest is only readable after import. After import,
@@ -34,7 +44,9 @@ import importlib.machinery
 import importlib.util
 import json
 import logging
+import marshal
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -143,8 +155,14 @@ def package_files(root: Path) -> dict[str, str]:
                 )
         subdirectories[:] = sorted(name for name in subdirectories if name != "__pycache__")
         for filename in sorted(filenames):
-            if filename == SIGNATURE_FILE or filename.endswith(_SKIPPED_SUFFIXES):
+            if filename == SIGNATURE_FILE:
                 continue
+            if filename.endswith(_SKIPPED_SUFFIXES):
+                raise ConfigurationError(
+                    f"plugin package {root} contains compiled bytecode "
+                    f"{(base / filename).relative_to(root).as_posix()!r} outside __pycache__, "
+                    "which Python can import without its source; remove it"
+                )
             path = base / filename
             digest = hashlib.sha256()
             with path.open("rb") as handle:
@@ -192,16 +210,102 @@ def locate_package(module: str) -> tuple[str, Path]:
     raise ConfigurationError(f"plugin module {module!r} has no regular package to verify")
 
 
+def _distribution_name(entry: metadata.EntryPoint) -> str:
+    dist = getattr(entry, "dist", None)
+    name = getattr(dist, "name", None) if dist is not None else None
+    return str(name) if name else "an unknown distribution"
+
+
+def resolve_entry_point(name: str) -> metadata.EntryPoint:
+    """The one installed entry point called ``name`` in the plugin group.
+
+    Refuses a name that several distributions declare, so the entry point whose module is
+    trusted and verified is the one that is loaded.
+    """
+    matches = [
+        entry for entry in metadata.entry_points(group=ENTRY_POINT_GROUP) if entry.name == name
+    ]
+    if not matches:
+        raise ConfigurationError(
+            f"plugin entry point {name!r} was not found in group {ENTRY_POINT_GROUP!r}"
+        )
+    if len(matches) > 1:
+        declared = ", ".join(f"{_distribution_name(entry)} ({entry.value})" for entry in matches)
+        raise ConfigurationError(
+            f"plugin entry point {name!r} is declared by more than one installed distribution: "
+            f"{declared}; uninstall one, or name the plugin as 'module:attribute'"
+        )
+    return matches[0]
+
+
 def plugin_module(reference: str) -> str:
     """The module a plugin reference imports: ``module:attribute`` or an entry point name."""
     if ":" in reference:
         return reference.split(":", 1)[0].strip()
-    for entry in metadata.entry_points(group=ENTRY_POINT_GROUP):
-        if entry.name == reference:
-            return entry.module
-    raise ConfigurationError(
-        f"plugin entry point {reference!r} was not found in group {ENTRY_POINT_GROUP!r}"
+    return resolve_entry_point(reference.strip()).module
+
+
+def _bytecode_source(cache: Path) -> tuple[str, int] | None:
+    """The source file name and optimization level of a ``__pycache__`` file for this Python."""
+    tag = sys.implementation.cache_tag
+    if tag is None:
+        return None
+    match = re.fullmatch(
+        rf"(?P<stem>.+)\.{re.escape(tag)}(?:\.opt-(?P<opt>[12]))?\.pyc", cache.name
     )
+    if match is None:
+        return None
+    return match.group("stem") + ".py", int(match.group("opt") or 0)
+
+
+def _loaded_instead_of(source: Path, data: bytes) -> bool:
+    """Whether Python would load this cache file in place of ``source``."""
+    if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
+        return False
+    flags = int.from_bytes(data[4:8], "little")
+    if flags & ~0b11:
+        return False
+    if flags & 0b1:
+        if not flags & 0b10:
+            return True  # unchecked hash-based: loaded without looking at the source
+        return data[8:16] == importlib.util.source_hash(source.read_bytes())
+    stat = source.stat()
+    return (
+        int.from_bytes(data[8:12], "little") == int(stat.st_mtime) & 0xFFFFFFFF
+        and int.from_bytes(data[12:16], "little") == stat.st_size & 0xFFFFFFFF
+    )
+
+
+def check_bytecode(root: Path, signed_files: Mapping[str, Any]) -> None:
+    """Refuse ``__pycache__`` files that Python would run instead of a signed source file
+    unless they hold the code that source compiles to."""
+    for cache in sorted(root.rglob("__pycache__/*")):
+        if not cache.is_file() or cache.parent.name != "__pycache__":
+            continue
+        located = _bytecode_source(cache)
+        if located is None:
+            continue
+        filename, optimize = located
+        source = cache.parent.parent / filename
+        relative = source.relative_to(root).as_posix()
+        if relative not in signed_files or not source.is_file():
+            continue
+        data = cache.read_bytes()
+        if not _loaded_instead_of(source, data):
+            continue
+        try:
+            matches = marshal.loads(data[16:]) == compile(
+                source.read_bytes(), str(source), "exec", dont_inherit=True, optimize=optimize
+            )
+        except Exception:  # an unreadable cache is refused like a mismatched one
+            matches = False
+        if not matches:
+            raise ConfigurationError(
+                f"plugin package {root.name!r}: bytecode cache "
+                f"{cache.relative_to(root).as_posix()!r} does not match its signed source "
+                f"{relative!r}; delete the __pycache__ directories and install the plugin "
+                "read-only"
+            )
 
 
 def verify_module(module: str, settings: PluginSettings) -> SignedPackage | None:
@@ -271,6 +375,7 @@ def verify_module(module: str, settings: PluginSettings) -> SignedPackage | None
             f"plugin package {package!r} does not match its signature; changed, added or "
             f"removed: {', '.join(changed[:5])}{' ...' if len(changed) > 5 else ''}"
         )
+    check_bytecode(root, actual)
     name = document.get("name")
     version = document.get("version")
     return SignedPackage(

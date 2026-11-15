@@ -6,6 +6,7 @@
   "APPROVAL_MODIFICATION_IGNORED",
   "DIRECT_ENV_READ",
   "HOOK_PROVIDER_UNTRUSTED",
+  "JWT_AUDIENCE_MISSING",
   "UNREADABLE_SOURCE",
   "UNSUPPORTED_PROVIDER_TYPE"
  ],
@@ -99,6 +100,7 @@
   "agents[].guardrail_policy.policies": "list[string]",
   "agents[].guardrail_policy.require_citations": "boolean",
   "agents[].guardrail_policy.retrieval_injection": "enum[\"off\", \"flag\", \"drop\"]",
+  "agents[].guardrail_policy.stream_text": "enum[\"redacted\", \"off\"]",
   "agents[].guardrail_policy.tool_policies": "list[string] | null",
   "agents[].guardrail_policy.tool_result_injection": "enum[\"off\", \"flag\", \"block\"]",
   "agents[].learned_memory_policy": "object",
@@ -182,6 +184,7 @@
   "api.jwt_audience": "string | null",
   "api.jwt_issuer": "string | null",
   "api.jwt_key": "string | null",
+  "api.max_streams_per_principal": "integer",
   "api.oidc": "object",
   "api.oidc.allow_insecure_http": "boolean",
   "api.oidc.allow_private_networks": "boolean",
@@ -357,10 +360,12 @@
   "runtime.subagent": "object",
   "runtime.subagent.enabled": "boolean",
   "runtime.subagent.max_depth": "integer",
+  "runtime.subagent.max_descendants": "integer",
   "runtime.tool_threads": "object",
   "runtime.tool_threads.max_queued": "integer",
   "runtime.tool_threads.max_workers": "integer | null",
   "security": "object",
+  "security.allow_any_public_host": "boolean",
   "security.allow_private_networks": "boolean",
   "security.allow_subprocess_tools": "boolean",
   "security.allowed_attachment_types": "list[string]",
@@ -370,6 +375,7 @@
   "security.max_attachments_per_run": "integer",
   "security.max_request_bytes": "integer",
   "security.sandbox": "object",
+  "security.sandbox.allowed_executables": "list[string]",
   "security.sandbox.env_allowlist": "list[string] | null",
   "security.sandbox.limits": "object",
   "security.sandbox.limits.cpu_seconds": "integer | null",
@@ -571,6 +577,7 @@
   "model.call",
   "model.completed",
   "model.delta",
+  "model.delta.retracted",
   "model.output_limit_recovery",
   "model.retrying",
   "model.started",
@@ -710,7 +717,8 @@
      "sha256": "str | None",
      "size_bytes": "int | None",
      "status": "ArtifactStatus",
-     "tenant_id": "str"
+     "tenant_id": "str",
+     "user_id": "str | None"
     }
    },
    "ArtifactDescriptor": {
@@ -725,7 +733,8 @@
      "sha256": "str",
      "size_bytes": "int",
      "status": "ArtifactStatus",
-     "tenant_id": "str"
+     "tenant_id": "str",
+     "user_id": "str | None"
     }
    },
    "ArtifactLifecycleService": {
@@ -938,6 +947,9 @@
    }
   },
   "algen_agent_runtime.artifacts": {
+   "ARTIFACTS_ADMIN_SCOPE": {
+    "value": "str"
+   },
    "ArtifactLifecycleService": {
     "class": "(store: 'ArtifactStore', audit: 'AuditLog') -> 'None'",
     "methods": {
@@ -962,6 +974,12 @@
     "methods": {
      "scan": "(self, artifact: 'Artifact') -> 'ArtifactScanResult'"
     }
+   },
+   "artifact_owned_by": {
+    "function": "(artifact: 'Artifact | ArtifactDescriptor', user_id: 'str', *, run_user_id: 'str | None' = None) -> 'bool'"
+   },
+   "list_user_artifacts": {
+    "function": "(store: 'Any', tenant_id: 'str', user_id: 'str', *, run_id: 'str | None' = None, status: 'ArtifactStatus | None' = None, limit: 'int' = 100) -> 'Sequence[ArtifactDescriptor]'"
    }
   },
   "algen_agent_runtime.auth": {
@@ -1583,7 +1601,7 @@
   },
   "algen_agent_runtime.frameworks": {
    "AutoGenAdapter": {
-    "class": "(agent_or_team: 'Any') -> 'None'",
+    "class": "(agent_or_team: 'Any' = None, *, factory: 'Callable[[FrameworkRunRequest], Any] | None' = None, input_factory: 'Callable[[FrameworkRunRequest], Any] | None' = None, handoff_target: 'str' = 'user') -> 'None'",
     "methods": {
      "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
      "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
@@ -1656,7 +1674,7 @@
     }
    },
    "GovernedToolBridge": {
-    "class": "(executor: 'ToolExecutor', registry: 'ToolRegistry', request: 'FrameworkRunRequest', *, permissions: 'Iterable[str]' = (), secrets: 'Mapping[str, str] | None' = None) -> 'None'",
+    "class": "(executor: 'ToolExecutor', registry: 'ToolRegistry', request: 'FrameworkRunRequest', *, permissions: 'Iterable[str]' = (), secrets: 'Mapping[str, str] | None' = None, approval_policy: 'ApprovalPolicy | None' = None, policies: 'Any' = None) -> 'None'",
     "methods": {
      "call": "(self, name: 'str', arguments: 'dict[str, Any]') -> 'Any'",
      "call_for_model": "(self, name: 'str', arguments: 'dict[str, Any]') -> 'str'",
@@ -1669,13 +1687,13 @@
     "class": "(graph: 'Any', *, input_factory: 'Callable[[FrameworkRunRequest], Any] | None' = None, output_selector: 'Callable[[Any], str]' = <function _text>) -> 'None'",
     "methods": {
      "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
-     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
+     "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'",
+     "thread_id": "(request: 'FrameworkRunRequest') -> 'str'"
     }
    },
    "OpenAIAgentsAdapter": {
-    "class": "(agent: 'Any', *, runner: 'Any | None' = None, run_config: 'Any' = None) -> 'None'",
+    "class": "(agent: 'Any', *, runner: 'Any | None' = None, run_config: 'Any' = None, conversation_id: 'Callable[[FrameworkRunRequest], str | None] | None' = None) -> 'None'",
     "methods": {
-     "cancel": "(self, run_id: 'str') -> 'bool'",
      "invoke": "(self, request: 'FrameworkRunRequest') -> 'FrameworkRunResult'",
      "stream": "(self, request: 'FrameworkRunRequest') -> 'AsyncIterator[FrameworkStreamEvent]'"
     }
@@ -1818,13 +1836,14 @@
      "access_token": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None', *, rejected_token: 'str | None' = None) -> 'str'",
      "aclose": "(self) -> 'None'",
      "auth": "(self, server: 'str') -> 'OAuthClientAuth'",
-     "complete": "(self, state: 'str | None', code: 'str | None', error: 'str | None' = None) -> 'MCPOAuthCompletion'",
+     "complete": "(self, state: 'str | None', code: 'str | None', error: 'str | None' = None, *, browser_binding: 'str | None' = None, tenant_id: 'str | None' = None, user_id: 'str | None' = None) -> 'MCPOAuthCompletion'",
      "discovery_principal": "(self, server: 'str') -> 'tuple[str, str | None] | None'",
      "endpoints": "(self, server: 'str') -> 'AuthorizationServerEndpoints'",
      "key_for": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPTokenKey'",
      "not_connected": "(self, server: 'str') -> 'MCPNotConnectedError'",
      "on_disconnect": "(self, listener: 'Callable[[MCPTokenKey], Awaitable[None]]') -> 'None'",
      "revoke": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPOAuthRevocation'",
+     "server_for_state": "(self, state: 'str | None') -> 'str | None'",
      "start": "(self, server: 'str', tenant_id: 'str', user_id: 'str') -> 'MCPOAuthStart'",
      "status": "(self, server: 'str', tenant_id: 'str', user_id: 'str | None') -> 'MCPOAuthStatus'"
     }
@@ -2179,11 +2198,29 @@
    "PII_ENTITIES": {
     "value": "tuple"
    },
+   "SECRET_TOKEN_PATTERNS": {
+    "value": "tuple"
+   },
+   "fold_text": {
+    "function": "(text: 'str') -> 'str'"
+   },
+   "hidden_value_marker": {
+    "function": "(value: 'Any') -> 'str'"
+   },
+   "is_sensitive_key": {
+    "function": "(key: 'Any') -> 'bool'"
+   },
    "redact_pii": {
     "function": "(value: 'Any', *, entities: 'Iterable[str] | None' = None, exempt: 'Iterable[str]' = (), schema: 'Mapping[str, Any] | None' = None) -> 'Any'"
    },
+   "redact_secret_text": {
+    "function": "(text: 'str') -> 'tuple[str, int]'"
+   },
    "redact_secrets": {
     "function": "(value: 'Any') -> 'Any'"
+   },
+   "undeclared_sensitive_parameters": {
+    "function": "(arguments: 'Mapping[str, Any]', schema: 'Any') -> 'list[str]'"
    }
   },
   "algen_agent_runtime.semantics": {
@@ -2837,6 +2874,7 @@
   "POST /v1/conversations/{conversation_id}/turns/{turn_id}/credentials",
   "POST /v1/conversations/{conversation_id}/turns/{turn_id}/input",
   "POST /v1/conversations/{conversation_id}/turns/{turn_id}/steer",
+  "POST /v1/mcp/oauth/complete",
   "POST /v1/mcp/servers/{server}/oauth/start",
   "POST /v1/runs",
   "POST /v1/runs/{run_id}/approval",
@@ -2873,7 +2911,8 @@
   "019_session_owners.sql",
   "020_approval_decided_by.sql",
   "021_user_data_indexes.sql",
-  "022_run_turn_index.sql"
+  "022_run_turn_index.sql",
+  "023_artifact_owner.sql"
  ],
  "protocols": {
   "algen_agent_runtime.analytics.contracts.AnalyticalGraphStore": {

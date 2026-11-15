@@ -2,14 +2,23 @@
 
 ## Supported versions
 
-Algen Agent Runtime is pre-release software. Until the first supported release,
-only the latest commit on the default branch receives security fixes. Published
-support windows will be added before a public beta.
+Algen Agent Runtime is in beta. Security fixes go to the latest `0.2` beta and the default branch;
+from `1.0.0` the policy in [API stability](docs/api-stability.md) applies (the latest minor, and
+the previous minor for six months after the next one ships).
 
 | Version | Supported |
 | --- | --- |
-| Default branch | Yes |
-| Unreleased and older snapshots | No |
+| Latest `0.2.0b` release and the default branch | Yes |
+| Earlier `0.2.0b` releases | No: upgrade to the latest beta |
+| `0.1.x` | No |
+
+## Verifying a release
+
+Every release on PyPI is published by this repository's release workflow through trusted
+publishing and carries PEP 740 provenance; the GitHub release carries `SHA256SUMS`, a CycloneDX
+SBOM and a license report, and each file has a GitHub build attestation
+(`gh attestation verify <file> --repo AlgenAI/algen-agent-runtime`). See
+[releasing](docs/releasing.md#artifact-verification).
 
 ## Reporting a vulnerability
 

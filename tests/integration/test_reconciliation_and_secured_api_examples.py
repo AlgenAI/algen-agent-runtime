@@ -70,13 +70,17 @@ def test_secured_api_example() -> None:
     assert "alice starts a run -> awaiting_approval" in lines
     assert "alice GET /v1/approvals -> 403 (missing scope approvals:read)" in lines
     assert any(
-        line.startswith("carol GET /v1/approvals -> 1 pending") and "'[REDACTED]'" in line
+        line.startswith("carol GET /v1/approvals -> 1 pending")
+        and "'secret': '[REDACTED len=24 sha256=" in line
         for line in lines
     )
     assert "carol modifies and approves -> 202; run completed" in lines
-    assert (
-        "inbox shows modified with {'url': 'https://hooks.acme.example/billing', "
-        "'secret': '[REDACTED]'}" in lines
+    assert any(
+        line.startswith(
+            "inbox shows modified with {'url': 'https://hooks.acme.example/billing', "
+            "'secret': '[REDACTED len=24 sha256="
+        )
+        for line in lines
     )
     assert "alice GET /v1/runs/<her turn's run> -> 200" in lines
     assert "bob GET /v1/runs/<alice's turn's run> -> 404" in lines

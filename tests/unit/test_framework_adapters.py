@@ -44,7 +44,7 @@ async def test_langgraph_adapter_propagates_identity_and_normalizes_output() -> 
     result = await LangGraphAdapter(graph).invoke(request())
 
     assert result.output == "graph"
-    assert graph.config["configurable"]["thread_id"] == "session-1"
+    assert graph.config["configurable"]["thread_id"] == "tenant-a:session-1"
     assert graph.config["metadata"]["tenant_id"] == "tenant-a"
 
 

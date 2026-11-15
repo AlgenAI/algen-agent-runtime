@@ -10,6 +10,7 @@ from conftest import make_agent, make_runtime
 from algen_agent_runtime.models.providers.mock import MockModelProvider
 from algen_agent_runtime.runtime.guards import wrap_up_note
 from algen_agent_runtime.runtime.runtime import AgentRuntime
+from algen_agent_runtime.runtime.stream_guard import STREAM_HOLDBACK_CHARS
 from algen_agent_runtime.tools.contracts import SideEffect, Tool, ToolDefinition
 from algen_agent_runtime.types.contracts import (
     Budget,
@@ -210,8 +211,12 @@ async def test_runs_within_the_event_limit_are_unaffected() -> None:
     assert (await runtime.run(_request())).status == RunStatus.COMPLETED
 
 
+# 60 four-character words: longer than the text a stream holds back (STREAM_HOLDBACK_CHARS).
+WORDS = " ".join(f"w{index:02d}" for index in range(60))
+
+
 async def test_streamed_chunks_within_the_interval_share_one_event() -> None:
-    runtime = _runtime(MockModelProvider(["one two three four"]))
+    runtime = _runtime(MockModelProvider([WORDS]))
     runtime.stream_delta_interval_seconds = 60
     result = await runtime.run(_request(stream=True))
 
@@ -220,12 +225,29 @@ async def test_streamed_chunks_within_the_interval_share_one_event() -> None:
         for event in await runtime.events.history(result.run_id)
         if event.type == "model.delta"
     ]
-    # The first chunk goes out at once; the rest are joined until the stream ends.
-    assert deltas == ["one ", "two three four "]
-    assert result.output == "one two three four"
+    # The first text released goes out at once; the rest is joined until the stream ends.
+    assert len(deltas) == 2
+    assert deltas[0] == "w00 "
+    assert "".join(deltas) == WORDS + " "
+    assert result.output == WORDS
 
 
 async def test_every_chunk_is_an_event_without_an_interval() -> None:
+    runtime = _runtime(MockModelProvider([WORDS]))
+    result = await runtime.run(_request(stream=True))
+    deltas = [
+        event.data["delta"]
+        for event in await runtime.events.history(result.run_id)
+        if event.type == "model.delta"
+    ]
+    # Once more than the held-back text has arrived, each chunk releases one word; the text
+    # held back goes out when the stream ends.
+    assert deltas[:3] == ["w00 ", "w01 ", "w02 "]
+    assert "".join(deltas) == WORDS + " "
+    assert len(deltas[-1]) >= STREAM_HOLDBACK_CHARS
+
+
+async def test_a_short_streamed_answer_is_one_event_at_the_end() -> None:
     runtime = _runtime(MockModelProvider(["one two three"]))
     result = await runtime.run(_request(stream=True))
     deltas = [
@@ -233,4 +255,4 @@ async def test_every_chunk_is_an_event_without_an_interval() -> None:
         for event in await runtime.events.history(result.run_id)
         if event.type == "model.delta"
     ]
-    assert deltas == ["one ", "two ", "three "]
+    assert deltas == ["one two three "]

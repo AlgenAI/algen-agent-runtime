@@ -82,6 +82,7 @@ mcp_servers:
 1. **`stdio`**: Spawns a local subprocess and communicates via standard input/output.
    - Requires `command: str` and optional `args: list[str]`.
    - **Environment Isolation**: Subprocesses do not inherit ambient process environment variables. Only safe system keys (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TEMP`, `TMP`, `SYSTEMROOT`, or `security.sandbox.env_allowlist` when set) and explicit variables in `env` are passed.
+   - **Credentials in `env`**: a value may be `env://NAME`, resolved from the Runtime's environment when the server starts. From 0.2.0b4 a variable whose name names a credential (`GITHUB_TOKEN`, `API_KEY`, `DB_PASSWORD`; not `MAX_TOKENS`) must be an `env://` reference, and a literal value is refused when the settings load. Before 0.2.0b4 values were passed as written. See [A stdio server's `env`](operations.md#subprocess-and-mcp-stdio-sandboxing).
    - **Sandbox**: `security.sandbox` (or the server's own `sandbox`, which replaces it) sets resource limits and an isolation wrapper such as `bwrap`; `security.sandbox.required: true` refuses to start a server without a wrapper. See [Subprocess and MCP stdio sandboxing](operations.md#subprocess-and-mcp-stdio-sandboxing).
    - **Trust Boundary**: without a wrapper, `stdio` commands run with the Runtime user's access to files and network. They must only execute trusted operator-declared commands.
 2. **`streamable_http`**: Connects via HTTP using the official SDK v1 Streamable HTTP client.
@@ -126,6 +127,7 @@ mcp_servers:
       type: oauth
       client_id_ref: env://LINEAR_CLIENT_ID
       client_secret_ref: env://LINEAR_CLIENT_SECRET
+      issuer: https://mcp.linear.app          # required with a client secret (0.2.0b4)
       scopes: [read, write]
       token_scope: user                       # one connection per user; tenant is the default
       redirect_uri: https://agents.example.com/v1/mcp/oauth/callback
@@ -173,7 +175,7 @@ The endpoint values above are illustrative; use the ones your provider documents
 | `redirect_uri` | *required* | The callback registered with the provider. It must reach `GET /v1/mcp/oauth/callback`; only this exact value is sent. HTTPS (HTTP only for localhost). |
 | `authorization_endpoint`, `token_endpoint` | discovered | Set both to skip discovery. |
 | `revocation_endpoint` | discovered | RFC 7009 endpoint called on revoke, if any. |
-| `issuer` | the MCP server's origin | Authorization server to discover when the MCP server publishes no protected resource metadata. |
+| `issuer` | the advertised one, else the MCP server's origin | Authorization server to discover metadata from. Unset, the one the MCP server's protected resource metadata names, else the MCP server's origin. Since 0.2.0b4, **required with `client_secret_ref`** unless both endpoints are set: otherwise the MCP server could name any authorization server and receive the client secret. |
 | `send_resource` | `true` | Send the RFC 8707 `resource` parameter (the MCP server URL). |
 | `authorize_params` | `{}` | Extra non-secret authorization parameters (e.g. `prompt: consent`). Parameters the Runtime sets are rejected. |
 | `success_redirect_url` | none | Where the callback sends the browser, with `mcp_server`, `status` (`connected` or `error`) and `error` added. Without it the callback answers with JSON. |
@@ -185,14 +187,43 @@ The endpoint values above are illustrative; use the ones your provider documents
 
 | Route | Scope | What it does |
 | --- | --- | --- |
-| `POST /v1/mcp/servers/{server}/oauth/start` | `mcp:connect` (+ `mcp:admin` for `token_scope: tenant`) | Returns `{server, token_scope, authorize_url, expires_at}`. Send the user's browser to `authorize_url`. |
-| `GET /v1/mcp/oauth/callback` | none: the state is the credential | The provider redirects here. Exchanges the code, stores the tokens, lists the server's tools if nobody has yet, and redirects to `success_redirect_url` or answers with the connection status. |
+| `POST /v1/mcp/servers/{server}/oauth/start` | `mcp:connect` (+ `mcp:admin` for `token_scope: tenant`) | Returns `{server, token_scope, authorize_url, expires_at, binding_cookie, browser_binding}` and sets the HttpOnly, `SameSite=Lax` cookie `binding_cookie` (path: the `redirect_uri` path). Send the user's browser to `authorize_url`. |
+| `GET /v1/mcp/oauth/callback` | none, but bound to the starting browser | The provider redirects here. With the binding cookie for the state, exchanges the code, stores the tokens, lists the server's tools if nobody has yet, and redirects to `success_redirect_url` or answers with the connection status. Without it, consumes nothing and redirects to `success_redirect_url` with `mcp_server`, `status=confirm`, `state` and `code` (or `error`), or answers `400` `mcp_oauth_unbound` when there is no such page. |
+| `POST /v1/mcp/oauth/complete` (since 0.2.0b4) | `mcp:connect`, as the user who started | Body `{state, code}` (or `{state, error}`) from a `status=confirm` redirect. Finishes the flow only when the caller's tenant and user are the ones that started it; answers like the JSON callback. |
 | `GET /v1/mcp/servers/{server}/oauth/status` | `mcp:read` or `mcp:connect` | `{server, token_scope, connected, expires_at, scopes, refreshable, connected_at, connected_by}`. |
 | `GET /v1/mcp/oauth/servers` | `mcp:read` or `mcp:connect` | The caller's status for every OAuth server. |
 | `DELETE /v1/mcp/servers/{server}/oauth` | `mcp:connect` (+ `mcp:admin` for tenant scope) | Removes the stored tokens, closes the caller's open session, then calls the provider's revocation endpoint if one is configured or advertised. Returns `{server, removed, provider_revoked}` (`provider_revoked` is `null` when there was nothing to revoke there). |
 
 A tenant-scoped connection is shared by everyone in the tenant, so starting or revoking it needs
 `mcp:admin` as well. No response carries a token.
+
+#### Binding the callback to the user who started it (since 0.2.0b4)
+
+Before 0.2.0b4 the callback completed on the state alone, so an authorize URL was a bearer
+capability: a user could send theirs to someone else, and whoever consented had their provider
+account connected under the starter's tenant and user (and the starter could then act as them
+through the MCP server). The callback now finishes the flow only for the browser or the user that
+started it. Which path a host takes depends on who calls the start route:
+
+- **The browser calls start on the Runtime's own site** (same site as `redirect_uri`, for
+  example the Runtime's agent UI or a host behind the same domain): the start response's cookie
+  binds the flow to that browser, and the callback finishes it as before. Nothing to change.
+- **A host backend calls start, or the browser calls it cross-site** (the browser keeps no cookie
+  for the Runtime, or blocks it as third-party): set `success_redirect_url` to a page of the host.
+  The callback redirects there with `status=confirm&mcp_server=...&state=...&code=...`; the page
+  sends `state` and `code` (or `error`) to the host's backend, which calls
+  `POST /v1/mcp/oauth/complete` with the signed-in user's credentials. The Runtime checks that
+  the tenant and user are the ones that started the flow and answers with the connection status
+  (`connected`, `tools_ready`) or `400` (`mcp_oauth_invalid_state` or `mcp_oauth_failed`). Keep
+  the page `Referrer-Policy: no-referrer` and do not log its query string.
+- A host that sets the cookie itself (it shares a parent domain with the Runtime) can use
+  `binding_cookie` and `browser_binding` from the start response.
+
+In process, `MCPOAuthManager.complete(state, code, error, *, browser_binding=..., tenant_id=...,
+user_id=...)` needs either the binding or the finishing caller's tenant and user, and raises
+`MCPOAuthStateError` otherwise. States now end with `.<server>` so an unbound callback can pick
+the server's page; authorizations started before the upgrade finish only through
+`POST /v1/mcp/oauth/complete`.
 
 ### When a user has not connected
 
@@ -255,7 +286,13 @@ registered tool; every call runs on the caller's own connection, opened on first
   logs, run events, spans or audit records; token values are `SecretStr` in memory.
 - The state is 256 random bits, bound to the tenant, user and server that started the flow,
   valid for `state_ttl_seconds`, and deleted on first use, so a replayed or forged callback is
-  rejected (`400`, `code: mcp_oauth_invalid_state`).
+  rejected (`400`, `code: mcp_oauth_invalid_state`). Since 0.2.0b4 completing it also needs the
+  starting browser's binding cookie (compared in constant time against its stored SHA-256) or
+  the starting user's credentials on `POST /v1/mcp/oauth/complete`.
+- Since 0.2.0b4 a confidential client must name its `issuer` (or both endpoints), so the client
+  secret is never sent to an authorization server that only the MCP server advertised.
+  Metadata, token and revocation responses are read up to 256 KiB and dropped beyond that
+  without being buffered whole.
 - Only the configured `redirect_uri` is ever sent, and a pending authorization is rejected if
   the configured value changed since it started. Callback responses are `Cache-Control:
   no-store` and `Referrer-Policy: no-referrer`.
@@ -292,7 +329,7 @@ During `Container.astart()`:
 
 ## Current Boundaries and Deferred Capabilities
 
-The following capabilities are outside the scope of `0.1.0a3`:
+The following capabilities are not supported (still true in `0.2.0b3`):
 - **Local Processes**: `stdio` servers are isolated only as far as the configured `security.sandbox` wrapper isolates them; do not configure untrusted or dynamic user commands.
 - **MCP Server Hosting**: Runtime acts solely as an MCP client; exposing Runtime tools or agents as an MCP server is deferred.
 - **Resources, Prompts, and Sampling Callbacks**: Only the MCP Tools primitive is supported.

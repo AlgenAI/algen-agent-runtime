@@ -29,12 +29,13 @@ http_tools:
 | `parameters` | JSON Schema (an object) for the arguments the model supplies. |
 | `query`, `headers`, `body` | Templates. An entry naming a missing optional argument is left out. In `body`, a value that is exactly `"{param}"` keeps the argument's JSON type. `Authorization`, `Cookie` and `Host` headers, and the `auth.header_name` of `caller` or `header` authentication, are refused; use `auth`. |
 | `auth` | `none`, `bearer` (`token`), `basic` (`username`, `password`) or `header` (`header_name`, `token`): values are `env://` references, resolved per call. `caller`: the calling user's credential for this run (see below). |
-| `pagination` | `none`, `link_header` (follows `rel="next"`) or `page_param` (increments `page_param` from `start_page` until an empty page), up to `max_pages`; `items_pointer` names the list to concatenate. |
+| `pagination` | `none`, `link_header` (follows `rel="next"`, resolved against the current page) or `page_param` (increments `page_param` from `start_page` until an empty page), up to `max_pages`; `items_pointer` names the list to concatenate. Since 0.2.0b4, for every `auth` type, a `rel="next"` URL on another origin (scheme, host or port, so an `http://` downgrade too) is not requested: pagination stops there and the result carries what was collected plus `pagination_stopped`. Before, only `caller` auth checked the origin, and failed the call; static `bearer`, `basic` and `header` secrets followed the link to any allowlisted host. A `Link` header over 8 KiB is ignored. |
 | `response` | `select`: a JSON pointer into the body; `output_schema`: validates the selected data. |
-| `timeout_seconds`, `max_result_bytes` | Per-request limits; a larger response fails the call. |
+| `timeout_seconds`, `max_result_bytes` | Per-request limits; a larger response fails the call. The body is streamed and the call fails as soon as the total passes `max_result_bytes` (since 0.2.0b4; before, the whole response was read first). |
 | `side_effect`, `idempotency`, `required_permissions` | Defaults: `GET` is a read; other methods are external (and so need approval under the default approval policy). |
 
-The tool returns `{"ok", "status", "headers", "data", "pages"}`. A non-2xx response is returned
+The tool returns `{"ok", "status", "headers", "data", "pages"}`, and `pagination_stopped` (a
+reason) when it stopped before a next page on another origin. A non-2xx response is returned
 with `ok: false` rather than raised, so the model can react to it.
 
 ## Calling the API as the signed-in user
@@ -81,8 +82,9 @@ await runtime.run(request, credentials={"authorization": incoming_headers["autho
   being echoed. With `scheme` set, a value that carries another scheme (`Basic ...`) or more than
   one word is refused instead of being prefixed.
 - The credential goes only to the declared URL's origin (scheme, host and port). A `Link` header
-  that points the next page at another origin fails the call instead of forwarding the credential,
-  even to an allowlisted host. Redirects are never followed.
+  that points the next page at another origin stops pagination there instead of forwarding the
+  credential, even to an allowlisted host (since 0.2.0b4 the tool returns the pages it has, with
+  `pagination_stopped`; before, the call failed). Redirects are never followed.
 - A call that carries caller credentials is never served from, or stored in, the tool-result cache
   (`cache.policies.tool_results`), whose scope is shared by more than one caller.
 - The credential is not part of the tool's arguments, result, events, audits, spans or errors;

@@ -242,8 +242,10 @@ async def paused_for_approval(
 
 
 async def test_streamed_turn_emits_ordered_deltas_then_one_completed_message() -> None:
+    # Longer than the text a stream holds back, so it arrives in several deltas.
+    words = " ".join(f"w{index:02d}" for index in range(60))
     service, runtime, _ = build(
-        MockModelProvider(["one two three four"]),
+        MockModelProvider([words]),
         Seen(),
         handler_options={"delta_interval_seconds": 0},
     )
@@ -254,8 +256,9 @@ async def test_streamed_turn_emits_ordered_deltas_then_one_completed_message() -
     history = await events(service, conversation_id)
     deltas = [event for event in history if event.type == "assistant.message.delta"]
     assert message.status == MessageStatus.COMPLETED
-    assert message.text_content == "one two three four"
-    assert [event.data["delta"] for event in deltas] == ["one ", "two ", "three ", "four "]
+    assert message.text_content == words
+    assert [event.data["delta"] for event in deltas][:3] == ["w00 ", "w01 ", "w02 "]
+    assert "".join(event.data["delta"] for event in deltas) == words + " "
     assert all(event.data["message_id"] == assistant.id for event in deltas)
     assert all(event.message_id == assistant.id for event in deltas)
     sequences = [event.sequence for event in history]

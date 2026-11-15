@@ -98,8 +98,9 @@ async def test_langgraph_adapter_cancellation() -> None:
     cancelled = await adapter.cancel(req.run_id)
     assert cancelled
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    # Since 0.2.0b4 a run stopped by cancel() returns CANCELLED instead of raising.
+    result = await task
+    assert result.status.value == "cancelled"
 
 
 def test_openai_agents_missing_dependency_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,7 +243,9 @@ async def test_real_openai_agents_streaming() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_openai_agents_cancellation_clears_active() -> None:
+async def test_real_openai_agents_cancellation_clears_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("agents")
     from agents import Agent
     from agents.testing import ScriptedModel, assistant_message
@@ -257,7 +260,8 @@ async def test_real_openai_agents_cancellation_clears_active() -> None:
         await asyncio.sleep(5.0)
         return await orig_run(*args, **kwargs)
 
-    adapter._runner.run = slow_run
+    # The adapter holds the SDK class Runner: patch it for this test only.
+    monkeypatch.setattr(adapter._runner, "run", slow_run)
 
     req = _sample_request()
     task = asyncio.create_task(adapter.invoke(req))
@@ -268,8 +272,8 @@ async def test_real_openai_agents_cancellation_clears_active() -> None:
     assert cancelled is True
     assert req.run_id not in adapter._active
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    result = await task
+    assert result.status.value == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -297,10 +301,16 @@ async def test_real_openai_agents_interruption_normalization() -> None:
     result = await adapter.invoke(req)
 
     assert result.status.value == "awaiting_input"
-    assert result.resume_state is None
+    # The RunResult is kept so the host can resume it (to_state, approve/reject).
+    assert result.resume_state is not None
     assert result.metadata["interruption_count"] == 1
     assert result.metadata["interruptions"] == [
-        {"type": "tool_approval_item", "tool_name": "sensitive_action"}
+        {
+            "type": "tool_approval_item",
+            "tool_name": "sensitive_action",
+            "call_id": None,
+            "arguments": None,
+        }
     ]
 
 
@@ -334,6 +344,181 @@ async def test_real_openai_agents_runtime_metadata_boundary() -> None:
     assert captured_kwargs["context"]["tenant_id"] == "tenant-prod"
     assert captured_kwargs["context"]["user_id"] == "analyst-42"
     assert captured_kwargs["context"]["session_id"] == "session-99"
-    assert captured_kwargs["conversation_id"] == "session-99"
+    assert "conversation_id" not in captured_kwargs
     assert captured_kwargs["run_config"].tracing_disabled is True
     assert captured_kwargs["run_config"].trace_id == "run-framework-1"
+
+
+class _ApprovalState(TypedDict):
+    decision: str
+
+
+@pytest.mark.asyncio
+async def test_real_langgraph_interrupt_is_awaiting_input_and_resumes_on_the_tenant_thread() -> (
+    None
+):
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.types import Command, interrupt
+
+    def review(state: _ApprovalState) -> dict[str, Any]:
+        return {"decision": str(interrupt({"action": "refund", "amount": 40}))}
+
+    builder = StateGraph(_ApprovalState)
+    builder.add_node("review", review)
+    builder.add_edge(START, "review")
+    builder.add_edge("review", END)
+    saver = InMemorySaver()
+    graph = builder.compile(checkpointer=saver)
+    resuming = {"value": None}
+
+    def input_factory(request: FrameworkRunRequest) -> Any:
+        if resuming["value"] is not None:
+            return Command(resume=resuming["value"])
+        return {"decision": ""}
+
+    adapter = LangGraphAdapter(
+        graph, input_factory=input_factory, output_selector=lambda value: value["decision"]
+    )
+    req = _sample_request()
+
+    paused = await adapter.invoke(req)
+    streamed = [e async for e in adapter.stream(req.model_copy(update={"session_id": "other"}))]
+    resuming["value"] = "approved"
+    resumed = await adapter.invoke(req)
+
+    assert adapter.capabilities.persistence is True
+    assert paused.status.value == "awaiting_input"
+    [interrupt_item] = paused.metadata["interrupts"]
+    assert interrupt_item["value"] == {"action": "refund", "amount": 40}
+    assert interrupt_item["id"]
+    assert streamed[-1].result is not None
+    assert streamed[-1].result.status.value == "awaiting_input"
+    assert len(streamed[-1].result.metadata["interrupts"]) == 1
+    assert resumed.status.value == "completed"
+    assert resumed.output == "approved"
+    threads = {item.config["configurable"]["thread_id"] for item in saver.list(None)}
+    assert threads == {"tenant-prod:session-99", "tenant-prod:other"}
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_tool_approval_pauses_with_arguments_and_resumes() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent, RunConfig, Runner, function_tool
+    from agents.testing import ScriptedModel, assistant_message, function_call
+
+    @function_tool(needs_approval=True)
+    def issue_refund(amount: int) -> str:
+        """Refund an order."""
+        return f"refunded {amount}"
+
+    model = ScriptedModel(
+        [
+            [function_call("issue_refund", {"amount": 40}, call_id="call-1")],
+            [assistant_message("refund issued")],
+        ]
+    )
+    agent = Agent(name="refunds", model=model, tools=[issue_refund])
+
+    paused = await OpenAIAgentsAdapter(agent).invoke(_sample_request())
+
+    assert paused.status.value == "awaiting_input"
+    assert paused.metadata["interrupts"] == [
+        {"id": "call-1", "value": {"tool_name": "issue_refund", "arguments": {"amount": 40}}}
+    ]
+    # The kept RunResult resumes the run with the SDK's own approval API.
+    state = paused.resume_state.to_state()
+    state.approve(paused.resume_state.interruptions[0])
+    resumed = await Runner.run(agent, state, run_config=RunConfig(tracing_disabled=True))
+    assert resumed.final_output == "refund issued"
+
+
+@pytest.mark.asyncio
+async def test_real_openai_agents_stream_reports_a_tool_approval() -> None:
+    pytest.importorskip("agents")
+    from agents import Agent, function_tool
+    from agents.testing import ScriptedModel, function_call
+
+    @function_tool(needs_approval=True)
+    def issue_refund(amount: int) -> str:
+        """Refund an order."""
+        return f"refunded {amount}"
+
+    model = ScriptedModel([[function_call("issue_refund", {"amount": 5}, call_id="call-2")]])
+    agent = Agent(name="refunds", model=model, tools=[issue_refund])
+
+    events = [e async for e in OpenAIAgentsAdapter(agent).stream(_sample_request())]
+
+    assert events[-1].type == FrameworkEventType.COMPLETED
+    assert events[-1].result is not None
+    assert events[-1].result.status.value == "awaiting_input"
+    assert events[-1].result.metadata["interrupts"][0]["id"] == "call-2"
+
+
+@pytest.mark.asyncio
+async def test_real_autogen_team_isolation_handoff_and_cancellation() -> None:
+    pytest.importorskip("autogen_agentchat")
+    from autogen_agentchat.agents import BaseChatAgent
+    from autogen_agentchat.base import Response
+    from autogen_agentchat.conditions import HandoffTermination, MaxMessageTermination
+    from autogen_agentchat.messages import HandoffMessage, TextMessage
+    from autogen_agentchat.teams import RoundRobinGroupChat
+
+    from algen_agent_runtime.frameworks import AutoGenAdapter
+
+    class Counter(BaseChatAgent):
+        """Answers with how many messages it has seen, which grows unless the team is reset."""
+
+        def __init__(self, *, handoff: bool = False, slow: bool = False) -> None:
+            super().__init__("counter", "counts messages")
+            self.seen = 0
+            self.handoff = handoff
+            self.slow = slow
+
+        @property
+        def produced_message_types(self) -> Any:
+            return (TextMessage, HandoffMessage)
+
+        async def on_messages(self, messages: Any, cancellation_token: Any) -> Response:
+            self.seen += len(messages)
+            if self.slow:
+                # Stops only through the CancellationToken the adapter passes to team.run.
+                waiting = asyncio.ensure_future(asyncio.sleep(30))
+                cancellation_token.link_future(waiting)
+                await waiting
+            if self.handoff:
+                message: Any = HandoffMessage(source=self.name, target="user", content="ok?")
+            else:
+                message = TextMessage(source=self.name, content=f"seen {self.seen}")
+            return Response(chat_message=message)
+
+        async def on_reset(self, cancellation_token: Any) -> None:
+            self.seen = 0
+
+    def request(tenant: str, run_id: str = "run-1") -> FrameworkRunRequest:
+        return FrameworkRunRequest(
+            input="hi", run_id=run_id, tenant_id=tenant, user_id="u", session_id="s"
+        )
+
+    shared = AutoGenAdapter(
+        RoundRobinGroupChat([Counter()], termination_condition=MaxMessageTermination(2))
+    )
+    first = await shared.invoke(request("tenant-a"))
+    second = await shared.invoke(request("tenant-b"))
+    assert (first.output, second.output) == ("seen 1", "seen 1")
+
+    handoff_team = RoundRobinGroupChat(
+        [Counter(handoff=True)], termination_condition=HandoffTermination(target="user")
+    )
+    paused = await AutoGenAdapter(handoff_team).invoke(request("tenant-a"))
+    assert paused.status.value == "awaiting_input"
+    assert paused.metadata["interrupts"][0]["value"]["target"] == "user"
+
+    slow = AutoGenAdapter(
+        RoundRobinGroupChat([Counter(slow=True)], termination_condition=MaxMessageTermination(2))
+    )
+    task = asyncio.create_task(slow.invoke(request("tenant-a", "run-slow")))
+    await asyncio.sleep(0.2)
+    assert await slow.cancel("run-slow") is True
+    assert (await task).status.value == "cancelled"

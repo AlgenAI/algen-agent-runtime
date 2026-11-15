@@ -467,7 +467,7 @@ class ToolReconciliation:
         if state is not None:
             user_id = state.request.user_id
             try:
-                agent = self._runtime.agents.get(state.request.agent, state.request.agent_version)
+                agent = self._runtime._run_agent(state)
                 permissions = agent.tool_permissions
             except NotFoundError:
                 pass
@@ -619,7 +619,7 @@ class ToolReconciliation:
                 confirmed["result_reference"] = reference
             return json.dumps(confirmed)
         text = json.dumps(record.result.value, default=str)
-        agent = self._runtime.agents.get(state.request.agent, state.request.agent_version)
+        agent = self._runtime._run_agent(state)
         action = PlannedAction(
             id=f"tool-{call_id}",
             type=ActionType.TOOL,
