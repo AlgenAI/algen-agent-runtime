@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import difflib
 import inspect
 from collections.abc import (
     AsyncIterator,
@@ -16,7 +17,6 @@ from collections.abc import (
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-import structlog
 from opentelemetry.context import Context
 
 from algen_agent_runtime.approvals.service import ApprovalStatus
@@ -64,11 +64,20 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
 )
+from algen_agent_runtime.observability.metrics import Stopwatch
+from algen_agent_runtime.observability.metrics import record as record_metric
+from algen_agent_runtime.observability.safe_logging import runtime_logger
+from algen_agent_runtime.observability.safe_spans import redacting_tracer, telemetry_text
 from algen_agent_runtime.observability.traccia_adapter import (
     NoopObservabilityAdapter,
     ObservabilityAdapter,
 )
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.security.redaction import (
+    redact,
+    redact_error_text,
+    redact_pii,
+    redact_text,
+)
 from algen_agent_runtime.tools.contracts import read_only_credentials
 from algen_agent_runtime.types.contracts import (
     PAUSED_STATUSES,
@@ -631,6 +640,8 @@ _INTERRUPTED_TEXT = "The response was interrupted during a service restart. Plea
 # A run nothing drives is given up this long after its deadline; it is polled meanwhile.
 _ORPHAN_GRACE = timedelta(seconds=30)
 _ORPHAN_POLL_SECONDS = 0.25
+# How long an answer waits for the turn task that just paused to return (see respond).
+_PAUSING_TURN_SECONDS = 5.0
 
 
 def _optional_text(value: Any) -> str | None:
@@ -736,6 +747,36 @@ def _awaited(status: MessageStatus) -> str:
     return "input"
 
 
+def _count_turn(handler: str, outcome: str, stopwatch: Stopwatch) -> None:
+    """Count a turn that answered, paused, failed or was cancelled, and how long it took."""
+    attributes = {"handler": handler, "outcome": outcome}
+    record_metric("algen_agent_runtime.conversation.turns", 1, attributes)
+    record_metric("algen_agent_runtime.conversation.turn.duration", stopwatch.seconds(), attributes)
+
+
+TITLE_CHARS = 80
+
+
+def conversation_title(text: str) -> str:
+    """A conversation's title from its first message: its first ``TITLE_CHARS`` characters,
+    with credentials masked, and cut before a personal identifier (an email, phone, Aadhaar or
+    card number) that would not fit whole, so the title never ends in part of one that
+    masking could no longer recognise (0.2.0b5). Whole identifiers stay: the title is the
+    user's own; telemetry masks them (``conversation.title``)."""
+    masked = redact_text(text.strip())
+    if len(masked) <= TITLE_CHARS:
+        return masked
+    cut = TITLE_CHARS
+    without = redact_pii(masked)
+    if isinstance(without, str) and without != masked:
+        matcher = difflib.SequenceMatcher(None, masked, without, autojunk=False)
+        for tag, start, end, _, _ in matcher.get_opcodes():
+            if tag != "equal" and start < cut < end:
+                cut = start
+                break
+    return masked[:cut].rstrip()
+
+
 class ConversationService:
     def __init__(
         self,
@@ -760,7 +801,9 @@ class ConversationService:
         self.presentation = presentation or ConversationPresentation()
         self.feedback_store = feedback_store or InMemoryConversationFeedbackStore()
         self._followup_provider = followup_provider
-        self._tracer = self._observability.tracer("algen_agent_runtime.conversations")
+        self._tracer = redacting_tracer(
+            self._observability.tracer("algen_agent_runtime.conversations")
+        )
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # One lock per conversation, so turns of different conversations never wait on each
         # other; a lock exists only while held or awaited.
@@ -1040,7 +1083,9 @@ class ConversationService:
             await self.store.append_message(assistant_message)
             if conversation.title == "New conversation":
                 expected = conversation.version
-                conversation.title = text.strip()[:80]
+                # A credential in the first message never becomes the title, nor does part of
+                # a personal identifier cut at its end (0.2.0b5).
+                conversation.title = conversation_title(text)
                 conversation.updated_at = utc_now()
                 await self.store.save(conversation, expected)
             await self._emit(
@@ -1103,6 +1148,7 @@ class ConversationService:
         handler: Any = self.handlers.get(conversation.handler)
         if getattr(handler, "resume", None) is None or getattr(handler, "follow", None) is None:
             raise ConflictError(f"conversation handler {handler.name!r} cannot resume turns")
+        await self._await_pausing_turn(conversation, turn_id)
         async with self._locks.hold(conversation.id):
             active = self._tasks.get(conversation_id)
             if active and not active.done():
@@ -1248,7 +1294,7 @@ class ConversationService:
                     if await self._reattach(conversation, assistant, fail_without_run=True):
                         recovered += 1
             except Exception as exc:
-                structlog.get_logger("algen_agent_runtime.conversations").warning(
+                runtime_logger("algen_agent_runtime.conversations").warning(
                     "conversation_turn_recovery_failed",
                     conversation_id=assistant.conversation_id,
                     message_id=assistant.id,
@@ -1331,7 +1377,7 @@ class ConversationService:
                         )
                     changed += 1
             except Exception as exc:
-                structlog.get_logger("algen_agent_runtime.conversations").warning(
+                runtime_logger("algen_agent_runtime.conversations").warning(
                     "conversation_pending_turn_reconcile_failed",
                     conversation_id=message.conversation_id,
                     message_id=message.id,
@@ -1363,6 +1409,23 @@ class ConversationService:
         if conversation.user_id != user_id:
             raise NotFoundError(f"conversation {conversation_id!r} not found")
         return conversation
+
+    async def _await_pausing_turn(self, conversation: Conversation, turn_id: str) -> None:
+        """Let the turn task that just paused finish before answering it.
+
+        The task saves the message as awaiting approval or input and then returns; a host that
+        answers as soon as it sees that status would otherwise be refused as busy. Waits only
+        while the turn already awaits an answer, and at most ``_PAUSING_TURN_SECONDS``.
+        """
+        active = self._tasks.get(conversation.id)
+        if active is None or active.done():
+            return
+        try:
+            _, assistant = await self._turn(conversation, turn_id)
+        except NotFoundError:
+            return
+        if assistant.status in AWAITING_MESSAGE_STATUSES and assistant.pending is not None:
+            await asyncio.wait({active}, timeout=_PAUSING_TURN_SECONDS)
 
     async def _turn(
         self, conversation: Conversation, turn_id: str
@@ -1618,7 +1681,7 @@ class ConversationService:
             "gen_ai.conversation.id": conversation.id,
             "conversation.id": conversation.id,
             "conversation.handler": conversation.handler,
-            "conversation.title": conversation.title,
+            "conversation.title": telemetry_text(conversation.title),
             "interaction.id": user_message.id,
             "turn.id": user_message.id,
             "message.id": assistant_message.id,
@@ -1639,6 +1702,7 @@ class ConversationService:
             ) or self._tracer.start_as_current_span(
                 "conversation.turn", context=Context(), attributes=attributes
             )
+            stopwatch = Stopwatch()
             with span_scope as span:
                 context_getter = getattr(span, "get_span_context", None)
                 span_context = context_getter() if context_getter is not None else None
@@ -1661,12 +1725,14 @@ class ConversationService:
                         recovered=recovered,
                     )
                 except asyncio.CancelledError:
+                    _count_turn(conversation.handler, "cancelled", stopwatch)
                     span.set_attribute("conversation.turn.status", "cancelled")
                     span.set_attribute("agent.run.outcome", "cancelled")
                     self._observability.set_span_outcome(
                         span, failed=True, description="conversation turn cancelled"
                     )
                     raise
+                _count_turn(conversation.handler, outcome, stopwatch)
                 span.set_attribute("conversation.turn.status", outcome)
                 span.set_attribute("agent.run.outcome", outcome)
                 span.set_attribute("conversation.agent_run_count", len(run_ids))
@@ -1726,7 +1792,7 @@ class ConversationService:
                 await self._emit(conversation, event_type, payload, assistant_message.id)
             except Exception as exc:
                 # A lost progress event must not abandon a turn whose run goes on.
-                structlog.get_logger("algen_agent_runtime.conversations").warning(
+                runtime_logger("algen_agent_runtime.conversations").warning(
                     "conversation_event_publish_failed",
                     conversation_id=conversation.id,
                     event_type=event_type,
@@ -1764,7 +1830,7 @@ class ConversationService:
                         assistant_text=output_text,
                     )
                 except Exception as exc:
-                    structlog.get_logger("algen_agent_runtime.conversations").warning(
+                    runtime_logger("algen_agent_runtime.conversations").warning(
                         "conversation_followup_generation_failed",
                         conversation_id=conversation.id,
                         error_type=type(exc).__name__,
@@ -1798,7 +1864,7 @@ class ConversationService:
             return "failed", streaming.run_ids, 1, _INTERRUPTED_TEXT
         except Exception as exc:
             public_message = self.presentation.unexpected_error_message(exc)
-            structlog.get_logger("algen_agent_runtime.conversations").exception(
+            runtime_logger("algen_agent_runtime.conversations").exception(
                 "conversation_response_failed",
                 conversation_id=conversation.id,
                 message_id=assistant_message.id,
@@ -1876,7 +1942,7 @@ class ConversationService:
             await self._emit(conversation, _EVENT_BY_STATUS[status], event_payload, message.id)
         except Exception as exc:
             # The message is stored: a reader gets it from messages(), so the turn stands.
-            structlog.get_logger("algen_agent_runtime.conversations").warning(
+            runtime_logger("algen_agent_runtime.conversations").warning(
                 "conversation_event_publish_failed",
                 conversation_id=conversation.id,
                 event_type=_EVENT_BY_STATUS[status],
@@ -1885,7 +1951,8 @@ class ConversationService:
         return output_text
 
     def _telemetry_content(self, value: str) -> str:
-        sanitized = str(redact(value))
+        # Credentials and personal identifiers masked (personal identifiers since 0.2.0b5).
+        sanitized = telemetry_text(str(redact(value)))
         if len(sanitized) <= self._telemetry_max_content_chars:
             return sanitized
         marker = "...[TRUNCATED]"
@@ -1894,10 +1961,10 @@ class ConversationService:
     def _forget_task(self, completed: asyncio.Task[None]) -> None:
         if not completed.cancelled() and completed.exception() is not None:
             exception = completed.exception()
-            structlog.get_logger("algen_agent_runtime.conversations").error(
+            runtime_logger("algen_agent_runtime.conversations").error(
                 "conversation_task_terminated_unexpectedly",
                 error_type=type(exception).__name__,
-                error=str(exception)[:500],
+                error=redact_error_text(str(exception))[:500],
             )
         for conversation_id, task in tuple(self._tasks.items()):
             if task is completed:

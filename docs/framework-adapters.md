@@ -22,12 +22,12 @@ Experimental adapters are outside the compatibility promise
 
 Algen Agent Runtime explicitly delineates the governance boundaries between Runtime-managed execution and foreign framework execution:
 
-| Framework | Invocation | Trace / Span Propagation | Runtime Governance of Outer Call | Governance of Internal Model / Tool Calls | Durable Pause & Resume |
+| Framework | Support | Trace / Span Propagation | Runtime Governance of Outer Call | Governance of Internal Model / Tool Calls | Durable Pause & Resume |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **LangGraph** | Supported | Propagates `run_id`, `tenant_id`, `user_id`, `session_id`; thread `<tenant_id>:<session_id>` | Enforced (timeout, tenancy, cancellation) | Foreign (LangGraph-owned nodes/tools) | Interrupts detected (`AWAITING_INPUT`); the checkpointer persists the thread; resume through your `input_factory` |
 | **OpenAI Agents SDK** | Supported | Propagates `run_id`, `tenant_id`, `user_id`, `session_id` | Enforced (timeout, tenancy, cancellation) | Foreign (OpenAI client/tool-owned) | Tool approvals detected; `RunResult` in `resume_state` (in-process, no durable resume) |
-| **AutoGen AgentChat** | Supported | Through your `factory` / `input_factory` only | Enforced (timeout, tenancy, cancellation) | Foreign (AutoGen team-owned) | Handoff to the user detected; no resume, no state across requests |
-| **CrewAI** | Supported | Through your `input_factory` only | Enforced (timeout, tenancy; cancellation only with native `akickoff`) | Foreign (Crew task/tool-owned) | Not supported |
+| **AutoGen AgentChat** | Experimental, frozen | Through your `factory` / `input_factory` only | Enforced (timeout, tenancy, cancellation) | Foreign (AutoGen team-owned) | Handoff to the user detected; no resume, no state across requests |
+| **CrewAI** | Experimental | Through your `input_factory` only | Enforced (timeout, tenancy; cancellation only with native `akickoff`) | Foreign (Crew task/tool-owned) | Not supported |
 
 > [!IMPORTANT]
 > **Governance Boundary**: Algen Agent Runtime governs the outer adapter boundary (request normalization, tenant isolation, request deadlines, and cancellation). Internal model calls and tool calls initiated inside the foreign framework are managed by that framework's native engine. To govern internal calls, configure framework-native hooks or observe them using shared tracing (e.g. Traccia).

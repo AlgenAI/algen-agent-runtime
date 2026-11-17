@@ -21,7 +21,10 @@ Production prerequisites:
 - an explicit dashboard origin in `config/ecs.yaml`; do not use a wildcard with credentials;
 - encrypted RDS, Redis, log groups, and Secrets Manager resources, plus retention policies;
 - an ALB idle timeout compatible with server-sent events and deregistration delay for draining;
-- autoscaling on CPU and request latency, and alarms on readiness, policy denials, cost, and errors.
+- one running task per database (ECS `desiredCount: 1`, scaled vertically): the supported
+  deployment scope is a single Runtime process per database, and running more is experimental
+  (see [production readiness](../../../docs/production-readiness.md#deployment-scope));
+- alarms on readiness, policy denials, cost, and errors.
 
 The supplied task runs as a non-root user with a read-only root filesystem. It intentionally contains
 no AWS credentials; the ECS task role and Secrets Manager injection provide deployment identity.

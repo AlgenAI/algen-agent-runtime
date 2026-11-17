@@ -8,12 +8,13 @@ from contextlib import AbstractContextManager
 from enum import Enum
 from typing import Any, Protocol
 
-import structlog
-from opentelemetry import metrics, trace
 from pydantic import BaseModel
 
 from algen_agent_runtime.events.contracts import AuditEvent
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
+from algen_agent_runtime.observability.metrics import instrument as metric_instrument
+from algen_agent_runtime.observability.safe_logging import runtime_logger
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 from algen_agent_runtime.policies.contracts import (
     PAYLOAD_CHANGE_KEY,
     POLICY_ERROR_REASON_CODE,
@@ -811,18 +812,11 @@ class OutputValidationPolicy:
 _TOOL_POINTS = frozenset({PolicyPoint.PLAN_TOOL, PolicyPoint.BEFORE_TOOL, PolicyPoint.AFTER_TOOL})
 POLICY_ERROR_AUDIT_ACTION = "policy.error"
 POLICY_ERROR_METRIC_NAME = "algen_agent_runtime.policy.errors"
-_logger = structlog.get_logger("algen_agent_runtime.policies")
+_logger = runtime_logger("algen_agent_runtime.policies")
 
 
 def _error_counter() -> Any:
-    try:
-        return metrics.get_meter("algen_agent_runtime.policies").create_counter(
-            POLICY_ERROR_METRIC_NAME,
-            unit="1",
-            description="Policy evaluations that raised or timed out, by boundary and fail mode",
-        )
-    except Exception:
-        return None
+    return metric_instrument(POLICY_ERROR_METRIC_NAME)
 
 
 class _AuditLog(Protocol):
@@ -853,7 +847,7 @@ class CompositePolicyEngine:
         self.error_handling = error_handling or PolicyErrorHandling()
         self._audits = audits
         self._error_counter = _error_counter()
-        self._tracer = trace.get_tracer("algen_agent_runtime.guardrails")
+        self._tracer = runtime_tracer("algen_agent_runtime.guardrails")
         self._guardrail_scope = guardrail_scope or self._otel_guardrail_scope
 
     def _otel_guardrail_scope(

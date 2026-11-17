@@ -1,0 +1,231 @@
+# Prometheus alerting rules for Algen Agent Runtime (single-node scope), since 0.2.0b5.
+#
+# Built on the Runtime's OpenTelemetry metrics (docs/operations.md, "Metrics reference") as an
+# OTLP pipeline writes them to Prometheus: the OpenTelemetry Collector's prometheus or
+# prometheusremotewrite exporter, or Prometheus's own OTLP receiver, with the default name
+# translation (dots to underscores, unit and _total suffixes). Load with `rule_files:` in
+# prometheus.yml, or convert for Grafana, Mimir or Thanos rulers; check with
+# `promtool check rules deploy/observability/prometheus/alerts.yml`.
+#
+# Severities: page (wake someone), ticket (look today), security (route to whoever owns
+# authentication). Thresholds marked "tune" depend on traffic: start with these, then adjust.
+# tests/unit/test_runtime_metrics.py checks that every metric queried here is recorded.
+groups:
+  - name: algen-agent-runtime.availability
+    rules:
+      - alert: AlgenRuntimeStoreUnavailable
+        expr: sum by (job, store) (rate(algen_agent_runtime_store_unavailable_total[2m])) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.store }} is unavailable to the Runtime ({{ $labels.job }})"
+          description: >-
+            Store calls fail because PostgreSQL or Redis cannot be reached; readiness is down
+            and new work gets 503. Work in flight keeps its checkpoints.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#database-outages
+
+      - alert: AlgenRuntimeServiceUnavailableAnswers
+        expr: sum by (job) (rate(algen_agent_runtime_api_requests_total{status_code="503"}[2m])) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "The Runtime API answers 503 ({{ $labels.job }})"
+          description: A required store is down or the service is draining.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#database-outages
+
+      # Run admission SLO: 99.9 % of POST /v1/runs answered without a 5xx (429 and 413 are the
+      # limits working and are left out). Multi-window burn rates of the 0.1 % error budget.
+      - alert: AlgenRuntimeRunAdmissionErrorBudgetFastBurn
+        expr: |
+          (
+            sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code=~"5.."}[5m]))
+              / sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code!~"413|429"}[5m]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code=~"5.."}[1h]))
+              / sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code!~"413|429"}[1h]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Run creation is failing fast enough to spend a month's error budget in two days ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimeRunAdmissionErrorBudgetSlowBurn
+        expr: |
+          (
+            sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code=~"5.."}[30m]))
+              / sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code!~"413|429"}[30m]))
+          ) > (6 * 0.001)
+          and
+          (
+            sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code=~"5.."}[6h]))
+              / sum by (job) (rate(algen_agent_runtime_api_requests_total{method="POST", route="/v1/runs", status_code!~"413|429"}[6h]))
+          ) > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Run creation errors are using up the monthly error budget ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimeRunAdmissionSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(algen_agent_runtime_api_request_duration_seconds_bucket{method="POST", route="/v1/runs"}[5m]))
+          ) > 0.25
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "p95 of POST /v1/runs is over 250 ms ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#capacity-guidance-single-node
+
+  - name: algen-agent-runtime.capacity
+    rules:
+      - alert: AlgenRuntimePostgresPoolSaturated
+        expr: |
+          sum by (job) (algen_agent_runtime_postgres_pool_connections{state="in_use"})
+            >= sum by (job) (algen_agent_runtime_postgres_pool_max_size)
+          and sum by (job) (algen_agent_runtime_postgres_pool_max_size) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The PostgreSQL pool has been at its maximum for 5 minutes ({{ $labels.job }})"
+          description: Durable writes are queueing. Raise storage.postgres_max_pool_size or move PostgreSQL to more capacity.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#capacity-guidance-single-node
+
+      - alert: AlgenRuntimeAdmissionRejections
+        # tune: one refused request a second, sustained, is a tenant at its limit.
+        expr: sum by (job, route_class) (rate(algen_agent_runtime_api_admission_rejections_total[10m])) > 1
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Requests to {{ $labels.route_class }} routes are being refused with 429 ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#noisy-neighbour
+
+      - alert: AlgenRuntimeEventBackpressure
+        expr: sum by (job, kind) (increase(algen_agent_runtime_events_backpressure_total{kind=~"stream_overflow|event_limit"}[15m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Run events were dropped or a stream overflowed ({{ $labels.kind }}, {{ $labels.job }})"
+          description: >-
+            event_limit means a run reached budget.max_events (a runaway run); stream_overflow
+            means a subscriber fell further behind than the in-memory history keeps.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#subscribers-that-fall-behind
+
+  - name: algen-agent-runtime.runs
+    rules:
+      - alert: AlgenRuntimeRunsFailing
+        # tune: a fifth of runs ending failed or timed out, leaving out runs a person declined
+        # or let expire.
+        expr: |
+          sum by (job) (rate(algen_agent_runtime_runs_finished_total{status=~"failed|timed_out", reason!~"approval_rejected|continuation_rejected|approval_expired|clarification_expired|credentials_expired"}[15m]))
+            / sum by (job) (rate(algen_agent_runtime_runs_finished_total[15m]))
+          > 0.2
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "More than 20 % of runs are failing ({{ $labels.job }})"
+          description: Break the failures down by reason and agent on the Runtime overview dashboard.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimeRunLimitsExceeded
+        # tune: runs ending at a step, token, cost or time limit point at a looping agent or
+        # hostile input.
+        expr: sum by (job, agent) (increase(algen_agent_runtime_runs_finished_total{reason="limit_exceeded"}[1h])) > 10
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Runs of {{ $labels.agent }} keep reaching their limits ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#run-limits
+
+      - alert: AlgenRuntimeRunsNotFinishing
+        expr: |
+          (sum by (job) (min_over_time(algen_agent_runtime_runs_active[15m])) > 0)
+          unless
+          (sum by (job) (increase(algen_agent_runtime_runs_finished_total[15m])) > 0)
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Runs are executing but none has ended for 30 minutes ({{ $labels.job }})"
+          description: Runs may be stuck on a provider or a tool. Compare with the agents' budget.max_latency_seconds.
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimeToolReconciliationRequired
+        expr: sum by (job) (algen_agent_runtime_runs_paused{pause_kind="reconciliation"}) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Runs wait for an operator to reconcile a tool call ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbook
+
+      - alert: AlgenRuntimeApprovalsExpiring
+        # tune: approvals left to expire mean nobody is watching the approval inbox.
+        expr: sum by (job) (increase(algen_agent_runtime_approvals_resolved_total{outcome="expired"}[1h])) > 5
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Approval requests are expiring undecided ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#approval-inbox
+
+  - name: algen-agent-runtime.dependencies
+    rules:
+      - alert: AlgenRuntimeModelErrors
+        # tune: a tenth of calls to one model failing. Rate limits (error_kind="rate_limit")
+        # mean provider max_concurrency or the account's limits are too low.
+        expr: |
+          sum by (job, provider, model, error_kind) (rate(algen_agent_runtime_model_calls_total{outcome="error"}[10m]))
+            / ignoring(error_kind) group_left
+          sum by (job, provider, model) (rate(algen_agent_runtime_model_calls_total[10m]))
+          > 0.1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.provider }}/{{ $labels.model }} calls fail with {{ $labels.error_kind }} ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimeToolErrors
+        # tune: a quarter of a tool's calls failing or erroring.
+        expr: |
+          sum by (job, tool) (rate(algen_agent_runtime_tool_calls_total{outcome=~"failed|error"}[15m]))
+            / sum by (job, tool) (rate(algen_agent_runtime_tool_calls_total[15m]))
+          > 0.25
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Calls to {{ $labels.tool }} are failing ({{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#runbooks
+
+      - alert: AlgenRuntimePolicyErrors
+        expr: sum by (job, boundary, policy, fail_mode) (increase(algen_agent_runtime_policy_errors_total[15m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Policy {{ $labels.policy }} raised or timed out at {{ $labels.boundary }} (fail mode {{ $labels.fail_mode }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#boundaries-and-fail-modes
+
+  - name: algen-agent-runtime.security
+    rules:
+      - alert: AlgenRuntimeAuthenticationFailures
+        # tune: failed API authentications against the usual rate.
+        expr: |
+          sum by (job, reason) (rate(algen_agent_runtime_auth_attempts_total{outcome="failure"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: security
+        annotations:
+          summary: "API authentication failures are rising ({{ $labels.reason }}, {{ $labels.job }})"
+          runbook_url: https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md#authentication-audit-events

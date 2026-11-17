@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import webbrowser
@@ -91,6 +92,11 @@ def _run_serve(
         # The trusted-proxy identity hook checks the direct peer; never let X-Forwarded-For
         # rewrite it.
         proxy_headers=not settings.api.trusted_proxy_identity.enabled,
+        # On SIGTERM uvicorn waits for open connections before the app's shutdown (the drain)
+        # runs, and an event stream that follows a conversation or a paused run stays open: the
+        # drain never started and the orchestrator killed the process. Close what is still open
+        # after the grace period; clients reconnect with Last-Event-ID.
+        timeout_graceful_shutdown=math.ceil(settings.runtime.shutdown_grace_seconds),
     )
 
 

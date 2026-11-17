@@ -23,7 +23,9 @@ When reviewing an existing host, look for these duplicates first:
 - its own restart follow-up of turns that were waiting for approval or input, or that were
   streaming (the Runtime settles each turn by its run's state from 0.2.0b3);
 - its own list of event types that mean "the run ended" or "the run paused";
-- regular expressions that mask emails, phone numbers or tokens in stored tool results or logs;
+- regular expressions that mask emails, phone numbers or tokens in stored tool results or logs,
+  or that re-redact streamed `model.delta` text (the Runtime redacts it from 0.2.0b4);
+- its own per-user filter in front of `/v1/artifacts` (the routes check the owner from 0.2.0b4);
 - steering a run through a field in a tool result instead of `AgentRuntime.steer()`;
 - direct `provider.generate(...)` calls, which skip the router's fallback, circuit breakers,
   rate limits and `UsageMeter`;
@@ -34,7 +36,15 @@ When reviewing an existing host, look for these duplicates first:
   Runtime's migrations: apply `algen-agent-runtime migrations sql` and run `check_schema` instead;
 - a context builder of its own kept only to change the token budget
   (`context_policy.max_context_tokens`), or code that erases a user's runs and sessions by hand
-  (`container.user_data.erase_user`).
+  (`container.user_data.erase_user`);
+- its own counters of runs, tokens, tool calls or approvals built from run events or spans,
+  where the Runtime's metrics (`telemetry.otlp_metrics_endpoint`, from 0.2.0b5) and its shipped
+  dashboards and alert rules already measure them;
+- a `try: await runtime.run(...) except asyncio.CancelledError: ...` that swallows the
+  cancellation, or its own "cancelled" flag for runs: from 0.2.0b5 a cancelled waiter gets
+  `CancelledError` and the run ends `cancelled` (`runtime.cancel`, `DELETE /v1/runs/{id}`);
+- a hand-written list of experimental adapters or settings: ask
+  `algen_agent_runtime.stability.is_experimental(...)` (from 0.2.0b5).
 
 Always pass the real tenant and user on every call. Give each user their own `session_id` (a
 conversation uses its own id). Pass the caller's credentials per run and again on every resume;

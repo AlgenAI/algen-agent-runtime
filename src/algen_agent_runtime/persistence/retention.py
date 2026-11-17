@@ -139,8 +139,10 @@ SELECT
 """
 
 # A finished child run is kept while its parent is unfinished: the parent's recovery reads it.
+# A workflow run's tool steps record their calls in the ledger under its id (migration 024): they
+# go with it, and a run with an unresolved call is kept, as for agent runs.
 _DELETE_WORKFLOW_CHECKPOINTS = """
-DELETE FROM algen_agent_runtime_workflow_checkpoints w USING (
+WITH doomed AS (
     SELECT c.tenant_id, c.id FROM algen_agent_runtime_workflow_checkpoints c
     WHERE c.status IN ('completed', 'failed', 'cancelled')
       AND c.updated_at < now() - ($1 * interval '1 second')
@@ -150,10 +152,20 @@ DELETE FROM algen_agent_runtime_workflow_checkpoints w USING (
             AND p.id = c.state->>'parent_workflow_id'
             AND p.status NOT IN ('completed', 'failed', 'cancelled')
       )
+      AND NOT EXISTS (
+          SELECT 1 FROM algen_agent_runtime_tool_executions t
+          WHERE t.tenant_id = c.tenant_id AND t.run_id = c.id
+            AND t.status IN ('started', 'indeterminate', 'compensating', 'compensation_failed')
+      )
     ORDER BY c.updated_at
     LIMIT $2
     FOR UPDATE OF c SKIP LOCKED
-) doomed
+),
+deleted_tool_executions AS (
+    DELETE FROM algen_agent_runtime_tool_executions t USING doomed d
+    WHERE t.tenant_id = d.tenant_id AND t.run_id = d.id
+)
+DELETE FROM algen_agent_runtime_workflow_checkpoints w USING doomed
 WHERE w.tenant_id = doomed.tenant_id AND w.id = doomed.id
 """
 

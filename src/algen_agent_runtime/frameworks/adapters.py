@@ -31,7 +31,17 @@ from algen_agent_runtime.frameworks.contracts import (
     FrameworkRunStatus,
     FrameworkStreamEvent,
 )
+from algen_agent_runtime.stability import experimental
 from algen_agent_runtime.types.contracts import TokenUsage
+
+#: Why the AutoGen and CrewAI adapters are experimental (``algen_agent_runtime.stability``).
+_AUTOGEN_EXPERIMENTAL = (
+    "AutoGen is archived upstream: the adapter is frozen, takes fixes only and may be removed in "
+    "a minor release"
+)
+_CREWAI_EXPERIMENTAL = (
+    "tested only with mock crews, not the real CrewAI SDK; supported once it has real-SDK evidence"
+)
 
 #: Longest error message a FAILED result carries.
 _ERROR_MESSAGE_LIMIT = 500
@@ -81,9 +91,10 @@ def _add(total: TokenUsage, item: TokenUsage) -> TokenUsage:
 
 def _error(exc: BaseException) -> dict[str, str]:
     """An exception as a FAILED result reports it: its type and a redacted, bounded message."""
-    from algen_agent_runtime.security.redaction import redact_secrets
+    from algen_agent_runtime.security.redaction import redact_error_text
 
-    message = str(redact_secrets(str(exc)))
+    # Credentials and (0.2.0b5) personal identifiers, as a run's error masks them.
+    message = redact_error_text(exc)
     if len(message) > _ERROR_MESSAGE_LIMIT:
         message = message[: _ERROR_MESSAGE_LIMIT - 1] + "…"
     return {"type": type(exc).__name__, "message": message}
@@ -648,8 +659,11 @@ def _cancellation_token() -> Any:
     return CancellationToken()
 
 
+@experimental(_AUTOGEN_EXPERIMENTAL)
 class AutoGenAdapter(_BaseAdapter):
-    """Runs an AutoGen AgentChat agent or team.
+    """Experimental: frozen (AutoGen is archived upstream); may be removed in a minor release.
+
+    Runs an AutoGen AgentChat agent or team.
 
     Pass ``factory`` (preferred): it builds a fresh agent or team for each request, so no
     conversation state is shared between tenants or sessions, and it receives the request, so it
@@ -794,8 +808,11 @@ class AutoGenAdapter(_BaseAdapter):
 # --------------------------------------------------------------------------------------------
 
 
+@experimental(_CREWAI_EXPERIMENTAL)
 class CrewAIAdapter(_BaseAdapter):
-    """Runs a CrewAI ``Crew``. ``input_factory`` (default ``{"input": request.input}``) receives
+    """Experimental: tested only with mock crews, not the real CrewAI SDK.
+
+    Runs a CrewAI ``Crew``. ``input_factory`` (default ``{"input": request.input}``) receives
     the request, so it can pass the run's identity to the crew's inputs; the adapter does not add
     keys to them. A ``pydantic`` or ``json_dict`` result is kept in ``metadata["value"]``.
 

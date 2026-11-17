@@ -16,7 +16,7 @@ When writing code, tests, documentation, or Git commits in `algen-agent-runtime`
 ## 3. PostgreSQL & Redis Persistence Rules
 - **Relational Constraints**:
   - `algen_agent_runtime_runs` has `id text PRIMARY KEY`. Run IDs are globally unique identifiers; never attempt to create multiple runs with the same `id` across tenants.
-  - `algen_agent_runtime_tool_executions` enforces a foreign key constraint referencing `algen_agent_runtime_runs(id)`. Ensure parent runs exist before writing tool execution records.
+  - `algen_agent_runtime_tool_executions.run_id` is the agent run or, for a workflow tool step, the workflow run that made the call. Up to 0.2.0b4 it had a foreign key to `algen_agent_runtime_runs(id)`, which refused workflow tool steps; migration 024 drops it. Tests that write ledger records for agent runs still create the run first, as the Runtime does.
 - **Type Decoding**: `asyncpg` returns raw JSON strings for `jsonb` columns. Deserialize with `json.loads` if the value is a string before validating with Pydantic.
 - **Exception Normalization**: Wrap driver-level exceptions such as `asyncpg.exceptions.UniqueViolationError` into runtime-level errors (`algen_agent_runtime.exceptions.errors.ConflictError`).
 - **Container CI Testing**: The `container-integration` job requires installing `.[dev,postgres,redis]`.
@@ -90,3 +90,27 @@ Say in the PR description which readers are affected.
 - Then run `scripts/integration-tests.sh` (section 3) and, before a PR, the tools smoke test (section 4).
 - A change to the public surface also updates `docs/api/surface.json` (`python scripts/api_surface.py --update`) and `CHANGELOG.md`; `tests/unit/test_api_surface.py` fails otherwise.
 - Do not push to a pull request branch to find out whether CI passes: every push runs the full CI. Push once the local runs above pass and the maintainer has asked for it.
+
+## 9. Security Invariants (every change)
+The 0.2.0b3 security assessment found one critical and eight high-severity issues. None was a typo: each broke a rule nobody had written down, so nothing failed when new code broke it. These are the rules. Each names the test that enforces it; a change that breaks one fails that test, and a new route, status or tool path is covered without anyone remembering to add a case.
+
+| Rule | Enforced by |
+| --- | --- |
+| Every HTTP route either serves no tenant data (and is listed `public` or `platform`) or reads and writes only the caller's tenant. A resource of another tenant answers 404 or 403, never 409 or 422, which would confirm it exists. | `tests/unit/test_api_tenant_matrix.py`: a new route fails until it is classified in `ROUTES`; tenant B then calls it with tenant A's ids. |
+| Every route that is not `public` needs an identity. | Same file: each one is called without one and must answer 401. |
+| Every store method takes the tenant and filters by it in the query, not afterwards. A user's own data (conversations, uploads, MCP tokens) is also filtered by user. | `tests/adversarial/test_cross_tenant.py`, `tests/unit/test_isolation_hardening.py`, `tests/unit/test_artifact_ownership.py`. |
+| Governance fails closed. Only an explicit `approved` or `modified` decision runs a gated tool; any other value, a missing decision, an expired approval or a policy error refuses. Compare against the allowed set (`in {"approved", "modified"}`), never `!= "rejected"`. | `tests/unit/test_approval_decisions.py`: a new `ApprovalStatus` fails until it is sorted. |
+| Only `ToolExecutor.execute` runs a tool. A new way to run tools (a framework bridge, a workflow step, a plugin, an MCP proxy) calls the executor with the approval that covers the call. Never call a tool's `handler`, `execute`, `compensate` or `reconcile` yourself. | `tests/unit/test_tool_execution_chokepoint.py` reads the source; `tests/unit/test_tool_executor_refusals.py`, `tests/unit/test_framework_governed_tools.py`. |
+| Every way text reaches a user (the final answer, streamed deltas, events, conversation messages) passes the run's output policies. | `tests/unit/test_stream_text_guard.py`. |
+| Verify exactly what you then load or run: the signed file is the imported file, the validated SQL is the executed SQL. A check on one value and use of another is a bypass. | `tests/unit/test_plugin_signing.py`, `tests/unit/test_generated_sql_validation.py`. |
+| Nothing a user, tool or model wrote is rendered unescaped, and no configuration, secret or credential is served or logged. Outbound requests go through `OutboundNetwork` (SSRF policy). | `tests/unit/test_agent_ui.py`, `tests/unit/test_network_security.py`, `tests/telemetry/`, the redaction tests. |
+| Workflows and dependency updates: actions pinned to a commit SHA, no `${{ }}` of an input or event field in a `run:` script, `persist-credentials: false`, least `permissions:`, no `pull_request_target` that runs PR code, a Dependabot cooldown. | `scripts/check-workflows.sh` (zizmor), run by `scripts/ci-local.sh` and the Security workflow. |
+
+**When to look harder.** A change under `src/algen_agent_runtime/api/`, `auth/`, `persistence/`, `tools/`, `policies/`, `governance/`, `approvals/`, `workflows/`, `frameworks/`, `plugins/`, `mcp/` or `security/`, or to `.github/`, `Dockerfile`, `requirements/` or the release scripts:
+- run `python -m pytest -q -p no:cacheprovider tests/adversarial tests/unit/test_api_tenant_matrix.py tests/unit/test_approval_decisions.py tests/unit/test_tool_execution_chokepoint.py` and `scripts/check-workflows.sh`;
+- run a security review of the diff (in Claude Code, the `/security-review` command);
+- say in the pull request which rules above the change touches and how they still hold.
+
+**A new route, status or tool path** is added to the enforcing test in the same change (classify the route in `ROUTES` with a valid body in `BODIES`; sort the status; route the call through the executor). Never weaken a check to make a change pass: if a rule must change, say so in the pull request and update this section with it.
+
+**Reporting.** A vulnerability found while working is reported to the maintainer privately, as `SECURITY.md` describes, never in a public issue, pull request, commit message or test name.

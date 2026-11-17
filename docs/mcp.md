@@ -257,6 +257,17 @@ through that stored connection instead. Tool definitions are shared by all tenan
 registered tool; every call runs on the caller's own connection, opened on first use (at most
 256 open sessions, least recently used closed first).
 
+Because each call answers as the caller, a `token_scope: user` server's tools always key the
+tool-result cache (`cache.policies.tool_results`) by user, whatever the policy's `scope`
+(since 0.2.0b4).
+
+A server that echoes a credential it was sent (the caller's access or refresh token, or a
+static server's `env://` token, secret headers or stdio environment) does not hand it on: the tool
+masks each one as `[REDACTED]` in its text, structured result and error before the model, the
+run's messages, the ledger or telemetry see it (since 0.2.0b5). A raised error reads
+`MCP tool <name> execution error (<Type>): <masked message>` and is not chained to the server's
+exception.
+
 ### Storage, encryption and refresh
 
 - `mcp_oauth_token_store: memory` keeps tokens in process memory: a restart forgets every
@@ -329,7 +340,7 @@ During `Container.astart()`:
 
 ## Current Boundaries and Deferred Capabilities
 
-The following capabilities are not supported (still true in `0.2.0b3`):
+The following capabilities are not supported (still true in `0.2.0b4`):
 - **Local Processes**: `stdio` servers are isolated only as far as the configured `security.sandbox` wrapper isolates them; do not configure untrusted or dynamic user commands.
 - **MCP Server Hosting**: Runtime acts solely as an MCP client; exposing Runtime tools or agents as an MCP server is deferred.
 - **Resources, Prompts, and Sampling Callbacks**: Only the MCP Tools primitive is supported.

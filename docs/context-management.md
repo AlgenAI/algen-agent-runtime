@@ -74,7 +74,7 @@ Applications remain responsible for factual verification of the notes.
 
 The projection is protected by builder packing and model-profile packing, just like the compaction
 summary. If required context cannot fit, Runtime raises a budget error instead of dropping the
-record. Retrieval continues to select optional evidence from the remaining space. Keep working
+record (the oversized-result cut below applies only to the newest tool results). Retrieval continues to select optional evidence from the remaining space. Keep working
 state concise enough to leave room for user input, recent exchanges, tools, and model output.
 
 Generated working-state projections are not appended to canonical history or to compaction
@@ -107,6 +107,12 @@ For runs that look up many records, turn on `context_policy.shorten_older_tool_r
 history does not fit, a share of the budget is held back so older tool results stay in shortened
 form, each ending with a note that it was already retrieved, instead of being dropped. See
 [shortened older tool results](artifacts.md#shortened-older-tool-results) for the settings.
+
+When the newest tool results alone do not fit, the run no longer fails by default (since 0.2.0b3):
+each is offloaded to a context artifact the model pages with `core.context_read`, when the agent can
+call it, or cut to what fits and marked `truncated`, with a `context.tool_result_truncated` event.
+`context_policy.oversized_tool_result: fail` restores the earlier failure. See
+[one oversized tool result](artifacts.md#one-oversized-tool-result).
 
 ### The context budget of an agent (0.2.0b3)
 

@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelServiceKind(StrEnum):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     FORECAST = "forecast"
     OPTIMIZATION = "optimization"
     SIMULATION = "simulation"
@@ -15,6 +17,8 @@ class ModelServiceKind(StrEnum):
 
 
 class DriftState(StrEnum):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     UNKNOWN = "unknown"
     HEALTHY = "healthy"
     WARNING = "warning"
@@ -22,6 +26,8 @@ class DriftState(StrEnum):
 
 
 class ModelServiceManifest(BaseModel):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     version: str
@@ -41,6 +47,8 @@ class ModelServiceManifest(BaseModel):
 
 
 class ModelServiceRequest(BaseModel):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(default_factory=lambda: str(uuid4()))
     model: str
@@ -51,6 +59,8 @@ class ModelServiceRequest(BaseModel):
 
 
 class ModelServiceResponse(BaseModel):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     request_id: str
     model: str
@@ -63,6 +73,8 @@ class ModelServiceResponse(BaseModel):
 
 
 class ModelServiceHealth(BaseModel):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     healthy: bool
     drift_state: DriftState
@@ -70,6 +82,8 @@ class ModelServiceHealth(BaseModel):
 
 
 class ModelService(Protocol):
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     manifest: ModelServiceManifest
 
     async def predict(self, request: ModelServiceRequest) -> ModelServiceResponse: ...

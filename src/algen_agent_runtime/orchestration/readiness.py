@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from algen_agent_runtime.config.settings import AppSettings, ReadinessSettings
+from algen_agent_runtime.security.redaction import redact_error_text
 
 Status = Literal["up", "down", "unknown"]
 Probe = Callable[[], Awaitable[Any] | Any]
@@ -36,8 +37,10 @@ _SECRET = re.compile(
 
 
 def content_minimal_reason(text: str) -> str:
-    """A short reason that is safe to return from an unauthenticated probe."""
+    """A short reason that is safe to return from an unauthenticated probe: URLs, credentials
+    and (since 0.2.0b5) personal identifiers masked, as ``redact_error_text`` masks them."""
     reason = _URL.sub("<redacted-url>", text)
+    reason = redact_error_text(reason)
     reason = _SECRET.sub(lambda match: f"{match.group(1)}=<redacted>", reason)
     reason = " ".join(reason.split())
     if len(reason) > _MAX_REASON:

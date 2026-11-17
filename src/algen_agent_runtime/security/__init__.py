@@ -7,7 +7,11 @@ does (see docs/agent-tooling.md#reusing-the-redaction-rules). The lower-level ru
 token shapes, quoted values, DSN passwords and PEM keys in text), ``SECRET_TOKEN_PATTERNS``,
 ``hidden_value_marker`` (what an approver sees instead of a hidden value),
 ``undeclared_sensitive_parameters`` (credential-named arguments a tool's schema does not declare)
-and ``fold_text`` (the Unicode folding the detectors match on).
+and ``fold_text`` (the Unicode folding the detectors match on). Since 0.2.0b5:
+``redact_error_text`` (an exception's text with credentials and personal identifiers masked, as
+the Runtime shows errors) and ``redact_held`` (mask the credentials a caller holds, such as a
+token it sent, wherever a reply echoes them) and ``redact_log_event`` (the structlog processor
+``configure_logging`` installs, for a host's own logging configuration).
 """
 
 from algen_agent_runtime.security.redaction import (
@@ -16,6 +20,9 @@ from algen_agent_runtime.security.redaction import (
     fold_text,
     hidden_value_marker,
     is_sensitive_key,
+    redact_error_text,
+    redact_held,
+    redact_log_event,
     redact_pii,
     redact_secret_text,
     redact_secrets,
@@ -28,6 +35,9 @@ __all__ = [
     "fold_text",
     "hidden_value_marker",
     "is_sensitive_key",
+    "redact_error_text",
+    "redact_held",
+    "redact_log_event",
     "redact_pii",
     "redact_secret_text",
     "redact_secrets",

@@ -36,6 +36,9 @@ from algen_agent_runtime.mcp.oauth import (
     MCPOAuthStateError,
     binding_cookie_name,
 )
+from algen_agent_runtime.security.redaction import (
+    redact_error_text,
+)
 
 if TYPE_CHECKING:
     from algen_agent_runtime.orchestration.container import Container
@@ -110,9 +113,9 @@ def add_mcp_oauth_routes(app: FastAPI, container: Container, identity: Any) -> N
         try:
             started = await oauth.start(server, principal.tenant_id, principal.user_id)
         except PolicyDeniedError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise HTTPException(status_code=403, detail=redact_error_text(exc)) from exc
         except MCPOAuthError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=redact_error_text(exc)) from exc
         # Binds the callback to this browser when the browser itself called start on the
         # Runtime's site; otherwise the host finishes the flow with POST .../oauth/complete.
         auth = oauth.auth(server)
@@ -150,7 +153,7 @@ def add_mcp_oauth_routes(app: FastAPI, container: Container, identity: Any) -> N
         except MCPOAuthStateError as exc:
             return JSONResponse(
                 status_code=400,
-                content={"detail": str(exc), "code": "mcp_oauth_invalid_state"},
+                content={"detail": redact_error_text(exc), "code": "mcp_oauth_invalid_state"},
                 headers=_NO_STORE,
             )
         except MCPOAuthError as exc:
@@ -170,7 +173,7 @@ def add_mcp_oauth_routes(app: FastAPI, container: Container, identity: Any) -> N
                 )
             return JSONResponse(
                 status_code=400,
-                content={"detail": str(exc), "code": "mcp_oauth_failed"},
+                content={"detail": redact_error_text(exc), "code": "mcp_oauth_failed"},
                 headers=_NO_STORE,
             )
         key = completion.key
@@ -241,7 +244,7 @@ def add_mcp_oauth_routes(app: FastAPI, container: Container, identity: Any) -> N
         try:
             status = await manager().status(server, principal.tenant_id, principal.user_id)
         except PolicyDeniedError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise HTTPException(status_code=403, detail=redact_error_text(exc)) from exc
         return status.model_dump(mode="json")
 
     @app.delete("/v1/mcp/servers/{server}/oauth")
@@ -251,7 +254,7 @@ def add_mcp_oauth_routes(app: FastAPI, container: Container, identity: Any) -> N
         try:
             outcome = await oauth.revoke(server, principal.tenant_id, principal.user_id)
         except PolicyDeniedError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise HTTPException(status_code=403, detail=redact_error_text(exc)) from exc
         await audit(
             principal.tenant_id,
             principal.user_id,

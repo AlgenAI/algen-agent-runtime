@@ -7,6 +7,13 @@ injection.
 
 ## Typed analytical graphs
 
+> **Experimental** (since `0.2.0b5`). The analytical graph engine (`AnalyticalGraphEngine`, its
+> graph types and stores, `analytical_execution`, the plugin `analytical_nodes` registry and
+> `SemanticQueryGraphPlanner`) is outside the compatibility promise and can change in a minor
+> release ([experimental interfaces](api-stability.md#experimental-interfaces)). Analytical methods,
+> `AnalyticalResult`, `GraphExecutionContext`, the semantic layer, query governance and the
+> verifiers are stable.
+
 `AnalyticalGraph` is a validated DAG of `semantic_query`, `join_results`, `compare_periods`,
 `calculate`, `model_call`, `rank`, `verify`, and `compose` nodes. Every node declares dependencies,
 JSON input/output schemas, retry and cache policy, timeout/row/byte/cost budgets, and an optional
@@ -90,6 +97,10 @@ manifest declares analysis kinds, JSON schemas, required metrics/dimensions/hist
 artifacts, uncertainty behavior, lifecycle, validation/backtest references, approval, and deprecation.
 The registry validates those requirements before calling application code.
 
+> **Experimental** (since `0.2.0b5`): remote model services (`algen_agent_runtime.model_services`
+> and the plugin `model_services` registry) are outside the compatibility promise
+> ([experimental interfaces](api-stability.md#experimental-interfaces)).
+
 `ModelServiceRegistry` is deliberately separate from LLM routing. It discovers and pins forecast,
 optimization, simulation, and causal services; validates batches; checks health and drift state;
 applies timeouts/cancellation; validates outputs; and walks an explicit fallback chain. Implement the
@@ -112,6 +123,11 @@ and the configured aggregate score threshold.
 
 ## Distributed execution
 
+> **Experimental.** Work queues, `DistributedWorker` and `distributed_execution` are outside the
+> compatibility promise: the `1.0` deployment scope is a single node
+> ([experimental interfaces](api-stability.md#experimental-interfaces), [deployment
+> scope](production-readiness.md#deployment-scope)).
+
 `WorkQueue` provides idempotent enqueue, lease-based claim, renewal, completion, failure, retry, and
 stale-lease recovery. `PostgresWorkQueue` uses `FOR UPDATE SKIP LOCKED`; `DistributedWorker` executes
 registered work kinds with traced outcomes. PostgreSQL analytical graph checkpoints allow another
@@ -119,8 +135,8 @@ worker to resume only incomplete nodes. PostgreSQL run and conversation subscrip
 durable event log, so SSE consumers see events emitted by another process.
 
 The application still owns process supervision, worker count, deployment rollout, and registration
-of handlers. Use Redis for shared caches and PostgreSQL for graphs and work queues in a horizontally
-scaled deployment.
+of handlers. Use Redis for shared caches and PostgreSQL for graphs and work queues when you try a
+horizontally scaled layout.
 
 ```yaml
 analytical_execution:

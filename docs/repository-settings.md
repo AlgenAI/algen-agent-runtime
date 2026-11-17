@@ -21,9 +21,13 @@ Protect `main` with a ruleset that:
 - blocks force pushes and branch deletion;
 - limits bypass permission to named maintainers and records every bypass.
 
-Protect tags matching `v*` with a tag ruleset: block updates and deletion, and restrict creation to
-release maintainers and GitHub Actions (the Auto Release workflow creates the tag). Release
-artifacts carry GitHub build provenance and PEP 740 attestations (see [releasing](releasing.md)).
+Protect tags matching `v*` with a tag ruleset (`Release tags`) that blocks updates, deletion and
+force pushes. Tag creation is deliberately not restricted: the Auto Release workflow creates the
+tag with `GITHUB_TOKEN`, which a creation restriction would block. A stray `v*` tag cannot publish
+a release: pushing a tag starts nothing (the Release workflow runs only through
+`workflow_dispatch`), the workflow checks that the tag matches the package version, and its
+publish job waits for a reviewer of the `pypi` environment. Release artifacts carry GitHub build
+provenance and PEP 740 attestations (see [releasing](releasing.md)).
 
 ## Security features
 
@@ -72,5 +76,15 @@ The 2026-11-15 security assessment found the `pypi` environment without required
 branch policy, no `v*` tag ruleset, SHA pinning not required, Dependabot security updates off and
 a `RELEASE_TOKEN` personal access token in the repository secrets; 0.2.0b4 removes the workflows'
 use of that token.
+
+On 2026-11-16 the owner resolved these findings:
+
+- the `pypi` environment requires two reviewers, administrator bypass is off and deployment is
+  limited to `main`;
+- the `Release tags` ruleset protects `v*` tags (updates, deletion and force pushes blocked;
+  creation open to the Auto Release workflow, as described above);
+- actions must be pinned to a full-length commit SHA;
+- Dependabot security updates are on;
+- the `RELEASE_TOKEN` secret was deleted.
 
 Record completion of this checklist in the launch or release issue so the public-readiness decision is auditable.

@@ -1,0 +1,23 @@
+id: pattern_run_follower
+display_name: "Following a Streamed Run"
+tier: pattern
+description: >
+  The host side of a streamed run: model.delta text shown and discarded on
+  model.delta.retracted, a reconnect from the last sequence without repeats, a cancel while an
+  async tool waits, and a host deadline around Runtime.wait that cancels the run.
+
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.pattern_run_follower.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.pattern_run_follower.app"
+  test: "python -m pytest tests/integration/test_observability_and_run_follower_examples.py -q"
+  reset: "echo 'No persistent state to reset.'"
+
+expected_duration_seconds: 5
+deterministic_mock_support: true

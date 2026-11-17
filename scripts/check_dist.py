@@ -33,12 +33,18 @@ REQUIRED = {
     "algen_agent_runtime_examples/pattern_guarded_tools/agent.yaml",
     "algen_agent_runtime_examples/pattern_side_effect_reconciliation/agent.yaml",
     "algen_agent_runtime_examples/pattern_secured_api/agent.yaml",
+    "algen_agent_runtime_examples/pattern_observability/agent.yaml",
+    "algen_agent_runtime_examples/pattern_observability/deploy/compose.yaml",
+    "algen_agent_runtime_examples/pattern_run_follower/agent.yaml",
 }
 DOMAIN = (
     "algen_agent_runtime_examples/case_study_responsible_hiring/",
     "algen_agent_runtime_examples/pattern_text_to_sql/",
 )
 SDIST_REQUIRED = ("LICENSE", "NOTICE", "README.md", "CHANGELOG.md", "CHANGELOG-0.1.md")
+# The dashboards and alert rules built on the Runtime's metrics (docs/operations.md): every file
+# under it must be in the sdist.
+OBSERVABILITY = "deploy/observability"
 SKILLS_PREFIX = "algen_agent_runtime/_skills/"
 # Skills about working on the Runtime repository itself; never shipped in the wheel.
 MAINTAINER_SKILLS = ("algen-external-pr-review", "algen-runtime-contributor")
@@ -108,6 +114,16 @@ def main(dist: Path) -> None:
             raise SystemExit(f"sdist missing {required}")
     # The sdist's top folder is <name>-<version>/; the wheel is built from it.
     sdist_relative = {name.partition("/")[2] for name in sdist_names}
+    observability = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / OBSERVABILITY).rglob("*")
+        if path.is_file()
+    }
+    if not observability:
+        raise SystemExit(f"{OBSERVABILITY} has no dashboards or alert rules")
+    missing_observability = sorted(observability - sdist_relative)
+    if missing_observability:
+        raise SystemExit(f"sdist missing observability files: {missing_observability}")
     missing_skills = sorted(sdist_skills - sdist_relative)
     if missing_skills:
         raise SystemExit(f"sdist missing skill files: {missing_skills}")

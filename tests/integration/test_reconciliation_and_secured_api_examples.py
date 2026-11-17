@@ -62,8 +62,8 @@ def test_secured_api_example() -> None:
     lines = output.splitlines()
 
     assert (
-        "carol: user=carol scopes=['approvals:decide', 'approvals:read', 'auth:revoke', 'runs:read', 'runs:write']"
-        in lines
+        "carol: user=carol scopes=['approvals:decide', 'approvals:read', 'artifacts:admin', "
+        "'auth:revoke', 'runs:read', 'runs:write']" in lines
     )
     assert "no token -> 401" in lines
     assert "token signed by another key -> 401" in lines
@@ -85,6 +85,12 @@ def test_secured_api_example() -> None:
     assert "alice GET /v1/runs/<her turn's run> -> 200" in lines
     assert "bob GET /v1/runs/<alice's turn's run> -> 404" in lines
     assert "bob GET /v1/conversations/<alice's> -> 404" in lines
+    # A file belongs to its uploader; artifacts:admin reads every user's (0.2.0b4).
+    assert "alice POST /v1/artifacts -> 201" in lines
+    assert (
+        "GET /v1/artifacts/<alice's file>/metadata -> alice 200, bob 404, carol (artifacts:admin) 200"
+        in lines
+    )
     assert any(line.startswith("host route runs course-assistant") for line in lines)
     assert "LMS saw: ['alice']" in lines
     assert any(

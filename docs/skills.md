@@ -31,7 +31,9 @@ skills:
 agents. Definitions are explicit entries in `AgentDefinition.skills`; there is no global skill
 search, automatic filesystem discovery, network fetch, script execution, or installation. An
 application may package and review its definitions before registering the agent. These runtime
-entries are separate from this repository's coding-agent `SKILL.md` files.
+entries are separate from this repository's coding-agent `SKILL.md` files (Agent Skills for AI
+coding assistants, installed into a project with `algen-agent-runtime skills install` since
+0.2.0b3).
 
 The feature is disabled by default. Enable the flag, reserved `core.skills_load` tool, and
 `skills.read` permission together. Only built-in default and retrieval context builders support it.
@@ -91,7 +93,9 @@ Every context build, execution recovery with loaded skills, and completed tool r
 current agent's skill allowlist, permissions, and source identity. Removing or changing a loaded
 skill causes the run to fail closed before it can continue using that guidance. Deploy the same
 versioned definitions to workers resuming a run; start a new run when changing its skill definitions.
-Direct loader calls and replays also verify the originating run, tenant, and user. Loading another
+Direct loader calls and replays also verify the originating run, tenant, and user. A
+`core.subagent` delegate may enable `core.skills_load` even when its caller does not: it is one of
+the run-local tools the 0.2.0b4 delegation check leaves out. Loading another
 agent's skill by name is not supported, and keyed loads do not use the shared result cache.
 
 The selected bodies and completed-call marker persist in the same run checkpoint before the

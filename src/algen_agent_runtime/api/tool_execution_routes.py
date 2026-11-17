@@ -22,6 +22,7 @@ from algen_agent_runtime.runtime.reconciliation import (
     DEFAULT_RECONCILIATION_STATUSES,
     ReconciliationReport,
 )
+from algen_agent_runtime.security.redaction import redact_error_text
 from algen_agent_runtime.tools.contracts import ToolExecutionRecord, ToolExecutionStatus
 
 if TYPE_CHECKING:
@@ -121,7 +122,7 @@ def add_tool_execution_routes(app: FastAPI, container: Container, identity: Any)
                 resume=body.resume,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_error_text(exc)) from exc
         return _report(report)
 
     @app.post("/v1/tool-executions/{idempotency_key}/reconcile")
@@ -138,7 +139,7 @@ def add_tool_execution_routes(app: FastAPI, container: Container, identity: Any)
                 resume=body.resume,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_error_text(exc)) from exc
         return _report(report)
 
     @app.post("/v1/tool-executions/{idempotency_key}/compensate")
@@ -156,7 +157,7 @@ def add_tool_execution_routes(app: FastAPI, container: Container, identity: Any)
                 resume=body.resume,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_error_text(exc)) from exc
         return _report(report)
 
     @app.post("/v1/tool-executions/{idempotency_key}/resume")

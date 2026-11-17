@@ -1,0 +1,25 @@
+id: pattern_observability
+display_name: "Observability: Metrics, Dashboards and Alerts"
+tier: pattern
+description: >
+  Drives a stock assistant through the HTTP API (a lookup, an approved and a rejected reorder, a
+  denied input, a cancelled run, a refused request) and reads the Runtime's run-level metrics
+  back; optionally exports them over OTLP to a collector, Prometheus with the shipped alert rules
+  and Grafana with the shipped dashboards.
+
+# The offline run needs none; --otlp-endpoint needs the otlp extra (in dev).
+extras: []
+external_services: []
+secrets: []
+
+entry_points:
+  cli: algen_agent_runtime_examples.pattern_observability.app
+
+commands:
+  setup: "pip install -e '.[dev]'"
+  run: "python -m algen_agent_runtime_examples.pattern_observability.app"
+  test: "python -m pytest tests/integration/test_observability_and_run_follower_examples.py -q"
+  reset: "docker compose -f algen_agent_runtime_examples/pattern_observability/deploy/compose.yaml down"
+
+expected_duration_seconds: 5
+deterministic_mock_support: true

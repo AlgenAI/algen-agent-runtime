@@ -58,7 +58,13 @@ user reads the caller's credentials from `ToolContext.credentials`. For several 
 user their own `session_id`, grant `approvals:decide` to people who approve other users' runs, and
 let an agent delegate with `core.subagent` only to the agents in its `delegates` list (off unless
 `runtime.subagent.enabled`); a delegate's approval or question pauses the caller and is decided
-there. An agent that must ask the user mid-task enables `core.ask_user`. Follow a whole turn,
+there. Since 0.2.0b4 a delegate may enable only tools its caller enables too (apart from
+`core.working_state_update`, `core.skills_load` and `core.context_read`), runs with its caller's
+approval requirements and guardrails added, counts against its caller's budget, and one run tree
+starts at most `runtime.subagent.max_descendants` (64) child runs. An agent that must ask the user
+mid-task enables `core.ask_user`; the answer passes the run's `input` policies. Streamed text is
+redacted before it is sent (`guardrail_policy.stream_text`, default `redacted`; `off` sends no
+deltas), and a UI discards text a `model.delta.retracted` withdraws. Follow a whole turn,
 through its pauses, with `client.follow(run_id)` or `?through_pauses=true`. See "Tool-heavy and
 acting agents" in `references/project-shape.md`.
 

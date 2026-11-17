@@ -29,17 +29,17 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-import structlog
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision, PolicyPoint
 
 if TYPE_CHECKING:
     from algen_agent_runtime.config.settings import PolicySettings
 
-_logger = structlog.get_logger("algen_agent_runtime.policies")
+_logger = runtime_logger("algen_agent_runtime.policies")
 
 SIGNATURE_SUFFIX = ".sig"
 #: Clock skew allowed between the signer and this host for ``issued_at``.

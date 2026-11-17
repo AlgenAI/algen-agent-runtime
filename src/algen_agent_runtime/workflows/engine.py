@@ -20,6 +20,8 @@ from algen_agent_runtime.exceptions.errors import (
     VerificationError,
     run_failure_error,
 )
+from algen_agent_runtime.observability.metrics import record as record_metric
+from algen_agent_runtime.observability.safe_spans import exception_description
 from algen_agent_runtime.security.redaction import redact_parameters
 from algen_agent_runtime.tools.contracts import ToolApproval, ToolContext, tool_fingerprint
 from algen_agent_runtime.types.contracts import (
@@ -409,9 +411,10 @@ class MultiAgentWorkflowExecutor:
         # deadline. Account for the human wait only after the decision contract
         # has been accepted.
         self._extend_deadline_for_pause(state)
+        _count_workflow_approval(decision, state.pause.get("requested_at"))
         state.values[node.output_key] = result.model_dump(mode="json")
         execution = state.nodes[node.id]
-        if decision != "rejected":
+        if decision in {"approved", "modified"}:
             execution.approved_calls = self._approved_calls(state, node, nodes, decision)
         execution.status = (
             WorkflowNodeStatus.REJECTED if decision == "rejected" else WorkflowNodeStatus.COMPLETED
@@ -521,7 +524,7 @@ class MultiAgentWorkflowExecutor:
         except Exception as exc:
             execution = state.nodes[node.id]
             execution.status = WorkflowNodeStatus.FAILED
-            execution.error = f"{type(exc).__name__}: {exc}"
+            execution.error = exception_description(exc)
             execution.completed_at = utc_now()
             await self._emit(
                 emit,
@@ -811,7 +814,7 @@ class MultiAgentWorkflowExecutor:
         except Exception as exc:
             execution = state.nodes[node.id]
             execution.status = WorkflowNodeStatus.FAILED
-            execution.error = f"{type(exc).__name__}: {exc}"
+            execution.error = exception_description(exc)
             execution.completed_at = utc_now()
             await self._emit(
                 emit,
@@ -888,7 +891,7 @@ class MultiAgentWorkflowExecutor:
             raise
         except Exception as exc:
             state.status = WorkflowStatus.FAILED
-            state.error = f"{type(exc).__name__}: {exc}"
+            state.error = exception_description(exc)
             manifest_nodes = {node.id: node for node in manifest.nodes}
             for node_id, execution in state.nodes.items():
                 node = manifest_nodes[node_id]
@@ -1138,6 +1141,9 @@ class MultiAgentWorkflowExecutor:
                     ).isoformat(),
                     "requested_at": requested_at.isoformat(),
                 }
+                record_metric(
+                    "algen_agent_runtime.approvals.requested", 1, {"approval_kind": "workflow"}
+                )
                 await self._emit(
                     emit,
                     "workflow.approval.required",
@@ -1242,7 +1248,7 @@ class MultiAgentWorkflowExecutor:
             await self._ask_again_for_changed_tool(state, node, nodes, change, emit)
         except Exception as exc:
             execution.status = WorkflowNodeStatus.FAILED
-            execution.error = f"{type(exc).__name__}: {exc}"
+            execution.error = exception_description(exc)
             execution.completed_at = utc_now()
             await self._emit(emit, "workflow.node.failed", state, node, {"error": execution.error})
 
@@ -1478,6 +1484,7 @@ class MultiAgentWorkflowExecutor:
         execution.status = WorkflowNodeStatus.FAILED
         execution.error = "workflow approval expired"
         execution.completed_at = utc_now()
+        _count_workflow_approval("expired", (state.pause or {}).get("requested_at"))
         state.pause = None
         state.status = WorkflowStatus.RUNNING
         await self._emit(
@@ -2069,6 +2076,14 @@ class MultiAgentWorkflowExecutor:
         for key, value in values.items():
             rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
             rendered = rendered.replace(f"{{{{{key}.output}}}}", str(value))
+        # A typed workflow's input properties (input_schema) are kept under values["inputs"];
+        # the manifest accepts {{<property>}} for them, so render them too. A node output with
+        # the same name was rendered above and wins.
+        inputs = values.get("inputs")
+        if isinstance(inputs, Mapping):
+            for key, value in inputs.items():
+                if isinstance(key, str) and key not in values:
+                    rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
         remaining = re.findall(r"\{\{[^{}]+\}\}", rendered)
         if remaining:
             node_id = node.id if isinstance(node, WorkflowNode) else (node or "unknown")
@@ -2097,6 +2112,7 @@ class MultiAgentWorkflowExecutor:
         data: dict[str, Any] | None = None,
     ) -> None:
         await self._checkpoint(state)
+        _count_workflow(event_type, state)
         if sink is None:
             return
         payload = {
@@ -2115,3 +2131,31 @@ class MultiAgentWorkflowExecutor:
         async with lock:
             state.updated_at = utc_now()
             await self._store.save(state, state.version)
+
+
+_WORKFLOW_END_EVENTS = frozenset({"workflow.completed", "workflow.failed", "workflow.cancelled"})
+
+
+def _count_workflow_approval(outcome: str, requested_at: Any) -> None:
+    """Count an approval node's decision or expiry and how long it waited (``approval_kind``
+    ``workflow``); ``requested_at`` is the pause's ISO timestamp."""
+    attributes = {"approval_kind": "workflow", "outcome": outcome}
+    record_metric("algen_agent_runtime.approvals.resolved", 1, attributes)
+    try:
+        waited = (utc_now() - datetime.fromisoformat(str(requested_at))).total_seconds()
+    except (TypeError, ValueError):
+        return
+    record_metric("algen_agent_runtime.approval.wait.duration", max(0.0, waited), attributes)
+
+
+def _count_workflow(event_type: str, state: WorkflowExecutionState) -> None:
+    """Count a workflow run's start and end, by manifest name and status."""
+    if event_type == "workflow.started":
+        record_metric(
+            "algen_agent_runtime.workflow.runs.started", 1, {"workflow": state.manifest_name}
+        )
+    elif event_type in _WORKFLOW_END_EVENTS:
+        attributes = {"workflow": state.manifest_name, "status": state.status.value}
+        record_metric("algen_agent_runtime.workflow.runs.finished", 1, attributes)
+        elapsed = (utc_now() - state.created_at).total_seconds()
+        record_metric("algen_agent_runtime.workflow.run.duration", max(0.0, elapsed), attributes)

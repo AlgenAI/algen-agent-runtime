@@ -112,6 +112,26 @@ class ChangeRequests:
   Runtime defines only this protocol; the flow (a change request, a ticket, an email) is the
   deployment's. Such a tool has `audit_metadata["approval"] == "deployment"`.
 
+### What the approver sees
+
+An approval request shows the call's arguments as `redacted_parameters`
+(`algen_agent_runtime.security.redaction.redact_parameters`): the value of a credential-named key
+(`is_sensitive_key`, at any depth) becomes `[REDACTED len=N sha256=xxxxxxxx]`, its length and the
+first 8 hex digits of its SHA-256 (`hidden_value_marker`), so an approver can tell a short key
+from a large payload without seeing either; credentials inside other strings are masked as
+`redact_secret_text` masks them. Before 0.2.0b4 the marker was a plain `[REDACTED]`, and only
+top-level keys were hidden.
+
+Declare every credential argument an approval-gated tool takes in its input schema. Since
+0.2.0b4 an agent run refuses, with `PolicyDeniedError` (`approval.undeclared_secret_parameters`),
+to ask for approval of a call that carries a credential-named key (such as `token` or
+`api_key`) the schema does not declare (`undeclared_sensitive_parameters`): the approver would
+see only a marker, so the model could hide a payload there.
+
+A decision is `approved`, `rejected` or `modified`; since 0.2.0b4 `pending` or `expired` is
+refused (HTTP 422, an error from `Runtime.resume`), and `modified_parameters` are accepted only
+with `modified`.
+
 ### Who proves an approval is valid
 
 `ToolExecutor.execute(..., approval=...)` takes a `ToolApproval`, a decided approval bound to one
@@ -181,8 +201,8 @@ Limits:
 ### Why the agent wants the call
 
 A tool call's approval request carries a `rationale`: the text of the model reply that made the
-call, with whitespace collapsed, redacted like the parameters (bearer tokens and `key=value`
-credentials) and capped at 500 characters (`MAX_RATIONALE_CHARS`). It is `null` when the reply had
+call, with whitespace collapsed, with credentials masked as in the parameters (bearer tokens,
+`key=value` credentials and, since 0.2.0b4, token shapes such as `sk-`, `ghp_` or JWTs) and capped at 500 characters (`MAX_RATIONALE_CHARS`). It is `null` when the reply had
 no text. The approval API (`GET /v1/approvals`, `GET /v1/approvals/{id}`), the run's pause, the
 `approval.required` event and a conversation turn's pending action include it. It is never logged
 and stays out of spans unless content telemetry is on (`telemetry_include_content`), when the span

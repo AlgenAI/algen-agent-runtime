@@ -6,6 +6,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
+from algen_agent_runtime.security.redaction import redact_error_text
+
 
 class PresentationAudience(StrEnum):
     BUSINESS = "business"
@@ -74,11 +76,12 @@ class ConversationPresentation:
         ),
     ) -> str:
         if self.error_audience == PresentationAudience.DEVELOPER:
-            return str(error)[:500]
+            # Masked before it is cut, so no partial credential or identifier is left (0.2.0b5).
+            return redact_error_text(error)[:500]
         return business_message
 
     def unexpected_error_message(self, error: Exception) -> str:
         if self.error_audience == PresentationAudience.DEVELOPER:
-            detail = str(error).strip()
+            detail = redact_error_text(error).strip()
             return detail[:500] if detail else type(error).__name__
         return _GENERIC_FAILURE

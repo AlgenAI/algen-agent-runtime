@@ -30,6 +30,7 @@ import httpx
 from algen_agent_runtime.exceptions.errors import ProviderError
 from algen_agent_runtime.models.providers.openai_compatible import (
     OpenAICompatibleProvider,
+    stream_error,
     tool_arguments,
     with_constraint_note,
 )
@@ -79,6 +80,19 @@ _FINISH_REASONS = {
     "max_tokens": FinishReason.LENGTH,
     "tool_use": FinishReason.TOOL_CALLS,
     "refusal": FinishReason.CONTENT_FILTER,
+}
+# An ``error`` event in a stream, by its error type (Anthropic's documented error types); any
+# other type is a retryable ``unavailable``, as for an HTTP 5xx.
+_STREAM_ERROR_KINDS: dict[str, tuple[ErrorKind, bool]] = {
+    "invalid_request_error": (ErrorKind.INVALID_REQUEST, False),
+    "authentication_error": (ErrorKind.AUTHENTICATION, False),
+    "permission_error": (ErrorKind.AUTHORIZATION, False),
+    "not_found_error": (ErrorKind.INVALID_REQUEST, False),
+    "request_too_large": (ErrorKind.INVALID_REQUEST, False),
+    "rate_limit_error": (ErrorKind.RATE_LIMIT, True),
+    "timeout_error": (ErrorKind.TIMEOUT, True),
+    "api_error": (ErrorKind.UNAVAILABLE, True),
+    "overloaded_error": (ErrorKind.UNAVAILABLE, True),
 }
 
 
@@ -335,20 +349,24 @@ class AnthropicProvider(OpenAICompatibleProvider):
                 timeout=request.timeout_seconds,
             ) as response:
                 if response.is_error:
-                    retryable = response.status_code == 429 or response.status_code >= 500
-                    raise ProviderError(
-                        f"anthropic returned HTTP {response.status_code}",
-                        ErrorKind.RATE_LIMIT
-                        if response.status_code == 429
-                        else ErrorKind.UNAVAILABLE,
-                        retryable,
-                        status_code=response.status_code,
-                    )
+                    # Mapped as a plain call's is (401 authentication, 404 invalid_request, ...),
+                    # so the router never falls back on an error no other model would fix.
+                    await response.aread()
+                    raise self._http_error(response)
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
                         continue
                     data = json.loads(line.removeprefix("data: "))
                     event_type = data.get("type")
+                    if event_type == "error":
+                        # Anthropic broke the answer off (overloaded_error, api_error, ...): the
+                        # text so far is not the answer, so the stream fails rather than ends.
+                        error = data.get("error")
+                        error = error if isinstance(error, Mapping) else {}
+                        kind, retryable = _STREAM_ERROR_KINDS.get(
+                            str(error.get("type")), (ErrorKind.UNAVAILABLE, True)
+                        )
+                        raise stream_error(self.provider_id, error, response, kind, retryable)
                     if event_type == "message_start":
                         message = data.get("message", {})
                         response_id = message.get("id", response_id)
@@ -385,6 +403,12 @@ class AnthropicProvider(OpenAICompatibleProvider):
                         )
         except httpx.TimeoutException as exc:
             raise ProviderError("anthropic stream timed out", ErrorKind.TIMEOUT, True) from exc
+        except httpx.TransportError as exc:
+            # As for the other providers: a refused or dropped connection is retryable and
+            # lets the router fall back, rather than escaping as an httpx error.
+            raise ProviderError(
+                "anthropic stream transport failure", ErrorKind.UNAVAILABLE, True
+            ) from exc
         calls = tuple(
             ToolCall(
                 id=item["id"],

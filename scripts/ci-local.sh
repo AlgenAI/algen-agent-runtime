@@ -10,6 +10,7 @@
 #    python:3.12-slim container (docker or podman), from the hash-locked requirements/ci.txt.
 #    macOS passing proves nothing about Linux.
 # 5. scripts/container-smoke.sh: the service image starts, serves a run and drains.
+# 6. scripts/check-workflows.sh: zizmor over .github/ (offline audits), as the Security workflow.
 #
 # Usage: scripts/ci-local.sh [--no-linux]
 # Integration tests are separate: scripts/integration-tests.sh (AGENTS.md section 3).
@@ -63,4 +64,6 @@ if (( linux )); then
   echo "== container smoke test (build, readiness, one run, drain)"
   scripts/container-smoke.sh
 fi
+echo "== workflow audit (zizmor, offline)"
+scripts/check-workflows.sh
 echo "ci-local: OK"

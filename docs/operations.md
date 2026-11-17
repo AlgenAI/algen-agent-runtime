@@ -354,9 +354,12 @@ start recovers every unfinished run that is not waiting:
   one ledger record and one external effect per run.
 - A run paused for approval or clarification stays paused and is resumed by whichever process
   receives the decision; its approval request, ledger and events are in the database.
-- A conversation turn paused for approval resumes on the new process. A turn that was streaming
-  when the process died is ended as `failed` with `error_type: InterruptedResponse` (retryable);
-  its run is recovered by the runtime and does not repeat its tool effects.
+- A conversation turn paused for approval resumes on the new process. Since 0.2.0b3 a turn that
+  was streaming when the process died follows its recovered run: `ConversationService.recover()`
+  settles it from the run's outcome (completed, paused, failed or cancelled), and only a turn whose
+  run is gone ends as `failed` with `error_type: InterruptedResponse` (retryable); see
+  [conversation turns](#conversation-turns-streaming-approvals-and-input). The run does not repeat
+  its tool effects.
 - A workflow run started through the HTTP API is recovered as in [Workflow
   recovery](#workflow-recovery). An agent node with `recovery_policy: retry` starts a new agent
   run; the interrupted agent run is recovered too and completes from its own ledger, but the
@@ -606,8 +609,8 @@ flight.
 
 Tenant B creates five runs a second for 20 seconds and waits for each; tenant A runs 150 clients
 that create runs back to back and, when refused, retry after 100 ms whatever `Retry-After` says.
-Same stores and run shape as the load test; the model provider keeps its default
-`max_concurrency` of 20 calls, shared by all tenants. Each phase starts a fresh process.
+Same stores and run shape as the load test; no provider `max_concurrency` was set (before
+0.2.0b5 the setting was not enforced at all). Each phase starts a fresh process.
 
 | Phase | B p50 | B p95 | B p99 | B errors | A accepted | A refused (429) |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -633,7 +636,7 @@ latency grows about twentyfold (no errors: B's runs wait). With them, A gets 10 
 429 for the rest, and B's p95 stays within 15 % of its baseline (the test's bound is twice the
 baseline p95 or the baseline plus 200 ms, whichever is larger). Admission limits are the Runtime's
 per-tenant control: there is no per-tenant cap on runs already executing, and provider
-`max_concurrency` and the PostgreSQL pool are shared. In a multi-tenant deployment, enable
+`max_concurrency` (when set) and the PostgreSQL pool are shared. In a multi-tenant deployment, enable
 `api.rate_limiting` with a `run_create` rate per tenant below the process's sustained capacity.
 
 ### Soak
@@ -648,17 +651,76 @@ PostgreSQL (every store), a pool of 10 and concurrency 20; 4,000 runs (3,000 wit
 
 Every item completed with its effect exactly once, no run was left active, the pool stayed within
 its maximum and was released, and no task was left behind. Traced Python memory grew by 4 MB over
-about 4,500 items after the warm-up. This is minutes; a soak of hours on a production-like
-deployment remains open ([production readiness](production-readiness.md#release-confidence-and-operability)),
-and the production window in the [stability evidence](ga-criteria.md#stability-evidence) is the
-longer test.
+about 4,500 items after the warm-up. This is minutes; the [long soak](#long-soak-hours) below runs
+the service image for hours, and the production window in the
+[stability evidence](ga-criteria.md#stability-evidence) is the longer test.
+
+### Long soak (hours)
+
+`scripts/long-soak.sh` runs the service image from the `Dockerfile`, unchanged, for hours under
+mixed HTTP load on PostgreSQL 17 and Redis 7 containers, restarting it along the way, and checks
+at the end that nothing was lost, duplicated or left behind. What it runs, records and checks is in
+[`tests/perf/long_soak/README.md`](../tests/perf/long_soak/README.md):
+
+```bash
+SOAK_SECONDS=21600 PYTHON="$(command -v python)" scripts/long-soak.sh /tmp/soak-6h --workers 4 --chat-workers 2
+python tests/perf/long_soak/report.py /tmp/soak-6h
+```
+
+**Measured on 2026-11-17** at `0.2.0b5` (`da83204`), six hours of load, on the laptop above
+(Mac17,3, Apple M5, 10 cores, 16 GB, macOS 27.0.1); the Runtime, PostgreSQL 17.11 and Redis 7.4.12
+in podman 6.0.2, whose VM has 2 CPUs and 3.8 GB for all three. Three tenants, each with 4 clients
+doing the mixed work and 2 users chatting, and a noisy fourth tenant of 60 clients flooding for 10
+minutes in every 40. Every invariant held:
+
+- **Work**: 274,696 operations succeeded, 12.7 a second: 71,582 runs (30,294 followed over SSE,
+  17,416 paused for an approval, 6,930 cancelled mid-way, 6,084 slow runs), 8,693 workflows,
+  76,094 conversation turns (15,094 with an approval, 3,611 cancelled) and 17,241 artifact
+  uploads read back. The noisy tenant was refused 3,043,890 times by admission control while 10,862
+  of its runs were accepted; the other tenants' p95 moved by at most 22 ms (cancels, 15 to 37 ms).
+- **Restarts**: 10 stops with SIGTERM (graceful drain in 8 to 15 s, exit 0, ready again after 9
+  to 17 s), 4 kills with SIGKILL (ready after 1.5 to 1.8 s) and one PostgreSQL restart (back in
+  0.5 s, the Runtime ready 1.5 s later). Clients retried and followed their streams again with
+  `Last-Event-ID`. All 236 failed attempts fell within a restart, and one stream was cut by a
+  restart's drain and noticed 0.7 s after the Runtime was ready again; no operation was lost.
+- **Exactly once**: 32,406 write-tool effects, each with its completed ledger record and none
+  twice; 14,760 approval decisions, each recorded; 2,654 approvals left alone, each ending its run
+  `timed_out`; no tool call left `started`, no run, turn or workflow stuck.
+- **Retention**: 72 cycles retired 156,356 runs, 8,690 workflow runs, 4,332 conversations and
+  3,287,866 audit events; the sweep deleted each cycle's rows, with their events, approvals and
+  ledger records, before the next. The database stayed between 355 and 415 MB, Redis at 13 MB.
+- **Resources**: the Runtime's RSS stayed between 106 and 112 MB in every one of its 15 process
+  lifetimes, with 23 to 46 open files and 16 to 86 asyncio tasks, and no growth across the six
+  hours; Runtime CPU about 19 %.
+
+Latency over the whole soak, including the restarts (the scripted models answer in about 150 ms
+and 3 s, so this is the Runtime's own work plus model time):
+
+| Operation | Count | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- |
+| Run followed over SSE to its end | 30,294 | 594 ms | 791 ms | 903 ms |
+| Conversation turn, first streamed text | 71,073 | 410 ms | 669 ms | 798 ms |
+| Conversation turn, to its end | 61,000 | 399 ms | 567 ms | 659 ms |
+| Turn with an approval, to its end | 15,094 | 591 ms | 803 ms | 912 ms |
+| Run paused for an approval | 17,416 | 385 ms | 550 ms | 649 ms |
+| Approval decided, run resumed to its end | 14,762 | 195 ms | 320 ms | 404 ms |
+| Cancel a running run | 6,930 | 7 ms | 17 ms | 53 ms |
+| Workflow with an approval and a tool step | 7,391 | 2.57 s | 3.91 s | 4.23 s |
+| Artifact upload and read back | 17,241 | 10 ms | 22 ms | 57 ms |
+
+The longest single operations (13 to 21 s) are the ones caught by a restart, retried until the
+Runtime was ready again.
+
+An earlier six-hour run of the same commit line found that a tool call cancelled at the wrong
+moment could stay `started` and keep its run from retention (eight in about 7,000 cancellations);
+it is fixed in `0.2.0b5` ([Cancellation](#cancellation)), and this run is the one after the fix.
 
 ### Capacity guidance (single node)
 
 - **Runs in flight** = arrival rate x run duration, and run duration is mostly model time: 5 runs
   a second of 20 s each is 100 runs in flight. The measured memory cost of a run in flight is
   small (above); what limits concurrency is the shared provider slots
-  (`providers.<name>.max_concurrency`, default 20 calls per provider), the PostgreSQL pool
+  (`providers.<name>.max_concurrency` when set), the PostgreSQL pool
   (`storage.postgres_max_pool_size`, default 10) and the model provider's own rate limits.
 - **Durable write budget.** On PostgreSQL, budget about 30 ms of Runtime time per step and expect
   a ceiling of roughly 40 two-step runs a second per process with a pool of 20 on hardware like the
@@ -667,7 +729,9 @@ longer test.
   and keep PostgreSQL `max_connections` above the pool size plus maintenance and admin
   connections. A pool that sits at its maximum for minutes means writes are queueing.
 - **Provider concurrency.** Set `max_concurrency` per provider to what the provider account
-  allows; runs beyond it wait for a slot, whichever tenant they belong to.
+  allows; calls beyond it (plain calls and open streams) wait for a slot, whichever tenant they
+  belong to. It is enforced since 0.2.0b5 and only when set: without it a provider takes any
+  number of concurrent calls, as before.
 - **Tenants.** Enable `api.rate_limiting` (above) and storage quotas
   ([Storage quotas](#storage-quotas)) whenever tenants do not trust each other.
 - **Scaling.** Scale the one process vertically and move PostgreSQL to a dedicated server before
@@ -676,48 +740,242 @@ longer test.
 
 ## SLOs, alerts and runbooks (single node)
 
-Proposed service objectives for a single-node deployment, measured monthly. They cover what the
-Runtime controls; model provider latency and errors are reported separately.
+Since `0.2.0b5` the Runtime records run-level OpenTelemetry metrics and ships Grafana dashboards
+and Prometheus alert rules built on them (`deploy/observability`, also in the sdist). The service
+objectives below are the ones those rules and dashboards measure.
 
-| Objective | Target | Signal |
-| --- | --- | --- |
-| Readiness | `/health/ready` answers 200 for 99.9 % of one-minute probes, outside announced maintenance | Readiness probe |
-| Run admission | 99.9 % of `POST /v1/runs` answered without a 5xx (429 and 413 are excluded: they are the limits working); p95 under 250 ms | Proxy or ASGI access logs |
-| Runtime overhead | p95 of Runtime time per step (run time minus model and tool time) under 100 ms on PostgreSQL; the measured baseline above is 35 ms | `agent.run` and model/tool spans (OTLP), or the overhead benchmark per release |
-| Runs not lost | Every run that was started ends, pauses or is recovered after a restart; no paused run or approval lost | `run.started` vs end and pause events; persistence drills per release |
-| Recovery | Incomplete runs driven again within 60 s of a restart | Run events and checkpoints after the start (`updated_at` of non-terminal runs); the restart drills per release |
+### Service level objectives
 
-Alert on:
+Objectives for a single-node deployment, measured monthly. They cover what the Runtime controls;
+model provider latency and errors are reported separately (the models dashboard). Each target sits
+well inside what the [performance suite](#performance-and-capacity-evidence) measured on the
+laptop setup above, so a deployment that misses one has a problem to find rather than a target
+that was never reachable. Re-run the suite on your own hardware and keep the targets only if they
+hold there too.
 
-- readiness failing for more than 2 minutes (page);
-- `StoreUnavailableError` / HTTP 503 answers for more than 1 minute (page): see
-  [Database outages](#database-outages);
-- the PostgreSQL pool at its maximum for more than 5 minutes, or PostgreSQL connections near
-  `max_connections` (ticket): add pool or database capacity;
-- runs left in `running` for longer than the agents' `budget.max_latency_seconds` (ticket);
-- any `tool.reconciliation_required` event, or `indeterminate` calls in `GET /v1/tool-executions`
-  (ticket): see [the reconciliation runbook](#runbook);
-- a rising rate of `run.limit_exceeded` audit records or `run.failed` with
-  `reason: limit_exceeded` (ticket): a looping agent or hostile input;
-- a tenant's sustained 429 rate, or `storage.quota_exceeded` audit records (ticket);
-- `ToolCapacityError` (the synchronous tool pool is full) and `EventStreamOverflowError` (ticket);
-- the maintenance sweep failing, or the database growing faster than retention removes (ticket);
-- `algen_agent_runtime.auth.attempts` with `outcome` failed rising sharply (security).
+| Objective | Target | Measured basis | Signal |
+| --- | --- | --- | --- |
+| Readiness | `/health/ready` answers 200 for 99.9 % of one-minute probes, outside announced maintenance | Readiness goes down only while a required store is down ([Database outages](#database-outages)) | Readiness probe (blackbox exporter or the orchestrator's probe) |
+| Run admission | 99.9 % of `POST /v1/runs` answered without a 5xx (429 and 413 are excluded: they are the limits working); p95 under 250 ms | Admission is a run row and a `run.started` event; a whole direct-answer run, model call included, takes 73 ms at p95 on PostgreSQL, and no request failed in the load and noisy-neighbour tests | `algen_agent_runtime_api_requests_total` and `algen_agent_runtime_api_request_duration_seconds` with `method="POST", route="/v1/runs"` |
+| Runtime overhead | p95 of Runtime time per step (run time minus model and tool time) under 100 ms on PostgreSQL | 34.9 ms per step at p95 on PostgreSQL, 2.1 ms in memory | `agent.run` and model/tool spans (OTLP), or the overhead benchmark per release |
+| Runs not lost | Every run that was started ends, pauses or is recovered after a restart; no paused run or approval lost | 5,000 soak items each completed exactly once with no run left active; the restart drills | `runs_started_total` against `runs_finished_total` and `runs_paused`; persistence drills per release |
+| Recovery | Incomplete runs driven again within 60 s of a restart | Recovery runs once at start-up, before the API accepts work; the restart drills | `algen_agent_runtime_run_recoveries_total{trigger="restart"}`; the restart drills per release |
 
-The Runtime exports OpenTelemetry spans and some counters (cache, governance, auth, tool ledger,
-maintenance) when an OTLP endpoint is configured ([Traccia](#traccia)); there is no run-level
-metric yet, so derive run counts and durations from `agent.run` spans or run events. No dashboards
-are shipped.
+Burn-rate alerts for run admission page when the error budget (0.1 % a month) is being spent 14.4
+times too fast over both 5 minutes and an hour, and open a ticket at 6 times over 30 minutes and
+6 hours. The latency objective opens a ticket after 10 minutes over 250 ms.
+
+### Metrics, dashboards and alerts
+
+**Exporting.** Set `telemetry.otlp_metrics_endpoint` to an OTLP/HTTP metrics endpoint
+([Traccia](#traccia) has the details), or install your own meter provider before the Runtime
+starts. Every metric below is recorded only when a meter provider is installed. To get them into
+Prometheus, send them through the OpenTelemetry Collector:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http: {}
+exporters:
+  prometheus:            # scraped by Prometheus at :8889/metrics
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion: {enabled: false}
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
+```
+
+or to Prometheus's own OTLP receiver (`--web.enable-otlp-receiver`, Prometheus 3). Either keeps
+the default name translation the dashboards and rules expect: dots become underscores, the unit
+is appended (`_seconds`), counters end in `_total`, and `service.name` becomes the `job` label.
+`prometheus_name()` in `algen_agent_runtime.observability.metrics` gives the translated name of
+any metric.
+
+**Dashboards.** `deploy/observability/grafana/` holds two dashboards (Grafana 10 or later, a
+Prometheus data source):
+
+- `algen-runtime-overview.json`: runs started and finished by status and reason, run duration,
+  runs executing and paused, recoveries and resumes, approvals and approval wait, HTTP requests by
+  status, run admission latency and errors against the SLO, 429 rejections, authentication
+  failures, the PostgreSQL pool, store outages, event backpressure, conversation turns and
+  workflow runs.
+- `algen-runtime-models-tools.json`: model calls, errors, latency and tokens by provider and
+  model; tool calls, failures, latency and guard refusals by tool; policy denials and errors.
+
+Import each in Grafana (Dashboards, New, Import, upload the file, pick the Prometheus data
+source), or provision them from the folder with a dashboard provider. Both have a `datasource`
+and a `job` variable (the Runtime's `service.name`).
+
+**Alert rules.** `deploy/observability/prometheus/alerts.yml` is a Prometheus rule file: add it
+to `rule_files:` (check it with `promtool check rules`), or load it into a Grafana, Mimir or
+Thanos ruler. Route `severity="page"` to whoever is on call, `ticket` to a queue and `security`
+to whoever owns authentication. Rules marked `tune` have traffic-dependent thresholds.
+
+| Alert | Severity | Fires when | Runbook |
+| --- | --- | --- | --- |
+| `AlgenRuntimeStoreUnavailable` | page | Store calls fail because PostgreSQL or Redis is unavailable, for a minute | [Database outages](#database-outages) |
+| `AlgenRuntimeServiceUnavailableAnswers` | page | The API answers 503 for a minute | [Database outages](#database-outages) |
+| `AlgenRuntimeRunAdmissionErrorBudgetFastBurn` | page | `POST /v1/runs` 5xx ratio over 1.44 % in 5 minutes and in an hour | [Runbooks](#runbooks) |
+| `AlgenRuntimeRunAdmissionErrorBudgetSlowBurn` | ticket | `POST /v1/runs` 5xx ratio over 0.6 % in 30 minutes and 6 hours | [Runbooks](#runbooks) |
+| `AlgenRuntimeRunAdmissionSlow` | ticket | p95 of `POST /v1/runs` over 250 ms for 10 minutes | [Capacity guidance](#capacity-guidance-single-node) |
+| `AlgenRuntimePostgresPoolSaturated` | ticket | The pool at its maximum for 5 minutes | [Capacity guidance](#capacity-guidance-single-node) |
+| `AlgenRuntimeAdmissionRejections` | ticket | Sustained 429s on a route class | [Noisy neighbour](#noisy-neighbour) |
+| `AlgenRuntimeEventBackpressure` | ticket | A run reached `budget.max_events`, or a subscriber overflowed the history | [Subscribers that fall behind](#subscribers-that-fall-behind) |
+| `AlgenRuntimeRunsFailing` | ticket | More than 20 % of runs failing or timing out (declined and expired pauses left out) | [Runbooks](#runbooks) |
+| `AlgenRuntimeRunLimitsExceeded` | ticket | An agent's runs keep ending at a limit | [Run limits](#run-limits) |
+| `AlgenRuntimeRunsNotFinishing` | ticket | Runs executing but none ending for 30 minutes | [Runbooks](#runbooks) |
+| `AlgenRuntimeToolReconciliationRequired` | ticket | A run paused for a tool call an operator must reconcile | [Resolving indeterminate tool calls](#runbook) |
+| `AlgenRuntimeApprovalsExpiring` | ticket | Approval requests expiring undecided | [Approval inbox](#approval-inbox) |
+| `AlgenRuntimeModelErrors` | ticket | A tenth of one model's calls failing, by error kind | [Runbooks](#runbooks) |
+| `AlgenRuntimeToolErrors` | ticket | A quarter of one tool's calls failing | [Runbooks](#runbooks) |
+| `AlgenRuntimePolicyErrors` | ticket | A policy raised or timed out | [Boundaries and fail modes](#boundaries-and-fail-modes) |
+| `AlgenRuntimeAuthenticationFailures` | security | Failed API authentications over one a second | [Authentication audit events](#authentication-audit-events) |
+
+Readiness is not a metric: alert on the readiness probe failing for more than 2 minutes (page)
+with your blackbox exporter or orchestrator. The maintenance sweep and database growth are
+watched on PostgreSQL itself ([Maintenance and data retention](#maintenance-and-data-retention)).
+
+**Try it locally.** `algen_agent_runtime_examples/pattern_observability` drives traffic through
+the HTTP API and prints the series it recorded, offline; with `--otlp-endpoint`, its
+`deploy/compose.yaml` runs an OpenTelemetry Collector, Prometheus with these alert rules and
+Grafana with these dashboards (docker or podman). The `job` label is the meter provider's resource
+`service.name`: with `telemetry.otlp_metrics_endpoint`, set it through `OTEL_SERVICE_NAME` (or
+`OTEL_RESOURCE_ATTRIBUTES`): the provider does not take `telemetry.service_name`, so without it
+every Runtime reports as `unknown_service:python`.
+
+**Hosts that embed the Runtime** (no HTTP API) get the same run, model, tool, approval, store,
+event, conversation and workflow metrics; only the `api.*` metrics need the API app. Install a
+meter provider (or set `telemetry.otlp_metrics_endpoint`) before building the Runtime, since each
+component takes its instruments from the global provider when it is built.
+
+#### Metrics reference
+
+Every metric the Runtime records, with its OpenTelemetry name and the name it has in Prometheus.
+`RUNTIME_METRICS` in `algen_agent_runtime.observability.metrics` lists the same catalogue in code,
+and `tests/unit/test_runtime_metrics.py` checks that the code, this table, the dashboards and the
+alert rules agree.
+
+| Metric | Prometheus | Type | Unit | Attributes | What it counts | Since |
+| --- | --- | --- | --- | --- | --- | --- |
+| `algen_agent_runtime.runs.started` | `algen_agent_runtime_runs_started_total` | counter | `{run}` | `agent`, `run_kind` | Runs started | 0.2.0b5 |
+| `algen_agent_runtime.runs.finished` | `algen_agent_runtime_runs_finished_total` | counter | `{run}` | `agent`, `run_kind`, `status`, `reason` | Runs that ended, by final status and reason | 0.2.0b5 |
+| `algen_agent_runtime.run.duration` | `algen_agent_runtime_run_duration_seconds` | histogram | `s` | `agent`, `run_kind`, `status` | Time from a run's start to its end, pauses included | 0.2.0b5 |
+| `algen_agent_runtime.runs.active` | `algen_agent_runtime_runs_active` | gauge | `{run}` | – | Runs executing in this process now | 0.2.0b5 |
+| `algen_agent_runtime.runs.paused` | `algen_agent_runtime_runs_paused` | gauge | `{run}` | `pause_kind` | Runs paused now, by what they wait for (runs this process paused or recovered) | 0.2.0b5 |
+| `algen_agent_runtime.run.pauses` | `algen_agent_runtime_run_pauses_total` | counter | `{pause}` | `pause_kind` | Times a run paused, by what it waits for | 0.2.0b5 |
+| `algen_agent_runtime.run.resumes` | `algen_agent_runtime_run_resumes_total` | counter | `{resume}` | `pause_kind` | Paused runs that continued, by what they waited for | 0.2.0b5 |
+| `algen_agent_runtime.run.recoveries` | `algen_agent_runtime_run_recoveries_total` | counter | `{run}` | `trigger`, `outcome` | Incomplete runs found after a restart or a store outage, by what happened to them | 0.2.0b5 |
+| `algen_agent_runtime.approvals.requested` | `algen_agent_runtime_approvals_requested_total` | counter | `{approval}` | `approval_kind` | Approval requests a run or a workflow approval node paused for | 0.2.0b5 |
+| `algen_agent_runtime.approvals.resolved` | `algen_agent_runtime_approvals_resolved_total` | counter | `{approval}` | `approval_kind`, `outcome` | Approval requests decided or expired | 0.2.0b5 |
+| `algen_agent_runtime.approval.wait.duration` | `algen_agent_runtime_approval_wait_duration_seconds` | histogram | `s` | `approval_kind`, `outcome` | Time from an approval request to its decision or expiry | 0.2.0b5 |
+| `algen_agent_runtime.model.calls` | `algen_agent_runtime_model_calls_total` | counter | `{call}` | `provider`, `model`, `purpose`, `outcome`, `error_kind` | Calls to a model provider (each candidate and each retry is a call) | 0.2.0b5 |
+| `algen_agent_runtime.model.call.duration` | `algen_agent_runtime_model_call_duration_seconds` | histogram | `s` | `provider`, `model`, `purpose`, `outcome` | Model provider call latency, to the last streamed event | 0.2.0b5 |
+| `algen_agent_runtime.model.tokens` | `algen_agent_runtime_model_tokens_total` | counter | `{token}` | `provider`, `model`, `purpose`, `token_type` | Tokens the provider reported, input and output | 0.2.0b5 |
+| `algen_agent_runtime.model.tool_calls_invalid` | `algen_agent_runtime_model_tool_calls_invalid_total` | counter | `1` | `provider`, `model`, `cut_off` | Model tool calls whose arguments were not a JSON object, by model | 0.1.0a21 |
+| `algen_agent_runtime.tool.calls` | `algen_agent_runtime_tool_calls_total` | counter | `{call}` | `tool`, `outcome` | Tool calls through the tool executor, by outcome | 0.2.0b5 |
+| `algen_agent_runtime.tool.call.duration` | `algen_agent_runtime_tool_call_duration_seconds` | histogram | `s` | `tool`, `outcome` | Tool call latency through the tool executor (policies, ledger, retries included) | 0.2.0b5 |
+| `algen_agent_runtime.tool.refusals` | `algen_agent_runtime_tool_refusals_total` | counter | `{call}` | `tool`, `status` | Tool calls a guard held back (refused, repeated or over_limit) before they ran | 0.2.0b5 |
+| `algen_agent_runtime.policy.denials` | `algen_agent_runtime_policy_denials_total` | counter | `{decision}` | `boundary`, `policy` | Policy decisions that denied, by boundary and the policy that denied | 0.2.0b5 |
+| `algen_agent_runtime.policy.errors` | `algen_agent_runtime_policy_errors_total` | counter | `1` | `boundary`, `policy`, `fail_mode`, `error_type` | Policy evaluations that raised or timed out, by boundary and fail mode | 0.1.0a18 |
+| `algen_agent_runtime.api.requests` | `algen_agent_runtime_api_requests_total` | counter | `{request}` | `method`, `route`, `status_code` | HTTP API requests answered, by route template and status code | 0.2.0b5 |
+| `algen_agent_runtime.api.request.duration` | `algen_agent_runtime_api_request_duration_seconds` | histogram | `s` | `method`, `route`, `status_code` | HTTP API time to the response's first byte (an event stream's start) | 0.2.0b5 |
+| `algen_agent_runtime.api.admission.rejections` | `algen_agent_runtime_api_admission_rejections_total` | counter | `{request}` | `route_class`, `reason` | Requests refused with 429 by admission limits or the event-stream limit | 0.2.0b5 |
+| `algen_agent_runtime.auth.attempts` | `algen_agent_runtime_auth_attempts_total` | counter | `1` | `method`, `outcome`, `reason` | API authentication attempts by method, outcome and failure reason | 0.1.0a17 |
+| `algen_agent_runtime.store.unavailable` | `algen_agent_runtime_store_unavailable_total` | counter | `{error}` | `store` | Store calls that failed because PostgreSQL or Redis was unavailable | 0.2.0b5 |
+| `algen_agent_runtime.postgres.pool.connections` | `algen_agent_runtime_postgres_pool_connections` | gauge | `{connection}` | `state` | PostgreSQL pool connections in use and idle | 0.2.0b5 |
+| `algen_agent_runtime.postgres.pool.max_size` | `algen_agent_runtime_postgres_pool_max_size` | gauge | `{connection}` | – | PostgreSQL pool maximum size | 0.2.0b5 |
+| `algen_agent_runtime.events.backpressure` | `algen_agent_runtime_events_backpressure_total` | counter | `{event}` | `kind` | Run events dropped at a run's event limit, and subscribers that fell behind | 0.2.0b5 |
+| `algen_agent_runtime.conversation.turns` | `algen_agent_runtime_conversation_turns_total` | counter | `{turn}` | `handler`, `outcome` | Conversation turns answered, by outcome | 0.2.0b5 |
+| `algen_agent_runtime.conversation.turn.duration` | `algen_agent_runtime_conversation_turn_duration_seconds` | histogram | `s` | `handler`, `outcome` | Time a conversation turn took to answer or pause | 0.2.0b5 |
+| `algen_agent_runtime.workflow.runs.started` | `algen_agent_runtime_workflow_runs_started_total` | counter | `{workflow}` | `workflow` | Workflow runs started | 0.2.0b5 |
+| `algen_agent_runtime.workflow.runs.finished` | `algen_agent_runtime_workflow_runs_finished_total` | counter | `{workflow}` | `workflow`, `status` | Workflow runs that ended, by status | 0.2.0b5 |
+| `algen_agent_runtime.workflow.run.duration` | `algen_agent_runtime_workflow_run_duration_seconds` | histogram | `s` | `workflow`, `status` | Time from a workflow run's creation to its end, pauses included | 0.2.0b5 |
+| `algen_agent_runtime.cache.operations` | `algen_agent_runtime_cache_operations_total` | counter | – | `cache.backend`, `cache.policy`, `cache.namespace`, `cache.scope`, `cache.outcome` | Cache gets and sets by outcome (hit, miss, stored, bypass, oversize, error) | 0.1.0a1 |
+| `algen_agent_runtime.cache.operation.duration` | `algen_agent_runtime_cache_operation_duration_milliseconds` | histogram | `ms` | `cache.backend`, `cache.policy`, `cache.namespace`, `cache.scope` | Cache operation latency | 0.1.0a1 |
+| `algen_agent_runtime.governance.decisions` | `algen_agent_runtime_governance_decisions_total` | counter | – | `governance.decision`, `governance.reason_code`, `governance.purpose` | Analytical query governance decisions | 0.1.0a1 |
+| `algen_agent_runtime.analytics.node.executions` | `algen_agent_runtime_analytics_node_executions_total` | counter | – | `analytics.node.id`, `analytics.node.kind`, `outcome` | Analytical graph node executions | 0.1.0a1 |
+| `algen_agent_runtime.analytics.node.duration` | `algen_agent_runtime_analytics_node_duration_milliseconds` | histogram | `ms` | `analytics.node.id`, `analytics.node.kind` | Analytical graph node latency | 0.1.0a1 |
+| `algen_agent_runtime.method.executions` | `algen_agent_runtime_method_executions_total` | counter | – | `analytics.method.name`, `analytics.method.version`, `analytics.method.kind`, `outcome` | Analytical method executions | 0.1.0a1 |
+| `algen_agent_runtime.model_service.calls` | `algen_agent_runtime_model_service_calls_total` | counter | – | `model_service.name`, `model_service.version`, `model_service.kind`, `outcome` | Model-service calls | 0.1.0a1 |
+| `algen_agent_runtime.work.executions` | `algen_agent_runtime_work_executions_total` | counter | – | `work.kind`, `outcome` | Distributed work items a worker executed | 0.1.0a1 |
+| `algen_agent_runtime.evaluation.cases` | `algen_agent_runtime_evaluation_cases_total` | counter | – | `outcome` | Evaluation cases run | 0.1.0a1 |
+
+Attribute values:
+
+- `agent`: the agent's name; `run_kind`: `run`, `conversation_turn`, `workflow_step` or
+  `delegated` (a `core.subagent` child).
+- `status` (runs): `completed`, `failed`, `timed_out` or `cancelled`. `reason`: the `reason` of
+  the `run.failed` event (`timeout`, `limit_exceeded`, `approval_rejected`, `approval_expired`,
+  `budget_refused`, `continuation_rejected`, `clarification_expired`, `credentials_expired`,
+  `timeout_during_recovery`), else the run's `error_type` (`ProviderError`, `VerificationError`,
+  ...), else `error`; `none` for a completed run and `cancelled` for a cancelled one (0.2.0b5;
+  0.2.0b4 counted a cancellation as `error`). A timed-out run carries its event's reason
+  (`timeout`, `approval_expired`, ...).
+- `pause_kind`: `approval`, `continuation` (an execution-continuation approval), `clarification`,
+  `input` (`core.ask_user`), `reconciliation` or `credentials`. `approval_kind`: `tool`,
+  `continuation` or `workflow` (a workflow approval node). `outcome` (approvals): `approved`, `rejected`, `modified` or `expired`.
+- `trigger` (recoveries): `restart` (`recover()`) or `store_outage`; `outcome`: `driven`,
+  `awaiting_credentials`, `timed_out` or `superseded` (another process took the run).
+- Models: `provider` is the registration id, `model` the model name, `purpose` the
+  [usage meter](#usage-metering)'s purpose (`step`, `compaction`, or `other` for calls outside
+  a run step); `outcome` is `ok`, `error` or `cancelled`, and `error_kind` the provider
+  error's kind (`rate_limit`, `timeout`, `unavailable`, `invalid_response`, ...) or `none`. Every
+  candidate the router tries and every retry is one call; responses served from the model cache
+  are not calls. `token_type` is `input` or `output`. On `model.tool_calls_invalid`, `model` is
+  `provider/model`.
+- Tools: `outcome` is `completed`, `failed` (a failure the tool returned or a
+  `ToolExecutionError`), `denied` (a policy, missing permission or approval refused it),
+  `cancelled` or `error`. `status` (refusals) is the guard's: `refused`, `repeated` or
+  `over_limit`. A held call never reaches the executor, so it is in `tool.refusals`, not
+  `tool.calls`.
+- `boundary` is the policy point (`input`, `before_tool`, `after_model`, ...); `policy` the
+  policy that denied (the last one triggered).
+- API: `route` is the route template (`/v1/runs/{run_id}`), `unmatched` when none matched;
+  `status_code` the status as text. `route_class` (rejections) is `run_create`, `write`, `read`
+  or `event_stream`; `reason` is `rate_limit_exceeded`, `concurrency_limit_exceeded`,
+  `limiter_error` or `stream_limit_exceeded`.
+- `store`: `postgres` or `redis`. `state` (pool): `in_use` or `idle`, summed over the
+  process's pools. `kind` (events): `event_limit` (an event dropped at `budget.max_events`),
+  `subscriber_lagged` (a live subscriber's queue was full and it read on from history) or
+  `stream_overflow` (it fell behind further than the in-memory history keeps).
+- `handler` is the conversation handler's name; `outcome` (turns) the turn's: `completed`,
+  `failed`, `awaiting_approval`, `awaiting_input`, ... or `cancelled`. `workflow` is the
+  manifest name; `status` (workflows) `completed`, `failed` or `cancelled`.
+
+No metric carries a tenant, user, run, session, conversation or approval id, or any content.
+Agent, tool, provider, model, policy, workflow and handler names are bounded by what the
+deployment registers; a deployment with very many MCP tools can drop the `tool` attribute with a
+view in its meter provider. Since `0.2.0b5`, `analytics.node.*` no longer carry
+`analytics.graph.id` (one value per execution); the span still does.
+
+The two gauges of runs report this process: `runs.active` counts the drives executing now, and
+`runs.paused` the runs this process paused, plus those `recover()` found paused at start-up,
+until they continue or end. A host that does not call `recover()` counts only the runs paused
+since it started. Durations (`run.duration`, `approval.wait.duration`,
+`workflow.run.duration`) include pauses, so a run that waited a day for its approval records a
+day.
+
+### Runbooks
 
 Runbooks for the single-node scope:
 
 | Situation | Runbook |
 | --- | --- |
-| Process crash or restart | Start it again (one process per database): it recovers incomplete runs, keeps paused ones paused and turns interrupted side-effecting calls into indeterminate calls. [Restart recovery](#restart-recovery) |
-| PostgreSQL or Redis down | Readiness goes down and new work gets 503; work in flight is kept. Restore the store; the process carries on without a restart. [Database outages](#database-outages) and [Failover](#failover) |
-| Indeterminate tool calls | Reconcile, resolve or compensate each call. [Runbook](#runbook) |
-| Latency rising with load | Check the pool (at its maximum?), provider `max_concurrency` (all slots busy?) and the process CPU; then add pool, database or provider capacity, or lower admission limits. [Capacity guidance](#capacity-guidance-single-node) |
-| One tenant crowding out others | Enable or lower that tenant's `api.rate_limiting` and storage quotas. [Noisy neighbour](#noisy-neighbour) |
+| Process crash or restart | Start it again (one process per database): it recovers incomplete runs, keeps paused ones paused and turns interrupted side-effecting calls into indeterminate calls. `run_recoveries_total{trigger="restart"}` shows what it found. [Restart recovery](#restart-recovery) |
+| PostgreSQL or Redis down (`AlgenRuntimeStoreUnavailable`, 503s) | Readiness goes down and new work gets 503; work in flight is kept. Restore the store; the process carries on without a restart (`run_recoveries_total{trigger="store_outage"}`). [Database outages](#database-outages) and [Failover](#failover) |
+| Indeterminate tool calls (`AlgenRuntimeToolReconciliationRequired`) | Reconcile, resolve or compensate each call. [Runbook](#runbook) |
+| Run admission errors or latency (burn-rate and `AlgenRuntimeRunAdmissionSlow` alerts) | Break 5xx down by `status_code`: 503 is a store outage (above); 500 is a bug, so find the `agent_run_failed` or the ASGI error in the logs. For latency, check the pool and the process CPU, then the capacity guidance. [Capacity guidance](#capacity-guidance-single-node) |
+| Latency rising with load (`AlgenRuntimePostgresPoolSaturated`) | Check the pool (at its maximum?), provider `max_concurrency` (all slots busy, `model_calls_total{error_kind="rate_limit"}`?) and the process CPU; then add pool, database or provider capacity, or lower admission limits. [Capacity guidance](#capacity-guidance-single-node) |
+| Runs failing (`AlgenRuntimeRunsFailing`) | Break `runs_finished_total` down by `reason` and `agent`: `ProviderError` points at the provider (models dashboard), `limit_exceeded` at an agent's limits, `VerificationError` at its verifiers, `PolicyDeniedError` at policies (`policy_denials_total`). The run's narrative (`GET /v1/runs/{id}/narrative`) shows one run in order. |
+| Runs not finishing (`AlgenRuntimeRunsNotFinishing`) | Look at model latency and tool latency by tool on the models dashboard: a provider or tool that hangs holds runs until their deadline. Cancel runs that must not wait; lower the tool's `timeout_seconds` or the agent's `budget.max_latency_seconds`. |
+| A model failing (`AlgenRuntimeModelErrors`) | By `error_kind`: `rate_limit` (raise the account's limits or lower `max_concurrency`), `authentication` (rotate the key), `unavailable` or `timeout` (the provider; add a fallback model). |
+| A tool failing (`AlgenRuntimeToolErrors`) | Check the tool's backend; for side-effecting tools also look for indeterminate calls in `GET /v1/tool-executions`. |
+| One tenant crowding out others (`AlgenRuntimeAdmissionRejections`) | Enable or lower that tenant's `api.rate_limiting` and storage quotas. [Noisy neighbour](#noisy-neighbour) |
+| Approvals expiring (`AlgenRuntimeApprovalsExpiring`) | Nobody is deciding: check the approval inbox and who gets its notifications, or lengthen `approval_policy.expires_seconds`. [Approval inbox](#approval-inbox) |
+| Policy errors (`AlgenRuntimePolicyErrors`) | A policy raised or timed out: fix it, or set its boundary's fail mode deliberately. [Boundaries and fail modes](#boundaries-and-fail-modes) |
 | Upgrade, or rollback after a bad upgrade | Back up, start the new release; to roll back, start the previous release on the same database. [Upgrades and rollback](#upgrades-and-rollback) and [Upgrading](upgrading.md) |
 | Restore from backup | [Backup and restore](#backup-and-restore) |
 | Erase or export one user's data | [Erasing or exporting one user's data](#erasing-or-exporting-one-users-data) |
@@ -808,7 +1066,10 @@ a host calling them decides who may.
 (the body cannot name it) and `comment` is the body's optional `comment` (at most 4,000
 characters); for a conversation turn it is the conversation's owner, with the rejection `reason` as
 the comment. A host that calls `Runtime.resume(run_id, tenant_id, payload, decided_by=user_id)`
-itself passes the approver; the payload's `comment` (or `reason`) is recorded with it. Expiring an
+itself passes the approver; the payload's `comment` (or `reason`) is recorded with it. Since
+0.2.0b5 a credential pasted into the comment is masked (`[REDACTED]`, as `redact_text` masks
+one) before the built-in in-memory and PostgreSQL approval services store it; the rest of the note
+is kept as written. Expiring an
 approved request (`status_reason: tool_changed`) keeps who approved it. PostgreSQL keeps the three
 in columns (migration `020_approval_decided_by.sql`); requests decided before it have none. A
 custom `ApprovalService` whose `decide` has no `decided_by` and `comment` keywords keeps working:
@@ -1706,6 +1967,88 @@ raises leaves the run paused. The maintenance sweep expires a run waiting for cr
 `clarification_timeout_seconds`, like a clarification. Runs started over HTTP never carry
 credentials, so they always continue as before.
 
+## Cancellation
+
+A run is cancelled with `runtime.cancel(run_id, tenant_id)` or `DELETE /v1/runs/{id}` (the run's
+user, or `runs:admin`), a conversation turn with `ConversationService.cancel` or
+`DELETE /v1/conversations/{id}/active-response`. Cancelling the task that awaits `Runtime.run`
+cancels the run too: that is how a cancelled workflow (the `MultiAgentWorkflowExecutor.run` task)
+stops its agent step, and how a cancelled parent stops a `core.subagent` child it is waiting for.
+The run ends `cancelled`, with one `run.cancelled` event, last (`assistant.message.cancelled` for
+the turn). A run's deadline stops it the same way and ends it `timed_out`; a shutdown stops it the
+same way but keeps it recoverable (below).
+
+What stops, single node (one process drives the run and is asked to cancel it):
+
+| In flight | On cancel |
+| --- | --- |
+| A model call to a built-in HTTP provider (OpenAI-compatible, OpenAI, Azure OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek, Hugging Face, Ollama), streamed or not | The HTTP request is aborted and its response closed before the cancellation finishes; no retry, fallback or further model call follows. The call is not audited as `model.call`. |
+| The usage meter's reservation for that call | Released when nothing came back (a plain call, or a stream before its first text). A stream that had delivered text is settled with an estimate (`estimated=True`), since the provider bills it. A provider may still bill an abandoned plain call; the Runtime has no usage to charge for it. |
+| An async tool, an HTTP tool (`http_api_tool`) or an MCP tool | Cancelled where it waits: the handler gets `CancelledError`, the HTTP request is aborted, the MCP session's `call_tool` is cancelled (whether the MCP server stops its own work is up to the server). |
+| A tool with `execution: process` | Its subprocess is killed. |
+| A synchronous tool in a worker thread (`execution: thread`, the default) | **Cannot be stopped.** The run ends `cancelled` at once, but the thread runs to its end and its side effect may still happen. Its result is not recorded. Use an async handler or `execution: process` for work that must stop. |
+| A `core.subagent` child run | Cancelled with its parent (running or paused). |
+
+A cancelled tool call that reads is recorded `failed`; one that changes things is recorded
+`indeterminate` and listed for [reconciliation](#resolving-indeterminate-tool-calls), since it may
+have taken effect. A call cancelled before its handler started (while its ledger record was being
+written, while it waited for one of the tool's `max_concurrency` slots, or while the result cache
+was read) is recorded `failed` whatever its side effect: nothing ran. Since 0.2.0b5 the record is
+written to the end even if the call is cancelled again meanwhile (a turn and its run both
+cancelled); before, such a call could stay `started`, waiting for an operator, and retention kept
+its run until one resolved it.
+
+Variations:
+
+- **Shutdown is not a cancel.** `Runtime.shutdown` (and `Container.aclose`) aborts the provider
+  request after `shutdown_grace_seconds` but keeps the run recoverable, with no `run.cancelled`;
+  the next start's `recover()` drives it again, calling the provider again.
+  `WorkflowService.drain` likewise interrupts workflows without cancelling them.
+- **Cancelled from another process.** With several processes on one database, the process that
+  receives the cancel marks the run `cancelled` at once, but the model call in flight in the
+  process driving it is not aborted: cancellation is not delivered across processes (see
+  [Remaining for hardened multi-worker use](production-readiness.md#remaining-for-hardened-multi-worker-or-horizontally-scaled-use)).
+  That call completes and is recorded (`model.completed`, with its usage); the drive then stands
+  down at its next checkpoint, so no further model or tool call starts and the run stays
+  `cancelled`.
+- **Restarts.** A cancelled run is terminal: recovery never drives it again.
+
+Fixed in 0.2.0b5: closing a run's stream (on cancellation, an error or a response-size limit)
+closes the provider's HTTP stream at once rather than when the garbage collector finalized it; a
+cancel that raced the drive it cancelled no longer fails with a conflict (on PostgreSQL, a run
+could end `cancelled` while `cancel` or `wait` raised `RunConflictError`); and a task awaiting
+`Runtime.run` or `Runtime.wait` that is cancelled now raises `CancelledError` instead of returning
+the cancelled run's result (so a cancelled parent no longer recorded its `core.subagent` call as
+completed after `run.cancelled`).
+
+`algen_agent_runtime_examples/pattern_run_follower` shows the host side: following a streamed
+run, discarding text a `model.delta.retracted` withdraws, cancelling a run while its async tool
+waits, and an `asyncio.timeout` around `Runtime.wait` that ends the run `cancelled`.
+
+### Runbook: checking a cancellation
+
+1. `GET /v1/runs/{id}` shows `status: cancelled`; its events end in `run.cancelled`, once. A
+   `agent_run_superseded` warning in the logs means the cancel and the drive raced to record it:
+   expected and harmless.
+2. The provider's logs or dashboard show the request ended by the client. The Runtime does not
+   retry or fall back after a cancel.
+3. If a tool call was running, list the run's `indeterminate` calls and resolve them
+   ([Resolving indeterminate tool calls](#resolving-indeterminate-tool-calls)). For a thread
+   tool, check the external system once the thread has had time to finish.
+4. With a usage meter, a cancelled call shows either a release or a settle with `estimated=True`.
+
+The evidence runs in CI: the provider, run and tool cancellation tests
+(`tests/unit/test_provider_cancellation.py`, `tests/unit/test_run_cancellation.py`,
+`tests/unit/test_tool_cancellation.py`, against a local fake model API in
+`tests/fake_model_server.py`) run in the base job, and `tests/drills/test_cancellation.py` runs
+with the persistence drills on PostgreSQL:
+
+```bash
+pytest -q tests/unit/test_provider_cancellation.py tests/unit/test_run_cancellation.py \
+  tests/unit/test_tool_cancellation.py
+scripts/integration-tests.sh tests/drills/test_cancellation.py
+```
+
 ## Steering a running run
 
 A user can add to a run while it works: `runtime.steer(run_id, tenant_id, text)` queues a message
@@ -1770,7 +2113,7 @@ The command prints a JSON report and exits non-zero if any task failed. Each swe
 | Terminal runs | off | With `terminal_run_retention_days` set, deletes completed, failed, cancelled, and timed-out runs not updated within that window, together with their events, approvals, and tool-execution records. |
 | Audit events | off | With `audit_retention_days` set, deletes audit events older than that window. |
 | Conversations | off | With `conversation_retention_days` set, deletes conversations not updated within that window, together with their messages, conversation events and feedback. A conversation is kept while any of its messages is newer than the window or a turn is in progress or waiting (`accepted`, `streaming`, `awaiting_approval`, `awaiting_input`, `awaiting_credentials`). Reports `conversations`, `conversation_messages`, `conversation_events` and `conversation_feedback`. |
-| Workflow checkpoints | off | With `workflow_checkpoint_retention_days` set, deletes `completed`, `failed` and `cancelled` workflow runs not updated within that window, except a child run whose parent run is unfinished (the parent's recovery reads it). Reports `workflow_checkpoints`. |
+| Workflow checkpoints | off | With `workflow_checkpoint_retention_days` set, deletes `completed`, `failed` and `cancelled` workflow runs not updated within that window, except a child run whose parent run is unfinished (the parent's recovery reads it) or a run with a tool step call still `started`, `indeterminate`, `compensating` or `compensation_failed`. From 0.2.0b5 the run's tool-step ledger records go with it. Reports `workflow_checkpoints`. |
 | Analytical graphs | off | With `analytical_graph_retention_days` set, deletes `completed`, `failed` and `cancelled` graphs not updated within that window. Reports `analytical_graphs`. |
 | Work items | off | With `work_item_retention_days` set, deletes `completed` and `failed` (dead) distributed work items not updated within that window. Their deduplication keys are released: enqueueing the same key later creates a new item. Reports `work_items`. |
 
@@ -2060,7 +2403,199 @@ for approval and resumes, driven from Python with `ConversationService.submit` a
 A host that drives conversations from Python (ownership checks, restarts, credentials, custom
 handlers) reads [conversations from a host](conversations.md).
 
-Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted. Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
+Health endpoints are `/health/live` and `/health/ready` (see [Readiness and lifecycle](#readiness-and-lifecycle)). Export OpenTelemetry through a deployment-specific SDK exporter; content capture defaults off. Logs are JSON and redacted (see [Redacted telemetry](#redacted-telemetry)). Alert on run failure ratio, provider circuit openings, approval age, p95 model/tool latency, budget exhaustion, and event-store lag.
+
+## Redacted telemetry
+
+What the Runtime records about a run never carries a credential, and carries personal identifiers
+(emails, phone, Aadhaar and card numbers) only where a person wrote them into their own record.
+This holds with the default guardrails (`secrets` and `pii` among `guardrail_policy.policies`) and
+is proven by the golden telemetry suite (`tests/telemetry`, 0.2.0b5), which plants canary
+credentials (`sk-...`, `AKIA...`, `ghp_...`, JWTs, DSN passwords, bearer tokens, credential-named
+arguments), personal identifiers, a caller's credential, an `env://` secret, a provider API key and
+an MCP OAuth token in every path a run takes, and reads back every sink. The paths: model calls
+(streamed and not), tools and their errors, retrieval, approvals, verification, policies, provider
+errors, timeouts, conversation turns, workflows, delegation, the HTTP API, steering,
+`core.ask_user` and clarification answers, learned memory, uploaded files and run attachments, the
+tool-result cache, an MCP server on OAuth, and JSON Schema errors that quote the value they
+reject; the stores: in memory, PostgreSQL (every row) and Redis (every key).
+
+| Sink | What it never carries |
+| --- | --- |
+| Run events (`/v1/runs/{id}/events` over SSE included), the run narrative | credentials and personal identifiers from the input, model output (streamed or not), tool arguments and results, retrieved documents, tool and provider error text, verifier messages, approval notes |
+| Audit records | the same; an invalid tool call's error is masked like a run error (0.2.0b5) |
+| OpenTelemetry spans, span events and status descriptions | the same, with content capture off and with `telemetry.include_content` / `include_conversation_content` on (captured content is masked); an exception leaving a span is recorded masked (0.2.0b5, below) |
+| OpenTelemetry metrics | content of any kind: metric attributes are names, ids, counts and outcomes |
+| Logs of the Runtime's loggers, under `configure_logging` (as `algen-agent-runtime serve` logs) or the host's own structlog or `logging` configuration (0.2.0b5, [below](#logs-under-a-hosts-own-logging)) | credentials in any field; personal identifiers in an exception's traceback (0.2.0b5) |
+| Traccia (enrichment and export processors) | the same as the spans: Runtime spans and their exceptions go through the same masking |
+| A run's error (`RunState.error`, `run.failed`, API responses) | credentials and, since 0.2.0b5, personal identifiers |
+| Every API error body (`detail` of a 400, 404, 409, 413, 422, 502 or 503, the tool-execution and MCP OAuth routes included), `/health/ready` reasons, `container.degraded_dependencies`, a failed work item's `error` (distributed workers), a developer-audience conversation error | credentials and personal identifiers (0.2.0b5); the error keeps its actionable text |
+| Steering text, `core.ask_user` and clarification answers | credentials and personal identifiers, as the agent's `secrets` and `pii` policies mask its input: steering held for a paused run (its state, `RunResult.undelivered_steering`, `steer.*` events with content capture on) is stored masked (0.2.0b5) |
+| Usage meter calls (`MeterCall`) | content of any kind: ids, provider, model and token counts |
+| Credentials the Runtime holds (caller credentials, `env://` secrets, provider keys, MCP OAuth tokens and an MCP server's `env://` token, headers and environment) | every sink and store, the run's own records included: they stay in the process's memory, and a tool (declared HTTP or MCP) whose server echoes one back has it masked in its result and error (MCP since 0.2.0b5); an MCP OAuth token is stored only encrypted (`v1.` AES-GCM ciphertext bound to its tenant) |
+| Redis keys (runs, session memory, the tool-result cache) | the same as the in-memory and PostgreSQL stores (0.2.0b5 suite) |
+
+**What a run's working data keeps.** The run's own records are what it needs to continue, and the
+suite pins these exceptions rather than hiding them:
+
+- the run's messages (`RunState.messages`) and the tool-execution ledger keep what the guardrails
+  let through: a value under a credential-named key in a tool's structured result
+  (`{"password": ...}`) reaches the model, the run's messages and the ledger, since the `secrets`
+  guardrail masks credentials by their shape in text and leaves structured fields to the tool (a
+  `next_page_token` must reach the model); every telemetry sink still masks it by its key. The
+  model's own tool call is kept as it wrote it, also when a redaction refused it;
+- an agent whose `guardrail_policy.tool_policies` leaves `secrets` or `pii` out gets its tools'
+  payloads unmasked in its messages and ledger, never in telemetry;
+- a tool call's arguments as approved (or as an approver modified them) are kept to run and replay
+  the call, and shown to approvers through `redact_parameters`;
+- the user's own conversation messages, their events and the conversation's history keep what the
+  user wrote; an approver's note keeps the personal data they wrote (credentials are masked);
+- a workflow's values (its input and what its handlers return) are kept in its checkpoint;
+- the tool-result cache (`cache.policies.tool_results`, memory or Redis) keeps a result as the
+  ledger does;
+- an uploaded file, its name and its metadata are the user's own record, returned to whoever may
+  read it; credentials in its metadata are masked when it is uploaded (0.2.0b5). The name is a
+  query parameter of `POST /v1/artifacts`, so an access log that records query strings (the ASGI
+  server's, a proxy's) carries it: see [what a host still owns](#what-a-host-still-owns).
+
+**Changes in 0.2.0b5.** The suite found these leaks in `0.2.0b4`; each is fixed without changing
+a span's, event's or record's shape:
+
+- An exception leaving a Runtime span (a tool, provider, policy or verifier error) was recorded by
+  OpenTelemetry (and Traccia) with its raw message and traceback, in the `exception` event and the
+  span's status description. Runtime tracers now record it themselves, masked: the same
+  `exception` event (`exception.type`, `exception.message`, `exception.stacktrace`,
+  `exception.escaped`) and the same `ERROR` status `"<Type>: <message>"`, with credentials and
+  personal identifiers masked. This works with any tracer an `ObservabilityAdapter.tracer()`
+  returns (a custom adapter's own `span_scope` records as it chooses): the
+  exception is recorded inside the span and re-raised after it closes.
+- A run's error and a tool error shown to the model masked credentials but not personal
+  identifiers; they mask both now (the model-facing text follows the agent's `pii` tool policy and
+  its `exempt_entities`).
+- An input the `input` boundary refused (prompt injection, a failing policy) was stored unmasked in
+  the run's state; it is stored as the agent's `secrets` and `pii` policies would have masked it.
+- A verifier whose findings or repair hint quoted the output put it in the repair request the
+  model reads; the request is masked.
+- A workflow node's error (`workflow.node.failed`, `workflow.failed`, the checkpoint) and an
+  analytical node's error carried the exception's raw text; they are masked.
+- An invalid tool call's audit record quoted the malformed arguments with personal data.
+- An OpenAI-compatible provider that quotes the API key it was sent ("Incorrect API key provided:
+  ...") put the key in the run's error; the key is masked whatever its shape.
+- A declared HTTP tool whose API echoes the credential it was sent (an `env://` secret or the
+  caller's) handed it to the model, the run's messages and the ledger; the tool masks the
+  credentials it sent (bearer, header, caller and Basic, decoded) in what it returns.
+- An approver's note was stored with any credential in it; it is masked.
+- A conversation's title, taken from its first message, and the `conversation.title` span attribute
+  carried a credential from that message; the title masks credentials and the span attribute masks
+  personal identifiers too. Conversation content captured on the turn span
+  (`include_conversation_content`) masks personal identifiers as well as credentials.
+- The service log's redaction left personal identifiers in an exception's traceback; it masks them
+  in the `exception` and `stack` fields (fields the Runtime chooses, such as `user_id`, are kept).
+- Steering text sent to a paused run was kept unmasked until it was delivered: in the run's state
+  (memory, PostgreSQL, Redis), in `RunResult.undelivered_steering` and, with content capture on,
+  in `steer.delivered` / `steer.undelivered` events. It is masked when it is queued, as the agent's
+  `secrets` and `pii` policies mask an input; delivery still runs every `input` policy.
+- An MCP server that echoes the credential it was sent (the caller's OAuth access token, or the
+  server's `env://` token, secret headers or stdio environment) handed it to the model, the run's
+  messages, the ledger and spans with content capture on; the tool masks every credential it sent
+  in its result, structured result and error. A raised error is no longer chained to the server's
+  exception (whose traceback would quote it) and names its type instead:
+  `MCP tool <name> execution error (<Type>): <masked message>`.
+- The API's error handlers returned the exception's text as `detail` (`str(exc)`), as did the
+  tool-execution compensate, resolve and reconcile routes and the MCP OAuth routes; the readiness
+  reasons and `container.degraded_dependencies` masked URLs and `token=`-style pairs but not token
+  shapes or personal data; a distributed worker stored the exception's text in the work item's
+  row; a developer-audience conversation error was cut at 500 characters before masking. Each is
+  masked by `redact_error_text` now; a framework adapter's FAILED message and a governed tool's
+  error to a framework's model mask personal data too.
+- A credential in an uploaded file's `x-artifact-metadata` was stored and listed as written; it is
+  masked as a conversation's metadata is.
+- A conversation's title cut its first message at 80 characters, so it could end in part of an
+  email, phone or card number that masking no longer recognises (in the `conversation.title`
+  span attribute); the title is now cut before an identifier that does not fit whole.
+- The Runtime's loggers handed a host's structlog configuration the raw exception (`exc_info`)
+  and unmasked fields when the host did not use `configure_logging`, and its stdlib loggers
+  (authentication audit, workflow service, startup recovery) logged raw tracebacks; see below.
+
+**The golden files.** `tests/telemetry/golden/*.json` pin the shape of each scenario's run events,
+spans (name, parent, status, attribute keys and value types, events), audit records, metric
+attributes and log events, with ids and timestamps normalised away. An unannounced change in what
+the Runtime records fails CI. After an intended change, regenerate them and review the diff:
+
+```bash
+ALGEN_UPDATE_GOLDEN=1 python -m pytest -q -p no:cacheprovider tests/telemetry
+```
+
+The PostgreSQL variant (`tests/telemetry/test_golden_telemetry_postgres.py`) reads every row of
+every table in a fresh schema after the same scenarios, a restart that recovers a run and an MCP
+OAuth token write, and checks that the model and tool path records the same shape as on the
+in-memory stores. The Redis variant (`tests/telemetry/test_golden_telemetry_redis.py`, 0.2.0b5)
+runs the model and tool path, a paused run with steering waiting, a failing tool and a
+conversation turn with a caller credential on Redis runs, session memory and the tool-result
+cache, and reads every key and value of its own Redis database (while the run is paused and at
+the end). Run both with `scripts/integration-tests.sh tests/telemetry`; they skip without
+`POSTGRES_DSN` / `REDIS_URL`.
+
+### Logs under a host's own logging
+
+`configure_logging` installs `redact_log_event` (`algen_agent_runtime.security`, a structlog
+processor), which masks every line. A host that embeds the Runtime usually keeps its own
+structlog configuration: structlog's default (`ConsoleRenderer`, which prints an exception's
+traceback, and its local variables when `rich` is installed) or a chain that sends exceptions to an
+error tracker. Since 0.2.0b5 the Runtime's own loggers protect themselves there without touching
+that configuration:
+
+- when the host's structlog processors do not include `redact_log_event`, every event a Runtime
+  logger writes is masked before the host's processors see it (credentials in every field and
+  bound value), and an exception is passed as its masked traceback in the `exception` field
+  (what `format_exc_info` writes) instead of the exception object;
+- when they do include it (`configure_logging`, or a host that adds it after `format_exc_info`),
+  events pass through as before, exception objects included, and the processor masks the output;
+- the Runtime's few stdlib `logging` calls that reported an exception (authentication audit
+  failures, a workflow that stopped with an error, startup workflow recovery) log its masked
+  traceback as text, with no `exc_info`, so the host's handlers never format the raw exception.
+
+`tests/telemetry/test_golden_telemetry_host_logging.py` runs failing runs under structlog's
+default configuration with an error-tracker processor in front and finds no canary in the
+console output, the tracker or stdlib records. A host that wants its own error tracker to get
+the exception objects adds `redact_log_event` to its chain:
+
+```python
+import structlog
+from algen_agent_runtime.security import redact_log_event
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        sentry_processor,  # or any processor that wants exc_info
+        structlog.processors.format_exc_info,
+        redact_log_event,
+        structlog.processors.JSONRenderer(),
+    ]
+)
+```
+
+`redact_error_text(error)` (an exception's text with credentials and personal identifiers masked,
+as the Runtime shows errors) and `redact_held(value, held)` (mask credentials you hold wherever a
+reply echoes them) are in `algen_agent_runtime.security` too.
+
+### What a host still owns
+
+The Runtime cannot see these, so the suite cannot prove them; a host checks its own:
+
+- **Access logs.** The ASGI server's or a proxy's access log records request paths and query
+  strings: an uploaded file's name (`POST /v1/artifacts?name=...`) and ids. Turn query strings
+  off in access logs, or accept that file names reach them.
+- **Unhandled exceptions.** An exception that escapes a route (a bug, or a host scanner or hook
+  that raises) is logged by the ASGI server (`uvicorn.error`) with its raw traceback; the
+  Runtime's own errors are handled and masked before that.
+- **The host's own code.** Spans, logs and error reports the host writes itself, around
+  `Runtime.run` or a conversation, are outside the Runtime's tracers and loggers: wrap them with
+  `redact_error_text` / `redact_secrets` / `redact_pii`, or add `redact_log_event` to the host's
+  structlog chain.
+- **The CLI.** `algen-agent-runtime` commands print a configuration error's text to the
+  operator's terminal unmasked (it names settings and environment variables, not run data).
 
 ## Traccia
 
@@ -2082,7 +2617,7 @@ telemetry:
   max_content_chars: 16384
   # Optional second exporter for dual delivery to another OTLP backend:
   # otlp_endpoint: https://otel-collector.example.com/v1/traces
-  # Runtime metrics (cache, governance, auth, worker counters...) to an OTLP collector:
+  # Runtime metrics (runs, models, tools, approvals, API, stores...) to an OTLP collector:
   # otlp_metrics_endpoint: https://otel-collector.example.com/v1/metrics
   # otlp_metrics_export_interval_seconds: 60
   traccia:
@@ -2153,7 +2688,8 @@ parallel agents, while their own `agent.id` attributes preserve specialist attri
 also records `interaction.id`, user/tenant IDs, outcome, child-run count, and content-block count.
 This gives the platform both per-turn timelines and session-level duration/token/cost rollups.
 
-`include_conversation_content` controls only the redacted user message and narrative assistant text on
+`include_conversation_content` controls only the redacted user message and narrative assistant text (credentials
+masked, and personal identifiers since 0.2.0b5) on
 the turn span. It is separate from `include_content`, which controls substantially more sensitive LLM
 messages, retrieved context, and tool inputs/outputs. Keep both disabled unless the tenant's data policy
 explicitly permits export.
@@ -2200,9 +2736,11 @@ Other OpenTelemetry deployments can use `install_runtime_trace_filter(provider)`
 after an approval or a pause, the new `agent.run` is a child of that span, so the whole run is one
 trace even across processes.
 
-**Metrics.** The Runtime records OpenTelemetry metrics (cache operations and latency,
-governance decisions, authentication attempts, analytical nodes, distributed work items, method
-and model-service calls). Set `telemetry.otlp_metrics_endpoint` to an OTLP/HTTP metrics endpoint
+**Metrics.** The Runtime records OpenTelemetry metrics: since `0.2.0b5` runs, pauses,
+approvals, model and tool calls, policy denials, HTTP requests, store outages, event backpressure,
+conversation turns and workflow runs, besides cache operations, governance decisions,
+authentication attempts, analytical nodes, distributed work items, method and model-service calls
+(the [metrics reference](#metrics-reference), with dashboards and alert rules). Set `telemetry.otlp_metrics_endpoint` to an OTLP/HTTP metrics endpoint
 to export them: the Runtime installs a meter provider with a periodic reader
 (`otlp_metrics_export_interval_seconds`, default 60). `otlp_endpoint` alone exports traces only,
 and no meter provider is installed, so an application can install its own. Traccia's metrics
@@ -2212,7 +2750,11 @@ application, is kept, and `otlp_metrics_endpoint` is then ignored with a warning
 provider's readers are fixed when it is built. The endpoint is used as given, so include the
 path (`https://collector:4318/v1/metrics`, not `https://collector:4318`). The interval setting
 always applies, so `OTEL_METRIC_EXPORT_INTERVAL` has no effect. The Runtime flushes its meter
-provider when the API shuts down.
+provider when the API shuts down. The meter provider (and the tracer provider `otlp_endpoint`
+installs) report `service.name` from `telemetry.service_name` since 0.2.0b5, so Prometheus's
+`job` label is the service's name rather than `unknown_service:python`; `OTEL_SERVICE_NAME`, when
+set, still wins, and `OTEL_RESOURCE_ATTRIBUTES` adds attributes. A provider installed by Traccia or
+the application keeps its own resource.
 
 To export the same spans to Traccia and another OTLP backend, also set `telemetry.otlp_endpoint`. Algen Agent Runtime attaches the standard OTLP processor to Traccia's OpenTelemetry provider. Leave it unset when Traccia is the only destination to prevent duplicate delivery.
 

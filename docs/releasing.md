@@ -1,6 +1,6 @@
 # Release process
 
-Releases are built from signed or protected tags and published to PyPI through a dedicated GitHub Actions workflow using PyPI Trusted Publishing. Maintainers must not upload release artifacts from a workstation.
+Releases are built from `v<version>` tags (protected against updates and deletion by the `Release tags` ruleset, see [repository settings](repository-settings.md#branch-and-tag-rulesets)) and published to PyPI through a dedicated GitHub Actions workflow using PyPI Trusted Publishing. Maintainers must not upload release artifacts from a workstation.
 
 ## Distribution channels
 
@@ -10,15 +10,18 @@ Algen Agent Runtime supports three reproducible distribution channels:
    Install the latest available release from PyPI:
    ```bash
    pip install algen-agent-runtime
-   # Or for pre-releases (e.g. 0.1.0a1):
+   # Or for pre-releases (e.g. 0.2.0b4):
    pip install --pre algen-agent-runtime
    ```
 
 2. **GitHub Releases:**
-   Every release tag `v<version>` includes pre-built `.whl` and `.tar.gz` assets and a `SHA256SUMS` manifest.
-   Download the wheel directly and install:
+   Every release tag `v<version>` has a GitHub release with the release notes, a `SHA256SUMS`
+   manifest of the wheel and sdist published to PyPI, a CycloneDX SBOM (`sbom.cdx.json`) and a
+   license report (`licenses.md`). The wheel and sdist themselves are on PyPI; download them and
+   check them against the manifest (see [Artifact verification](#artifact-verification)):
    ```bash
-   pip install algen_agent_runtime-<version>-py3-none-any.whl
+   pip download --no-deps --pre algen-agent-runtime==<version> -d dist/
+   pip install dist/algen_agent_runtime-<version>-py3-none-any.whl
    ```
 
 3. **Direct Git Tag:**
@@ -40,6 +43,12 @@ Algen Agent Runtime supports three reproducible distribution channels:
 - The `pypi` GitHub environment has required reviewers.
 - PyPI trusts `.github/workflows/release.yml` for the `AlgenAI/algen-agent-runtime` repository and `pypi` environment.
 - The release maintainer has reviewed dependency, secret-scanning, CodeQL, and container findings.
+- The first release of a new minor line (`0.3.0`, `0.4.0`, ...) and any release that adds an HTTP
+  route, an authentication mode, a way to run tools or a release-workflow change has had a
+  security review: the rules in AGENTS.md, "Security invariants", checked against the change,
+  and for a new minor line a full assessment of the API, governance, storage, plugins and supply
+  chain like the one before `0.2.0b4`. Findings are fixed or tracked in a private security
+  advisory before the release, never in a public issue.
 - The owner-controlled settings in [repository-settings.md](repository-settings.md) are enabled and verified.
 
 ## Release steps
@@ -62,8 +71,63 @@ are complete; an unreleased feature branch is not evidence of release readiness.
 
 Run `python -m algen_agent_runtime_examples.context_evaluation` and the base test suite for deterministic context
 regressions. Review [context evaluation limitations](context-evaluation.md) separately from any
-deployment-specific model-quality evidence. Include the new diagnostic event and evaluation API
-in the Studio documentation sync.
+deployment-specific model-quality evidence. Record what Studio's own Runtime documentation must
+change for the release (new events, settings, scopes) in [Studio compatibility](studio-compatibility.md).
+
+### Live provider contracts
+
+Before every release, a maintainer runs the live provider contract suite (`tests/live`, marker
+`live`) against the real vendor APIs with their own keys. It checks every capability that
+[provider compatibility](provider-compatibility.md#live-provider-contracts) claims for each
+built-in provider class, through the Runtime's own classes, `ModelRouter`, `build_container` and
+`Runtime.run`. CI never runs it: no repository secret holds a vendor key, and no workflow may
+read one. Without `ALGEN_LIVE=1` (or `ALGEN_LIVE_FAKE=1`) every test in it is collected and
+skipped, so the base suite is unaffected.
+
+```bash
+# Keys come from your shell, never from a file in the checkout. Set only the ones you have:
+# each provider without its variables is skipped and says which ones it needs.
+export OPENAI_API_KEY=... ANTHROPIC_API_KEY=... GEMINI_API_KEY=... XAI_API_KEY=...
+export GROQ_API_KEY=... MISTRAL_API_KEY=... DEEPSEEK_API_KEY=... HF_TOKEN=...
+export AZURE_OPENAI_API_KEY=... AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+export AZURE_OPENAI_DEPLOYMENT=<chat deployment>        # optional: AZURE_OPENAI_API_VERSION,
+                                                        # AZURE_OPENAI_EMBED_DEPLOYMENT
+ALGEN_LIVE=1 ALGEN_LIVE_REPORT=live-report.md \
+  python -m pytest -p no:cacheprovider tests/live -m live -rsx
+```
+
+- **Providers and models.** `ALGEN_LIVE_PROVIDERS=openai,anthropic` runs only some providers.
+  Each uses a cheap default model, replaced with `ALGEN_LIVE_<PROVIDER>_MODEL` (and
+  `ALGEN_LIVE_<PROVIDER>_EMBED_MODEL` for embeddings): `openai` `gpt-4o-mini`, `anthropic`
+  `claude-haiku-4-5`, `gemini` `gemini-2.5-flash-lite`, `xai` `grok-4-fast-non-reasoning`, `groq`
+  and `huggingface` `openai/gpt-oss-20b`, `mistral` `mistral-small-latest`, `deepseek`
+  `deepseek-chat`, `ollama` `llama3.2`. Ollama runs when `ALGEN_LIVE_OLLAMA_BASE_URL` (default
+  `http://127.0.0.1:11434/v1`) answers; pull the model first.
+- **Cost.** Every request is a short prompt with `max_output_tokens` 512
+  (`ALGEN_LIVE_MAX_OUTPUT_TOKENS`). A full run is about 30 small calls per provider, two of them
+  with a 32x32 image or a one-page PDF; with the default models it costs well under one US dollar
+  in total. The wrong-key checks send a key no vendor issues.
+- **Keys.** The provider classes read keys through `env://` references; the suite never prints,
+  logs or stores them, and the report holds outcomes only. A provider error that quoted the key
+  it was sent fails the wrong-key check.
+- **Reading failures.** A capability test runs only when the provider class claims the
+  capability (`capabilities(model)`), so a failure means the Runtime claims something the live
+  API did not do with that model: fix the class, narrow its default capabilities, or, when only
+  some models of the vendor support it, pick a model that does with `ALGEN_LIVE_<PROVIDER>_MODEL`
+  and say so in [provider compatibility](provider-compatibility.md). A failure of a wrong-key or
+  unknown-model check means an HTTP error is mapped to the wrong `ErrorKind`, which changes
+  whether the router retries and falls back. `xfail` marks a provider bug already known (listed
+  in `KNOWN_BUGS` in the test module); an `XPASS` means it was fixed: remove the entry. A
+  model's wording can occasionally miss an expected word: rerun that test once before treating it
+  as a failure.
+- **Record the result.** Paste the table `ALGEN_LIVE_REPORT` wrote (date, mode, one row per
+  provider) into the results table of [provider compatibility](provider-compatibility.md#live-provider-contracts)
+  in the release pull request, and say there which providers you could not run.
+
+`ALGEN_LIVE_FAKE=1` runs the same suite offline against a local fake of each vendor's API
+(`tests/live/live_fake_api.py`), with a placeholder key and no network beyond 127.0.0.1. It
+proves the suite's own logic and the request shapes, not the vendors: use it after changing the
+suite or a provider class, never instead of the live run.
 
 ### Publish
 
@@ -103,7 +167,7 @@ in the Studio documentation sync.
 Users and participants can verify the integrity of downloaded distribution artifacts before installation:
 
 ```bash
-# Checksums (SHA256SUMS is attached to the GitHub release)
+# Checksums (SHA256SUMS is attached to the GitHub release; run in the directory holding the files)
 sha256sum -c SHA256SUMS
 
 # GitHub build provenance: the file was built by this repository's release workflow
@@ -113,7 +177,7 @@ gh attestation verify algen_agent_runtime-<version>-py3-none-any.whl --repo Alge
 PyPI shows the PEP 740 provenance of each file under "Verified details", and
 `https://pypi.org/integrity/algen-agent-runtime/<version>/<file>/provenance` returns it. The SBOM
 (`sbom.cdx.json`) and license report (`licenses.md`) on the GitHub release list what a deployment
-of the release installs with the `service` and `postgres` extras.
+of the release installs with the `service`, `postgres`, `auth` and `redis` extras.
 
 ### Dependency locks
 
@@ -128,12 +192,9 @@ applications resolve them with their other dependencies.
 
 Do not reuse or overwrite an existing release tag or published version number; once a version tag is published, it remains immutable. If a release contains a defect or security issue:
 
-1. **Halt Announcements & Triage:** Immediately stop marketing/hackathon announcements and assess the blast radius.
+1. **Halt Announcements & Triage:** Immediately stop announcements and assess the blast radius.
 2. **Yank on PyPI:**
-   - Mark the affected release files as yanked via PyPI Web UI (**Manage Project -> Releases -> Options -> Yank Release**) or via `twine`:
-     ```bash
-     twine yank --reason "Critical regression: see advisory GHSA-xxx" algen-agent-runtime <version>
-     ```
+   - Mark the affected release as yanked in the PyPI web UI (**Manage Project -> Releases -> Options -> Yank**), with a reason that names the advisory or issue. `twine` has no yank command.
    - Yanking prevents the package resolver from selecting this version for unpinned installs while preserving compatibility for existing pinned lockfiles.
 3. **Annotate GitHub Release:**
    - Edit the GitHub Release notes to add a prominent warning banner stating that the version is yanked and why.
@@ -141,6 +202,6 @@ Do not reuse or overwrite an existing release tag or published version number; o
 4. **Publish Security Advisory:**
    - If the issue is a security vulnerability, publish a GitHub Security Advisory (GHSA) with affected versions and remediation.
 5. **Issue Patch Release:**
-   - Increment the version in `src/algen_agent_runtime/__init__.py` (e.g. `0.1.0a2`).
+   - Increment the version in `src/algen_agent_runtime/__init__.py` (e.g. `0.2.0b4` to `0.2.0b5`).
    - Document the fix and the yanked version context in `CHANGELOG.md`.
    - Tag and publish the new patch release following the standard release process.

@@ -1,0 +1,253 @@
+{
+  "audits": [
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "intervention": "str",
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [],
+          "policies_triggered": [
+            "str"
+          ],
+          "risk": "str"
+        },
+        "reason_code": "prompt_injection.detected"
+      },
+      "outcome": "deny"
+    }
+  ],
+  "events": [
+    {
+      "payload": {
+        "agent": "str"
+      },
+      "type": "run.started"
+    },
+    {
+      "payload": {
+        "action": "deny",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "prompt_injection.detected",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "error": "str"
+      },
+      "type": "run.failed"
+    }
+  ],
+  "logs": [
+    "error:agent_run_failed"
+  ],
+  "metrics": [
+    {
+      "attributes": {
+        "agent": "str",
+        "reason": "str",
+        "run_kind": "str",
+        "status": "failed"
+      },
+      "name": "algen_agent_runtime.runs.finished"
+    },
+    {
+      "attributes": {
+        "agent": "str",
+        "run_kind": "str",
+        "status": "failed"
+      },
+      "name": "algen_agent_runtime.run.duration"
+    },
+    {
+      "attributes": {
+        "agent": "str",
+        "run_kind": "str"
+      },
+      "name": "algen_agent_runtime.runs.started"
+    },
+    {
+      "attributes": {
+        "boundary": "str",
+        "policy": "str"
+      },
+      "name": "algen_agent_runtime.policy.denials"
+    },
+    {
+      "attributes": {
+        "pause_kind": "str"
+      },
+      "name": "algen_agent_runtime.runs.paused"
+    },
+    {
+      "attributes": {},
+      "name": "algen_agent_runtime.runs.active"
+    }
+  ],
+  "spans": {
+    "common_agent_attributes": {
+      "agent.correlation.id": "str",
+      "agent.definition.id": "str",
+      "agent.description": "str",
+      "agent.id": "str",
+      "agent.name": "str",
+      "agent.planning.strategy": "str",
+      "agent.run.id": "str",
+      "agent.run.input_chars": "int",
+      "agent.run.input_tokens": "int",
+      "agent.run.mode": "str",
+      "agent.run.model_calls": "int",
+      "agent.run.outcome": "failed",
+      "agent.run.output_tokens": "int",
+      "agent.run.retry_count": "int",
+      "agent.run.status": "failed",
+      "agent.run.step_count": "int",
+      "agent.run.tool_calls": "int",
+      "agent.session.id": "str",
+      "agent.span.type": "str",
+      "agent.tenant.id": "str",
+      "agent.type": "str",
+      "agent.user.id": "str",
+      "agent.version": "str",
+      "gen_ai.agent.id": "str",
+      "gen_ai.agent.name": "str",
+      "gen_ai.agent.version": "str",
+      "gen_ai.conversation.id": "str",
+      "gen_ai.operation.name": "str",
+      "governance.event_type": "str",
+      "policy.action": "str",
+      "policy.boundary": "input",
+      "policy.invoked_count": "int",
+      "policy.operation": "str",
+      "policy.policies_invoked": [
+        "str"
+      ],
+      "policy.policies_triggered": [
+        "str"
+      ],
+      "policy.reason_code": "prompt_injection.detected",
+      "policy.skipped_count": "int",
+      "policy.source_sdk": "str",
+      "policy.subject_type": "str",
+      "policy.triggered": "bool",
+      "policy.triggered_count": "int",
+      "session.id": "str",
+      "span.type": "policy_pipeline",
+      "tenant.id": "str",
+      "user.id": "str"
+    },
+    "spans": [
+      {
+        "attributes": {
+          "span.type": "agent"
+        },
+        "name": "agent.run",
+        "parent": null,
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.boundary",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_invoked",
+          "policy.policies_triggered",
+          "policy.reason_code",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {},
+        "name": "agent.policy.input",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "agent.description",
+          "agent.planning.strategy",
+          "agent.run.input_chars",
+          "agent.run.input_tokens",
+          "agent.run.mode",
+          "agent.run.model_calls",
+          "agent.run.outcome",
+          "agent.run.output_tokens",
+          "agent.run.retry_count",
+          "agent.run.status",
+          "agent.run.step_count",
+          "agent.run.tool_calls",
+          "agent.span.type",
+          "agent.type",
+          "gen_ai.operation.name"
+        ]
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "prompt_injection",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "prompt_injection",
+          "guardrail.reason_code": "prompt_injection.detected",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.prompt_injection",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      }
+    ]
+  }
+}

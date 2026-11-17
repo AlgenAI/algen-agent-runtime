@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from algen_agent_runtime.analytics.contracts import (
+    _GRAPH_ENGINE_EXPERIMENTAL,
     AnalyticalGraph,
     AnalyticalNode,
     AnalyticalNodeKind,
@@ -16,10 +17,15 @@ from algen_agent_runtime.exceptions.errors import ConfigurationError
 from algen_agent_runtime.semantics.contracts import MetricQuery
 from algen_agent_runtime.semantics.layer import SemanticLayer
 from algen_agent_runtime.semantics.production_compiler import ProductionSemanticQueryCompiler
+from algen_agent_runtime.stability import experimental
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class SemanticQueryTask(BaseModel):
-    """One independently executable semantic result set in an analysis graph."""
+    """Experimental: it plans analytical graphs; not covered by the compatibility promise.
+
+    One independently executable semantic result set in an analysis graph.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]*$")
@@ -56,8 +62,12 @@ class SemanticAnalysisPlan(BaseModel):
         return self
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class SemanticQueryGraphPlanner:
-    """Lowers governed semantic tasks into a validated analytical execution DAG."""
+    """Experimental: it plans analytical graphs; not covered by the compatibility promise.
+
+    Lowers governed semantic tasks into a validated analytical execution DAG.
+    """
 
     def __init__(self, compiler: ProductionSemanticQueryCompiler) -> None:
         self._compiler = compiler

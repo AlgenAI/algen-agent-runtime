@@ -11,6 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.exceptions.errors import ConflictError, NotFoundError
+from algen_agent_runtime.security.redaction import redact_text
 from algen_agent_runtime.types.contracts import utc_now
 
 # The longest rationale an approval request shows the approver.
@@ -104,11 +105,17 @@ TOOL_CHANGED = "tool_changed"
 
 
 def _decision(decided_by: str | None, comment: str | None) -> dict[str, Any]:
-    """The fields a decision records: who, when and their note, checked like the model's."""
+    """The fields a decision records: who, when and their note, checked like the model's.
+
+    A credential pasted into the note is masked before it is stored (0.2.0b5), as
+    ``redact_text`` masks one; the rest of the note is kept as the approver wrote it.
+    """
     if decided_by is not None and not 1 <= len(decided_by) <= MAX_DECIDED_BY_CHARS:
         raise ValueError(f"decided_by must be 1 to {MAX_DECIDED_BY_CHARS} characters")
     if comment is not None and len(comment) > MAX_COMMENT_CHARS:
         raise ValueError(f"comment must be at most {MAX_COMMENT_CHARS} characters")
+    if comment is not None:
+        comment = redact_text(comment)[:MAX_COMMENT_CHARS]
     return {"decided_by": decided_by, "decided_at": utc_now(), "comment": comment}
 
 

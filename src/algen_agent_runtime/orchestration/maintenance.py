@@ -6,10 +6,10 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.config.settings import MaintenanceSettings
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.orchestration.lifecycle import OwnedWorkflows
 from algen_agent_runtime.persistence.retention import RetentionPolicy, RetentionSweeper
 from algen_agent_runtime.types.interfaces import ArtifactStore
@@ -54,7 +54,7 @@ class MaintenanceService:
         self._sweeper = sweeper
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
-        self._logger = structlog.get_logger("algen_agent_runtime.maintenance")
+        self._logger = runtime_logger("algen_agent_runtime.maintenance")
         self._workflows: OwnedWorkflows | None = None
 
     def attach_workflows(self, workflows: OwnedWorkflows) -> None:

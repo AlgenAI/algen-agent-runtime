@@ -15,9 +15,8 @@ from typing import Any
 from uuid import uuid4
 
 import jsonschema
-import structlog
 from opentelemetry import context as otel_context
-from opentelemetry import metrics, trace
+from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from pydantic import ValidationError
@@ -76,7 +75,13 @@ from algen_agent_runtime.context.working_state import (
     working_state_tool,
 )
 from algen_agent_runtime.events.bus import InMemoryAuditLog
-from algen_agent_runtime.events.contracts import AuditEvent, EventType, RunEvent
+from algen_agent_runtime.events.contracts import (
+    RUN_END_EVENT_TYPES,
+    RUN_PAUSE_EVENT_TYPES,
+    AuditEvent,
+    EventType,
+    RunEvent,
+)
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     BudgetExceededError,
@@ -104,6 +109,10 @@ from algen_agent_runtime.memory.service import (
 )
 from algen_agent_runtime.models.base import ModelRouter
 from algen_agent_runtime.models.metering import MeterCall, MeterPurpose
+from algen_agent_runtime.observability.metrics import RunMetrics
+from algen_agent_runtime.observability.metrics import instrument as metric_instrument
+from algen_agent_runtime.observability.metrics import record as record_metric
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.observability.traccia_adapter import (
     NoopObservabilityAdapter,
     ObservabilityAdapter,
@@ -141,7 +150,9 @@ from algen_agent_runtime.runtime.state_machine import validate_transition
 from algen_agent_runtime.runtime.stream_guard import StreamTextGuard
 from algen_agent_runtime.security.redaction import (
     redact,
+    redact_error_text,
     redact_parameters,
+    redact_pii,
     redact_text,
     undeclared_sensitive_parameters,
 )
@@ -254,6 +265,8 @@ _ALWAYS_RECORDED_EVENTS = frozenset(
 _OUTAGE_RETRY_SECONDS = (0.5, 30.0)
 # How long resume waits for the drive that paused a run to finish its tail (events, trace).
 _PAUSED_DRIVE_WAIT_SECONDS = 10.0
+# How many times cancel re-reads a run whose checkpoint moved on under it before giving up.
+_CANCEL_ATTEMPTS = 5
 _ORDERED_TOOLS = frozenset({WORKING_STATE_TOOL, SKILL_LOAD_TOOL, *MEMORY_PERMISSIONS})
 # plan_tool answers a parallel reply leaves to the single path: it refuses the call, or runs it
 # with its rewritten arguments.
@@ -530,6 +543,8 @@ class AgentRuntime:
         # answer is delivered or that text is retracted (model.delta.retracted).
         self._streamed_steps: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Run, approval and guard metrics (OpenTelemetry; no-ops without a meter provider).
+        self._run_metrics = RunMetrics(self._tasks)
         # The caller's credentials for each run while it executes, by run id. Memory only: set
         # when a drive is scheduled, removed when the run pauses or ends and when its drive ends.
         self._credentials: dict[str, Mapping[str, str]] = {}
@@ -546,7 +561,7 @@ class AgentRuntime:
         self._tracer = TraceLevelTracer(
             self.observability.tracer("algen_agent_runtime.runtime"), telemetry_trace_level
         )
-        self._logger = structlog.get_logger("algen_agent_runtime.runtime")
+        self._logger = runtime_logger("algen_agent_runtime.runtime")
         # Custom approval services whose decide() takes no decided_by or comment (warned once).
         self._unattributed_approval_services: set[str] = set()
         # Runs whose pinned agent version is no longer registered (warned once per run).
@@ -673,6 +688,13 @@ class AgentRuntime:
                 task = self._tasks.get(run_id)
             if task is not None and not task.done():
                 await task
+                waiter = asyncio.current_task()
+                if waiter is not None and waiter.cancelling():
+                    # This waiter was cancelled (a cancelled parent run, workflow or caller's
+                    # timeout): the cancellation reached the drive, which ends the run
+                    # cancelled and returns normally. Pass it on, or the waiter would carry on
+                    # as if nothing had happened (a parent recording its delegated call done).
+                    raise asyncio.CancelledError
             elif run_id in self._outage_runs and self._accepting_runs:
                 await asyncio.sleep(0.05)
             else:
@@ -716,8 +738,19 @@ class AgentRuntime:
             task = self._tasks.get(run_id)
             if task and not task.done():
                 task.cancel()
-        if state.status not in TERMINAL_STATUSES:
-            await self._transition(state, RunStatus.CANCELLED)
+        conflicts = 0
+        while state.status not in TERMINAL_STATUSES:
+            try:
+                await self._transition(state, RunStatus.CANCELLED)
+            except RunConflictError:
+                # The drive just cancelled above saved meanwhile (a checkpoint it was writing,
+                # or its own ``cancelled`` as it stopped): read the run again and finish the job
+                # unless it has ended. Whichever write lands first emits run.cancelled.
+                conflicts += 1
+                if conflicts >= _CANCEL_ATTEMPTS:
+                    raise
+                state = await self._require_state(run_id, tenant_id)
+                continue
             await self._emit(state, "run.cancelled", {})
         # A core.subagent call waiting for a paused child run: the child is cancelled with it.
         for child_run_id in state.delegated_runs.values():
@@ -747,6 +780,13 @@ class AgentRuntime:
         state = await self._require_state(run_id, tenant_id)
         if state.status in TERMINAL_STATUSES:
             raise ConflictError(f"run in {state.status.value!r} has ended and cannot be steered")
+        # Held until delivered (in the run's state, its events with content capture on, and
+        # RunResult.undelivered_steering when it never is): masked as the agent's ``secrets``
+        # and ``pii`` policies mask an input (0.2.0b5). Delivery still runs every input policy.
+        try:
+            text = self._masked_user_text(text, delegated_agent(self._run_agent(state), state))
+        except NotFoundError:
+            text = str(redact_pii(redact_text(text)))
         message = SteeringMessage(text=text)
         async with self._task_lock:
             task = self._tasks.get(run_id)
@@ -858,6 +898,9 @@ class AgentRuntime:
                 decided_by=decided_by,
                 comment=_decision_comment(payload),
             )
+            self._run_metrics.approval_resolved(
+                pause_payload.get("kind"), approval.status.value, approval.created_at
+            )
             call_id = str((state.pause_payload or {}).get("tool_call_id", ""))
             if approval.status == ApprovalStatus.REJECTED:
                 agent = self._run_agent(state)
@@ -944,6 +987,10 @@ class AgentRuntime:
             )
             if approved_call is not None:
                 state.tool_approvals[call_id] = self._bind_approval(approval, approved_call)
+                # The pause counted this call's step and the next drive plans and counts it
+                # again before running it: take the first count back, as recovery does for an
+                # interrupted step, so an approved call costs one step of max_steps.
+                state.step_count = max(0, state.step_count - 1)
             self._restore_deadline_after_pause(state)
             state.pause_payload = None
             await self._transition(state, RunStatus.PLANNING)
@@ -1306,6 +1353,7 @@ class AgentRuntime:
                 self._logger.info("agent_run_resumed_after_outage", run_id=run_id)
                 try:
                     await self._schedule(run_id, tenant_id, credentials)
+                    self._run_metrics.recovered("store_outage", "driven")
                 except ConflictError:
                     pass  # already executing
 
@@ -1415,6 +1463,8 @@ class AgentRuntime:
             if existing and not existing.done():
                 continue
             if state.status in PAUSED_STATUSES:
+                # Counted in runs.paused from now on, as if this process had paused it.
+                self._run_metrics.seen_paused(state)
                 continue
             try:
                 if state.deadline and state.deadline <= utc_now():
@@ -1425,12 +1475,14 @@ class AgentRuntime:
                     state.updated_at = utc_now()
                     await self.runs.save(state, expected)
                     await self._emit(state, "run.failed", {"reason": "timeout_during_recovery"})
+                    self._run_metrics.recovered("restart", "timed_out")
                     continue
                 credentials: Mapping[str, str] | None = None
                 if state.caller_credentials:
                     credentials = await self._recovery_credentials(provider, state)
                     if not credentials:
                         await self._pause_for_credentials(state)
+                        self._run_metrics.recovered("restart", "awaiting_credentials")
                         continue
                 if self._recovery_status(state.status) != state.status:
                     expected = state.version
@@ -1446,7 +1498,9 @@ class AgentRuntime:
                     run_id=state.id,
                     tenant_id=state.request.tenant_id,
                 )
+                self._run_metrics.recovered("restart", "superseded")
                 continue
+            self._run_metrics.recovered("restart", "driven")
             recovered += 1
         return recovered
 
@@ -1530,6 +1584,12 @@ class AgentRuntime:
                 await self._transition(state, RunStatus.TIMED_OUT)
             except ConflictError:
                 continue
+            if reason == "approval_expired":
+                self._run_metrics.approval_resolved(
+                    (state.pause_payload or {}).get("kind"),
+                    "expired",
+                    approval.created_at if approval is not None else None,
+                )
             await self._emit(state, "run.failed", {"reason": reason})
             expired += 1
         return expired
@@ -1629,14 +1689,20 @@ class AgentRuntime:
                 await self._emit(current, "run.failed", {"reason": "timeout"})
         except asyncio.CancelledError:
             current = await self._require_state(run_id, tenant_id)
-            if self._shutdown_cancellation and current.status not in TERMINAL_STATUSES:
-                expected = current.version
-                self._rewind_for_recovery(current)
-                current.updated_at = utc_now()
-                await self.runs.save(current, expected)
-            elif current.status not in TERMINAL_STATUSES:
-                await self._transition(current, RunStatus.CANCELLED)
-                await self._emit(current, "run.cancelled", {})
+            try:
+                if self._shutdown_cancellation and current.status not in TERMINAL_STATUSES:
+                    expected = current.version
+                    self._rewind_for_recovery(current)
+                    current.updated_at = utc_now()
+                    await self.runs.save(current, expected)
+                elif current.status not in TERMINAL_STATUSES:
+                    await self._transition(current, RunStatus.CANCELLED)
+                    await self._emit(current, "run.cancelled", {})
+            except RunConflictError:
+                # ``cancel`` (or another writer) changed the run while this drive stopped: on a
+                # store whose writes take time both mark it cancelled from the same version.
+                # The one that saved first emitted run.cancelled; this one stands down.
+                self._logger.warning("agent_run_superseded", run_id=run_id, tenant_id=tenant_id)
         except StoreUnavailableError:
             raise  # _drive_with_credentials keeps the run for a later drive
         except RunConflictError:
@@ -1867,9 +1933,13 @@ class AgentRuntime:
             loaded_skills_message(state.loaded_skills, agent)
         if state.status == RunStatus.RECEIVED:
             await self._transition(state, RunStatus.VALIDATING)
-            checked_input = await self._policy_value(
-                "input", state.request.input, state, {"agent": agent}
-            )
+            try:
+                checked_input = await self._policy_value(
+                    "input", state.request.input, state, {"agent": agent}
+                )
+            except PolicyDeniedError:
+                await self._mask_refused_input(state, agent)
+                raise
             if isinstance(checked_input, str) and checked_input != state.request.input:
                 state.request = state.request.model_copy(update={"input": checked_input})
             if state.request.attachments:
@@ -2781,6 +2851,9 @@ class AgentRuntime:
             lines += [f"- {finding}" for finding in item.findings]
             if item.repair_hint:
                 lines.append(f"- {item.repair_hint}")
+        # A verifier's findings say what failed, never the output's values; one that quotes
+        # them anyway has its credentials and personal data masked (0.2.0b5).
+        lines[1:] = [str(redact_pii(redact_text(line))) for line in lines[1:]]
         return Message(
             role=Role.USER,
             name=REPAIR_MESSAGE_NAME,
@@ -2789,11 +2862,7 @@ class AgentRuntime:
 
     @cached_property
     def _invalid_tool_calls(self) -> Any:
-        return metrics.get_meter("algen_agent_runtime.models").create_counter(
-            "algen_agent_runtime.model.tool_calls_invalid",
-            unit="1",
-            description="Model tool calls whose arguments were not a JSON object, by model",
-        )
+        return metric_instrument("algen_agent_runtime.model.tool_calls_invalid")
 
     async def _invalid_tool_call(
         self,
@@ -2813,7 +2882,13 @@ class AgentRuntime:
             "model.tool_call_invalid",
             "cut_off" if error.cut_off else "malformed",
             model,
-            {"step_id": step_id, "tool": error.tool, "attempt": attempt + 1, "error": str(error)},
+            # The error quotes the malformed arguments: masked like a run error (0.2.0b5).
+            {
+                "step_id": step_id,
+                "tool": error.tool,
+                "attempt": attempt + 1,
+                "error": self._safe_error(error),
+            },
         )
 
     @staticmethod
@@ -3108,7 +3183,7 @@ class AgentRuntime:
             await self._finish_tool_call_without_result(
                 state,
                 action,
-                {"error": {"type": "UnknownTool", "message": str(exc)}},
+                {"error": {"type": "UnknownTool", "message": redact_error_text(exc)}},
                 status="failed",
                 agent=agent,
             )
@@ -3608,6 +3683,7 @@ class AgentRuntime:
             span.set_attribute("tool.guard.reason_code", held.reason_code)
             for key, value in held.details.items():
                 span.set_attribute(f"tool.guard.{key}", value)
+            self._run_metrics.tool_refused(name, held.status)
             await self._emit(
                 state,
                 "tool.refused" if held.status == "refused" else "tool.repeated",
@@ -4240,7 +4316,7 @@ class AgentRuntime:
             return
         if agent.tool_policy.on_error != "return_to_model":
             raise exc
-        message = self._safe_error(exc)
+        message = self._safe_error(exc, agent)
         await self._finish_tool_call_without_result(
             state,
             action,
@@ -4268,7 +4344,13 @@ class AgentRuntime:
         await self._finish_tool_call_without_result(
             state,
             action,
-            {"error": {"type": "MCPNotConnected", "message": str(exc), "server": exc.server}},
+            {
+                "error": {
+                    "type": "MCPNotConnected",
+                    "message": redact_error_text(exc),
+                    "server": exc.server,
+                }
+            },
             status="failed",
             settle=settle,
         )
@@ -4670,6 +4752,7 @@ class AgentRuntime:
 
     async def _transition(self, state: RunState, target: RunStatus) -> None:
         validate_transition(state.status, target)
+        previous = state.status
         if target in TERMINAL_STATUSES and target != RunStatus.COMPLETED:
             # A run that did not complete delivers no answer.
             state.output_text = None
@@ -4679,6 +4762,10 @@ class AgentRuntime:
         # Steering queued since the last checkpoint is saved with this one.
         state.pending_steering.extend(self._steering.pop(state.id, ()))
         await self.runs.save(state, expected)
+        if previous in PAUSED_STATUSES and target not in PAUSED_STATUSES:
+            self._run_metrics.left_pause(
+                state.id, previous.value, ended=target in TERMINAL_STATUSES
+            )
         if target in PAUSED_STATUSES or target in TERMINAL_STATUSES:
             # A paused run gets fresh credentials on resume; an ended run needs none.
             self._credentials.pop(state.id, None)
@@ -4702,6 +4789,7 @@ class AgentRuntime:
             # A runaway run must not fill the event store: drop the event and fail the run at
             # its next step. Events that end or pause a run are always recorded.
             self._event_overflow.add(state.id)
+            record_metric("algen_agent_runtime.events.backpressure", 1, {"kind": "event_limit"})
             return
         span_context = trace.get_current_span().get_span_context()
         await self.events.publish(
@@ -4722,6 +4810,12 @@ class AgentRuntime:
                 data=data,
             )
         )
+        if event_type == "run.started":
+            self._run_metrics.started(state)
+        elif event_type in RUN_END_EVENT_TYPES:
+            self._run_metrics.finished(state, data.get("reason") or state.error_type)
+        elif event_type in RUN_PAUSE_EVENT_TYPES and state.status in PAUSED_STATUSES:
+            self._run_metrics.paused(state)
 
     def _event_limit(self, state: RunState) -> int:
         try:
@@ -4729,6 +4823,26 @@ class AgentRuntime:
         except NotFoundError:
             return Budget().max_events
         return agent.budget.max_events
+
+    @staticmethod
+    def _masked_user_text(text: str, agent: AgentDefinition) -> str:
+        """``text`` a user wrote, masked as the agent's ``secrets`` and ``pii`` policies mask an
+        input they let through."""
+        guardrails = agent.guardrail_policy
+        if "secrets" in guardrails.policies:
+            text = redact_text(text)
+        if "pii" in guardrails.policies:
+            text = str(redact_pii(text, exempt=guardrails.pii.exempt_entities))
+        return text
+
+    async def _mask_refused_input(self, state: RunState, agent: AgentDefinition) -> None:
+        """Store an input the ``input`` boundary refused masked as the agent's ``secrets`` and
+        ``pii`` policies mask an input they let through (0.2.0b5): a refusal keeps no
+        credential or personal data the run would otherwise have masked."""
+        text = self._masked_user_text(state.request.input, agent)
+        if text != state.request.input:
+            state.request = state.request.model_copy(update={"input": text})
+            await self.runs.save(state, state.version)
 
     async def _require_state(self, run_id: str, tenant_id: str) -> RunState:
         state = await self.runs.get(run_id, tenant_id)
@@ -4957,10 +5071,24 @@ class AgentRuntime:
         return response.model_copy(update={"tool_calls": tuple(calls)})
 
     @staticmethod
-    def _safe_error(exc: Exception) -> str:
+    def _safe_error(exc: Exception, agent: AgentDefinition | None = None) -> str:
         if isinstance(exc, AlgenAgentRuntimeError):
-            # A tool's own error text may quote a credential it was given or sent.
-            return redact_text(str(exc))
+            # A tool's own error text may quote a credential it was given or sent, or a
+            # customer's personal data (0.2.0b5). Shown to the model (``agent`` given), the
+            # personal data is masked as the agent's ``pii`` tool policy masks a result; kept as
+            # the run's error, it always is.
+            text = redact_text(str(exc))
+            if agent is None:
+                return str(redact_pii(text))
+            guardrails = agent.guardrail_policy
+            selected = (
+                guardrails.tool_policies
+                if guardrails.tool_policies is not None
+                else guardrails.policies
+            )
+            if "pii" not in selected:
+                return text
+            return str(redact_pii(text, exempt=guardrails.pii.exempt_entities))
         if isinstance(exc, ImportError) and re.fullmatch(
             r"install algen-agent-runtime\[[a-z0-9-]+\](?: for [A-Za-z0-9 ._-]+)?",
             str(exc),

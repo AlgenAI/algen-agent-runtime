@@ -17,10 +17,13 @@ not.
 | `PluginManifest.env`, `Toolkit(env=...)`, `env://` references | the environment variables a deploy asks for |
 | `workflows` | workflow manifests and their hook providers ([workflows](multi-agent-workflows.md)) |
 
-`algen-agent-runtime describe --json` lists what a plugin registers without calling any component.
-Studio is moving to run it in its build sandbox and check names against that inventory; until it
-does, Studio checks names against its own list and may still report a plugin's components as
-unknown.
+`algen-agent-runtime describe --json` (since `0.1.0a11`) lists what a plugin registers without
+calling any component. Studio runs it, with only the plugin declarations, inside the image each
+project build makes (no network, read-only image, unprivileged user) and checks the names agents
+use against that inventory, the Runtime's own components and Studio's starter tools. Until a build
+has described the declared plugins, Studio reports their components as waiting for a build
+(`COMPONENT_PENDING_BUILD`), not as unknown; a plugin that fails to load is reported as
+`PLUGIN_LOAD_FAILED`, the same error `algen-agent-runtime check` shows locally.
 
 ## What Studio cannot see
 
@@ -43,3 +46,32 @@ Errors (an unknown name, an untrusted plugin, a conflict) are what Studio would 
 names code Studio will not run; `OWN_CONTAINER` is expected for any project with a runnable entry
 point, the others are worth fixing. `--json` prints the inventory Studio will build from. See
 [plugins and the component inventory](plugins.md) for the issue codes.
+
+`check` uses the `studio` profile by default. A project that runs its own host and is not
+imported into Studio can use `--profile standalone` (since `0.1.0a21`), which leaves out the
+warnings about code Studio cannot run. Studio shows the same code findings (`OWN_CONTAINER`,
+`CONSTRUCTOR_COMPONENTS`, `POST_BUILD_REGISTRATION`, `CODE_DEFINED_AGENT`, `DIRECT_ENV_READ`) when a
+project is imported.
+
+## Runtime versions
+
+Studio pins one exact Runtime release for its images and its exported projects' dependency range
+(checked 2026-11-16: Studio's `main` runs `0.2.0b3`, supported range `>=0.1.0a23,<0.3`). A project
+imported into Studio runs on Studio's Runtime, not on the version its own lock file names; Studio
+replaces a locked Runtime pin with its own when it knows that release's hashes. Check a project
+with the Runtime version Studio runs (`pip install "algen-agent-runtime==<version>"`).
+
+These `0.2.0b4` changes decide whether a project that ran on `0.2.0b3` still runs as before; check
+them before Studio moves to `0.2.0b4` or later:
+
+| Change in `0.2.0b4` | What a project declares |
+| --- | --- |
+| `core.http` refuses every call while `security.allowed_http_hosts` is empty | list the hosts, or set `security.allow_any_public_host: true` |
+| `core.subprocess` runs only executables listed in `security.sandbox.allowed_executables` (absolute paths) | list them, as well as `security.allow_subprocess_tools: true` |
+| a coordinator must enable every tool its delegate enables (except `core.working_state_update`, `core.skills_load`, `core.context_read`); delegates inherit their parent's approval requirements and guardrails; `runtime.subagent.max_descendants` (default 64) caps a run tree | add the delegate's tools to the coordinator's `enabled_tools`, and expect delegated children to pause for approvals |
+| Gemini, xAI, Groq and Mistral providers with a non-vendor `base_url` need an explicit `api_key` | an `env://` reference for that provider's `api_key` |
+| a stdio MCP server's credential-named `env` value must be an `env://` reference, as must a retrieval `connection_url` with a password | `env://` references |
+| `POST /v1/agents` needs `agents:admin`; artifacts are visible to their owner, the run's user or `artifacts:admin` | for an exported service's tokens: grant `agents:admin` and `artifacts:admin` only to operator tools |
+
+The [CHANGELOG](../CHANGELOG.md) upgrade notes for `0.2.0b4` list every change, and
+[upgrading](upgrading.md) covers 0.1 to 0.2.

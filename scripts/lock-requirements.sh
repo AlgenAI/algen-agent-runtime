@@ -4,7 +4,8 @@
 #
 #   requirements/build.txt     build, hatchling, twine: the release build installs only these
 #   requirements/ci.txt        the package with the dev extra: lint, type check and tests
-#   requirements/service.txt   the package with the service and postgres extras: the Dockerfile
+#   requirements/service.txt   the package with the service, postgres, auth and redis extras: the
+#                              Dockerfile
 #   requirements/security.txt  pip-audit and bandit for the Security workflow
 #
 # Run it after changing dependencies in pyproject.toml or requirements/*.in. Dependabot keeps the
@@ -23,8 +24,9 @@ python -m pip install -q --root-user-action=ignore "pip-tools>=7.4,<8"
 export CUSTOM_COMPILE_COMMAND="scripts/lock-requirements.sh"
 compile() { echo "== $*"; pip-compile -q --pip-args "--timeout 120 --retries 10" --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url "$@"; }
 compile -o requirements/build.txt requirements/build.in
+compile -o requirements/pip.txt requirements/pip.in
 compile -o requirements/security.txt requirements/security.in
 compile --extra dev -o requirements/ci.txt pyproject.toml
-compile --extra service --extra postgres -o requirements/service.txt pyproject.toml
+compile --extra service --extra postgres --extra auth --extra redis -o requirements/service.txt pyproject.toml
 '
 echo "lock-requirements: requirements/*.txt updated"

@@ -13,6 +13,232 @@ host code are listed in the `algen-runtime-host` skill
 
 ## [Unreleased]
 
+## [0.2.0b5] - 2026-11-16
+
+The last beta before 0.2.0: the remaining GA readiness evidence and the fixes it found. Provider
+cancellation and redacted telemetry now have automated evidence (both found and fixed bugs);
+run-level metrics, Grafana dashboards, Prometheus alert rules and published SLOs ship for the
+single-node scope; experimental interfaces are marked in code; event payload shapes are part of
+the checked API surface; every doc page, skill and example was reviewed. Migration 024 is additive (it drops one foreign
+key). Fixes and
+additive changes only: read the upgrade notes for the few visible behaviour corrections.
+
+### Upgrade notes
+
+1. **Migration 024 (workflow tool steps on PostgreSQL).** Every workflow `tool:<name>` step failed
+   on PostgreSQL with `ForeignKeyViolationError`: its ledger record's `run_id` is the workflow
+   run's id, which the ledger's foreign key to `algen_agent_runtime_runs` refused.
+   `024_workflow_tool_step_ledger.sql` drops that foreign key; workflow checkpoint retention now
+   deletes a workflow run's ledger records and keeps workflows with unresolved calls. Hosts that
+   own the schema apply it with `algen-agent-runtime migrations sql --since 23`. Rolling back to
+   0.2.0b4 keeps working on the migrated database.
+2. **The service image installs the `auth` and `redis` extras**, so `auth_mode: jwt`/`oidc` and
+   Redis stores work in the image built from the repository's Dockerfile
+   (`requirements/service.txt` re-locked; five packages added, no other pin changed).
+3. **Provider `base_url` is honoured.** `openai`, `anthropic`, `deepseek` and
+   `huggingface_inference` ignored `base_url` and always called the vendor, so a configuration
+   that named a gateway still sent its requests and the default key to the vendor. They now call
+   the configured `base_url`; like the hosted vendors since 0.2.0b4, a `base_url` other than the
+   vendor's needs an explicit `api_key`, or the container refuses to build ("set api_key
+   explicitly"). `azure_openai` without `base_url` now fails at build time instead of on the
+   first call.
+4. **A cancelled waiter raises `CancelledError`.** A task awaiting `Runtime.run` or
+   `Runtime.wait` that is itself cancelled now raises `CancelledError`, as asyncio expects,
+   instead of returning the cancelled run's result. `asyncio.timeout()` around `runtime.run`
+   raises `TimeoutError`; a cancelled parent no longer records its `core.subagent` call as
+   completed after `run.cancelled`.
+5. **More text is masked.** These can now contain `[REDACTED…]` markers: run error text and
+   model-facing tool error text (personal identifiers too, honouring
+   `guardrail_policy.pii.exempt_entities`), approver comments, conversation titles, steering text
+   queued for a paused run, `x-artifact-metadata` credentials, API error bodies, readiness reasons
+   and `degraded_dependencies`, work-queue error rows, and the exception event text and status
+   description on spans. An MCP tool masks credentials its server echoes back, and a raised MCP
+   error reads `MCP tool X execution error (<Type>): <masked>` without chaining the server's
+   exception.
+6. **The Runtime's loggers protect themselves.** Under a host's own structlog or stdlib logging
+   (without `configure_logging`), Runtime log events are masked and carry a masked `exception`
+   string instead of `exc_info`. Add `redact_log_event` after `format_exc_info` in your chain to
+   get exception objects back.
+7. **Metrics.** The OTLP meter and tracer providers report `telemetry.service_name`
+   (`OTEL_SERVICE_NAME` still wins), so the Prometheus `job` changes from
+   `unknown_service:python` to the service name. The analytics node metrics no longer carry the
+   per-execution `analytics.graph.id` attribute (the span keeps it).
+8. **Provider errors.** Anthropic streamed calls map HTTP errors by status as plain calls do
+   (401 `authentication`, 403 `authorization`, 400/404/422 `invalid_request`, 429 `rate_limit`,
+   5xx `unavailable`); before, every status but 429 was `unavailable`, so a streamed wrong key or
+   unknown model fell back to the next model. Gemini's HTTP 400 `API_KEY_INVALID` is
+   `authentication`. An error a provider reports inside a stream (Anthropic `error` events, an
+   OpenAI-style `{"error": ...}` chunk) now fails the call instead of completing it with the
+   partial text: a run retracts the streamed text (`model.delta.retracted`, reason `model_error`)
+   and retries when the error is retryable. DeepSeek structured-output requests use JSON mode
+   (`{"type": "json_object"}` plus a system message with the schema). Azure OpenAI retrieval or
+   memory without an `embedding_model` needs `providers.<name>.embedding_deployment`.
+9. **Provider `max_concurrency` is enforced when set.** `providers.<name>.max_concurrency` was
+   documented but never read. Set explicitly, it now caps the calls in flight on that provider
+   (plain calls and open streams); left at its default it sets no cap, as before.
+10. **Experimental interfaces.** Marked experimental and outside the 1.x compatibility promise:
+   horizontal scaling (`distributed`, `distributed_execution`,
+   `maintenance.work_item_retention_days`), the AutoGen and CrewAI adapters, the analytical graph
+   engine (`AnalyticalGraphEngine`, graph types and stores, `analytical_execution`,
+   `maintenance.analytical_graph_retention_days`, plugin `analytical_nodes`,
+   `SemanticQueryGraphPlanner`, `SemanticQueryTask`), remote model services (`model_services`)
+   and the Jev decision client (`decisions`). Nothing changes at run time and nothing warns.
+   Analytical methods, `AnalyticalResult`, the semantic layer and query governance stay stable.
+
+### You can now remove
+
+- **Host-side counting of runs, tokens, tool calls, approvals or failures** from run events or
+  spans, and hand-built Runtime dashboards and alerts: use the Runtime's metrics
+  (`algen_agent_runtime.observability.metrics`) and `deploy/observability`.
+- **Host scrubbing of Runtime spans, exceptions, run errors and Runtime logger output**: the
+  Runtime masks them in every sink, also under the host's own logging configuration.
+- **Hand-written lists of supported versus experimental adapters or settings**: use
+  `algen_agent_runtime.stability.is_experimental()` or `"stability": "experimental"` in the
+  settings schema.
+
+### Fixed
+
+- A cancelled tool call no longer leaves its ledger record `started`. A call cancelled while the
+  record was being written, while it waited for a `max_concurrency` slot or while the result cache
+  was read is recorded `failed` (nothing ran); a call cancelled again while its outcome was being
+  recorded (a turn and its run both cancelled) now finishes recording it. Such a record waited for
+  an operator, and retention kept its run until then: the six-hour soak left eight after about
+  7,000 cancellations.
+- Cancelling a streamed model call (cancel, error or response-size limit) closes the provider's
+  HTTP stream at once; `ModelRouter.stream` and `OllamaProvider.stream` left it open until the
+  generator was garbage collected.
+- `Runtime.cancel` and the drive it cancels no longer race: a run could end `cancelled` while
+  `cancel` (so `DELETE /v1/runs/{id}`, as 409) or `wait` raised `RunConflictError`.
+  `run.cancelled` is still recorded once.
+- `AnthropicProvider.stream` reports a refused or dropped connection as a retryable `unavailable`
+  `ProviderError`, so the router can fall back.
+- Telemetry leaks found by the golden suite: an exception leaving a Runtime span (OpenTelemetry or
+  Traccia) recorded its raw message and traceback; an input refused at the input boundary was
+  stored raw; verifier repair requests, workflow and analytical node errors and invalid-tool-call
+  audits quoted raw text; an OpenAI-compatible provider quoting the API key it was sent put it in
+  the run error; declared HTTP tools returned an echoed credential; steering text, approver
+  comments, conversation titles (now never cut inside an identifier), artifact metadata and
+  logged tracebacks kept credentials or personal data; API error bodies, the tool-execution and
+  MCP OAuth routes, readiness reasons, `degraded_dependencies`, work-queue rows and
+  developer-audience conversation errors carried raw exception text.
+- `runs.finished` reports `reason="cancelled"` for a cancelled run.
+- Providers (found by the live contract suite): Anthropic streamed HTTP errors are mapped by
+  status; mid-stream error events no longer end a stream as completed; `AzureOpenAIProvider.embed`
+  posts to `/openai/deployments/<deployment>/embeddings?api-version=...` (it posted to a URL
+  Azure does not serve); `embed()` has a timeout (`embed_timeout_seconds`, 60 s) and reports
+  transport failures and malformed bodies as `ProviderError`; plain OpenAI-compatible calls report
+  `cached_tokens`; DeepSeek's `response_schema` is sent in JSON mode, which DeepSeek accepts;
+  Gemini's wrong-key 400 is an `authentication` error and list-wrapped error bodies are read.
+- Found by the long soak: a run whose deadline passes while it plans, verifies or composes ends
+  `timed_out` (the state machine refused the transition and left the run in its working status);
+  an approved tool call costs one step of `max_steps`, not two; an interrupted read-only tool call
+  runs again on replay instead of waiting for reconciliation (its `started` ledger row stayed
+  forever); event streams end cleanly when the store becomes unavailable; `serve` bounds the wait
+  for open connections on SIGTERM by `runtime.shutdown_grace_seconds`, so the drain runs while
+  clients hold event streams (the process was killed instead); `input_template` renders
+  `input_schema` properties.
+- Answering a conversation turn right after it paused for approval or input no longer fails with
+  "conversation already has an active response": `respond` waits (up to 5 seconds) for the turn
+  task that just paused to return.
+
+### Added
+
+- Run-level OpenTelemetry metrics: `runs.started`/`runs.finished`, `run.duration`, `runs.active`,
+  `runs.paused`, `run.pauses`/`run.resumes`/`run.recoveries`, `approvals.requested`/
+  `approvals.resolved`/`approval.wait.duration` (runs and workflow approval nodes),
+  `model.calls`/`model.call.duration`/`model.tokens`, `tool.calls`/`tool.call.duration`/
+  `tool.refusals`, `policy.denials`, `api.requests`/`api.request.duration`/
+  `api.admission.rejections`, `store.unavailable`, `postgres.pool.*`, `events.backpressure`,
+  `conversation.turns`/`conversation.turn.duration`, `workflow.runs.*`/`workflow.run.duration`,
+  recorded only when a meter provider is installed; the catalogue is `RUNTIME_METRICS` and
+  `prometheus_name()` in `algen_agent_runtime.observability.metrics`.
+- Grafana dashboards and Prometheus alert rules in `deploy/observability` (also in the sdist).
+- `algen_agent_runtime.stability` (`experimental`, `is_experimental`, `experimental_reason`,
+  `EXPERIMENTAL_FIELD`) marks experimental interfaces in code.
+- `docs/api/surface.json` records event payload shapes (`event_payloads`) and an `experimental`
+  index; `scripts/api_surface.py --changes` groups API differences as removed, changed, added and
+  experimental.
+- `algen_agent_runtime.security.redact_error_text`, `redact_held` and `redact_log_event`.
+- `providers.<name>.embedding_deployment` (Azure OpenAI) and
+  `OpenAICompatibleProvider.embed_timeout_seconds`; the `_error_kind_for`/`_http_error` hooks and
+  the `stream_error`/`stream_error_kind` helpers for adapter authors.
+- Live provider contracts (`tests/live`, marker `live`): a maintainer runs them before each
+  release against the real APIs (`ALGEN_LIVE=1` with each provider's key) to check every
+  capability each built-in provider class claims; `ALGEN_LIVE_FAKE=1` runs them offline against a
+  local fake of each API ([releasing](docs/releasing.md#live-provider-contracts)).
+- Examples `pattern_observability` (metrics offline, or a Collector, Prometheus and Grafana with
+  the shipped dashboards and alerts through `deploy/compose.yaml`) and `pattern_run_follower` (a
+  host following a streamed run: retraction, reconnect with `after=`, cancel, a timeout around
+  `wait`). `pattern_secured_api` shows per-user file ownership with `artifacts:admin`;
+  `quickstart_conversation` handles `assistant.message.delta.retracted`.
+- Evidence suites: provider cancellation (`tests/unit/test_provider_cancellation.py`,
+  `test_run_cancellation.py`, `test_tool_cancellation.py` against a local fake model API, and the
+  PostgreSQL drill `tests/drills/test_cancellation.py`); golden telemetry and redaction
+  (`tests/telemetry`: canaries through every run path against every sink, golden shape files,
+  PostgreSQL, Redis and host-logging variants; regenerate with
+  `ALGEN_UPDATE_GOLDEN=1 python -m pytest tests/telemetry`).
+- Security rules enforced by tests and CI (AGENTS.md, "Security invariants"):
+  `tests/unit/test_api_tenant_matrix.py` classifies every HTTP route, calls each one without an
+  identity (401) and as another tenant with every scope (403 or 404, no data), so a route added
+  later is checked; `tests/unit/test_approval_decisions.py` sorts every `ApprovalStatus` and runs
+  the tool only for `approved` and `modified`; `tests/unit/test_tool_execution_chokepoint.py`
+  fails when code outside `ToolExecutor` calls a tool's handler. `scripts/check-workflows.sh` audits
+  `.github/` with zizmor (hash-locked in `requirements/security.txt`), in a new `workflows` job of
+  the Security workflow and in `scripts/ci-local.sh`.
+- A long soak of the service image (`scripts/long-soak.sh`, `tests/perf/long_soak/`): hours of
+  mixed HTTP load (runs followed over SSE, approvals, workflows, cancellations, conversation turns,
+  artifacts, a noisy tenant) on PostgreSQL and Redis, with SIGTERM and SIGKILL restarts and a
+  PostgreSQL restart, rolling retention, and invariants checked at the end (nothing lost or
+  duplicated, nothing stuck, every aged row deleted). Six hours at `0.2.0b5` held every invariant;
+  the results are in docs/operations.md, "Long soak (hours)".
+
+### Changed
+
+- CI: pinned actions updated (`actions/download-artifact` v8.0.2, `actions/upload-artifact`
+  v7.0.2, `actions/setup-python` v7.1.0, `actions/attest-build-provenance` v4.2.2,
+  `github/codeql-action` v4.39.1; Dependabot #148–#152). Dependabot updates the CodeQL actions as
+  one group. Dependabot waits 14 days before proposing a new release of a Python package or the
+  base image too, as it already did for actions (security updates are not delayed).
+- The service image upgrades pip to 26.3, hash-locked in the new `requirements/pip.txt`. The base
+  image's pip 25.0.1 had six published CVEs (CVE-2025-8869, CVE-2026-1703, CVE-2026-3219,
+  CVE-2026-6357, CVE-2026-8643, CVE-2026-13346; one low, five moderate). The Runtime never runs
+  pip, but an image that extends ours with `pip install` did. The Security workflow's image scan
+  again uploads to code scanning, and its report includes MEDIUM findings (the job still fails
+  only on HIGH and CRITICAL), so a moderate CVE in the image is raised as an alert.
+  `.trivyignore.yaml` ignores two setuptools CVEs (CVE-2025-47273, CVE-2026-59890) for
+  `setuptools@70.3.0` only, until 2027-02-17: that version is pip's vendored `pkg_resources`, and
+  neither flaw is in it (they are in `PackageIndex.download` and the sdist `FileList`).
+- A workflow approval decision is compared with the decisions that approve (`approved`,
+  `modified`) instead of with `rejected`. Behaviour is unchanged: other values were already
+  refused before this point.
+
+### Documentation
+
+- The README is a short introduction (157 lines, from 616): what the Runtime is, the one-minute
+  demo, install, a quickstart, the documentation and the AI coding skills, with absolute links so
+  they also work on PyPI. Everything it held moved, unchanged, to the new
+  `docs/getting-started.md`: install with extras, both offline quickstarts, the CLI, the HTTP
+  service and manifest UI, the architecture diagram, the capability table, the product family,
+  status, the examples and the skills, with the index of every guide.
+- Every doc page, Agent Skill, example README and `docs/docs.html` reviewed for the 1.0
+  single-node scope; the threat model's controls table rebuilt with the 0.2.0b4 findings;
+  `docs/upgrading.md` covers migration 023 and every 0.2.0b4 note; `docs/providers.md` lists every
+  provider type with its default secret, endpoint and `base_url` handling.
+- Operations: published single-node SLOs, a metrics reference, dashboards, alert table and
+  runbooks; "Cancellation" (what stops and what does not); "Redacted telemetry" (the guarantee per
+  sink, the working-data exceptions, what a host still owns).
+- The comparison in "Who should use it" refreshed on 2026-11-16 with dated sources.
+- `docs/studio-compatibility.md` describes how Studio checks projects and the 0.2.0b4 settings an
+  imported project declares; historical pages carry banners.
+- `docs/repository-settings.md` describes the `v*` tag ruleset correctly and records the
+  2026-11-16 settings audit; `docs/releasing.md` lists what the GitHub release carries.
+- `AGENTS.md` gains "Security invariants": each rule from the 0.2.0b3 assessment with the test
+  that enforces it, which changes need a security review, and private reporting. `CLAUDE.md`
+  imports `AGENTS.md`. `docs/releasing.md` requires a security review before a new minor line or a
+  release that adds a route, an authentication mode, a way to run tools or a workflow change.
+- `docs/api-stability.md`: how experimental interfaces are marked and what the recorded surface
+  covers. `docs/production-readiness.md` and `docs/ga-criteria.md` updated with the evidence.
+
 ## [0.2.0b4] - 2026-11-15
 
 Fixes from a security assessment of 0.2.0b3 (the application and the release pipeline, after the

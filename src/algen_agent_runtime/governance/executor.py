@@ -5,12 +5,11 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from opentelemetry import trace
-
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
 from algen_agent_runtime.governance.contracts import GovernedQueryRequest, QueryEstimate
 from algen_agent_runtime.governance.engine import QueryGovernanceEngine, query_fingerprint
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 
 
 class QueryBackend(Protocol):
@@ -41,7 +40,7 @@ class GovernedQueryExecutor:
         self._pools: defaultdict[tuple[str, str], asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(governance.policy.maximum_concurrency)
         )
-        self._tracer = trace.get_tracer("algen_agent_runtime.governance")
+        self._tracer = runtime_tracer("algen_agent_runtime.governance")
 
     async def execute(
         self,

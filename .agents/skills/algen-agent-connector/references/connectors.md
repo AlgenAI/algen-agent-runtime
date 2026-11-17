@@ -8,9 +8,19 @@ provider-neutral model requirement plus allowlist/fallback policy. Keep provider
 from a declared plugin (`context.providers.register(provider, registration_id=...)`), not with
 `router.register_provider` on a built container.
 
-Built-in types include `openai`, `anthropic`, `ollama`, `gemini`, `xai`, `groq` and any
-OpenAI-compatible endpoint. `routing_preference: ordered` tries a profile's candidates in the
-order declared. A model reads attached files only when its capabilities say so (`images`, and
+Built-in types include `openai`, `azure_openai`, `anthropic`, `deepseek`, `mistral`,
+`huggingface_inference`, `gemini`, `xai`, `groq`, `ollama`, `local_transformers` and
+`openai_compatible` for any OpenAI-compatible endpoint (see docs/providers.md and docs/provider-compatibility.md). Since 0.2.0b4 a
+`gemini`, `xai`, `groq` or `mistral` provider whose `base_url` is not the vendor's needs an
+explicit `api_key`: the default `env://<PROVIDER>_API_KEY` is not sent to another host. Since
+0.2.0b5 the same holds for `openai`, `anthropic`, `deepseek` and `huggingface_inference`, which
+before ignored `base_url` and always called the vendor (with Runtime 0.2.0b4 or older, point a
+gateway at `openai_compatible` instead), and `azure_openai` requires `base_url`, the resource
+endpoint. For Azure embeddings (retrieval, learned memory), set `embedding_deployment` on the
+`azure_openai` entry or pass the embeddings deployment as `embedding_model` (since 0.2.0b5;
+before, Azure embeddings did not work). `deepseek` answers a `response_schema` in JSON mode with
+the Runtime verifying the schema (it has no strict `json_schema`). `routing_preference: ordered`
+tries a profile's candidates in the order declared. A model reads attached files only when its capabilities say so (`images`, and
 `files` for PDF); a custom `ModelProvider` reports neither by default. A provider adapter returns
 a malformed or cut-off tool call as `InvalidToolCallError` (a retryable `ProviderError`), which the
 Runtime retries and audits as `model.tool_call_invalid`.
@@ -39,7 +49,9 @@ To mask PII or credentials in a tool's own logs or errors, call
 0.2.0b3) instead of copying the rules: they are the guardrails' own.
 Since 0.2.0b4 an approval-gated tool must declare every credential argument it takes (a key such
 as `token`, `api_key` or `client_secret`) under its input schema's `properties`: an agent run
-refuses to put an undeclared one to an approver. The `secrets` guardrail now also redacts token
+refuses to put an undeclared one to an approver (`approval.undeclared_secret_parameters`).
+Approvers see a declared credential as `[REDACTED len=N sha256=xxxxxxxx]` (since 0.2.0b4; was
+`[REDACTED]`). The `secrets` guardrail now also redacts token
 shapes (`sk-...`, `AKIA...`, `ghp_...`, JWTs) and URL passwords, which refuses a tool call that
 carries one in its arguments. The tool-result cache defaults to `user` scope (since 0.2.0b4);
 still declare `cache_context` for every context value a result reads. A persistent vector store
@@ -55,6 +67,9 @@ A client factory that fails on configuration raises `ConfigurationError`; the to
 
 Register the toolkit from a declared plugin (`toolkit.register(context)`, the plugin named in
 `domain_plugins`; see `docs/plugins.md`) so Studio and `algen-agent-runtime describe` can see it.
+List the plugin's package in `security.trusted_plugin_prefixes`. Since 0.2.0b4 an entry point
+name is trusted by the module it loads (not its name), a name two distributions declare is
+refused, and a signed package with a loose `.pyc` or a mismatched `__pycache__` is refused.
 Test every tool with `assert_tool_contract` and call it with `fake_tool_context`
 (`algen_agent_runtime.tools.testing`). `algen_agent_runtime_examples/quickstart_agent_tool` is the reference. A
 hand-built `ToolDefinition` remains valid when a tool needs something the presets cannot express.
@@ -112,6 +127,12 @@ Runtime provides first-class client connectivity through `algen_agent_runtime.mc
   plugin (`context.mcp_servers.register(config)`), for automated discovery and managed session
   lifecycle (`MCPClientManager` registered in container resources for clean exit).
   `build_container(mcp_servers=...)` remains for tests and embedding; Studio cannot see it.
+- Tools of a `token_scope: user` OAuth server always key the tool-result cache by user (since
+  0.2.0b4).
+- A server that echoes a credential it was sent (OAuth access or refresh token, `env://` token,
+  secret headers, stdio environment) has it masked in the tool's result and error (since
+  0.2.0b5); do not add your own scrubbing for those. A raised error reads
+  `MCP tool <name> execution error (<Type>): <masked message>`.
 
 ## HTTP APIs
 
@@ -121,7 +142,9 @@ equivalent typed adapter backed by `SafeHttpClient` from `algen_agent_runtime.se
 Configure a fixed endpoint or an allowlisted host (`allowed_hosts`), deny private/internal networks
 by default (loopback, RFC 1918, link-local, carrier-grade NAT, multicast), protect against DNS
 rebinding via IP-pinned sockets, avoid unvalidated redirects across trust boundaries, propagate the
-idempotency key, and bound response size and time. `core.http` refuses private addresses unless the
+idempotency key, and bound response size and time. Since 0.2.0b4 a declared HTTP tool's
+`Link: rel=next` on another origin stops pagination there (the result carries
+`pagination_stopped`) for every `auth` type, instead of sending the credential on. `core.http` refuses private addresses unless the
 `network` settings allow them, and since 0.2.0b4 refuses every call while
 `security.allowed_http_hosts` is empty unless `security.allow_any_public_host: true`;
 `core.subprocess` runs only `security.sandbox.allowed_executables` (absolute paths); corporate egress goes through `network.egress_proxy`, and per-host

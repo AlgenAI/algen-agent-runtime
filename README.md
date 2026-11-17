@@ -9,15 +9,15 @@
 [![Quality](https://github.com/AlgenAI/algen-agent-runtime/actions/workflows/quality.yml/badge.svg)](https://github.com/AlgenAI/algen-agent-runtime/actions/workflows/quality.yml)
 [![Security](https://github.com/AlgenAI/algen-agent-runtime/actions/workflows/security.yml/badge.svg)](https://github.com/AlgenAI/algen-agent-runtime/actions/workflows/security.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/AlgenAI/algen-agent-runtime/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/algen-agent-runtime.svg)](https://pypistats.org/packages/algen-agent-runtime)
 
-Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. It provides deterministic execution state, model routing, tool controls, human approvals, retrieval, verification, durable stores, streaming events, and OpenTelemetry instrumentation without binding applications to one model vendor or agent framework.
+Algen Agent Runtime is a typed, provider-neutral Python runtime for building governed AI agents. Approvals, policies, budgets and tenant boundaries are enforced in the execution path, not asked for in a prompt; every run is checkpointed, recoverable and observable. Use it as a library or as a REST/SSE service, with any model provider.
 
 > [!IMPORTANT]
-> `0.2.0b3` is the third beta of a single-node foundation; its public API is a candidate for `1.0`. The repository is suitable for evaluation and contribution, but it is not yet presented as a production distributed control plane. Review the [known production gaps](docs/production-readiness.md), [threat model](docs/threat-model.md), and [security policy](SECURITY.md) before deployment.
+> The `0.2` betas lead to `0.2.0` and then `1.0`. The supported deployment is a single node (one Runtime process per database); running several processes on one database is experimental. Read the [production readiness](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/production-readiness.md) scope and the [threat model](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/threat-model.md) before deploying.
 
-**[Documentation](https://algenai.github.io/algen-agent-runtime/)** · [Why use it](docs/why-algen-agent-runtime.md) · [Examples](#importable-examples) · [Changelog](CHANGELOG.md)
+**[Documentation](https://algenai.github.io/algen-agent-runtime/)** · [Getting started](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md) · [Why use it](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/why-algen-agent-runtime.md) · [Examples](https://github.com/AlgenAI/algen-agent-runtime/blob/main/algen_agent_runtime_examples/README.md) · [Changelog](https://github.com/AlgenAI/algen-agent-runtime/blob/main/CHANGELOG.md)
 
 ## See it in one minute
 
@@ -34,134 +34,51 @@ written. The final state records the decision, who made it, and the key:
 
 <img alt="Terminal recording: the approval quickstart pauses, the user types approve, and the run prints the approval decision and the applied result with its idempotency key" src="https://raw.githubusercontent.com/AlgenAI/algen-agent-runtime/refs/heads/main/docs/assets/demo/approval.gif" width="720">
 
-The approval is part of the Runtime's execution path, not an instruction in the prompt, so the model
-cannot skip it. Pass `--approve-all` or `--reject-all` to run it without a prompt.
+The approval is part of the Runtime's execution path, so the model cannot skip it.
 
-## Why Algen Agent Runtime?
+## What you get
 
-- **Provider-neutral execution:** route across local and hosted model providers through typed contracts.
-- **Governance in the execution path:** enforce policies, approvals, budgets, verification, and tenant boundaries around every run.
-- **Durable and observable:** persist agent and multi-agent workflow checkpoints, events, conversations, approvals, artifacts, and tool-execution records with optional PostgreSQL and Redis adapters.
-- **Governed artifact inputs:** stage tenant-scoped files with checksums, scan/quarantine state,
-  expiry, metadata-only listing, and bounded retention before attaching them to a run. Agents that
-  opt in read attached images and PDFs natively, passed by reference and never stored inline.
-- **Application-friendly:** use the same runtime as an embedded Python library or through its FastAPI REST/SSE service.
-- **Runtime-owned multi-agent DAGs:** declare JSON-Schema inputs/outputs, agent, dynamic map-agent, deterministic-handler,
-  predicate, and join nodes with conditions, bounded loops and repairs, clarification limits, and
-  lifecycle events; compose exact-version child workflows without duplicating their topology.
-- **Ready-made connectors:** email (SMTP, Gmail, Outlook), messaging, databases, documents, GitHub
-  and more ship as governed toolkits in
-  [algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools), which builds on this runtime.
-- **Typed System One decisions:** use the optional TypeSafe Jev client for fast Choice, Score, and
-  Noul routing gates while keeping generative work in model providers and deterministic work in code.
-- **Extensible by design:** add model providers, tools, planners, context builders, verifiers, stores, and external-framework adapters without changing the state machine.
-- **Offline-testable:** the deterministic mock provider supports tests without credentials, network access, or paid model calls.
+- **Governance in the execution path**: policies at every boundary, human approvals and an
+  approval inbox, budgets, PII and secret redaction (streamed text included), tenant and user
+  isolation.
+- **Any model provider**: OpenAI, Azure OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek,
+  Hugging Face, Ollama and any OpenAI-compatible endpoint, with routing and fallback.
+- **Governed tools**: typed schemas, permissions, approvals enforced at execution, an
+  idempotency ledger that reconciles unknown outcomes; MCP servers with per-user OAuth.
+- **Durable and recoverable**: checkpointed runs, conversations, multi-agent workflows (DAGs with
+  fan-out, approvals and child workflows), artifacts and events on PostgreSQL and Redis; crash
+  recovery and graceful drain.
+- **Observable**: OpenTelemetry traces and metrics, Grafana dashboards, Prometheus alerts and
+  single-node SLOs, with telemetry tested free of credentials.
+- **Offline-testable**: a deterministic mock provider runs everything without keys or network.
 
-## The Algen agent lifecycle
-
-Runtime is the open-source execution foundation in a three-product lifecycle:
-
-| Product | Role | Boundary |
-| --- | --- | --- |
-| **Algen Agent Runtime** | Build and execute portable, governed agents and multi-agent DAGs | Open-source Python library and service; owns execution contracts and semantics |
-| **Algen Agent Studio** | Low-code build, test, evaluate, publish, and deploy workbench | Private product; consumes Runtime without redefining its workflow dialect |
-| **Algen Agent Marketplace** | Discover, distribute, license, and import versioned agents | Public/private and free/paid catalog; packages agents but does not execute them |
-
-An agent can be built directly with Runtime or visually in Studio. Studio validates and evaluates the
-same Runtime project, publishes a versioned package to Marketplace, and deploys it with
-environment-specific credentials. Marketplace consumers import that package into Studio before
-configuration and deployment. Secrets and live environment values never belong in a marketplace
-artifact.
-
-Typed workflows can reference staged file IDs rather than embedding bytes. See the
-[artifact lifecycle](docs/artifacts.md) for upload, checksum, quarantine, retention, and storage
-boundaries.
-
-Workflows can also call exact, trusted child workflow versions through a `WorkflowRegistry`; Runtime
-preserves correlation, lineage, checkpoints, pause/approval propagation, and recovery. See
-[multi-agent workflows](docs/multi-agent-workflows.md) and the importable
-`algen_agent_runtime_examples/pattern_child_workflow`. For governed outbound messages, see [email](docs/email.md).
-
-## Status and support
-
-| Area | Status |
-| --- | --- |
-| Python | 3.12 and 3.13 |
-| Package maturity | Beta (`0.2.0b3`) |
-| Core execution | Available and covered by deterministic tests |
-| HTTP API | Available; secure deployment configuration is operator-owned |
-| Persistence | In-memory, PostgreSQL, and Redis adapters |
-| Artifact storage | Memory, PostgreSQL, and encrypted S3-compatible object storage |
-| Deployment scope | Single node (one Runtime process per database); see [deployment scope](docs/production-readiness.md#deployment-scope) |
-| Distributed execution | Experimental; see the production-readiness roadmap |
-| Public API compatibility | Experimental during `0.x`; see the [API stability policy](docs/api-stability.md) |
-| Community support | Best effort; see [SUPPORT.md](SUPPORT.md) |
+The full list is in [Getting started](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md#capabilities).
+Ready-made connectors (email, messaging, databases, documents, GitHub) ship separately in
+[algen-agent-tools](https://github.com/AlgenAI/algen-agent-tools).
 
 ## Install
 
-Install the latest package from PyPI:
-
 ```bash
-python -m pip install algen-agent-runtime
-# Or for pre-release builds:
-python -m pip install --pre algen-agent-runtime
+python -m pip install --pre algen-agent-runtime              # the library
+python -m pip install --pre 'algen-agent-runtime[service]'   # plus the HTTP API and OTLP export
 ```
 
-The base package is the library. To run the HTTP API (`algen-agent-runtime serve`) and export
-telemetry over OTLP, install the `service` extra (or only `server` or `otlp`):
+Extras add PostgreSQL, Redis, auth, MCP and framework adapters (`[postgres,redis,auth]`, `[mcp]`,
+`[langgraph]`, ...); see [Install](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md#install).
+Python 3.12 and 3.13.
+
+## Quickstart
+
+Scaffold a project and run it offline:
 
 ```bash
-python -m pip install --pre 'algen-agent-runtime[service]'
-```
-
-Optional integrations are installed as extras:
-
-```bash
-# Storage, cache, auth
-python -m pip install --pre 'algen-agent-runtime[postgres,redis,auth]'
-
-# Model Context Protocol (MCP) client
-python -m pip install --pre 'algen-agent-runtime[mcp]'
-
-# External framework adapters
-python -m pip install --pre 'algen-agent-runtime[langgraph]'
-```
-
-To install a release from its GitHub tag instead of PyPI:
-
-```bash
-python -m pip install git+https://github.com/AlgenAI/algen-agent-runtime.git@v0.2.0b3
-```
-
-For development from a checkout:
-
-```bash
-git clone https://github.com/AlgenAI/algen-agent-runtime.git
-cd algen-agent-runtime
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
-
-Verify your installation with the CLI:
-
-```bash
-algen-agent-runtime --help
-```
-
-Quickly scaffold a new agent project:
-
-```bash
-algen-agent-runtime new my-agent --template agent
+algen-agent-runtime new my-agent --template agent   # or --template approval, workflow
 cd my-agent
 python app.py
+pytest
 ```
 
-## Five-minute offline quickstart
-
-### Single agent
-
-This example uses the built-in mock provider, so it requires no API key or external service:
+Or embed the Runtime in your own code:
 
 ```python
 import asyncio
@@ -171,37 +88,29 @@ from algen_agent_runtime.orchestration.container import build_container
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.types.contracts import RunRequest
 
+settings = AppSettings.model_validate(
+    {
+        "providers": {"mock": {"type": "mock", "default_model": "deterministic"}},
+        "agents": [
+            {
+                "name": "hello",
+                "version": "1.0.0",
+                "description": "Offline quickstart agent",
+                "system_instructions": "Answer concisely.",
+                "default_model": {"name": "default", "provider": "mock", "model": "deterministic"},
+            }
+        ],
+    }
+)
+
 
 async def main() -> None:
-    settings = AppSettings.model_validate(
-        {
-            "providers": {"mock": {"type": "mock", "default_model": "deterministic"}},
-            "agents": [
-                {
-                    "name": "hello",
-                    "version": "1.0.0",
-                    "description": "Offline quickstart agent",
-                    "system_instructions": "Answer concisely.",
-                    "default_model": {
-                        "name": "default",
-                        "provider": "mock",
-                        "model": "deterministic",
-                    },
-                }
-            ],
-        }
-    )
     container = build_container(settings)
     try:
         result = await AlgenAgentRuntimeClient(container.runtime).run(
-            RunRequest(
-                agent="hello",
-                input="Hello",
-                tenant_id="quickstart",
-                user_id="local-user",
-            )
+            RunRequest(agent="hello", input="Hello", tenant_id="quickstart", user_id="local-user")
         )
-        print(result.output)
+        print(result.output)  # Hello
     finally:
         await container.aclose()
 
@@ -209,395 +118,40 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Expected output:
-
-```text
-Hello
-```
-
-### Multi-agent DAG workflow
-
-Execute a multi-agent DAG with dynamic map-agent fan-out, evidence joining, and synthesis:
-
-```python
-import asyncio
-
-from algen_agent_runtime.config.settings import load_settings
-from algen_agent_runtime.orchestration.container import build_container
-from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
-from algen_agent_runtime.workflows import MultiAgentWorkflowExecutor
-from algen_agent_runtime_examples.pattern_multi_agent_fanout.hooks import create_hooks
-
-
-async def main() -> None:
-    settings = load_settings(("algen_agent_runtime_examples/pattern_multi_agent_fanout/agent.yaml",))
-    container = build_container(settings)
-    manifest = settings.workflows["multi-agent-fanout"]
-    hooks = create_hooks(container=container, manifest=manifest)
-    try:
-        executor = MultiAgentWorkflowExecutor(
-            AlgenAgentRuntimeClient(container.runtime),
-            hooks,
-            store=container.workflow_checkpoints,
-        )
-        state = await executor.run(
-            manifest,
-            {"question": "Assess a migration to managed queues"},
-            tenant_id="quickstart",
-            user_id="local-user",
-        )
-        print(state.values["answer"]["summary"])
-    finally:
-        container.close()
-
-
-asyncio.run(main())
-```
-
-Expected output:
-
-```text
-Completed bounded parallel research for: Assess a migration to managed queues
-```
-
-For a real local model, follow the [Ollama quickstart](algen_agent_runtime_examples/quickstart_local_chat/README.md).
-
-## CLI & Project Scaffolding
-
-Algen Agent Runtime provides a CLI for project scaffolding and serving runtime endpoints:
-
-```bash
-# Scaffold a new agent project (templates: agent, approval, workflow)
-algen-agent-runtime new my-agent
-algen-agent-runtime new my-approval-agent --template approval
-algen-agent-runtime new my-workflow-agent --template workflow
-
-# Test and run the scaffolded project offline
-cd my-agent
-python app.py
-pytest
-
-# List every component the settings register (tools, planners, providers, ...) and its source,
-# without running any of them; --path adds a directory for plugin imports
-algen-agent-runtime describe --config agent.yaml --path src --json
-
-# Validate the project as Studio will and warn about code Studio cannot run
-algen-agent-runtime check agent.yaml --path src
-# ...or for a project that runs its own server, without the Studio-only warnings
-algen-agent-runtime check agent.yaml --path src --profile standalone
-
-# Copy the Agent Skills for coding agents into the project (.agents/skills/); --force refreshes them
-algen-agent-runtime skills list
-algen-agent-runtime skills install --path .
-```
-
-## Run the HTTP service
-
-From a source checkout with Ollama running and `llama3.2` installed:
-
-```bash
-ALGEN_AGENT_RUNTIME_CONFIG=algen_agent_runtime_examples/quickstart_local_chat/agent.yaml \
-  algen-agent-runtime serve
-```
-
-Alternatively, invoking `algen-agent-runtime` without subcommands defaults to `serve` for backward compatibility.
-
-In a terminal, `serve` first prints a banner naming the agent, its model, tools, guards and URLs
-(`--no-banner` turns it off, `--banner` prints it to a log too). An application that runs its own
-server prints the same banner with its own name and rows:
-
-```python
-from algen_agent_runtime.banner import print_startup_banner
-
-print_startup_banner(settings, title="ms-email-test", details={"mailbox": "fake (in-process Graph)"})
-```
-
-The default bind is `127.0.0.1:8000`. Development-header authentication is intentionally limited to loopback unless the insecure-development override is explicitly enabled.
-
-Start a run:
-
-```bash
-curl --fail-with-body -X POST http://127.0.0.1:8000/v1/runs \
-  -H 'content-type: application/json' \
-  -H 'x-tenant-id: demo' \
-  -H 'x-user-id: user-1' \
-  -H 'x-scopes: runs:write' \
-  -d '{"agent":"minimal","input":"Hello"}'
-```
-
-Production deployments should use verified JWT authentication, TLS termination, durable stores, explicit CORS rules, secret references, and infrastructure-level resource controls. See the [operations guide](docs/operations.md).
-
-### Agent Manifest UI (Swagger-Style Visualizer)
-
-Similar to Swagger UI for OpenAPI specifications, Algen Agent Runtime provides an in-built interactive UI for inspecting, visualizing, and testing `agent.yaml` specifications and multi-agent workflows.
-
-**Access via running server:**
-Start the server with the `--ui` flag:
-```bash
-ALGEN_AGENT_RUNTIME_CONFIG=agent.yaml algen-agent-runtime serve --ui
-```
-Then navigate to `http://127.0.0.1:8000/agent-ui` (or `/ui`) in your browser to explore the interactive DAG workflow graph, agent configurations, model provider matrices, tools/MCP servers, and test runs via the built-in playground. You can also enable it permanently in `agent.yaml`:
-```yaml
-api:
-  agent_ui_enabled: true
-```
-
-The page shows every agent's definition, so with `jwt` or `oidc` authentication it needs a bearer
-token with `agents:read` (from 0.2.0b4); with `development_headers` on loopback a browser opens it
-as before. The live page never includes the server's settings (DSNs, stdio environments, telemetry
-endpoints); a static export shows the configuration file it was given.
-
-**Generate standalone static HTML from CLI:**
-Generate a completely self-contained, offline-compatible static HTML documentation file:
-```bash
-algen-agent-runtime ui --config agent.yaml --output agent-ui.html
-
-# Or open directly in your browser:
-algen-agent-runtime ui --config agent.yaml --open
-```
-
-## Architecture
-
-```mermaid
-flowchart TD
-  subgraph Interface["Interface Layer"]
-    Client["Application / Studio / REST / SSE"]
-  end
-
-  subgraph Workflows["Multi-Agent Workflow Orchestration"]
-    WorkflowExec["MultiAgentWorkflowExecutor"]
-    Manifest["WorkflowManifest (DAG)"]
-    Hooks["WorkflowHookRegistry"]
-    WorkflowExec --- Manifest
-    WorkflowExec --- Hooks
-  end
-
-  subgraph Core["AgentRuntime Execution State Machine"]
-    Runtime["AgentRuntime State Machine"]
-    Policies["Policy Middleware"]
-    Context["Context Builder"]
-    Planner["Planner"]
-    Router["Model Router"]
-    ToolExec["Tool Executor"]
-    Verifier["Verifier Pipeline"]
-  end
-
-  subgraph Adapters["Infrastructure & Adapters"]
-    Providers["Model Providers (Local / Cloud)"]
-    Tools["Tools & Resource Connectors"]
-    Stores["Run, Memory & Artifact Stores"]
-    Events["Events, Audit & Telemetry"]
-  end
-
-  Client -->|Execute workflow DAG| WorkflowExec
-  Client -->|Direct agent run| Runtime
-  WorkflowExec -->|agent / map_agent nodes| Runtime
-  WorkflowExec -->|handler hooks| Hooks
-  Runtime --> Policies
-  Runtime --> Context
-  Runtime --> Planner
-  Runtime --> Router --> Providers
-  Runtime --> ToolExec --> Tools
-  Runtime --> Verifier
-  Runtime --> Stores
-  Runtime --> Events
-```
-
-The orchestration layer depends on typed contracts rather than provider SDKs. The composition root resolves configured adapters and registries, while applications retain ownership of domain prompts, metrics, tools, policies, and data access.
-
-See the full [architecture guide](docs/architecture.md) for the state machine, component boundaries, persistence model, and extension points.
-
-## Capabilities
-
-| Capability | Included |
-| --- | --- |
-| Execution | Checkpointed state machine, retries, cancellation, timeouts, resumability |
-| Models | Capability-aware routing and ordered or balanced fallback across OpenAI, Azure OpenAI, Anthropic, Gemini, xAI, Groq, Mistral, DeepSeek, Hugging Face Inference, Ollama, any OpenAI-compatible endpoint and local transformers; prompt caching; recoverable malformed tool calls |
-| File attachments | Images and PDFs passed by reference to scanned artifacts, read natively by models that support them, on runs, conversations and workflows ([guide](docs/attachments.md)) |
-| Tools | Typed schemas, permissions, idempotency, approvals enforced at execution, call guards, caller credentials, execution ledger with reconciliation of unknown outcomes |
-| MCP | Managed client for stdio, streamable HTTP and SSE servers with per-tenant or per-user OAuth, DNS-pinned egress, secret references, and governance mapping |
-| Context management | [Working state](docs/context-management.md), [progressive skills](docs/skills.md), [learned memory](docs/learned-memory.md), [compaction/offloading](docs/artifacts.md), and [evaluations/diagnostics](docs/context-evaluation.md) |
-| Retrieval | Keyword, vector, and hybrid retrieval with citation verification |
-| Governance | Policies at every boundary with explicit fail modes, signed policy bundles, budgets, PII and secret redaction, prompt-injection screening, human-in-the-loop decisions and an approval inbox |
-| Security and operations | OIDC or JWT authentication with scopes and token revocation, egress proxy and mTLS, sandboxed subprocesses, signed plugins, per-run limits, per-tenant storage quotas and retention, readiness and graceful drain |
-| Conversations | Durable messages, feedback, follow-ups, SSE, rich response blocks |
-| Analytics | Typed analytical DAGs, application-registered nodes, secret-safe query sources, semantic layers, governance and evaluation gates |
-| Multi-agent workflows | Validated manifests, dependency scheduling, dynamic fan-out, bounded repair, exact-version child composition, durable clarification and approval pause/resume, explicit crash recovery, typed resources, correlation, and lifecycle events |
-| Observability | Structured logs, OpenTelemetry, optional Traccia integration |
-| Frameworks | Optional adapters: LangGraph and OpenAI Agents (supported), AutoGen (experimental, frozen: archived upstream) and CrewAI (experimental). The Runtime governs the adapter call (tenancy, timeout, cancellation, tracing); model and tool calls inside the framework stay framework-owned unless they use Runtime tools. See the [governance matrix](docs/framework-adapters.md#honest-capability--governance-matrix) |
-
-Provider and integration dependencies remain optional. See the [provider compatibility matrix](docs/provider-compatibility.md), [MCP guide](docs/mcp.md), and [framework adapter guide](docs/framework-adapters.md).
+Next: a [multi-agent workflow](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md#multi-agent-dag-workflow),
+[the HTTP service](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md#run-the-http-service),
+a [real local model](https://github.com/AlgenAI/algen-agent-runtime/blob/main/algen_agent_runtime_examples/quickstart_local_chat/README.md),
+and the [examples](https://github.com/AlgenAI/algen-agent-runtime/blob/main/algen_agent_runtime_examples/README.md), each runnable offline.
 
 ## Documentation
 
-| Topic | Guide |
-| --- | --- |
-| Product fit and boundaries | [Why Algen Agent Runtime](docs/why-algen-agent-runtime.md) |
-| Architecture | [Architecture](docs/architecture.md) |
-| Deployment and configuration | [Operations](docs/operations.md) |
-| Embedding the Runtime in an application | [Conversations from a host](docs/conversations.md) and the `algen-runtime-host` skill |
-| Providers | [Provider extension](docs/providers.md) and [compatibility](docs/provider-compatibility.md) |
-| MCP tools | [Model Context Protocol (MCP)](docs/mcp.md) |
-| HTTP API tools | [HTTP API tools](docs/http-tools.md) |
-| Code components | [Plugins and the component inventory](docs/plugins.md), [writing agent tools](docs/tool-authoring.md) and [Studio compatibility](docs/studio-compatibility.md) |
-| Agent tool behaviour | [Errors, declines, guardrails, parallel calls, memory](docs/agent-tooling.md) |
-| Answer verification | [Verifiers, repair, and absence claims on partial searches](docs/verification.md) |
-| Framework adapters | [Framework adapters](docs/framework-adapters.md) |
-| File attachments | [Attachments](docs/attachments.md) and the [artifact lifecycle](docs/artifacts.md) |
-| Untrusted documents | [Document security](docs/document-security.md) |
-| Starter tools | [Safe starter tools](docs/starter-tools.md) |
-| Retrieval | [RAG](docs/rag.md) |
-| Analytical agents | [Analytical runtime](docs/analytical-runtime.md) and [semantic layer](docs/semantic-layer.md) |
-| Multi-agent workflows | [Workflow manifests and executor](docs/multi-agent-workflows.md) |
-| Security | [Threat model](docs/threat-model.md) and [security policy](SECURITY.md) |
-| Production limitations | [Production readiness](docs/production-readiness.md) and the [road to 1.0](docs/ga-criteria.md) |
-| Compatibility promises | [API stability and support policy](docs/api-stability.md) |
-| Upgrading | [Upgrading from 0.1 to 0.2](docs/upgrading.md) |
-| Releases | [Release process](docs/releasing.md) and [changelog](CHANGELOG.md) |
-| Repository operators | [Public repository settings](docs/repository-settings.md) |
+- [Getting started](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md): install, quickstarts, CLI, HTTP service, architecture, every guide
+- [Operations](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/operations.md): deployment, configuration, security, recovery, SLOs and runbooks, measured performance
+- [Embedding the Runtime in an application](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/conversations.md): conversations, streaming, approvals, cancellation
+- [Writing tools](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/tool-authoring.md), [MCP](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/mcp.md) and [multi-agent workflows](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/multi-agent-workflows.md)
+- [API stability](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/api-stability.md), [upgrading from 0.1](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/upgrading.md) and the [road to 1.0](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/ga-criteria.md)
 
-## Importable examples
+## AI coding skills
 
-[`algen_agent_runtime_examples/README.md`](algen_agent_runtime_examples/README.md) lists every example, what it shows, and whether it runs
-offline.
+The package ships skills that teach coding agents the current Runtime contracts. Install the copy
+that matches your Runtime with `algen-agent-runtime skills install --path .` (into
+`.agents/skills/`; `--skills-dir .claude/skills` for Claude Code):
 
-The source and wheel distributions include the `algen_agent_runtime_examples` package so portable workflow hook
-providers remain importable by Algen Agent Studio. Import an example directory—or its `agent.yaml`
-or `config/agent.yaml`—and Studio preserves the Runtime `WorkflowManifest` exactly. Credential-free
-examples use deterministic mock providers; service-backed case studies retain explicit prerequisites.
-The domain case studies `case_study_responsible_hiring` and `pattern_text_to_sql` ship only in
-the repository and sdist, not the wheel; run them from a checkout.
+- `algen-agent-builder`: Studio-importable single-agent and multi-agent projects;
+- `algen-agent-connector`: APIs, MCP, databases, retrieval, memory and telemetry, governed;
+- `algen-runtime-host`: applications that embed the Runtime (chat UIs, run following, approval
+  inboxes, metering, storage) without rebuilding what it already does;
+- `algen-runtime-extension`: providers, tools, stores, retrieval, telemetry and framework adapters.
 
-The workflow examples cover first-class approve/modify/reject checkpoints, human clarification,
-bounded repair, exact-version parent/child dispatch, dynamic fan-out,
-parallel branches, joins, framework adapters, evaluation gates, and secret-free links to tools,
-retrieval, memory, services, storage, and telemetry.
+This repository also has `algen-runtime-contributor` and `algen-external-pr-review` for work on the
+Runtime itself. More in [Getting started](https://github.com/AlgenAI/algen-agent-runtime/blob/main/docs/getting-started.md#ai-coding-skills).
 
-### Running examples from the CLI
+## Contributing, security and license
 
-Every example runs from the terminal without API keys or services, except those that need Ollama or
-pgvector. `tests/integration/test_all_examples_run.py` runs each one in CI, so a new example must
-be runnable offline or listed there with the service it needs.
+Contributions are welcome: see [CONTRIBUTING.md](https://github.com/AlgenAI/algen-agent-runtime/blob/main/CONTRIBUTING.md)
+(DCO sign-off, tests against real PostgreSQL and Redis) and [GOVERNANCE.md](https://github.com/AlgenAI/algen-agent-runtime/blob/main/GOVERNANCE.md).
+Community support is best effort ([SUPPORT.md](https://github.com/AlgenAI/algen-agent-runtime/blob/main/SUPPORT.md)).
 
-```bash
-# Multi-agent dynamic fan-out, evidence join, and synthesis
-python -m algen_agent_runtime_examples.pattern_multi_agent_fanout.app "Assess a migration to managed queues"
+Report vulnerabilities privately, never in a public issue, as [SECURITY.md](https://github.com/AlgenAI/algen-agent-runtime/blob/main/SECURITY.md) describes.
 
-# Deterministic handler and resource tool pattern
-python -m algen_agent_runtime_examples.quickstart_tool.app
-
-# The reference tool project: a Toolkit with a read tool and an approval-gated write tool, from a plugin
-python -m algen_agent_runtime_examples.quickstart_agent_tool.app
-
-# An approval node: approve, modify or reject a proposal before it is applied
-python -m algen_agent_runtime_examples.quickstart_approval.app --approve-all
-
-# Files attached by reference: an image the model reads, a CSV a reader tool reads, both scanned
-python -m algen_agent_runtime_examples.quickstart_attachments.app
-
-# Human approval checkpoint (interactive prompt, or automated with --approve-all)
-python -m algen_agent_runtime_examples.pattern_approval_workflow.app --approve-all
-
-# Governed research with retrieval and cited synthesis
-python -m algen_agent_runtime_examples.pattern_governed_research.app
-
-# A streamed conversation: deltas, a steering message, a tool note, an approval pause and resume
-python -m algen_agent_runtime_examples.quickstart_conversation.app
-
-# Typed tools behind a precheck, tool-call guards, a user-keyed cache and a usage meter
-python -m algen_agent_runtime_examples.pattern_guarded_tools.app
-
-# A release gate: evaluation cases decide whether a new agent version is promoted
-python -m algen_agent_runtime_examples.pattern_evaluation_gate.app
-
-# MCP servers declared in YAML, with operator overrides deciding which tools need approval
-python -m algen_agent_runtime_examples.pattern_mcp_governance.app
-
-# Hosted-provider examples: the real provider by default, the mock provider with --offline
-python -m algen_agent_runtime_examples.quickstart_rag.app --offline
-python -m algen_agent_runtime_examples.quickstart_cloud_chat.app --offline
-python -m algen_agent_runtime_examples.pattern_provider_fallback.app --offline
-python -m algen_agent_runtime_examples.pattern_text_to_sql.app --offline
-```
-
-All workflow examples support non-interactive execution in automated environments and CI pipelines:
-- `--approve-all`: automatically approve all approval checkpoints
-- `--reject-all`: automatically reject all approval checkpoints
-- `--answers-file PATH`: supply ordered approval/clarification decisions from a JSON file
-
-Examples that call a hosted provider (`quickstart_rag`, `quickstart_cloud_chat`,
-`pattern_provider_fallback`, `pattern_text_to_sql`, `case_study_teaching_assistant`) take
-`--offline`: the same `agent.yaml` with the provider swapped for the mock provider and a scripted
-reply (see `algen_agent_runtime_examples/offline.py`). Without `--offline` they need the provider's key and say so when
-it is missing. Traccia export is opt-in in every example
-(`ALGEN_AGENT_RUNTIME__TELEMETRY__TRACCIA__ENABLED=true` with the `traccia` extra).
-
-### Operating patterns
-
-Two examples walk through production controls offline, with mock models and in-process fakes:
-
-```bash
-# A write whose outcome is unknown: pause, reconcile by idempotency key, resolve over
-# /v1/tool-executions, compensate on request, and ToolNotAttemptedError recorded as failed
-python -m algen_agent_runtime_examples.pattern_side_effect_reconciliation.app
-
-# The HTTP API behind OIDC with a local JWKS stub: scopes from claims, the approval inbox,
-# redacted modified parameters, conversation ownership, token revocation and auth.type: caller
-# (needs the auth extra: pip install 'algen-agent-runtime[auth]'; without it, it says so and exits 0)
-python -m algen_agent_runtime_examples.pattern_secured_api.app
-```
-
-See [pattern_side_effect_reconciliation](algen_agent_runtime_examples/pattern_side_effect_reconciliation/README.md)
-and [pattern_secured_api](algen_agent_runtime_examples/pattern_secured_api/README.md).
-
-
-## Development
-
-```bash
-make install
-make lint
-make typecheck
-make test
-```
-
-Before opening a pull request, run the whole suite against throwaway PostgreSQL and Redis
-containers (`scripts/integration-tests.sh`, docker or podman), and smoke-test the latest
-`algen-agent-tools` release against a wheel built from your branch. Both steps are described in
-[CONTRIBUTING.md](CONTRIBUTING.md#running-integration--container-tests).
-
-### AI coding skills
-
-Repository-scoped skills under [`.agents/skills`](.agents/skills) help coding agents use the current
-Runtime contracts instead of inventing parallel abstractions:
-
-- `algen-agent-builder` — Studio-importable single-agent and multi-agent projects;
-- `algen-agent-connector` — governed combinations of APIs, MCP, databases, retrieval, memory,
-  persistence, and telemetry;
-- `algen-runtime-host` — applications that embed the Runtime (chat UIs, run following, approval
-  inboxes, metering, storage) without rebuilding its conversations, approvals, event streams,
-  recovery, model routing, redaction or guards;
-- `algen-runtime-extension` — providers, tools, stores, retrieval, telemetry, and framework adapters;
-- `algen-runtime-contributor` — safe, compatible open-source contributions to this repository.
-
-The package ships the first four, so an application repository gets the copy that matches its
-installed Runtime: `algen-agent-runtime skills install --path .` writes them into
-`.agents/skills/` (`--skill NAME` for one, `--skills-dir .claude/skills` for Claude Code, `--force`
-to replace an installed copy after an upgrade). The contributor and external-review skills are for
-work on this repository and stay here.
-
-Invoke a skill by name when supported by your coding agent, for example:
-
-```text
-Use $algen-agent-builder to create a multi-agent support workflow with CRM reads,
-approval-gated ticket updates, deterministic tests, and a Studio-importable manifest.
-```
-
-The complete contributor workflow, architecture rules, DCO requirement, and test expectations are in [CONTRIBUTING.md](CONTRIBUTING.md). Project decision-making and maintainership are documented in [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
-
-## Security
-
-Do not report vulnerabilities in public issues. Use GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md). Never include live credentials, private prompts, customer data, or production endpoints in reports or test fixtures.
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE). Third-party components retain their respective licenses. See [NOTICE](NOTICE).
+Licensed under the [Apache License 2.0](https://github.com/AlgenAI/algen-agent-runtime/blob/main/LICENSE); see [NOTICE](https://github.com/AlgenAI/algen-agent-runtime/blob/main/NOTICE).

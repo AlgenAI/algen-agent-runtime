@@ -1,0 +1,132 @@
+# The Runtime under the long soak: the durable single-node configuration from docs/operations.md
+# (every store on PostgreSQL, session memory on Redis, JWT auth, admission limits, the
+# maintenance sweep) with scripted models and tools from soak_plugin.py. See README.md.
+security:
+  trusted_plugin_prefixes: [soak_plugin]
+  max_artifact_bytes: 1048576
+  upload_scanner: basic
+agents:
+  - name: soak-reader
+    version: 1.0.0
+    description: Looks things up, then answers
+    system_instructions: Use the tools you are told to use, then answer.
+    default_model: {name: fast, provider: soak-fast, model: scripted}
+    enabled_tools: [soak.lookup]
+    domain_plugins: ["soak_plugin:SoakPlugin"]
+    max_steps: 6
+    approval_policy: {require_for_side_effects: false}
+  - name: soak-writer
+    version: 1.0.0
+    description: Looks up, then records; the write needs an approval
+    system_instructions: Use the tools you are told to use, then answer.
+    default_model: {name: fast, provider: soak-fast, model: scripted}
+    enabled_tools: [soak.lookup, soak.record]
+    domain_plugins: ["soak_plugin:SoakPlugin"]
+    max_steps: 6
+    approval_policy: {require_for_side_effects: true, expires_seconds: 90}
+  - name: soak-slow
+    version: 1.0.0
+    description: A slow model that looks things up
+    system_instructions: Use the tools you are told to use, then answer.
+    default_model: {name: slow, provider: soak-slow, model: scripted}
+    enabled_tools: [soak.lookup]
+    domain_plugins: ["soak_plugin:SoakPlugin"]
+    max_steps: 8
+    approval_policy: {require_for_side_effects: false}
+  - name: soak-chat
+    version: 1.0.0
+    description: The conversation agent; a write needs an approval
+    system_instructions: Use the tools you are told to use, then answer.
+    default_model: {name: fast, provider: soak-fast, model: scripted}
+    enabled_tools: [soak.lookup, soak.record]
+    domain_plugins: ["soak_plugin:SoakPlugin"]
+    max_steps: 6
+    approval_policy: {require_for_side_effects: true, expires_seconds: 90}
+workflows:
+  soak-review:
+    name: soak-review
+    version: 1.0.0
+    description: An agent step, an approval, then a recorded write
+    input_schema:
+      type: object
+      required: [text, key]
+      additionalProperties: false
+      properties:
+        text: {type: string, minLength: 1}
+        key: {type: string, minLength: 1}
+    nodes:
+      - id: draft
+        kind: agent
+        agent: soak-reader
+        input_template: "{{text}}"
+        output_key: draft
+      - id: approve
+        kind: approval
+        depends_on: [draft]
+        output_key: approval
+        approval:
+          prompt: Record this item?
+          rejection_policy: skip_dependents
+          expires_seconds: 90
+      - id: record
+        kind: handler
+        depends_on: [approve]
+        handler: tool:soak.record
+        arguments: {item: "{{inputs.key}}", note: workflow}
+        output_key: recorded
+storage:
+  run_store: postgres
+  memory_store: redis
+  event_store: postgres
+  audit_store: postgres
+  approval_store: postgres
+  artifact_store: postgres
+  tool_execution_store: postgres
+  conversation_store: postgres
+  workflow_store: postgres
+  postgres_dsn: env://ALGEN_AGENT_RUNTIME_POSTGRES_DSN
+  redis_url: env://ALGEN_AGENT_RUNTIME_REDIS_URL
+  initialize_schema: true
+  postgres_min_pool_size: 1
+  postgres_max_pool_size: 20
+  postgres_connect_timeout_seconds: 10
+  postgres_command_timeout_seconds: 60
+  memory_retention_seconds: 3600
+runtime:
+  recover_incomplete_runs: true
+  recovery_limit: 1000
+  shutdown_grace_seconds: 10
+  recover_service_workflows: true
+  readiness:
+    model_providers: any
+    require_durable_stores: true
+maintenance:
+  enabled: true
+  interval_seconds: 30
+  clarification_timeout_seconds: 3600
+  terminal_run_retention_days: 1
+  audit_retention_days: 1
+  conversation_retention_days: 1
+  workflow_checkpoint_retention_days: 1
+  batch_size: 1000
+conversation_streaming:
+  enabled: true
+  delta_interval_ms: 50
+api:
+  host: 0.0.0.0
+  auth_mode: jwt
+  jwt_key: env://ALGEN_AGENT_RUNTIME_JWT_PUBLIC_KEY
+  jwt_algorithms: [RS256]
+  jwt_issuer: https://soak.invalid/
+  jwt_audience: algen-agent-runtime
+  tenant_claim: tenant_id
+  scopes_claim: scope
+  rate_limiting:
+    enabled: true
+    default_rate_per_minute: 6000
+    default_burst: 200
+    max_concurrent_run_requests_per_tenant: 10
+    route_overrides:
+      # Below this node's sustained capacity, as the docs advise (the docs' example, 600 a
+      # minute, is above what a 2-vCPU container VM shared with other work sustains).
+      run_create: {rate_per_minute: 120, burst: 10}

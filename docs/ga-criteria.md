@@ -1,8 +1,8 @@
 # General availability (1.0) criteria
 
 Owner: AlgenAI Maintainers  
-Status: Active tracking — beta (`0.2.0b3`; `0.2.0b4` in preparation)  
-Last reviewed: 2026-11-15
+Status: Active tracking — beta (`0.2.0b4`; `0.2.0b5` in preparation)  
+Last reviewed: 2026-11-16
 
 `1.0.0` is a promise, not a feature set: documented public interfaces stay compatible across
 `1.x`, upgrades are safe and reversible, and a deployment can be operated against published
@@ -29,7 +29,8 @@ production evidence rather than for the feature list.
 | `0.2.0b2` | Fixes from an independent review of 0.2.0b1 (session ownership, run actors, delegation allowlist, output integrity, policy false positives); approval attribution, client credentials, `core.subagent` from settings. Additive surface; behaviour changes listed in the upgrade notes | Released |
 | `0.2.0b3` | Conversation turns survive restarts and deploys; pauses followed end to end (delegated pauses, `core.ask_user`, credentials after recovery); `budget.on_limit: summarize`; typed run errors; migration SQL, `check_schema`, user data export and erasure; public redaction helpers; settable context budget; workflow approval and input routes follow the run actor rule; the host skill and skills installed from the package. Additive surface; behaviour changes listed in the upgrade notes | Released |
 | `0.2.0b4` | Security assessment fixes; framework adapter fixes ([#146](https://github.com/AlgenAI/algen-agent-runtime/issues/146)); GA evidence: the deployment scope and adapter support decided, upgrade and rollback drills against `0.1.0a23` and `0.2.0b3`, the [upgrade guide](upgrading.md), the [support and deprecation policy](api-stability.md#support-and-deprecation-policy-1x), and the performance suite with published results ([#118](https://github.com/AlgenAI/algen-agent-runtime/issues/118)) | Public API candidate frozen; only fixes and additive changes |
-| `0.2.0b5` … `0.2.0bN` | Public API candidate frozen; only fixes and additive changes | Every section below except "Stability evidence" is checked |
+| `0.2.0b5` | The remaining GA evidence: provider cancellation, golden redacted telemetry, a soak of hours, live provider contracts; run-level metrics, dashboards, alerts and published SLOs; experimental interfaces marked in code; event payload shapes in the API surface; every doc page, skill and example reviewed. Fixes and additive changes only | Every section below except "Stability evidence" is checked |
+| `0.2.0b6` … `0.2.0bN` | Only if the stability window finds a defect: fixes only | Every section below except "Stability evidence" stays checked |
 | `0.2.0` | Supported pre-1.0 release | No breaking change for the stability window |
 | `1.0.0rc1` … | Release candidates | Only fixes; the support and deprecation policy is published |
 | `1.0.0` | General availability | Every box below is checked |
@@ -75,13 +76,18 @@ A breaking change after `0.2.0b1` restarts the stability window.
   - [x] 5. Network, plugin and local-execution hardening (`0.1.0a18`).
   - [x] 6. Readiness and lifecycle (`0.1.0a16`).
   - [x] 7. Resource bounds and retention (`0.1.0a18`).
-- [ ] The [production gate](production-readiness.md#production-gate) has automated evidence,
+- [x] The [production gate](production-readiness.md#production-gate) has automated evidence,
       including provider cancellation, schema upgrade **and rollback**, and recovery under repeated
-      process failure. Schema upgrade and rollback (against `0.1.0a23` and `0.2.0b3`), restart-safe
-      approvals and tool execution, and recovery under repeated process failure have evidence in
-      the persistence drills (`tests/drills`); bounded resource use under load and between tenants
-      in the performance suite (`tests/perf`). Provider cancellation and redacted telemetry do not
-      yet.
+      process failure (`0.2.0b5`). Schema upgrade and rollback (against `0.1.0a23` and `0.2.0b3`),
+      restart-safe approvals and tool execution, and recovery under repeated process failure: the
+      persistence drills (`tests/drills`). Bounded resource use under load and between tenants: the
+      performance suite (`tests/perf`). Cross-tenant isolation and authenticated access: the
+      adversarial suite (`tests/adversarial`) and the API and authentication tests. Provider
+      cancellation: `tests/unit/test_provider_cancellation.py`, `test_run_cancellation.py`,
+      `test_tool_cancellation.py` and the drill `tests/drills/test_cancellation.py`
+      ([operations](operations.md#cancellation)). Redacted telemetry: the golden suite
+      (`tests/telemetry`, in memory, PostgreSQL, Redis and host logging;
+      [operations](operations.md#redacted-telemetry)).
 
 ## Public API
 
@@ -89,15 +95,16 @@ A breaking change after `0.2.0b1` restarts the stability window.
       identifiers, configuration fields, extension-point protocols and persisted schemas
       ([API stability](api-stability.md)). The `0.2.0b1` baseline is
       [`docs/api/surface.json`](api/surface.json), generated by `scripts/api_surface.py`. Event
-      payload shapes are not in it yet.
+      payload shapes are in it since `0.2.0b5` (`event_payloads`).
 - [x] Everything marked deprecated is removed: `algen_agent_runtime.communications`,
       `tools.adapters.database_tool`, the `0.1.0a14` `UsageMeter.reserve` form without `call`, and
       the document extractors in `algen_agent_runtime.security` (`0.2.0b1`).
-- [ ] Experimental interfaces that are not ready are moved out of the public surface or marked
-      experimental in code and docs. Listed and marked in the docs on 2026-11-15
-      ([experimental interfaces](api-stability.md#experimental-interfaces): horizontal scaling and
-      distributed execution, the AutoGen and CrewAI adapters); not yet marked in code (docstrings,
-      `surface.json`).
+- [x] Experimental interfaces that are not ready are moved out of the public surface or marked
+      experimental in code and docs (`0.2.0b5`): horizontal scaling and distributed execution, the
+      AutoGen and CrewAI adapters, the analytical graph engine, remote model services and the Jev
+      decision client carry `@experimental` / `__experimental__` markers and
+      `"stability": "experimental"` in `surface.json` and the settings schema
+      ([experimental interfaces](api-stability.md#experimental-interfaces)).
 - [x] A long-term support and deprecation policy is published: how long a deprecated interface keeps
       working in `1.x`, which Python versions are supported, and how security fixes are backported
       ([support and deprecation policy](api-stability.md#support-and-deprecation-policy-1x):
@@ -122,10 +129,22 @@ A breaking change after `0.2.0b1` restarts the stability window.
 
 ## Release engineering
 
-- [ ] Reproducible dependency lock files for the service image and CI.
-- [ ] SBOM and license report published with each release.
-- [ ] Signed tags or provenance attestations for every release artifact.
-- [ ] A container runtime smoke test (start, readiness, one mock run, drain), not only build and scan.
+- [x] Reproducible dependency lock files for the service image and CI: hash-locked
+      `requirements/*.txt` (`scripts/lock-requirements.sh`), used by CI, the release build and the
+      image (`0.2.0b4`).
+- [x] SBOM and license report published with each release: `sbom.cdx.json` and `licenses.md` on
+      the GitHub release (`0.2.0b4`, first published with `v0.2.0b4`).
+- [x] Signed tags or provenance attestations for every release artifact: GitHub build provenance
+      and PEP 740 attestations (`gh attestation verify`; [releasing](releasing.md)); `v*` tags are
+      protected by a ruleset (`0.2.0b4`).
+- [x] A container runtime smoke test (start, readiness, one mock run, drain), not only build and
+      scan: `scripts/container-smoke.sh` in CI and `scripts/ci-local.sh` (`0.2.0b4`).
+- [x] Security rules enforced by tests, not only by review: every HTTP route classified and
+      checked for authentication and tenant isolation (`tests/unit/test_api_tenant_matrix.py`),
+      every approval status sorted (`tests/unit/test_approval_decisions.py`), tools run only
+      through the executor (`tests/unit/test_tool_execution_chokepoint.py`) and the workflows
+      audited with zizmor (`scripts/check-workflows.sh`, Security workflow); the rules are in
+      AGENTS.md, "Security invariants" (`0.2.0b5`).
 
 ## Operations
 
@@ -134,30 +153,41 @@ A breaking change after `0.2.0b1` restarts the stability window.
       load and noisy-neighbour tests are in the performance suite (`tests/perf`, marker `perf`);
       the soak drill ran 5,000 items. Results, machine and commit are in
       [operations](operations.md#performance-and-capacity-evidence) (2026-11-15, `0.2.0b3`). A
-      soak of hours on a production-like deployment remains open.
-- [ ] Golden telemetry and redaction tests across model, tool, retrieval, approval, verification and
-      failure paths.
-- [ ] Published SLOs, capacity guidance, dashboards, alerts and runbooks for the single-node scope.
-      Proposed SLOs, capacity guidance, alerts and runbooks are published
-      ([operations](operations.md#slos-alerts-and-runbooks-single-node)); no dashboards are
-      shipped, and there is no run-level metric to build them on yet.
+      six-hour soak of the service image under mixed HTTP load, with restarts, kills and a
+      PostgreSQL restart, held every invariant (2026-11-17, `0.2.0b5`,
+      [results](operations.md#long-soak-hours)).
+- [x] Golden telemetry and redaction tests across model, tool, retrieval, approval, verification and
+      failure paths (`tests/telemetry`, `0.2.0b5`): canaries through every run path against every
+      sink, golden shape files, PostgreSQL, Redis and host-logging variants
+      ([operations](operations.md#redacted-telemetry)).
+- [x] Published SLOs, capacity guidance, dashboards, alerts and runbooks for the single-node scope
+      (`0.2.0b5`): run-level metrics, Grafana dashboards and Prometheus alert rules in
+      `deploy/observability`, SLOs with their measured basis, and a runbook per alert
+      ([operations](operations.md#slos-alerts-and-runbooks-single-node)). The targets come from
+      laptop measurements; revisit them after the production window.
 - [x] Benchmark baselines for latency overhead per step and per tool call
       (`tests/perf/test_overhead.py`; [results](operations.md#overhead-per-step-and-per-tool-call):
       p95 per step 2.1 ms in memory and 34.9 ms on PostgreSQL).
 
 ## Documentation
 
-- [ ] Every doc page reviewed for the `1.0` scope; stale version references removed. Stale version
-      references in `docs/*.md` were fixed on 2026-11-15 (historical pages marked as such); the
-      full review for the `1.0` scope is still to do.
-- [ ] The comparison in [Who should use it](why-algen-agent-runtime.md) refreshed within the quarter
-      before release. Competitor versions re-checked on 2026-11-15; the capability rows are from
-      2026-10-28 and the Algen column from `0.1.0a21`.
-- [ ] Studio's Runtime documentation synced for `1.0`.
+- [x] Every doc page reviewed for the `1.0` scope; stale version references removed (2026-11-16:
+      every `docs/*.md` page, the Agent Skills, the example READMEs and `docs/docs.html`;
+      historical pages carry banners).
+- [x] The comparison in [Who should use it](why-algen-agent-runtime.md) refreshed within the quarter
+      before release: versions and capability cells re-checked on 2026-11-16 with dated sources,
+      the Algen column at `0.2.0b5`. Refresh it again if `1.0.0` ships after 2027-02-16.
+- [x] Studio's Runtime documentation synced for `1.0`: [Studio compatibility](studio-compatibility.md)
+      describes Studio's current checks and the settings an imported project declares; Studio's
+      own pin and support-range checklist is on its `docs/runtime-0.2-sync` branch (2026-11-16).
 
 ## Stability evidence
 
-- [ ] No breaking change for at least four to six weeks on the `0.2` line.
+- [ ] No breaking change for at least four to six weeks on the `0.2` line. The window counts from
+      `0.2.0b4` (the last release that changed behaviour); `0.2.0b5` is fixes and additive
+      changes.
 - [ ] The Runtime's internal users run the same release in production through that window: Algen
       Agent Studio, the HRMS agents and the Traccia azAI service.
-- [ ] No open critical or high security issue, and no open data-loss defect.
+- [ ] No open critical or high security issue, and no open data-loss defect. True on 2026-11-16
+      (the 0.2.0b3 assessment's findings are fixed in `0.2.0b4`); it must still hold at the end of
+      the window.

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
-from typing import Any
+import json
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from contextlib import aclosing
+from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
+from algen_agent_runtime.exceptions.errors import ProviderError
 from algen_agent_runtime.models.providers.anthropic import (
     AnthropicProvider as AnthropicProvider,  # re-exported; the adapter lives in its own module
 )
@@ -13,6 +17,7 @@ from algen_agent_runtime.models.providers.openai_compatible import (
     openai_strict_json_schema,
 )
 from algen_agent_runtime.types.contracts import (
+    ErrorKind,
     Message,
     ModelCapabilities,
     ModelRequest,
@@ -23,10 +28,16 @@ from algen_agent_runtime.types.contracts import (
 
 
 class OpenAIProvider(OpenAICompatibleProvider):
-    def __init__(self, api_key_reference: str, default_model: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        api_key_reference: str,
+        default_model: str,
+        base_url: str = "https://api.openai.com/v1",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(
             "openai",
-            "https://api.openai.com/v1",
+            base_url,
             api_key_reference,
             default_model,
             ModelCapabilities(
@@ -55,6 +66,13 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
 
 class AzureOpenAIProvider(OpenAICompatibleProvider):
+    """Azure OpenAI: each model is a deployment, addressed in the URL with an ``api-version``.
+
+    ``deployment`` serves chat. ``embed(texts, model)`` posts to the deployment named ``model``,
+    or to ``embedding_deployment`` when no model is given (since 0.2.0b5); without either it
+    fails with ``invalid_request``, since a chat deployment does not serve embeddings.
+    """
+
     def __init__(
         self,
         base_url: str,
@@ -64,7 +82,11 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
         secret_provider: Any | None = None,
         client: httpx.AsyncClient | None = None,
         stream_usage: bool | None = None,
+        *,
+        embedding_deployment: str | None = None,
     ) -> None:
+        self._api_version = api_version
+        self._embedding_deployment = embedding_deployment
         super().__init__(
             "azure_openai",
             base_url,
@@ -97,14 +119,56 @@ class AzureOpenAIProvider(OpenAICompatibleProvider):
             )
         return payload
 
+    def _embedding_target(self, model: str | None) -> str:
+        deployment = model or self._embedding_deployment
+        if not deployment:
+            raise ProviderError(
+                "azure_openai embeddings need a deployment: pass model= (the embeddings "
+                "deployment name) or configure embedding_deployment on the provider",
+                ErrorKind.INVALID_REQUEST,
+                False,
+            )
+        return deployment
+
+    def _embeddings_url(self, model: str | None) -> str:
+        deployment = quote(self._embedding_target(model), safe="")
+        return (
+            f"{self._base_url}/openai/deployments/{deployment}/embeddings"
+            f"?api-version={quote(self._api_version, safe='')}"
+        )
+
+    def _embeddings_payload(self, texts: Sequence[str], model: str | None) -> dict[str, Any]:
+        # The deployment in the URL picks the model; the body carries the input only.
+        return {"input": list(texts)}
+
+
+def _json_instruction(schema: Mapping[str, Any]) -> str:
+    return (
+        "Answer with one JSON object only, no other text, that is valid against this JSON "
+        f"Schema: {json.dumps(schema, separators=(',', ':'), sort_keys=True)}"
+    )
+
 
 class DeepSeekProvider(OpenAICompatibleProvider):
+    """DeepSeek's OpenAI-compatible API.
+
+    DeepSeek's ``response_format`` takes ``text`` or ``json_object`` only, not ``json_schema``.
+    A ``response_schema`` is therefore sent as JSON mode (``{"type": "json_object"}``) with the
+    schema in a system message (since 0.2.0b5), and the adapter reports ``structured_output``
+    but not ``json_schema``: the answer is JSON, and the Runtime's ``json_schema`` verifier
+    checks it against the schema.
+    """
+
     def __init__(
-        self, api_key_reference: str, default_model: str = "deepseek-chat", **kwargs: Any
+        self,
+        api_key_reference: str,
+        default_model: str = "deepseek-chat",
+        base_url: str = "https://api.deepseek.com/v1",
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             "deepseek",
-            "https://api.deepseek.com/v1",
+            base_url,
             api_key_reference,
             default_model,
             ModelCapabilities(
@@ -112,6 +176,20 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             ),
             **kwargs,
         )
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        payload = super()._payload(request)
+        if request.response_schema:
+            payload["response_format"] = {"type": "json_object"}
+            messages = payload["messages"]
+            # After the leading system messages, so the agent's instructions still come first.
+            at = 0
+            while at < len(messages) and messages[at].get("role") == "system":
+                at += 1
+            messages.insert(
+                at, {"role": "system", "content": _json_instruction(request.response_schema)}
+            )
+        return payload
 
 
 class MistralProvider(OpenAICompatibleProvider):
@@ -254,24 +332,27 @@ class OllamaProvider(OpenAICompatibleProvider):
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
         reasoning = _ReasoningFilter(hold_all=bool(request.tools))
         emitted: list[str] = []
-        async for event in super().stream(request):
-            if event.type == "delta" and event.delta:
-                if text := reasoning.feed(event.delta):
-                    emitted.append(text)
-                    yield ModelStreamEvent(type="delta", delta=text)
-                continue
-            if event.type == "completed" and event.response is not None:
-                if text := reasoning.finish():
-                    emitted.append(text)
-                    yield ModelStreamEvent(type="delta", delta=text)
-                event = event.model_copy(
-                    update={
-                        "response": event.response.model_copy(
-                            update={"message": Message.text(Role.ASSISTANT, "".join(emitted))}
-                        )
-                    }
-                )
-            yield event
+        # Closing this stream closes the HTTP stream under it at once, not when collected.
+        stream = cast(AsyncGenerator[ModelStreamEvent, None], super().stream(request))
+        async with aclosing(stream) as events:
+            async for event in events:
+                if event.type == "delta" and event.delta:
+                    if text := reasoning.feed(event.delta):
+                        emitted.append(text)
+                        yield ModelStreamEvent(type="delta", delta=text)
+                    continue
+                if event.type == "completed" and event.response is not None:
+                    if text := reasoning.finish():
+                        emitted.append(text)
+                        yield ModelStreamEvent(type="delta", delta=text)
+                    event = event.model_copy(
+                        update={
+                            "response": event.response.model_copy(
+                                update={"message": Message.text(Role.ASSISTANT, "".join(emitted))}
+                            )
+                        }
+                    )
+                yield event
 
 
 class HuggingFaceInferenceProvider(OpenAICompatibleProvider):
@@ -374,6 +455,13 @@ class GeminiProvider(OpenAICompatibleProvider):
         if "embedding" in model:
             return ModelCapabilities(chat=False, embeddings=True)
         return await super().capabilities(model)
+
+    def _error_kind_for(self, response: httpx.Response) -> tuple[ErrorKind, bool]:
+        # Google answers a wrong or revoked key with HTTP 400 INVALID_ARGUMENT, reason
+        # API_KEY_INVALID, not 401: it is an authentication error, and retrying cannot help.
+        if response.status_code == 400 and "API_KEY_INVALID" in response.text:
+            return ErrorKind.AUTHENTICATION, False
+        return super()._error_kind_for(response)
 
     async def embed(self, texts: Sequence[str], model: str | None = None) -> list[list[float]]:
         return await super().embed(texts, model or "gemini-embedding-001")

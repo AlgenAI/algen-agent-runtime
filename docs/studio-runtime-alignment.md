@@ -2,9 +2,21 @@
 
 Owner: AlgenAI Maintainers
 
-Status: Historical: an audit against Runtime `0.1.0a3` (2026-09); version ranges below are from then, not current requirements
+Status: Historical. An audit against Runtime `0.1.0a3` (2026-09), kept as the record of what
+Studio changed to align with the Runtime. Do not use it as current guidance: version ranges,
+provider lists (Gemini, for example, is supported now), file paths and open items below are from
+then.
 
-Last reviewed: 2026-09-24
+Last reviewed: 2026-09-24 (status re-checked 2026-11-16)
+
+> **Current guidance.** For what Studio can and cannot see in a project, and the Runtime release
+> Studio runs, read [Studio compatibility](studio-compatibility.md). For what a host such as Studio
+> should take from the Runtime instead of writing itself, read the `algen-runtime-host` skill
+> (`.agents/skills/algen-runtime-host/`) and the CHANGELOG's "You can now remove" entries. Studio
+> keeps its own list of what it re-implements on purpose, with reasons, in section 9 of its
+> `AGENTS.md`. As of 2026-11-16 Studio's `main` runs Runtime `0.2.0b3` (range `>=0.1.0a23,<0.3`),
+> checks component names against `algen-agent-runtime describe --json` run in its build image, and
+> creates the Runtime's run and approval tables from `algen-agent-runtime migrations sql`.
 
 This audit compares **Algen Agent Studio** (`algen-agent-studio`) with **Algen Agent Runtime** (`algen-agent-runtime`) at Runtime commit `d2cda51` on the `fix/0.1.0a3-stabilization` branch. The Studio baseline is its current `main` working tree, including the uncommitted workflow, checkpoint-store, and secret-vault work present during this review.
 

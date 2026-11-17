@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 import jsonschema
-from opentelemetry import metrics, trace
+from opentelemetry import metrics
 
 from algen_agent_runtime.exceptions.errors import ConfigurationError, NotFoundError, ProviderError
 from algen_agent_runtime.model_services.contracts import (
@@ -17,14 +17,18 @@ from algen_agent_runtime.model_services.contracts import (
     ModelServiceRequest,
     ModelServiceResponse,
 )
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 
 
 class ModelServiceRegistry:
-    """Provider-neutral predictive service router; intentionally separate from LLMs."""
+    """Experimental: remote model services; not covered by the compatibility promise.
+
+    Provider-neutral predictive service router; intentionally separate from LLMs.
+    """
 
     def __init__(self) -> None:
         self._services: dict[tuple[str, str], ModelService] = {}
-        self._tracer = trace.get_tracer("algen_agent_runtime.model_services")
+        self._tracer = runtime_tracer("algen_agent_runtime.model_services")
         self._counter = metrics.get_meter("algen_agent_runtime.model_services").create_counter(
             "algen_agent_runtime.model_service.calls"
         )
@@ -104,6 +108,8 @@ class ModelServiceRegistry:
 
 
 class DeterministicModelService:
+    """Experimental: remote model services; not covered by the compatibility promise."""
+
     def __init__(
         self,
         manifest: ModelServiceManifest,

@@ -1,9 +1,14 @@
 # a7 release preparation
 
+> **Historical record, not current guidance.** This page is the checklist kept while preparing
+> `0.1.0a7` (2026-10-19). `0.1.0a7` was released (tag `v0.1.0a7`, notes in
+> [CHANGELOG-0.1.md](../CHANGELOG-0.1.md)). Its open items were resolved later: the `pypi`
+> environment has required reviewers and `RELEASE_TOKEN` was deleted on 2026-11-16
+> ([repository settings](repository-settings.md#audit)). The current process is in
+> [releasing](releasing.md).
+
 Prepared on 2026-10-19. Version `0.1.0a7` is a release candidate on
 `feat/context-management`; it has not been tagged or published by this preparation.
-
-> Historical: `0.1.0a7` was later released (tag `v0.1.0a7`); see [CHANGELOG-0.1.md](../CHANGELOG-0.1.md).
 
 ## Verified locally
 

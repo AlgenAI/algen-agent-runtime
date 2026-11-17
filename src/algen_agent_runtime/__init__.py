@@ -52,4 +52,4 @@ __all__ = [
     "SourceDocument",
     "UsageMeter",
 ]
-__version__ = "0.2.0b4"
+__version__ = "0.2.0b5"

@@ -34,6 +34,8 @@ examples take `--offline` to run that way.
 | [`pattern_langgraph_governance`](pattern_langgraph_governance) | `LangGraphAdapter`: identity, status and streaming for a graph | Yes | `python -m algen_agent_runtime_examples.pattern_langgraph_governance.app` |
 | [`pattern_openai_agents_integration`](pattern_openai_agents_integration) | `OpenAIAgentsAdapter`, and Runtime tools governed inside the SDK | Yes, with the `openai-agents` extra | `python -m algen_agent_runtime_examples.pattern_openai_agents_integration.app` |
 | [`pattern_mcp_governance`](pattern_mcp_governance) | MCP servers declared in YAML, with operator policy overrides | Yes, with the `mcp` extra | `python -m algen_agent_runtime_examples.pattern_mcp_governance.app` |
+| [`pattern_observability`](pattern_observability) | Run-level metrics (0.2.0b5) from traffic through the HTTP API; with `deploy/compose.yaml`, OTLP to a collector, Prometheus with the shipped alert rules and Grafana with the shipped dashboards | Yes; the stack needs docker or podman | `python -m algen_agent_runtime_examples.pattern_observability.app` |
+| [`pattern_run_follower`](pattern_run_follower) | A host following a streamed run: `model.delta.retracted`, reconnecting with `after`, cancelling, and a deadline around `Runtime.wait` (0.2.0b5) | Yes | `python -m algen_agent_runtime_examples.pattern_run_follower.app` |
 
 `pattern_text_to_sql/advanced` needs pgvector (`PGVECTOR_DSN`) and OpenAI embeddings; see its
 README.

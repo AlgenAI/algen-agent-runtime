@@ -1,0 +1,40 @@
+# A stock assistant served over the HTTP API, with the Runtime's OpenTelemetry metrics on.
+# StockPlugin (plugin.py) registers the stock tools (tools.py). app.py drives traffic through
+# the API and reads the metrics back; with --otlp-endpoint it exports them to a collector.
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: stock-assistant
+    version: 1.0.0
+    description: Answers stock questions and reorders stock after an approver agrees
+    system_instructions: >
+      Use stock.level to say how much of a SKU is on hand, stock.reorder to order more and
+      stock.audit to count a SKU by hand.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    planning_strategy: direct
+    enabled_tools: [stock.level, stock.reorder, stock.audit]
+    tool_permissions: [stock.read, stock.write]
+    domain_plugins: ["algen_agent_runtime_examples.pattern_observability.plugin:StockPlugin"]
+    approval_policy: {on_rejection: fail_run}
+api:
+  # Identity from x-tenant-id / x-user-id / x-scopes headers: for this in-process demo only.
+  auth_mode: development_headers
+security:
+  trusted_plugin_prefixes: [algen_agent_runtime_examples.pattern_observability]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+  conversation_store: memory
+  workflow_store: memory
+telemetry:
+  enabled: true
+  # The `job` label the dashboards filter on, once the metrics reach Prometheus.
+  service_name: stock-assistant
+  # Set by app.py --otlp-endpoint (needs the otlp extra), or here:
+  # otlp_metrics_endpoint: http://127.0.0.1:4318/v1/metrics
+  otlp_metrics_export_interval_seconds: 5

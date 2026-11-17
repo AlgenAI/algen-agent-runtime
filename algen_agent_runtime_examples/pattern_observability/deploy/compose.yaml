@@ -1,0 +1,45 @@
+# OpenTelemetry Collector + Prometheus + Grafana for the Runtime's metrics, with the shipped
+# dashboards and alert rules (deploy/observability at the repository root, mounted read-only).
+#
+#   docker compose -f algen_agent_runtime_examples/pattern_observability/deploy/compose.yaml up -d
+#   podman compose -f algen_agent_runtime_examples/pattern_observability/deploy/compose.yaml up -d
+#
+# Then run the example against the collector (see ../README.md). Host ports can be changed with
+# OTLP_PORT, PROMETHEUS_PORT and GRAFANA_PORT. Remove everything with `... down`.
+name: algen-rt-ex-observability
+
+services:
+  collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.115.1
+    container_name: algen-rt-ex-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro,Z
+    ports:
+      - "127.0.0.1:${OTLP_PORT:-4318}:4318"
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.0.1
+    container_name: algen-rt-ex-prometheus
+    depends_on: [collector]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - ../../../deploy/observability/prometheus/alerts.yml:/etc/prometheus/rules/alerts.yml:ro,Z
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: docker.io/grafana/grafana:11.3.1
+    container_name: algen-rt-ex-grafana
+    depends_on: [prometheus]
+    environment:
+      # A local demo: anonymous viewers are admins and there is no login page.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/algen.yaml:ro,Z
+      - ./grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/algen.yaml:ro,Z
+      - ../../../deploy/observability/grafana:/var/lib/grafana/dashboards/algen-agent-runtime:ro,Z
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"

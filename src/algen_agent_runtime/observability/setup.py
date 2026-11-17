@@ -1,31 +1,32 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
-from collections.abc import Mapping, MutableMapping
-from typing import Any, cast
+from typing import Any
 
 import structlog
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from algen_agent_runtime.config.settings import TelemetrySettings
 from algen_agent_runtime.extras import MissingExtraError
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.observability.safe_logging import runtime_logger
+from algen_agent_runtime.security.redaction import redact_log_event
 
-_logger = structlog.get_logger("algen_agent_runtime.observability")
+_logger = runtime_logger("algen_agent_runtime.observability")
 
 # The meter provider configure_telemetry installed, so a second call recognises its own provider
 # and shutdown can flush it. Providers installed by Traccia or the application are never touched.
 _installed_meter_provider: MeterProvider | None = None
 
 
-def _redact_processor(
-    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
-) -> Mapping[str, Any]:
-    return cast(dict[str, Any], redact(event_dict))
+# The structlog processor that masks credentials (and personal identifiers in tracebacks);
+# public as ``algen_agent_runtime.security.redact_log_event`` since 0.2.0b5.
+_redact_processor = redact_log_event
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -44,8 +45,20 @@ def configure_logging(level: int = logging.INFO) -> None:
     )
 
 
-def otlp_meter_provider(endpoint: str, *, export_interval_millis: int) -> MeterProvider:
-    """A meter provider that exports every instrument to an OTLP/HTTP metrics endpoint."""
+def service_resource(service_name: str | None) -> Resource:
+    """The OpenTelemetry resource for the Runtime's own providers: ``service.name`` from
+    ``telemetry.service_name`` (0.2.0b5), unless ``OTEL_SERVICE_NAME`` names it, which wins as
+    it always has. ``OTEL_RESOURCE_ATTRIBUTES`` still adds attributes."""
+    if not service_name or os.environ.get("OTEL_SERVICE_NAME"):
+        return Resource.create()
+    return Resource.create({"service.name": service_name})
+
+
+def otlp_meter_provider(
+    endpoint: str, *, export_interval_millis: int, service_name: str | None = None
+) -> MeterProvider:
+    """A meter provider that exports every instrument to an OTLP/HTTP metrics endpoint, as the
+    service ``service_name`` (see :func:`service_resource`)."""
     try:
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     except ModuleNotFoundError as exc:
@@ -57,7 +70,7 @@ def otlp_meter_provider(endpoint: str, *, export_interval_millis: int) -> MeterP
     reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(endpoint=endpoint), export_interval_millis=export_interval_millis
     )
-    return MeterProvider(metric_readers=[reader])
+    return MeterProvider(metric_readers=[reader], resource=service_resource(service_name))
 
 
 def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
@@ -70,7 +83,7 @@ def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
             raise MissingExtraError("telemetry.otlp_endpoint", "otlp", missing=exc.name) from exc
         tracer_provider = trace.get_tracer_provider()
         if not isinstance(tracer_provider, TracerProvider):
-            tracer_provider = TracerProvider()
+            tracer_provider = TracerProvider(resource=service_resource(settings.service_name))
             trace.set_tracer_provider(tracer_provider)
 
         tracer_provider.add_span_processor(
@@ -93,6 +106,7 @@ def configure_telemetry(settings: TelemetrySettings) -> tuple[Any, Any]:
             provider = otlp_meter_provider(
                 settings.otlp_metrics_endpoint,
                 export_interval_millis=settings.otlp_metrics_export_interval_seconds * 1000,
+                service_name=settings.service_name,
             )
             metrics.set_meter_provider(provider)
             _installed_meter_provider = provider

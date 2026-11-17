@@ -226,6 +226,10 @@ memory. They have no automatic garbage collection in this version. Source-run id
 foreign key to the run table: deleting a source run does not erase long-term memory. Monitor record
 and receipt growth and apply the deployment's data-retention requirements deliberately. Deleting a
 learned record is not a promise to erase prior transcripts, logs, database backups, or tool results.
+To export or erase everything the Runtime stores about one user, learned memory included, use
+`container.user_data.export_user` / `erase_user`, the `algen-agent-runtime users` command or the
+`/v1/admin/users/{user_id}/data` routes (since 0.2.0b3; see
+[Erasing or exporting one user's data](operations.md#erasing-or-exporting-one-users-data)).
 
 This feature adds versioned storage and explicit recall, optionally ranked by similarity, not
 automatic consolidation, deduplication, or factual validation. It requires no new core dependencies. PostgreSQL remains

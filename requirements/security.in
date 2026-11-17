@@ -1,3 +1,4 @@
-# Scanners the Security workflow runs. Hash-locked in security.txt (scripts/lock-requirements.sh).
+# Scanners the Security workflow runs (zizmor also runs in scripts/check-workflows.sh). Hash-locked in security.txt (scripts/lock-requirements.sh).
 bandit
 pip-audit
+zizmor

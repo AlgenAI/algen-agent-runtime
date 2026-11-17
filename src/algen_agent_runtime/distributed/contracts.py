@@ -11,6 +11,8 @@ from algen_agent_runtime.types.contracts import utc_now
 
 
 class WorkStatus(StrEnum):
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     PENDING = "pending"
     LEASED = "leased"
     COMPLETED = "completed"
@@ -18,6 +20,8 @@ class WorkStatus(StrEnum):
 
 
 class WorkItem(BaseModel):
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: str(uuid4()))
     tenant_id: str
@@ -37,6 +41,8 @@ class WorkItem(BaseModel):
 
 
 class WorkQueue(Protocol):
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     async def enqueue(self, item: WorkItem) -> tuple[WorkItem, bool]: ...
     async def claim(self, worker_id: str, lease_seconds: int) -> WorkItem | None: ...
     async def renew(self, item_id: str, worker_id: str, lease_seconds: int) -> bool: ...

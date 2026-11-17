@@ -3,7 +3,7 @@ name: Protected paths
 # pull_request_target runs this file from the base branch, so a fork cannot edit the check.
 # It never checks out or runs pull-request code: it only reads the list of changed files.
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] read-only, never runs PR code
     types: [opened, synchronize, reopened, edited]
 
 permissions:

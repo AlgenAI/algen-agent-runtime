@@ -74,6 +74,40 @@ async def test_a_non_decision_never_runs_the_tool(decision: str) -> None:
         await runtime.shutdown(grace_seconds=5)
 
 
+# Every approval status, sorted by what deciding with it does. A status added later fails
+# test_every_approval_status_is_sorted until someone decides whether it runs the tool; only an
+# explicit approve may (AGENTS.md, "Security invariants").
+RUNS_THE_TOOL = frozenset({ApprovalStatus.APPROVED, ApprovalStatus.MODIFIED})
+SKIPS_THE_TOOL = frozenset({ApprovalStatus.REJECTED})
+REFUSED = frozenset({ApprovalStatus.PENDING, ApprovalStatus.EXPIRED})
+
+
+def test_every_approval_status_is_sorted() -> None:
+    assert RUNS_THE_TOOL | SKIPS_THE_TOOL | REFUSED == set(ApprovalStatus)
+    assert len(RUNS_THE_TOOL) + len(SKIPS_THE_TOOL) + len(REFUSED) == len(ApprovalStatus)
+
+
+@pytest.mark.parametrize("status", list(ApprovalStatus))
+async def test_only_an_approving_decision_runs_the_tool(status: ApprovalStatus) -> None:
+    seen: list[Any] = []
+    runtime, state = await _awaiting_approval(seen)
+    response: dict[str, Any] = {"decision": status.value}
+    if status is ApprovalStatus.MODIFIED:
+        response["modified_parameters"] = {"to": "eve"}
+    try:
+        if status in REFUSED:
+            with pytest.raises(ValueError):
+                await runtime.resume(state.id, "tenant", response, decided_by="user")
+            await asyncio.sleep(0.02)
+            assert (await runtime.status(state.id, "tenant")).status == RunStatus.AWAITING_APPROVAL
+        else:
+            await runtime.resume(state.id, "tenant", response, decided_by="user")
+            await runtime.wait(state.id, "tenant")
+        assert bool(seen) == (status in RUNS_THE_TOOL), seen
+    finally:
+        await runtime.shutdown(grace_seconds=5)
+
+
 async def test_approved_with_modified_parameters_is_refused_by_the_runtime() -> None:
     seen: list[Any] = []
     runtime, state = await _awaiting_approval(seen)

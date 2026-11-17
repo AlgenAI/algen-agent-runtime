@@ -16,7 +16,10 @@ from algen_agent_runtime.security.network import (
 
 
 class HTTPModelService:
-    """Remote model adapter with SSRF validation and no provider-specific SDK leakage."""
+    """Experimental: remote model services; not covered by the compatibility promise.
+
+    Remote model adapter with SSRF validation and no provider-specific SDK leakage.
+    """
 
     def __init__(
         self,

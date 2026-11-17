@@ -514,6 +514,29 @@ async def test_a_turn_cannot_be_answered_twice() -> None:
     assert len(seen.calls) == 1
 
 
+async def test_an_answer_waits_for_the_turn_task_that_just_paused() -> None:
+    """The turn task saves the message as awaiting approval and then returns. A host that
+    answers as soon as it sees the status must not be refused as busy (0.2.0b5)."""
+    service, _, _, seen, conversation_id, paused = await paused_for_approval(
+        tool_call_response("api.write", {"value": "draft"}), "saved"
+    )
+    assert paused.pending is not None
+    # Stand in for the pausing task still returning: done shortly after the answer arrives.
+    finishing = asyncio.get_running_loop().create_task(asyncio.sleep(0.2))
+    service._tasks[conversation_id] = finishing
+    resumed = await service.respond(
+        conversation_id,
+        paused.pending.turn_id,
+        TENANT,
+        USER,
+        ConversationApprovalDecision(decision="approved"),
+    )
+    assert finishing.done()
+    assert resumed.status == MessageStatus.STREAMING
+    await settled(service, conversation_id, MessageStatus.COMPLETED)
+    assert len(seen.calls) == 1
+
+
 # --- clarification --------------------------------------------------------------------------------
 
 

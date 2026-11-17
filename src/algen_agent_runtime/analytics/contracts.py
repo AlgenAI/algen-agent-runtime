@@ -7,10 +7,20 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from algen_agent_runtime.stability import experimental
 from algen_agent_runtime.types.contracts import utc_now
 
+#: Why the analytical graph engine is experimental (``algen_agent_runtime.stability``).
+_GRAPH_ENGINE_EXPERIMENTAL = (
+    "the analytical graph engine has no production user yet and is not integrated into the "
+    "service lifecycle; methods, results and the semantic layer are stable"
+)
 
+
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalNodeKind(StrEnum):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     SEMANTIC_QUERY = "semantic_query"
     JOIN_RESULTS = "join_results"
     COMPARE_PERIODS = "compare_periods"
@@ -21,7 +31,10 @@ class AnalyticalNodeKind(StrEnum):
     COMPOSE = "compose"
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class NodeStatus(StrEnum):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -30,7 +43,10 @@ class NodeStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class GraphStatus(StrEnum):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -38,20 +54,29 @@ class GraphStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class NodeRetryPolicy(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     maximum_attempts: int = Field(default=1, ge=1, le=10)
     initial_backoff_seconds: float = Field(default=0.1, ge=0, le=60)
     maximum_backoff_seconds: float = Field(default=5, ge=0, le=300)
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class NodeCachePolicy(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = False
     policy_name: str = "analytical_nodes"
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class NodeBudget(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     timeout_seconds: float = Field(default=30, gt=0, le=3600)
     maximum_rows: int = Field(default=10_000, ge=1, le=1_000_000)
@@ -59,13 +84,19 @@ class NodeBudget(BaseModel):
     maximum_cost_usd: float | None = Field(default=None, ge=0)
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class ResultReference(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     node_id: str
     path: str | None = None
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalNode(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]*$")
     kind: AnalyticalNodeKind
@@ -89,7 +120,10 @@ class AnalyticalNode(BaseModel):
         return self
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalGraph(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
@@ -160,7 +194,10 @@ class AnalyticalResult(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class NodeExecution(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid")
     node_id: str
     status: NodeStatus = NodeStatus.PENDING
@@ -171,7 +208,10 @@ class NodeExecution(BaseModel):
     completed_at: datetime | None = None
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalGraphState(BaseModel):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid")
     id: str
     tenant_id: str
@@ -195,7 +235,10 @@ class GraphExecutionContext(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalNodeHandler(Protocol):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     async def __call__(
         self,
         node: AnalyticalNode,
@@ -204,7 +247,10 @@ class AnalyticalNodeHandler(Protocol):
     ) -> AnalyticalResult: ...
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalGraphStore(Protocol):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     async def create(self, state: AnalyticalGraphState) -> None: ...
     async def get(self, graph_id: str, tenant_id: str) -> AnalyticalGraphState | None: ...
     async def save(self, state: AnalyticalGraphState, expected_version: int) -> None: ...

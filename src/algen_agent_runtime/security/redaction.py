@@ -256,6 +256,71 @@ def redact(value: Any) -> Any:
     return value
 
 
+def redact_held(value: Any, held: Iterable[str]) -> Any:
+    """``value`` with every credential in ``held`` masked as ``[REDACTED]`` wherever it
+    appears in a string, in dicts, lists and tuples at any depth (since 0.2.0b5).
+
+    For credentials the caller holds and sent somewhere (a token, an ``env://`` secret, an MCP
+    OAuth token) that come back in a reply: they have no recognisable shape, so only knowing
+    them masks them. Longer values are masked first; empty values are ignored. The input is
+    never modified.
+    """
+    values = sorted({item for item in held if item}, key=len, reverse=True)
+    if not values:
+        return value
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, str):
+            for credential in values:
+                item = item.replace(credential, REDACTED)
+            return item
+        if isinstance(item, Mapping):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(walk(child) for child in item)
+        return item
+
+    return walk(value)
+
+
+def redact_error_text(error: BaseException | str) -> str:
+    """An error's text (``str(error)``) with credentials masked as ``redact_secret_text`` masks
+    them and personal identifiers as ``redact_pii`` does (since 0.2.0b5).
+
+    The Runtime shows an error this way wherever it leaves the run (API responses, events,
+    audits, logs, spans, work-queue rows); a host showing or logging an exception it caught
+    from the Runtime, a tool or a provider can do the same. The error's type is not added.
+    """
+    text = error if isinstance(error, str) else str(error)
+    masked = redact_pii(redact_text(text))
+    return masked if isinstance(masked, str) else text
+
+
+# Log fields holding text the Runtime does not choose: an exception's message and traceback
+# (structlog's format_exc_info and StackInfoRenderer), which can quote a tool's or a provider's
+# data.
+_UNTRUSTED_LOG_KEYS = ("exception", "stack")
+
+
+def redact_log_event(logger: Any, method_name: str, event_dict: Any) -> Any:
+    """A structlog processor: credentials masked in every field (``redact``) and, in an
+    exception's traceback (``exception``, ``stack``), personal identifiers too (since 0.2.0b5).
+
+    ``algen_agent_runtime.observability.setup.configure_logging`` installs it. A host with its
+    own structlog configuration adds it after ``format_exc_info`` (and before its renderer) to
+    mask its own log lines the same way; the Runtime's loggers then pass their events through
+    unchanged, exception objects included (see docs/operations.md#redacted-telemetry).
+    """
+    redacted = redact(dict(event_dict))
+    for key in _UNTRUSTED_LOG_KEYS:
+        value = redacted.get(key)
+        if isinstance(value, str):
+            redacted[key] = redact_error_text(value)
+    return redacted
+
+
 def hidden_value_marker(value: Any) -> str:
     """What an approver sees in place of a credential: ``[REDACTED len=<n> sha256=<8 hex>]``.
 

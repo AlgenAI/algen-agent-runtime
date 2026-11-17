@@ -10,6 +10,7 @@ Tier 1 — Quickstarts (prefix: quickstart_)
     quickstart_agent_tool      Typed @tool functions in a Toolkit, registered by a plugin
     quickstart_approval        Human checkpoint, resume, and apply-or-abort
     quickstart_conversation    Streamed conversation turns, steering, tool notes and approvals
+    quickstart_attachments     Files attached to a run: an image the model reads, a CSV a tool reads
 
 Tier 2 — Focused patterns (prefix: pattern_)
     pattern_provider_fallback          Multi-provider fallback with routing evidence
@@ -23,6 +24,10 @@ Tier 2 — Focused patterns (prefix: pattern_)
     pattern_multi_agent_fanout         Bounded dynamic agent fan-out and join
     pattern_child_workflow             Exact-version parent/child workflow dispatch
     pattern_evaluation_gate            Evaluation fixtures and promotion gate
+    pattern_secured_api                The HTTP API behind OIDC: scopes, approval inbox, ownership
+    pattern_side_effect_reconciliation Unknown side-effect outcomes: reconcile, resolve, compensate
+    pattern_observability              Run-level metrics, Prometheus alert rules, Grafana dashboards
+    pattern_run_follower               Following a streamed run: retracted text, reconnects, cancel
 
 Tier 3 — Enterprise reference applications (prefix: reference_)
     reference_customer_support         Customer support case resolution

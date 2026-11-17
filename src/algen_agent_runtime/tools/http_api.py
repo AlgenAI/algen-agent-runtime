@@ -27,6 +27,7 @@ from algen_agent_runtime.security.network import (
     create_safe_http_client,
     validate_outbound_url,
 )
+from algen_agent_runtime.security.redaction import REDACTED
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
     SideEffect,
@@ -227,10 +228,15 @@ def http_api_tool(
         # The URL's own query first, then the query templates.
         query = [*url_query, *_render_mapping(config.query, arguments).items()]
         headers = {"Accept": "application/json", **_render_mapping(config.headers, arguments)}
-        if caller_auth:
-            headers.update(_caller_headers(config.name, config.auth, context))
-        else:
-            headers.update(await _auth_headers(config.auth, secrets))
+        authentication = (
+            _caller_headers(config.name, config.auth, context)
+            if caller_auth
+            else await _auth_headers(config.auth, secrets)
+        )
+        headers.update(authentication)
+        # An API that echoes the credential it was sent (in an error body, say) does not hand
+        # it to the model, the run's records or the ledger (0.2.0b5).
+        held = _held_credentials(authentication)
         body = _render_value(config.body, arguments) if config.body is not None else None
         collected: list[Any] = []
         data: Any = None
@@ -289,13 +295,16 @@ def http_api_tool(
             total_bytes += len(content)
             parsed = _parse_body(response)
             if not response.is_success:
-                return {
-                    "ok": False,
-                    "status": status,
-                    "headers": response_headers,
-                    "data": parsed,
-                    "pages": pages,
-                }
+                return _mask_result(
+                    {
+                        "ok": False,
+                        "status": status,
+                        "headers": response_headers,
+                        "data": parsed,
+                        "pages": pages,
+                    },
+                    held,
+                )
             if config.pagination.type == "none":
                 data = parsed
                 break
@@ -326,7 +335,7 @@ def http_api_tool(
         }
         if stopped is not None:
             result["pagination_stopped"] = stopped
-        return result
+        return _mask_result(result, held)
 
     side_effect = config.side_effect or (
         SideEffect.READ if config.method == "GET" else SideEffect.EXTERNAL
@@ -398,6 +407,46 @@ def _caller_headers(name: str, auth: HttpToolAuth, context: ToolContext) -> dict
     if not _HEADER_VALUE.fullmatch(value):
         raise ToolNotAttemptedError(f"{name}: the caller's credential is not a valid header value")
     return {auth.header_name or "Authorization": value}
+
+
+def _held_credentials(headers: Mapping[str, str]) -> tuple[str, ...]:
+    """The credentials ``headers`` carry: each value, the token after its scheme and, for
+    ``Basic``, the decoded pair and password; longest first, so a longer one masks whole."""
+    held: set[str] = set()
+    for value in headers.values():
+        held.add(value)
+        scheme, _, rest = value.partition(" ")
+        rest = rest.strip()
+        if not rest:
+            continue
+        held.add(rest)
+        if scheme.lower() == "basic":
+            try:
+                pair = base64.b64decode(rest, validate=True).decode()
+            except ValueError:
+                continue
+            held.update({pair, pair.partition(":")[2]})
+    return tuple(sorted((item for item in held if len(item) >= 6), key=len, reverse=True))
+
+
+def _mask_result(result: dict[str, Any], held: tuple[str, ...]) -> dict[str, Any]:
+    """A tool result with every credential in ``held`` masked (see ``_mask_held``)."""
+    return {key: _mask_held(item, held) for key, item in result.items()}
+
+
+def _mask_held(value: Any, held: tuple[str, ...]) -> Any:
+    """``value`` with every credential in ``held`` masked as ``[REDACTED]`` in its strings."""
+    if not held:
+        return value
+    if isinstance(value, str):
+        for credential in held:
+            value = value.replace(credential, REDACTED)
+        return value
+    if isinstance(value, Mapping):
+        return {key: _mask_held(item, held) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_held(item, held) for item in value]
+    return value
 
 
 async def _auth_headers(auth: HttpToolAuth, secrets: SecretResolver) -> dict[str, str]:

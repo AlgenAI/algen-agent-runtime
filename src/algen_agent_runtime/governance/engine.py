@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from opentelemetry import metrics, trace
+from opentelemetry import metrics
 
 from algen_agent_runtime.exceptions.errors import PolicyDeniedError
 from algen_agent_runtime.governance.contracts import (
@@ -14,6 +14,7 @@ from algen_agent_runtime.governance.contracts import (
     GovernedQueryRequest,
     QueryGovernancePolicy,
 )
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 
 
 class QueryGovernanceEngine:
@@ -21,7 +22,7 @@ class QueryGovernanceEngine:
 
     def __init__(self, policy: QueryGovernancePolicy) -> None:
         self.policy = policy
-        self._tracer = trace.get_tracer("algen_agent_runtime.governance")
+        self._tracer = runtime_tracer("algen_agent_runtime.governance")
         self._counter = metrics.get_meter("algen_agent_runtime.governance").create_counter(
             "algen_agent_runtime.governance.decisions"
         )

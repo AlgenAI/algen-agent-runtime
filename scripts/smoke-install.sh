@@ -54,7 +54,8 @@ fi
 
 for example in context_evaluation context_compaction context_offloading working_state \
   progressive_skills learned_memory quickstart_conversation.app quickstart_attachments.app \
-  pattern_guarded_tools.app pattern_side_effect_reconciliation.app pattern_secured_api.app; do
+  pattern_guarded_tools.app pattern_side_effect_reconciliation.app pattern_secured_api.app \
+  pattern_observability.app pattern_run_follower.app; do
   "$venv/bin/python" -m "algen_agent_runtime_examples.${example}" >/dev/null
 done
 
