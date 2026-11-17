@@ -4,11 +4,19 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from algen_agent_runtime.analytics.contracts import AnalyticalGraphState, GraphStatus
+from algen_agent_runtime.analytics.contracts import (
+    _GRAPH_ENGINE_EXPERIMENTAL,
+    AnalyticalGraphState,
+    GraphStatus,
+)
 from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.stability import experimental
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class InMemoryAnalyticalGraphStore:
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     def __init__(self) -> None:
         self._states: dict[str, AnalyticalGraphState] = {}
         self._lock = asyncio.Lock()
@@ -51,7 +59,10 @@ class InMemoryAnalyticalGraphStore:
             return len(doomed)
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class PostgresAnalyticalGraphStore:
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     def __init__(self, database: Any) -> None:
         self._database = database
 

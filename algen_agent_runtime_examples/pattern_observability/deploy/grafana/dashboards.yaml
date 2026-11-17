@@ -1,0 +1,9 @@
+# Loads the shipped dashboards (deploy/observability/grafana, mounted read-only) into a folder.
+apiVersion: 1
+providers:
+  - name: algen-agent-runtime
+    folder: Algen Agent Runtime
+    type: file
+    disableDeletion: true
+    options:
+      path: /var/lib/grafana/dashboards/algen-agent-runtime

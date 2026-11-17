@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from algen_agent_runtime.observability.metrics import record as record_metric
 from algen_agent_runtime.policies.contracts import PolicyAction, PolicyDecision, PolicyPoint
 
 
@@ -62,4 +63,11 @@ async def evaluate_policy_observed(
             span.set_attribute("policy.policies_triggered", tuple(str(item) for item in triggered))
         if skipped:
             span.set_attribute("policy.policies_skipped", tuple(str(item) for item in skipped))
+        if decision.action == PolicyAction.DENY:
+            # The policy that denied is the last one triggered (the engine stops there).
+            record_metric(
+                "algen_agent_runtime.policy.denials",
+                1,
+                {"boundary": boundary, "policy": str(triggered[-1]) if triggered else "unknown"},
+            )
         return decision

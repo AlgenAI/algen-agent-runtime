@@ -142,6 +142,7 @@ include = [
   "/algen_agent_runtime_examples",
   "/CHANGELOG.md",
   "/CHANGELOG-0.1.md",
+  "/deploy/observability",
   "/LICENSE",
   "/NOTICE",
   "/README.md",
@@ -154,7 +155,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
   "adversarial: scripted agent runs where the model or a tool behaves maliciously",
-  "live: tests requiring external credentials",
+  "live: live provider contracts (tests/live); skipped unless ALGEN_LIVE=1 (real APIs, keys from the environment) or ALGEN_LIVE_FAKE=1 (local fake API)",
   "integration: tests requiring external or behavioral storage/network integration",
   "postgres: tests targeting PostgreSQL persistence stores",
   "redis: tests targeting Redis cache/run stores",

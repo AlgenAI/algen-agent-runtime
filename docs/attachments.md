@@ -182,8 +182,8 @@ model limits, and a document or text file declared as an image or PDF. Everythin
 available: `reason_code: clean` when the declared type agrees with the bytes, `not_inspected` for
 types it does not know or a document whose declared type disagrees (a run still refuses that
 mismatch). It records scan evidence before the status changes. It does not inspect content: hosts
-add that with their own `ArtifactScanner`, for example over the document inspectors (moving to
-`algen-agent-tools`).
+add that with their own `ArtifactScanner`, for example over the document inspectors of
+`algen-agent-tools[documents]` ([document inspection](document-security.md)).
 
 ## 10. Files a tool reads
 
@@ -254,8 +254,8 @@ call itself still succeeds. A tool without `returns_files` that returns files ge
 refused that way. The `tool.completed` event reports `file_count` and `files_refused`, and a
 refusal is audited (`tool.files`, `refused`).
 
-A profile with `context_window_tokens` now packs messages holding attached files (at the rough
-cost of section 5) instead of failing with a configuration error.
+Since 0.2.0b1 a profile with `context_window_tokens` packs messages holding attached files (at the
+rough cost of section 5) instead of failing with a configuration error.
 
 As with run attachments, the run's checkpoints, events and memory hold only the reference, the
 bytes are loaded for each provider call and a note that files are data follows them, and
@@ -273,6 +273,6 @@ retention of these uploads.
 
 ## Mixed versions
 
-Every new field defaults to empty or off, and empty attachments are left out of stored run state,
+When attachments arrived (0.1.0a19), every new field defaults to empty or off, and empty attachments are left out of stored run state,
 workflow checkpoints and manifest fingerprints, so 0.1.0a18 replicas can read what 0.1.0a19 stores
 during a rolling upgrade. Send attachments only once every API process and worker runs 0.1.0a19.

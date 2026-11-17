@@ -7,7 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class JevQuestion(BaseModel):
-    """A bounded TypeSafe System One question."""
+    """Experimental: the Jev decision client; not covered by the compatibility promise.
+
+    A bounded TypeSafe System One question.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["choice", "score", "noul"]
@@ -28,6 +31,8 @@ class JevQuestion(BaseModel):
 
 
 class JevRequest(BaseModel):
+    """Experimental: the Jev decision client; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     state: str | dict[str, Any] | list[Any]
     questions: dict[str, JevQuestion] = Field(min_length=1, max_length=64)
@@ -35,6 +40,8 @@ class JevRequest(BaseModel):
 
 
 class JevAnswer(BaseModel):
+    """Experimental: the Jev decision client; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="allow", frozen=True)
     type: Literal["choice", "score", "noul"]
     choice: str | None = None
@@ -53,12 +60,16 @@ class JevAnswer(BaseModel):
 
 
 class JevUsage(BaseModel):
+    """Experimental: the Jev decision client; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="allow", frozen=True)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
 
 
 class JevResponse(BaseModel):
+    """Experimental: the Jev decision client; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="allow", frozen=True)
     model: str
     answers: dict[str, JevAnswer]
@@ -66,6 +77,8 @@ class JevResponse(BaseModel):
 
 
 class JevSettings(BaseModel):
+    """Experimental: the Jev decision client; not covered by the compatibility promise."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     api_key: SecretStr
     base_url: str = "https://api.typesafe.ai"
@@ -73,11 +86,17 @@ class JevSettings(BaseModel):
 
 
 class JevDecisionError(RuntimeError):
-    """Content-minimal TypeSafe transport error safe to expose in logs."""
+    """Experimental: the Jev decision client; not covered by the compatibility promise.
+
+    Content-minimal TypeSafe transport error safe to expose in logs.
+    """
 
 
 class JevDecisionClient:
-    """Typed client for TypeSafe's Jev System One decision endpoint."""
+    """Experimental: the Jev decision client; not covered by the compatibility promise.
+
+    Typed client for TypeSafe's Jev System One decision endpoint.
+    """
 
     def __init__(self, settings: JevSettings, *, client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings

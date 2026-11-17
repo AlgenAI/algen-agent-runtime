@@ -70,16 +70,20 @@ gh pr diff <n> | grep -nE '^\+.*(os\._exit|sys\.exit|SystemExit|subprocess|os\.s
 
 ## 5. Breaking-change analysis
 
-Runtime is pre-1.0. Breaking changes are still allowed, but each one must be deliberate and recorded
-under the CHANGELOG's upgrade notes.
+Runtime is in the `0.2` beta line heading to `1.0`. From `0.2.0b1` later `0.2` betas only add to the
+recorded public surface (`docs/api/surface.json`, checked by `tests/unit/test_api_surface.py`), and
+`0.2.0b4` was the last beta planned to change behaviour: later betas take fixes and additive changes.
+A removal or an incompatible change from an outside contributor is a *decline* or *open an issue
+first* unless a maintainer has agreed to it; any accepted one is recorded under the CHANGELOG's
+upgrade notes and in `docs/upgrading.md`.
 
 - Public imports from `algen_agent_runtime.*` and `algen_agent_runtime_examples.*`: renamed, removed, or signatures changed?
 - Exception types and messages: does a caller that catches the old type still catch it? Do tests or
   applications match on the old message text?
 - Exit codes, CLI flags, stdout and stderr format, and JSON output keys (smoke tests parse these).
 - YAML manifest fields, event names and payloads, error codes, metric names.
-- Persisted data: can the previous alpha still read what this version writes (rolling upgrade)? Is
-  there a forward migration?
+- Persisted data: can the previous release still read what this version writes (rollback)? Is
+  there a forward, additive migration?
 - Default behaviour changes, such as a different default provider, timeout or retry count.
 
 ## 6. Impact on existing applications
@@ -108,8 +112,11 @@ grep -rn --include='*.py' -e '<symbol>' -e '<old message>' \
   a mock that raises the exception directly?
 - Are there behaviour claims in the PR body with no test? Note each one as unverified.
 - Do tests that need optional extras use `pytest.importorskip` (AGENTS.md §2)?
-- Maintainer obligations before merge, which the contributor cannot do: `scripts/integration-tests.sh`
-  (AGENTS.md §3) and the Tools smoke test (§4) when `src/` changes.
+- Does a public-surface change regenerate `docs/api/surface.json`, and does a `SKILL.md` change come
+  with the synced `docs/docs.html` (`python scripts/sync_docs_skills.py --check`)?
+- Maintainer obligations before merge, which the contributor cannot do: `scripts/ci-local.sh`
+  (AGENTS.md §8), `scripts/integration-tests.sh` (§3) and the Tools smoke test (§4) when `src/`
+  changes.
 
 ## 8. Licensing, DCO and provenance
 
@@ -122,7 +129,9 @@ grep -rn --include='*.py' -e '<symbol>' -e '<old message>' \
 ## 9. Maintenance cost and contributor experience
 
 - Will maintainers have to own this code forever? Is the cost proportionate to the benefit?
-- Does it update `CHANGELOG.md` (Unreleased) and the docs for user-visible behaviour?
+- Does it update `CHANGELOG.md` (Unreleased), the Markdown docs, the affected Agent Skills and
+  `docs/docs.html` for user-visible behaviour (AGENTS.md §7)? A fork cannot change `.agents/`, so
+  a maintainer makes the skill changes.
 - Does it match the surrounding style (naming, comment density, error-message tone)?
 - Is the contributor responsive, and is `maintainerCanModify` true? If so, small fixes such as
   formatting can be pushed by the maintainer instead of costing the contributor another round.

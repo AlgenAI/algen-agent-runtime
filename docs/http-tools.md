@@ -86,7 +86,8 @@ await runtime.run(request, credentials={"authorization": incoming_headers["autho
   credential, even to an allowlisted host (since 0.2.0b4 the tool returns the pages it has, with
   `pagination_stopped`; before, the call failed). Redirects are never followed.
 - A call that carries caller credentials is never served from, or stored in, the tool-result cache
-  (`cache.policies.tool_results`), whose scope is shared by more than one caller.
+  (`cache.policies.tool_results`), whatever its `scope`: the same arguments can mean different
+  data for two signed-in users even within one Runtime `user_id`.
 - The credential is not part of the tool's arguments, result, events, audits, spans or errors;
   response headers are limited to `content-type`, `etag`, `x-ratelimit-remaining` and
   `retry-after`, so a `Set-Cookie` from the API never reaches the model.
@@ -96,8 +97,10 @@ await runtime.run(request, credentials={"authorization": incoming_headers["autho
 - Requests go through `create_safe_http_client`: DNS-rebinding and SSRF protection, private
   networks blocked unless `security.allow_private_networks`, and redirects never followed.
 - The URL's host must be listed in `security.allowed_http_hosts` (an exact host or a parent
-  domain). Settings validation refuses a declared tool whose host is not listed, even though an
-  empty allowlist otherwise admits every host.
+  domain). Settings validation refuses a declared tool whose host is not listed. (An empty
+  allowlist admits every public host for the Runtime's other outbound clients, such as MCP; the
+  built-in `core.http` refuses every call then unless `security.allow_any_public_host: true`,
+  since 0.2.0b4.)
 - Every page's URL, including `Link` header targets, is checked against the allowlist.
 - Secrets never appear in settings or tool arguments, only `env://` references.
 

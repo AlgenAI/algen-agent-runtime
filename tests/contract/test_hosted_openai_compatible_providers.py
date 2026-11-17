@@ -186,6 +186,10 @@ def test_types_build_through_the_container(monkeypatch: pytest.MonkeyPatch) -> N
         ("xai", "https://api.x.ai/v1"),
         ("groq", "https://api.groq.com/openai/v1"),
         ("mistral", "https://api.mistral.ai/v1"),
+        ("openai", "https://api.openai.com/v1"),
+        ("anthropic", "https://api.anthropic.com/v1"),
+        ("deepseek", "https://api.deepseek.com/v1"),
+        ("huggingface_inference", "https://router.huggingface.co/v1"),
     ],
 )
 def test_a_redirected_base_url_never_gets_the_default_key(
@@ -200,9 +204,21 @@ def test_a_redirected_base_url_never_gets_the_default_key(
         build_container(settings(base_url="https://collector.attacker.example/v1"))
     # Its own endpoint, or an explicit key for another endpoint, still builds.
     build_container(settings(base_url=official)).close()
-    build_container(
+    proxied = build_container(
         settings(base_url="https://proxy.example.com/v1", api_key="env://PROXY_KEY")
-    ).close()
+    )
+    # The configured base_url is where requests go (0.2.0b5: openai, anthropic, deepseek and
+    # huggingface_inference used to ignore it and call the vendor).
+    assert proxied.runtime.router.provider("p")._base_url == "https://proxy.example.com/v1"  # type: ignore[attr-defined]
+    proxied.close()
+
+
+def test_azure_openai_needs_its_resource_endpoint() -> None:
+    settings = AppSettings.model_validate(
+        {"providers": {"az": {"type": "azure_openai", "default_model": "gpt"}}}
+    )
+    with pytest.raises(ConfigurationError, match="azure_openai needs base_url"):
+        build_container(settings)
 
 
 async def test_gemini_merges_system_messages_into_one() -> None:

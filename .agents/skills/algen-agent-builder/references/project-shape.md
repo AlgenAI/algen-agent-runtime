@@ -165,7 +165,13 @@ agents:
   conversation's turns belong to the conversation's owner). An approver working from
   `/v1/approvals` on other users' runs needs the `approvals:decide` scope, an operator who cancels
   them `runs:admin`; map those scopes to the right roles in `api.auth`. The approval records
-  `decided_by` (the authenticated user), `decided_at` and an optional `comment`.
+  `decided_by` (the authenticated user), `decided_at` and an optional `comment`. A decision is
+  `approved`, `rejected` or `modified` only (from 0.2.0b4 `pending` or `expired` is refused, 422
+  over HTTP), and `modified_parameters` only with `modified`.
+- Approvers see a hidden value as `[REDACTED len=N sha256=xxxxxxxx]` (0.2.0b4; `[REDACTED]`
+  before), for credential-named keys at any depth. Declare every credential-like argument of an
+  approval-gated tool in its input schema: a call with an undeclared one (a key such as `token`)
+  is refused (`approval.undeclared_secret_parameters`).
 - A run that did not complete has no `output` (`RunResult.output` is `None`, `output_text` null);
   check `status` first. A verification failure keeps the rejected answer in `rejected_output` for
   review, never for the user.
@@ -242,8 +248,18 @@ Before calling a project production-ready, check the deployment settings, not on
 `api.auth_mode: oidc` for the HTTP API, PostgreSQL stores, per-run `budget` limits (including
 `max_model_calls`), `storage.quotas` and retention, `network` egress rules, and `policies.on_error`.
 `/health/ready` reports `degraded` for an optional dependency that is down. Run recovery
-(`runtime.recover_incomplete_runs`) on exactly one process per database: recovery is single-node
-until 0.3. See docs/operations.md and docs/production-readiness.md.
+(`runtime.recover_incomplete_runs`) on exactly one process per database: the supported 1.0
+deployment scope is a single node (one Runtime process per database). See docs/operations.md and
+docs/production-readiness.md ("Deployment scope").
+
+Since 0.2.0b5 the Runtime records run-level metrics: set `telemetry.otlp_metrics_endpoint` (the
+`otlp` extra) and `OTEL_SERVICE_NAME`, and use the shipped dashboards and alert rules
+(`deploy/observability`) rather than counting runs or tokens in the project
+(`algen_agent_runtime_examples/pattern_observability` shows the setup). Avoid building a project on
+experimental interfaces (`distributed_execution`, `analytical_execution` graphs, model services,
+the AutoGen and CrewAI adapters): they can change in a minor release.
+`algen_agent_runtime.stability.is_experimental(...)` and the settings schema's
+`"stability": "experimental"` tell which ones are (docs/api-stability.md).
 
 ## Importability
 

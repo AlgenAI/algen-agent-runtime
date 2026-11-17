@@ -16,6 +16,7 @@ from typing import Any
 from algen_agent_runtime.auth.contracts import AuthenticatedIdentity, AuthenticationFailure
 from algen_agent_runtime.config.authentication import AuthenticationAuditSettings
 from algen_agent_runtime.events.contracts import AuditEvent
+from algen_agent_runtime.observability.safe_spans import exception_log_text
 from algen_agent_runtime.types.interfaces import AuditLog
 
 logger = logging.getLogger(__name__)
@@ -28,16 +29,9 @@ AUTH_METRIC_NAME = "algen_agent_runtime.auth.attempts"
 
 
 def _counter() -> Any:
-    try:
-        from opentelemetry import metrics
+    from algen_agent_runtime.observability.metrics import instrument
 
-        return metrics.get_meter("algen_agent_runtime.auth").create_counter(
-            AUTH_METRIC_NAME,
-            unit="1",
-            description="API authentication attempts by method, outcome and failure reason",
-        )
-    except Exception:
-        return None
+    return instrument(AUTH_METRIC_NAME)
 
 
 class AuthenticationAuditor:
@@ -72,8 +66,12 @@ class AuthenticationAuditor:
             return
         try:
             await self._audits.append(event)
-        except Exception:
-            logger.exception("failed to append authentication audit record")
+        except Exception as exc:
+            # The traceback as masked text: the host's handlers never format the raw exception
+            # (0.2.0b5).
+            logger.error(
+                "failed to append authentication audit record\n%s", exception_log_text(exc)
+            )
 
     async def success(self, identity: AuthenticatedIdentity) -> None:
         self._count(identity.method, "success", None)

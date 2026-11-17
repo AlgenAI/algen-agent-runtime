@@ -21,6 +21,7 @@ try:
     from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 except ModuleNotFoundError as exc:
     raise MissingExtraError("The HTTP API", "server", missing=exc.name) from exc
+import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from algen_agent_runtime import __version__
@@ -43,6 +44,7 @@ from algen_agent_runtime.api.rate_limiting import (
     InMemoryApiRateLimiter,
     RouteLimitPolicy,
 )
+from algen_agent_runtime.api.request_metrics import RequestMetricsMiddleware
 from algen_agent_runtime.api.tool_execution_routes import add_tool_execution_routes
 from algen_agent_runtime.api.user_data_routes import add_user_data_routes
 from algen_agent_runtime.api.workflow_routes import add_workflow_routes
@@ -85,13 +87,14 @@ from algen_agent_runtime.exceptions.errors import (
     QuotaExceededError,
     StoreUnavailableError,
 )
+from algen_agent_runtime.observability.metrics import record as record_metric
 from algen_agent_runtime.observability.setup import (
     configure_logging,
     configure_telemetry,
     flush_telemetry,
 )
 from algen_agent_runtime.orchestration.container import Container, build_container
-from algen_agent_runtime.security.redaction import redact_parameters
+from algen_agent_runtime.security.redaction import redact, redact_error_text, redact_parameters
 from algen_agent_runtime.types.contracts import (
     MAX_STEERING_CHARS,
     AgentDefinition,
@@ -207,6 +210,8 @@ def _sse(event: RunEvent) -> bytes:
 # How often a run event stream that follows a run through its pauses sends a keepalive comment.
 _SSE_KEEPALIVE_SECONDS = 15.0
 
+_stream_logger = structlog.get_logger("algen_agent_runtime.api")
+
 
 def _sse_overflow(last_sequence: int) -> bytes:
     """The last frame of a run event stream whose subscriber fell behind: an ``id`` of the last
@@ -254,6 +259,11 @@ class _StreamSlots:
         function releases it (once, however often it is called)."""
         key = (tenant_id, user_id)
         if self._held.get(key, 0) >= self._limit:
+            record_metric(
+                "algen_agent_runtime.api.admission.rejections",
+                1,
+                {"route_class": "event_stream", "reason": "stream_limit_exceeded"},
+            )
             raise HTTPException(
                 status_code=429,
                 detail=f"at most {self._limit} event streams may be open at once",
@@ -437,6 +447,14 @@ def create_app(
                 principal_id=identity.user_id,
             )
             if not decision.allowed:
+                record_metric(
+                    "algen_agent_runtime.api.admission.rejections",
+                    1,
+                    {
+                        "route_class": route_class,
+                        "reason": decision.reason or "rate_limit_exceeded",
+                    },
+                )
                 retry_seconds = max(1, math.ceil(decision.retry_after_seconds))
                 code = (
                     "CONCURRENCY_LIMIT_EXCEEDED"
@@ -467,6 +485,9 @@ def create_app(
                     principal_id=identity.user_id,
                 )
 
+    # Outermost, so it sees every answer: 429s from admission, 413s, 503s and unhandled 500s.
+    app.add_middleware(RequestMetricsMiddleware)
+
     @app.exception_handler(RequestPayloadTooLarge)
     async def payload_too_large(request: Request, exc: RequestPayloadTooLarge) -> JSONResponse:
         return JSONResponse(
@@ -485,7 +506,7 @@ def create_app(
         return JSONResponse(
             status_code=413,
             content={
-                "detail": str(exc),
+                "detail": redact_error_text(exc),
                 "code": "QUOTA_EXCEEDED",
                 "resource": exc.resource,
                 "dimension": exc.dimension,
@@ -496,25 +517,26 @@ def create_app(
 
     @app.exception_handler(NotFoundError)
     async def not_found(request: Request, exc: NotFoundError) -> JSONResponse:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return JSONResponse(status_code=404, content={"detail": redact_error_text(exc)})
 
     @app.exception_handler(ConflictError)
     async def conflict(request: Request, exc: ConflictError) -> JSONResponse:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return JSONResponse(status_code=409, content={"detail": redact_error_text(exc)})
 
     @app.exception_handler(StoreUnavailableError)
     async def store_unavailable(request: Request, exc: StoreUnavailableError) -> JSONResponse:
         # A store outage, not a bad request: the client may retry once the store is back.
         return JSONResponse(
             status_code=503,
-            content={"detail": str(exc), "kind": exc.error_kind.value},
+            content={"detail": redact_error_text(exc), "kind": exc.error_kind.value},
             headers={"Retry-After": "5"},
         )
 
     @app.exception_handler(AlgenAgentRuntimeError)
     async def core_error(request: Request, exc: AlgenAgentRuntimeError) -> JSONResponse:
         return JSONResponse(
-            status_code=400, content={"detail": str(exc), "kind": exc.error_kind.value}
+            status_code=400,
+            content={"detail": redact_error_text(exc), "kind": exc.error_kind.value},
         )
 
     add_workflow_routes(
@@ -639,7 +661,7 @@ def create_app(
         try:
             message = await dependencies.runtime.steer(run_id, identity.tenant_id, body.text)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=redact_error_text(exc)) from exc
         return {"run_id": run_id, "steer_id": message.id, "status": "queued"}
 
     @app.post("/v1/runs/{run_id}/approval", status_code=202)
@@ -734,6 +756,11 @@ def create_app(
                     except EventStreamOverflowError as exc:
                         # Too slow for the live queue: tell the client where to reconnect from.
                         yield _sse_overflow(exc.last_sequence)
+                        return
+                    except StoreUnavailableError:
+                        # The response has started, so it cannot become a 503: end the stream
+                        # and let the client reconnect with Last-Event-ID once the store is back.
+                        _stream_logger.warning("event_stream_store_unavailable", run_id=run_id)
                         return
                     pending = asyncio.ensure_future(iterator.__anext__())
                     if event.sequence <= delivered:
@@ -832,6 +859,9 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail="artifact metadata must be a string-to-string object"
             )
+        # Labels for the file, listed to everyone who may read it: a credential in them is
+        # masked before it is stored, as a conversation's metadata is (0.2.0b5).
+        metadata = redact(metadata)
         if run_id is not None and not artifacts_admin(identity):
             # Only the run's user files an upload under a run (its owner may read it).
             if await run_user(run_id, identity.tenant_id) != identity.user_id:
@@ -1069,7 +1099,7 @@ def create_app(
                 agent=body.agent,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=redact_error_text(exc)) from exc
         return {
             "message_id": user_message.id,
             "assistant_message_id": assistant_message.id,
@@ -1172,7 +1202,7 @@ def create_app(
                 conversation_id, turn_id, identity.tenant_id, identity.user_id, body.text
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=redact_error_text(exc)) from exc
         return {"turn_id": turn_id, "steer_id": message.id, "status": "queued"}
 
     @app.put("/v1/conversations/{conversation_id}/messages/{message_id}/feedback")
@@ -1234,6 +1264,13 @@ def create_app(
                     try:
                         event = pending.result()
                     except StopAsyncIteration:
+                        return
+                    except StoreUnavailableError:
+                        # As for run streams: end it; the client reconnects with Last-Event-ID.
+                        _stream_logger.warning(
+                            "conversation_stream_store_unavailable",
+                            conversation_id=conversation_id,
+                        )
                         return
                     pending = asyncio.ensure_future(iterator.__anext__())
                     if event.sequence <= delivered:

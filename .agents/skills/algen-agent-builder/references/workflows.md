@@ -25,7 +25,9 @@ quarantined, mismatched-media-type, or oversized content.
 For images and PDFs a model should read itself, use workflow attachments instead: declare
 `attachments: {enabled: true}` on the workflow and `pass_attachments: true` on each agent node that
 needs the files (its agent must accept attachments too). Callers pass them on
-`POST /v1/workflows/{name}/runs`. See docs/attachments.md, "Workflows".
+`POST /v1/workflows/{name}/runs`; from 0.2.0b4 a file the caller may not use (another user's
+upload, without `artifacts:admin`) is refused as if it were missing. See docs/attachments.md,
+"Workflows".
 
 Do not mark uploads available from a workflow hook. A deployment-owned `ArtifactScanner` must run
 through `ArtifactLifecycleService` first; workflows consume only `available` descriptors and should

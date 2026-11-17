@@ -4,6 +4,12 @@ Owner: AlgenAI Maintainers
 Status: Historical: the plan for the first `0.1.0a1` publication (2026-09); current status is in [GA criteria](ga-criteria.md)  
 Last reviewed: 2026-09-22  
 
+> **Historical record, not current guidance.** This plan prepared the first public `0.1.0a1`
+> publication in September 2026 and is kept as written. Statements below about missing
+> features, open findings or the release pipeline describe that time. For the current state see
+> [GA criteria](ga-criteria.md), [releasing](releasing.md),
+> [repository settings](repository-settings.md) and the [threat model](threat-model.md).
+
 ## Implementation status — 2026-09-19
 
 The first P0 implementation slice is complete:

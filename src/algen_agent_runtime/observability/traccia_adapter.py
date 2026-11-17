@@ -27,6 +27,12 @@ from algen_agent_runtime.observability.runtime_traces import (
     install_runtime_trace_filter,
     runtime_trace_context,
 )
+from algen_agent_runtime.observability.safe_spans import (
+    RedactingTracer,
+    record_exception,
+    redacting_scope,
+    redacting_tracer,
+)
 from algen_agent_runtime.observability.trace_levels import TraceLevel
 
 
@@ -89,7 +95,7 @@ class NoopObservabilityAdapter:
         return None
 
     def tracer(self, name: str) -> Any:
-        return trace.get_tracer(name)
+        return redacting_tracer(trace.get_tracer(name))
 
     def run_scope(
         self, *, agent_id: str, agent_name: str, tenant_id: str
@@ -136,7 +142,7 @@ class NoopObservabilityAdapter:
         }
         if policy_id:
             attributes["guardrail.policy_id"] = policy_id
-        tracer = self.tracer("algen_agent_runtime.guardrails")
+        tracer = redacting_tracer(self.tracer("algen_agent_runtime.guardrails"))
         if self._trace_level == "detailed":
             return cast(
                 AbstractContextManager[Any],
@@ -232,7 +238,7 @@ class TracciaObservabilityAdapter:
         self._trace_filter: RuntimeTraceFilterProcessor | None = None
 
     def tracer(self, name: str) -> Any:
-        return _TracciaTracer(self, name)
+        return RedactingTracer(_TracciaTracer(self, name))
 
     def start(self) -> None:
         if self._started:
@@ -390,11 +396,19 @@ class TracciaObservabilityAdapter:
             token = otel_context.attach(
                 runtime_trace_context(Context() if opens_trace else otel_context.get_current())
             )
+            error: Exception | None = None
             try:
                 with module.span(name, attributes=span_attributes) as span:
-                    yield span
+                    # Recorded masked here, so Traccia's span never records the raw text.
+                    try:
+                        yield span
+                    except Exception as exc:
+                        error = exc
+                        record_exception(span, exc)
             finally:
                 otel_context.detach(token)
+            if error is not None:
+                raise error
 
         return scope()
 
@@ -421,11 +435,13 @@ class TracciaObservabilityAdapter:
         if self._trace_level == "detailed":
             return cast(
                 AbstractContextManager[Any],
-                guardrails.guardrail_span(
-                    name,
-                    category=category,
-                    enforcement_mode=enforcement_mode,
-                    policy_id=policy_id,
+                redacting_scope(
+                    guardrails.guardrail_span(
+                        name,
+                        category=category,
+                        enforcement_mode=enforcement_mode,
+                        policy_id=policy_id,
+                    )
                 ),
             )
 

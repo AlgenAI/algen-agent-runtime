@@ -8,9 +8,10 @@ from time import monotonic
 from typing import Any
 
 import jsonschema
-from opentelemetry import metrics, trace
+from opentelemetry import metrics
 
 from algen_agent_runtime.analytics.contracts import (
+    _GRAPH_ENGINE_EXPERIMENTAL,
     AnalyticalGraph,
     AnalyticalGraphState,
     AnalyticalGraphStore,
@@ -26,10 +27,19 @@ from algen_agent_runtime.analytics.contracts import (
 )
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import BudgetExceededError, ConfigurationError
+from algen_agent_runtime.observability.safe_spans import (
+    exception_description,
+    record_exception,
+    runtime_tracer,
+)
+from algen_agent_runtime.stability import experimental
 from algen_agent_runtime.types.contracts import utc_now
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalNodeRegistry:
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     def __init__(self) -> None:
         self._handlers: dict[AnalyticalNodeKind, AnalyticalNodeHandler] = {}
 
@@ -48,8 +58,12 @@ class AnalyticalNodeRegistry:
         return tuple(sorted(self._handlers, key=str))
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 class AnalyticalGraphEngine:
-    """Checkpointed DAG executor that keeps each node result independently addressable."""
+    """Experimental: the analytical graph engine; not covered by the compatibility promise.
+
+    Checkpointed DAG executor that keeps each node result independently addressable.
+    """
 
     def __init__(
         self,
@@ -67,7 +81,7 @@ class AnalyticalGraphEngine:
         self._maximum_concurrency = maximum_concurrency
         self._maximum_node_timeout_seconds = maximum_node_timeout_seconds
         self._maximum_graph_timeout_seconds = maximum_graph_timeout_seconds
-        self._tracer = trace.get_tracer("algen_agent_runtime.analytics")
+        self._tracer = runtime_tracer("algen_agent_runtime.analytics")
         meter = metrics.get_meter("algen_agent_runtime.analytics")
         self._node_duration = meter.create_histogram(
             "algen_agent_runtime.analytics.node.duration", unit="ms"
@@ -222,6 +236,10 @@ class AnalyticalGraphEngine:
             "analytics.node.id": node.id,
             "analytics.node.kind": node.kind.value,
         }
+        # The graph id is a per-execution id: on the span, never on the metrics.
+        metric_attributes = {
+            key: value for key, value in attributes.items() if key != "analytics.graph.id"
+        }
         with self._tracer.start_as_current_span(
             f"analytical_node.{node.kind.value}", attributes=attributes
         ) as span:
@@ -242,16 +260,16 @@ class AnalyticalGraphEngine:
                 execution.result_id = result.id
                 execution.status = NodeStatus.COMPLETED
                 execution.completed_at = utc_now()
-                self._node_runs.add(1, {**attributes, "outcome": "completed"})
+                self._node_runs.add(1, {**metric_attributes, "outcome": "completed"})
             except BaseException as exc:
                 execution.status = NodeStatus.FAILED
-                execution.error = f"{type(exc).__name__}: {exc}"
+                execution.error = exception_description(exc)
                 execution.completed_at = utc_now()
-                span.record_exception(exc)
-                self._node_runs.add(1, {**attributes, "outcome": "failed"})
+                record_exception(span, exc, status=False)
+                self._node_runs.add(1, {**metric_attributes, "outcome": "failed"})
                 raise
             finally:
-                self._node_duration.record((monotonic() - started) * 1000, attributes)
+                self._node_duration.record((monotonic() - started) * 1000, metric_attributes)
                 await self._checkpoint(state)
 
     async def _invoke(

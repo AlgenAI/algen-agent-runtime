@@ -2,7 +2,7 @@
 
 Owner: AlgenAI Maintainers  
 Status: Active (`0.2` beta line); the support and deprecation policy below applies from `1.0.0`  
-Last reviewed: 2026-11-15
+Last reviewed: 2026-11-16
 
 Algen Agent Runtime follows Semantic Versioning. The current `0.x` line is pre-release software, so APIs may change as the contracts are validated in real applications. This policy makes those changes reviewable rather than silent, and says what `1.x` will promise.
 
@@ -20,17 +20,52 @@ Imports from undocumented modules may be needed for advanced integrations during
 
 ## The recorded surface
 
-[`docs/api/surface.json`](api/surface.json) records the surface as of the current release: every
-name in `algen_agent_runtime` and each subpackage's `__all__` with its signature or model fields,
-the HTTP routes, every configuration field and its type, the exception classes, the event and audit
-identifiers, the codes `check` reports, the `Protocol` extension points and the migrations.
-`scripts/api_surface.py` generates it from the code.
+[`docs/api/surface.json`](api/surface.json) records the surface as of the current release.
+`scripts/api_surface.py` generates it from the code. Its keys:
+
+| Key | What it records |
+| --- | --- |
+| `exports` | Every name in `algen_agent_runtime` and each subpackage's `__all__`, with its signature or model fields; an experimental one also carries `"stability": "experimental"` |
+| `http_routes` | The HTTP routes (method and path) |
+| `configuration` | Every configuration field (dotted path) and its type |
+| `errors` | The exception classes and their bases |
+| `events` | The event and audit identifiers the Runtime emits |
+| `event_payloads` | The payload shapes of the public events (since `0.2.0b5`), below |
+| `check_codes` | The codes `algen-agent-runtime check` reports |
+| `protocols` | The `Protocol` extension points and their methods |
+| `migrations` | The SQL migrations |
+| `experimental` | Every experimental export, protocol and configuration field (since `0.2.0b5`) |
+
+`event_payloads` holds:
+
+- `envelopes`: the fields of `RunEvent`, `ConversationEvent`, `AuditEvent` and
+  `FrameworkStreamEvent`, and the keys every workflow event carries (`workflow_id`,
+  `workflow_name`, `status`, and `node_id` and `node_kind` for a node's event);
+- `run`, `conversation` and `workflow`: for each event type, the keys its `data` can carry, read
+  from every place the Runtime emits it. A key is not always present (a payload can differ from
+  one emitting place to another), and `*` means the payload can also carry keys the script cannot
+  name, such as a model dump or a caller's mapping;
+- `sse`: the frames of `GET /v1/runs/{run_id}/events` and
+  `GET /v1/conversations/{conversation_id}/events` (`id`, `event` and `data` lines, the
+  `stream.overflow` frame and its `data` keys, and the keepalive comment).
+
+Audit event `metadata` keys are not recorded.
 
 `tests/unit/test_api_surface.py` fails when the code and the file differ, and prints the
-difference. A pull request that changes the surface on purpose regenerates the file
+difference grouped by what it needs (`python scripts/api_surface.py --changes` prints the same):
+
+| Group | Meaning | What the pull request needs |
+| --- | --- | --- |
+| `removed` | A stable entry is gone | Breaking: an upgrade note; it restarts the stability window |
+| `changed` | A stable entry differs, or became experimental | Check compatibility: an incompatible change is breaking |
+| `added` | A new stable entry, or a payload that gains keys | A `CHANGELOG.md` line |
+| `experimental` | An experimental entry was added, changed or removed | Allowed: a `CHANGELOG.md` line (and an upgrade note for a removal), no deprecation window |
+
+A pull request that changes the surface on purpose regenerates the file
 (`python scripts/api_surface.py --update`), commits it with the change, and records the change in
-`CHANGELOG.md`. From `0.2.0b1`, later `0.2` betas only add to this file: a removal or an
-incompatible change needs an upgrade note and restarts the stability window
+`CHANGELOG.md`; the test fails until it does, whatever the group, so the file always matches the
+code. From `0.2.0b1`, later `0.2` betas only add to this file: a removal or an incompatible change
+to a stable entry needs an upgrade note and restarts the stability window
 ([GA criteria](ga-criteria.md)).
 
 ## Compatibility rules during `0.x`
@@ -97,16 +132,66 @@ own that file):
 
 An experimental interface is documented and usable but outside the compatibility promise: it can
 change or go away in any minor release, with an upgrade note but without a deprecation window.
-The docs mark each one as experimental. The following are experimental and stay so in `1.0`
-unless this list says otherwise:
+The docs and the code mark each one as experimental. The following are experimental and stay so
+in `1.0` unless this list says otherwise:
 
 | Interface | Why it is experimental | Docs |
 | --- | --- | --- |
 | Horizontal scaling: more than one Runtime process per database, `distributed_execution`, `DistributedWorker`, the work-item queues and worker leases | The GA deployment scope is a single node; multi-worker recovery, fencing and distributed limits are not complete | [Deployment scope](production-readiness.md#deployment-scope), [remaining for multi-worker use](production-readiness.md#remaining-for-hardened-multi-worker-or-horizontally-scaled-use), [Distributed worker operations](operations.md#distributed-worker-operations-and-storage-validation) |
 | The AutoGen AgentChat adapter (`autogen` extra) | Frozen: AutoGen is archived upstream; no new features, and it may be removed in a minor release | [Framework adapters](framework-adapters.md#support-status) |
 | The CrewAI adapter (`crewai` extra) | Tested only with mock crews, not the real SDK | [Framework adapters](framework-adapters.md#support-status) |
+| The analytical graph engine (since `0.2.0b5`): `AnalyticalGraphEngine`, its graph types and stores, `analytical_execution`, the plugin `analytical_nodes` registry, and `SemanticQueryGraphPlanner` | No application runs it in production (only a reference example), and analytical dispatch is not integrated into the service lifecycle. Analytical methods, `AnalyticalResult`, the semantic layer and query governance are stable: applications use them in production | [Analytical runtime](analytical-runtime.md#typed-analytical-graphs) |
+| Remote model services (since `0.2.0b5`): `algen_agent_runtime.model_services` and the plugin `model_services` registry | No application uses them yet; the HTTP client, health and drift contracts are tested against local fakes only | [Analytical runtime](analytical-runtime.md) |
+| The TypeSafe Jev decision client (since `0.2.0b5`): `algen_agent_runtime.decisions` | A client for a third-party service, tested against a mocked HTTP API only; no application uses it yet | [README](../README.md) |
 
 The LangGraph and OpenAI Agents SDK adapters are supported: they are tested against the real SDKs
 and follow the deprecation window. Inside a framework, only the outer call and Runtime tools handed
 over through `GovernedToolBridge` are governed by the Runtime; the framework's own model and tool
 calls are not, whatever the adapter's status.
+
+The rows marked "since `0.2.0b5`" were reviewed with the rest of the public surface before
+`0.2.0`; they were never covered by a stability promise (the `0.x` rules apply), so marking them
+changes no behaviour. Everything else in the surface was confirmed stable, among it learned memory,
+context evaluations, the semantic layer, analytical methods, query governance, the agent UI
+generator, and the LangGraph and OpenAI Agents SDK adapters.
+
+### How experimental interfaces are marked
+
+Since `0.2.0b5` the code marks them too, through `algen_agent_runtime.stability`. The marker is
+for people and tools only: it emits no warning and changes no behaviour.
+
+- **Classes and functions** carry `@experimental("<reason>")`, and their docstring starts with
+  `Experimental:`.
+- **Packages** set a module-level `__experimental__ = "<reason>"`: everything they export is
+  experimental (`algen_agent_runtime.distributed`, `algen_agent_runtime.model_services`,
+  `algen_agent_runtime.decisions`).
+- **Configuration fields** carry `"stability": "experimental"` in the settings JSON schema
+  (`AppSettings.model_json_schema()`), and the fields under them are experimental too.
+- `is_experimental(value)` and `experimental_reason(value)` answer for a class, function or
+  module, so a host (a settings editor, a capability inspector) can label experimental interfaces
+  without keeping its own list:
+
+```python
+from algen_agent_runtime.frameworks import AutoGenAdapter, LangGraphAdapter
+from algen_agent_runtime.stability import experimental_reason, is_experimental
+
+is_experimental(LangGraphAdapter)  # False
+experimental_reason(AutoGenAdapter)  # "AutoGen is archived upstream: the adapter is frozen, ..."
+```
+
+`scripts/api_surface.py` reads these markers into [`surface.json`](api/surface.json), and
+`tests/unit/test_api_surface.py` checks that every experimental export and protocol has an
+`Experimental:` docstring and is named below.
+
+Marked in code (`0.2.0b5`):
+
+| Area | Exports and protocols | Configuration |
+| --- | --- | --- |
+| Horizontal scaling | `DistributedWorker`, `InMemoryWorkQueue`, `PostgresWorkQueue`, `WorkItem`, `WorkQueue`, `WorkStatus` | `distributed_execution`, `maintenance.work_item_retention_days` |
+| Framework adapters | `AutoGenAdapter`, `CrewAIAdapter` | |
+| Analytical graph engine | `AnalyticalGraphEngine`, `AnalyticalNodeRegistry`, `InMemoryAnalyticalGraphStore`, `PostgresAnalyticalGraphStore`, `builtin_handlers`, `AnalyticalGraphStore`, `AnalyticalNodeHandler`, `SemanticQueryGraphPlanner`, `SemanticQueryTask`; also the graph types `AnalyticalGraph`, `AnalyticalNode`, `AnalyticalNodeKind`, `AnalyticalGraphState`, `NodeExecution`, `NodeStatus`, `GraphStatus`, `NodeRetryPolicy`, `NodeCachePolicy`, `NodeBudget`, `ResultReference` | `analytical_execution`, `maintenance.analytical_graph_retention_days` |
+| Remote model services | `DeterministicModelService`, `DriftState`, `HTTPModelService`, `ModelService`, `ModelServiceHealth`, `ModelServiceKind`, `ModelServiceManifest`, `ModelServiceRegistry`, `ModelServiceRequest`, `ModelServiceResponse` | |
+| Jev decisions | `JevAnswer`, `JevDecisionClient`, `JevDecisionError`, `JevQuestion`, `JevRequest`, `JevResponse`, `JevSettings`, `JevUsage` | |
+
+The database tables behind experimental features (work items, analytical graphs) are persisted
+schemas: like every migration they stay additive, whatever the feature's status.

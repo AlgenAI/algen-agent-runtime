@@ -1,0 +1,17 @@
+# OpenTelemetry Collector: receives the Runtime's OTLP/HTTP metrics and serves them to Prometheus
+# with the default name translation the dashboards and alert rules expect (dots to underscores,
+# unit and _total suffixes, service.name as the `job` label).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion: {enabled: false}
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]

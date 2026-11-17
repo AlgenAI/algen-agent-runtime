@@ -28,6 +28,7 @@ from algen_agent_runtime.security.network import (
     create_safe_http_client,
     normalize_and_validate_url,
 )
+from algen_agent_runtime.security.redaction import redact_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ class JwksCache:
             except JwksError as exc:
                 logger.warning(
                     "JWKS refresh failed; keeping the last good keys",
-                    extra={"issuer": self.issuer, "error": str(exc)},
+                    extra={"issuer": self.issuer, "error": redact_error_text(exc)},
                 )
                 return
             self._keys = keys

@@ -21,7 +21,10 @@ RUN groupadd --system algen && useradd --system --gid algen --create-home algen
 WORKDIR /app
 # Dependencies come from the hash-locked requirements/service.txt (scripts/lock-requirements.sh),
 # so a rebuild installs exactly the reviewed versions and a tampered download fails the build.
-COPY requirements/service.txt ./requirements/service.txt
+COPY requirements/pip.txt requirements/service.txt ./requirements/
+# The base image's pip lags behind its security fixes (CVE-2025-8869, CVE-2026-8643 and others):
+# upgrade it, hash-locked, before it installs anything.
+RUN pip install --require-hashes --no-deps -r requirements/pip.txt
 RUN pip install --require-hashes --no-deps -r requirements/service.txt
 COPY --from=build /dist/ /tmp/dist/
 RUN pip install --no-deps /tmp/dist/*.whl && rm -rf /tmp/dist && pip check

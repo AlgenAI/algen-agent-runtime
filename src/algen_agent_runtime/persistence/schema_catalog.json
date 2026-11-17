@@ -22,7 +22,8 @@
     "020_approval_decided_by.sql",
     "021_user_data_indexes.sql",
     "022_run_turn_index.sql",
-    "023_artifact_owner.sql"
+    "023_artifact_owner.sql",
+    "024_workflow_tool_step_ledger.sql"
   ],
   "tables": {
     "algen_agent_runtime_analytical_graphs": {

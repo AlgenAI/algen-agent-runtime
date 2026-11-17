@@ -1,0 +1,34 @@
+# A ticket assistant whose answers a host follows as a stream. TicketPlugin (plugin.py)
+# registers ticket.lookup, an async tool slow enough for the demo to cancel a run while it waits.
+providers:
+  mock: {type: mock, default_model: deterministic}
+agents:
+  - name: ticket-assistant
+    version: 1.0.0
+    description: Summarises support tickets as JSON and looks tickets up
+    system_instructions: Answer with the JSON the caller asks for. Use ticket.lookup to read a ticket.
+    default_model: {name: deterministic, provider: mock, model: deterministic, required_capabilities: [chat, tools]}
+    planning_strategy: direct
+    enabled_tools: [ticket.lookup]
+    tool_permissions: [ticket.read]
+    domain_plugins: ["algen_agent_runtime_examples.pattern_run_follower.plugin:TicketPlugin"]
+    # json_schema checks an answer against the run's response_schema; a failed check sends the
+    # model one repair turn. Text it streamed before the check is withdrawn (model.delta.retracted).
+    verification_policy: {verifiers: [non_empty, json_schema], max_repairs: 1}
+    # The default: streamed text is redacted before it is sent and can be retracted. `off` sends
+    # no model.delta at all, only the verified answer.
+    guardrail_policy: {stream_text: redacted}
+runtime:
+  # Record every streamed chunk as its own model.delta (the default joins chunks per 50 ms).
+  stream_delta_interval_ms: 0
+security:
+  trusted_plugin_prefixes: [algen_agent_runtime_examples.pattern_run_follower]
+storage:
+  run_store: memory
+  memory_store: memory
+  event_store: memory
+  audit_store: memory
+  approval_store: memory
+  artifact_store: memory
+  tool_execution_store: memory
+telemetry: {enabled: false}

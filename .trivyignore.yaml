@@ -1,0 +1,17 @@
+# Image findings that are not exploitable in the service image, each with its reason and an expiry
+# so it is checked again. Read by the Security workflow's container job (--ignorefile).
+vulnerabilities:
+  # pip (26.3 and earlier) vendors setuptools 70.3.0's pkg_resources module only
+  # (pip/_vendor/pkg_resources/__init__.py, listed in pip/_vendor/vendor.txt). Neither flaw is in
+  # it: CVE-2025-47273 is in setuptools.package_index.PackageIndex.download and CVE-2026-59890 in
+  # the sdist FileList. The image has no setuptools of its own.
+  - id: CVE-2025-47273
+    purls:
+      - pkg:pypi/setuptools@70.3.0
+    statement: pip's vendored pkg_resources only; the flaw is in setuptools.package_index
+    expired_at: 2027-02-17
+  - id: CVE-2026-59890
+    purls:
+      - pkg:pypi/setuptools@70.3.0
+    statement: pip's vendored pkg_resources only; the flaw is in the sdist FileList
+    expired_at: 2027-02-17

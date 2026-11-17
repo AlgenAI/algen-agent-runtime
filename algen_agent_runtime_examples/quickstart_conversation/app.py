@@ -81,6 +81,10 @@ class Transcript:
                 print("assistant> ", end="", flush=True)
                 self._streaming = True
             print(data["delta"], end="", flush=True)
+        elif event_type == "assistant.message.delta.retracted":
+            # The text streamed so far is not the answer (a policy, verification or a retried
+            # model call withdrew it): a UI clears it; later deltas start from empty (0.2.0b4).
+            self.say(f"  [assistant] streamed text withdrawn ({data.get('reason')}); clear it")
         elif event_type == "assistant.message.awaiting_approval":
             self.say("  [assistant] waiting for approval")
         elif event_type == "assistant.message.resumed":

@@ -14,7 +14,7 @@ import httpx
 from algen_agent_runtime.config.settings import EnvironmentSecretProvider
 from algen_agent_runtime.exceptions.errors import InvalidToolCallError, ProviderError
 from algen_agent_runtime.runtime.attachments import describe_for_text
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.security.redaction import REDACTED, is_sensitive_key, redact
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     FileBlock,
@@ -44,27 +44,126 @@ def _error_kind(status: int) -> tuple[ErrorKind, bool]:
     return ErrorKind.INVALID_REQUEST, False
 
 
-def _error_message(response: httpx.Response, provider_id: str) -> str:
-    """Return bounded provider diagnostics without retaining the raw response body."""
+def _sent_credentials(response: httpx.Response) -> list[str]:
+    """The credentials the request carried (its credential-named headers' values, and the token
+    after a scheme such as ``Bearer``), longest first."""
+    try:
+        headers = response.request.headers
+    except RuntimeError:
+        return []
+    held: set[str] = set()
+    for key, value in headers.items():
+        if not value or not is_sensitive_key(key):
+            continue
+        held.add(value)
+        parts = value.split(None, 1)
+        if len(parts) == 2:
+            held.add(parts[1].strip())
+    return sorted((item for item in held if len(item) >= 6), key=len, reverse=True)
+
+
+def _error_payload(payload: Any) -> Mapping[str, Any] | None:
+    """The error object of an error body: ``{"error": {...}}`` or a bare ``{...}``, either one
+    also wrapped in a one-item list (Gemini's OpenAI-compatible endpoint answers
+    ``[{"error": ...}]``)."""
+    if isinstance(payload, list) and len(payload) == 1:
+        payload = payload[0]
+    if not isinstance(payload, Mapping):
+        return None
+    error = payload.get("error")
+    return error if isinstance(error, Mapping) else payload
+
+
+def _error_detail(source: Mapping[str, Any] | None, credentials: Sequence[str]) -> str:
+    """An error object's message, type, code, status and param, bounded, with the request's
+    credentials and anything secret-shaped masked."""
     parts: list[str] = []
+    for key in ("message", "type", "code", "status", "param"):
+        value = source.get(key) if source is not None else None
+        if value is not None and not isinstance(value, (Mapping, list)) and str(value).strip():
+            label = "" if key == "message" else f"{key}="
+            parts.append(f"{label}{value}")
+    detail = "; ".join(parts)
+    if not detail:
+        return ""
+    for credential in credentials:
+        detail = detail.replace(credential, REDACTED)
+    detail = " ".join(detail.split())[:500]
+    return str(redact(detail))
+
+
+def _error_message(response: httpx.Response, provider_id: str) -> str:
+    """Return bounded provider diagnostics without retaining the raw response body.
+
+    A provider that quotes the API key it was sent ("Incorrect API key provided: ...") has the
+    key masked (0.2.0b5), whatever its shape."""
     try:
         payload = response.json()
     except ValueError:
         payload = None
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        source = error if isinstance(error, dict) else payload
-        for key in ("message", "type", "code", "param"):
-            value = source.get(key)
-            if value is not None and str(value).strip():
-                label = "" if key == "message" else f"{key}="
-                parts.append(f"{label}{value}")
-    detail = "; ".join(parts)
+    detail = _error_detail(_error_payload(payload), _sent_credentials(response))
     if detail:
-        detail = " ".join(detail.split())[:500]
-        detail = str(redact(detail))
         return f"{provider_id} returned HTTP {response.status_code}: {detail}"
     return f"{provider_id} returned HTTP {response.status_code}"
+
+
+# Words in an error object's ``type``, ``code`` or ``status`` that say what failed, for an error
+# a stream reports in its body after HTTP 200, where there is no status to go by.
+_STREAM_ERROR_WORDS: tuple[tuple[tuple[str, ...], ErrorKind, bool], ...] = (
+    (("rate_limit", "too_many_requests", "resource_exhausted"), ErrorKind.RATE_LIMIT, True),
+    (("timeout", "deadline"), ErrorKind.TIMEOUT, True),
+    (("authentication", "invalid_api_key", "unauthenticated"), ErrorKind.AUTHENTICATION, False),
+    (("permission", "forbidden"), ErrorKind.AUTHORIZATION, False),
+    (
+        ("invalid_request", "invalid_argument", "not_found", "context_length"),
+        ErrorKind.INVALID_REQUEST,
+        False,
+    ),
+)
+
+
+def stream_error_kind(error: Mapping[str, Any]) -> tuple[ErrorKind, bool]:
+    """The kind of an error a stream reported in its body (an OpenAI-style ``{"error": ...}``
+    chunk), and whether retrying may help.
+
+    A numeric ``code`` is read as the HTTP status it names; otherwise words in ``type``, ``code``
+    and ``status`` decide. Anything else, such as ``server_error`` or an overloaded model, is a
+    retryable ``unavailable``: the provider broke the answer off, not the request.
+    """
+    code = error.get("code")
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600:
+        return _error_kind(code)
+    words = f"{error.get('type') or ''} {code or ''} {error.get('status') or ''}".lower()
+    for markers, kind, retryable in _STREAM_ERROR_WORDS:
+        if any(marker in words for marker in markers):
+            return kind, retryable
+    return ErrorKind.UNAVAILABLE, True
+
+
+def stream_error(
+    provider_id: str, error: Any, response: httpx.Response, kind: ErrorKind, retryable: bool
+) -> ProviderError:
+    """A ``ProviderError`` for an error a stream reported after HTTP 200, so an answer the
+    provider broke off is never reported complete. Its text is bounded and masked like an HTTP
+    error's; ``status_code`` is None, since the HTTP status was 200."""
+    source = error if isinstance(error, Mapping) else {"message": error}
+    detail = _error_detail(source, _sent_credentials(response))
+    message = f"{provider_id} stream failed" + (f": {detail}" if detail else "")
+    return ProviderError(message, kind, retryable)
+
+
+def _token_usage(usage: Mapping[str, Any]) -> TokenUsage:
+    """An OpenAI-style ``usage`` object, plain or streamed, with the prompt tokens read from the
+    cache (``prompt_tokens_details.cached_tokens``) as ``cached_tokens``."""
+    details = usage.get("prompt_tokens_details") or {}
+    cached = details.get("cached_tokens") if isinstance(details, Mapping) else None
+    return TokenUsage(
+        input_tokens=usage.get("prompt_tokens") or 0,
+        output_tokens=usage.get("completion_tokens") or 0,
+        cached_tokens=cached or 0,
+    )
 
 
 def _message_text(content: Any) -> str:
@@ -228,6 +327,8 @@ class OpenAICompatibleProvider:
     # Ask for token usage on streamed calls; servers that reject ``stream_options`` turn it off
     # with the provider setting ``stream_usage: false``.
     default_stream_usage: bool = True
+    # How long an ``embed`` call may take; a slower one fails with a retryable ``timeout``.
+    embed_timeout_seconds: float = 60.0
 
     def __init__(
         self,
@@ -261,6 +362,22 @@ class OpenAICompatibleProvider:
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
+
+    def _http_error(self, response: httpx.Response) -> ProviderError:
+        """The ``ProviderError`` for an HTTP error response whose body has been read: its kind
+        from the status (see ``_error_kind_for``), its text bounded and masked."""
+        kind, retryable = self._error_kind_for(response)
+        return ProviderError(
+            _error_message(response, self.provider_id),
+            kind,
+            retryable,
+            status_code=response.status_code,
+        )
+
+    def _error_kind_for(self, response: httpx.Response) -> tuple[ErrorKind, bool]:
+        """The kind of an HTTP error response, and whether retrying may help. A provider whose
+        statuses mean something else (Gemini's 400 for a wrong key) overrides it."""
+        return _error_kind(response.status_code)
 
     async def _auth_headers(self) -> dict[str, str]:
         headers = dict(self._headers)
@@ -451,16 +568,12 @@ class OpenAICompatibleProvider:
             "length": FinishReason.LENGTH,
             "content_filter": FinishReason.CONTENT_FILTER,
         }
-        usage = data.get("usage") or {}
         return ModelResponse(
             id=data.get("id", "unknown"),
             message=Message.text(Role.ASSISTANT, text),
             tool_calls=calls,
             finish_reason=finish_map.get(choice.get("finish_reason"), FinishReason.STOP),
-            usage=TokenUsage(
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-            ),
+            usage=_token_usage(data.get("usage") or {}),
             latency_ms=(time.monotonic() - started) * 1000,
             model=data.get("model", self._default_model),
             provider=self.provider_id,
@@ -477,13 +590,7 @@ class OpenAICompatibleProvider:
                 timeout=request.timeout_seconds,
             )
             if response.is_error:
-                kind, retryable = _error_kind(response.status_code)
-                raise ProviderError(
-                    _error_message(response, self.provider_id),
-                    kind,
-                    retryable,
-                    status_code=response.status_code,
-                )
+                raise self._http_error(response)
             return self._response(response.json(), started, request.raw_response_enabled)
         except httpx.TimeoutException as exc:
             raise ProviderError(f"{self.provider_id} timed out", ErrorKind.TIMEOUT, True) from exc
@@ -517,14 +624,8 @@ class OpenAICompatibleProvider:
                 timeout=request.timeout_seconds,
             ) as response:
                 if response.is_error:
-                    kind, retryable = _error_kind(response.status_code)
                     await response.aread()
-                    raise ProviderError(
-                        _error_message(response, self.provider_id),
-                        kind,
-                        retryable,
-                        status_code=response.status_code,
-                    )
+                    raise self._http_error(response)
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -532,17 +633,19 @@ class OpenAICompatibleProvider:
                     if data == "[DONE]":
                         break
                     chunk = json.loads(data)
+                    if isinstance(chunk, Mapping) and chunk.get("error") is not None:
+                        # The provider broke the answer off (overloaded, a server error): the
+                        # text so far is not the answer, so the stream fails rather than ends.
+                        error = chunk["error"]
+                        kind, retryable = stream_error_kind(
+                            error if isinstance(error, Mapping) else {}
+                        )
+                        raise stream_error(self.provider_id, error, response, kind, retryable)
                     response_id = chunk.get("id", response_id)
                     model = chunk.get("model", model)
                     chunk_usage = chunk.get("usage") or {}
                     if chunk_usage:
-                        usage = TokenUsage(
-                            input_tokens=chunk_usage.get("prompt_tokens", 0),
-                            output_tokens=chunk_usage.get("completion_tokens", 0),
-                            cached_tokens=(chunk_usage.get("prompt_tokens_details", {}) or {}).get(
-                                "cached_tokens", 0
-                            ),
-                        )
+                        usage = _token_usage(chunk_usage)
                     # The usage chunk that ends a stream carries an empty ``choices`` list.
                     choices = chunk.get("choices") or [{}]
                     choice = choices[0]
@@ -609,21 +712,43 @@ class OpenAICompatibleProvider:
             ),
         )
 
+    def _embeddings_url(self, model: str | None) -> str:
+        """Where ``embed`` posts for ``model``."""
+        return self._base_url + "/embeddings"
+
+    def _embeddings_payload(self, texts: Sequence[str], model: str | None) -> dict[str, Any]:
+        return {"model": model or self._default_model, "input": list(texts)}
+
     async def embed(self, texts: Sequence[str], model: str | None = None) -> list[list[float]]:
-        response = await self._client.post(
-            self._base_url + "/embeddings",
-            headers=await self._auth_headers(),
-            json={"model": model or self._default_model, "input": list(texts)},
-        )
-        if response.is_error:
-            kind, retryable = _error_kind(response.status_code)
-            raise ProviderError(
-                _error_message(response, self.provider_id),
-                kind,
-                retryable,
-                status_code=response.status_code,
+        """One vector per text. Fails with a ``ProviderError`` like a chat call: an HTTP error by
+        its status, a call slower than ``embed_timeout_seconds`` as a retryable ``timeout``, a
+        refused or dropped connection as a retryable ``unavailable``."""
+        try:
+            response = await self._client.post(
+                self._embeddings_url(model),
+                headers=await self._auth_headers(),
+                json=self._embeddings_payload(texts, model),
+                timeout=self.embed_timeout_seconds,
             )
-        return [item["embedding"] for item in response.json()["data"]]
+        except httpx.TimeoutException as exc:
+            raise ProviderError(
+                f"{self.provider_id} embeddings timed out", ErrorKind.TIMEOUT, True
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderError(
+                f"{self.provider_id} embeddings transport failure", ErrorKind.UNAVAILABLE, True
+            ) from exc
+        if response.is_error:
+            raise self._http_error(response)
+        try:
+            data = response.json()["data"]
+            return [[float(value) for value in item["embedding"]] for item in data]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(
+                f"{self.provider_id} returned an invalid embeddings response",
+                ErrorKind.INVALID_RESPONSE,
+                True,
+            ) from exc
 
     async def health(self) -> bool:
         try:

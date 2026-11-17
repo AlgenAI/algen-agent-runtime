@@ -10,6 +10,7 @@ from algen_agent_runtime.exceptions.errors import (
     RunConflictError,
     StoreUnavailableError,
 )
+from algen_agent_runtime.observability.metrics import record as record_metric
 from algen_agent_runtime.persistence.quotas import ResourceUsage, StorageQuotas
 from algen_agent_runtime.types.contracts import Message, RunState
 
@@ -24,6 +25,7 @@ def redis_unavailable(exc: BaseException) -> StoreUnavailableError | None:
         return None
     names = {cls.__name__ for cls in type(exc).__mro__ if cls.__module__.startswith("redis")}
     if names & _UNAVAILABLE_ERRORS:
+        record_metric("algen_agent_runtime.store.unavailable", 1, {"store": "redis"})
         return StoreUnavailableError(f"Redis is unavailable ({type(exc).__name__})")
     return None
 

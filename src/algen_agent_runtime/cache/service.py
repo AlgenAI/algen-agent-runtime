@@ -9,11 +9,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from time import monotonic
 from typing import Any
 
-import structlog
 from opentelemetry import metrics, trace
 
 from algen_agent_runtime.cache.contracts import CacheContext, CachePolicy, CacheScope, CacheStore
+from algen_agent_runtime.observability.safe_logging import runtime_logger
+from algen_agent_runtime.observability.safe_spans import record_exception
 from algen_agent_runtime.observability.trace_levels import TraceLevel, TraceLevelTracer
+from algen_agent_runtime.security.redaction import redact_error_text
 
 
 class CacheService:
@@ -40,7 +42,7 @@ class CacheService:
         self._latency = meter.create_histogram(
             "algen_agent_runtime.cache.operation.duration", unit="ms"
         )
-        self._logger = structlog.get_logger("algen_agent_runtime.cache")
+        self._logger = runtime_logger("algen_agent_runtime.cache")
 
     def policy(self, name: str) -> CachePolicy:
         return self._policies.get(name, CachePolicy())
@@ -64,7 +66,7 @@ class CacheService:
                 self._operations.add(1, {**attributes, "cache.outcome": "hit" if hit else "miss"})
                 return json.loads(encoded) if encoded is not None else None
             except Exception as exc:
-                span.record_exception(exc)
+                record_exception(span, exc, status=False)
                 span.set_attribute("cache.outcome", "error")
                 self._operations.add(1, {**attributes, "cache.outcome": "error"})
                 self._logger.warning(
@@ -107,7 +109,7 @@ class CacheService:
                 self._operations.add(1, {**attributes, "cache.outcome": "stored"})
                 return True
             except Exception as exc:
-                span.record_exception(exc)
+                record_exception(span, exc, status=False)
                 span.set_attribute("cache.outcome", "error")
                 self._operations.add(1, {**attributes, "cache.outcome": "error"})
                 self._logger.warning(
@@ -173,7 +175,7 @@ class CacheService:
                 span.set_attribute("cache.invalidated_count", count)
                 return count
             except Exception as exc:
-                span.record_exception(exc)
+                record_exception(span, exc, status=False)
                 self._logger.warning("cache_invalidation_failed", error_type=type(exc).__name__)
                 return 0
 
@@ -198,7 +200,7 @@ class CacheService:
                 "cache_scope_unavailable",
                 namespace=self._namespace(namespace),
                 scope=policy.scope.value,
-                reason=str(exc),
+                reason=redact_error_text(exc),
             )
             return None
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Any
 
 import pytest
@@ -90,3 +91,18 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("perf") is not None:
             item.add_marker(skip)
+
+
+# The live provider contract suite (tests/live) writes a results table with ALGEN_LIVE_REPORT.
+# The hooks live here: a conftest.py in tests/live would shadow this one for ``from conftest
+# import ...``.
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if "tests/live/" in report.nodeid.replace("\\", "/"):
+        from live_report import record
+
+        record(report)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if (live_report := sys.modules.get("live_report")) is not None:
+        live_report.write()

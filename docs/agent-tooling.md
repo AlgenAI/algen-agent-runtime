@@ -192,8 +192,21 @@ same rules the guardrails use, instead of its own regular expressions:
 | `redact_text(text)` / `redact_secret_text(text)` | credentials in one string, by the `secrets` policy's rules (above); `redact_secret_text` also returns how many it masked | 0.1.0a18; `redact_secret_text` and the shared rules 0.2.0b4 |
 | `is_sensitive_key(key)` | whether a dict key names a credential: its name lower-cased without separators contains `token`, `secret`, `password`/`passwd`, `apikey`, `accesskey`, `authorization`, `cookie`, `credential`, `privatekey`, `signingkey` or `sessionkey`, or is `session`, `pwd` or `auth`; token counts and settings (`max_tokens`, `input_tokens`, `token_count`, `tokenizer`, `token_url`) and `session_id` are not | 0.2.0b4 |
 | `redact_parameters(arguments)` | tool arguments as an approval shows them: at any depth, a key that `is_sensitive_key` accepts becomes `hidden_value_marker(value)`, `[REDACTED len=<n> sha256=<first 8 hex>]`, and credentials inside every string are masked | 0.1.0a18; markers and nested keys 0.2.0b4 (before: top-level `password`, `secret`, `token`, `api_key`, `authorization` became `[REDACTED]`) |
-| `undeclared_sensitive_parameters(arguments, schema)` | the dotted paths of credential-named arguments that a tool's input schema does not declare under `properties` | 0.2.0b4 |
+| `undeclared_sensitive_parameters(arguments, schema)` | the dotted paths of credential-named arguments that a tool's input schema does not declare under `properties`. The Runtime uses it to refuse an approval-gated call that carries one (`PolicyDeniedError`, `approval.undeclared_secret_parameters`), since an approver would see only its marker: declare such fields in the tool's input schema | 0.2.0b4 |
 | `fold_text(text)` | the folded copy the guardrails also match on (NFKC, format characters removed, Cyrillic and Greek lookalikes folded to Latin) | 0.2.0b4 |
+| `redact_error_text(error)` (`algen_agent_runtime.security`) | an exception's text (or a string): credentials as `redact_text` masks them, then personal identifiers as `redact_pii` does; what the Runtime puts in API error bodies, readiness reasons and work-queue rows. Mask before you cut a message, so no partial identifier is left | 0.2.0b5 |
+| `redact_held(value, held)` (`algen_agent_runtime.security`) | every string in `held` (credentials you hold and sent: a token, an `env://` secret) wherever it appears in `value`, at any depth, as `[REDACTED]`, longest first; for an upstream reply that echoes a credential with no recognisable shape | 0.2.0b5 |
+| `redact_log_event` (`algen_agent_runtime.security`) | a structlog processor: credentials in every field, and personal identifiers in `exception` and `stack`. `configure_logging` installs it; add it after `format_exc_info` in your own chain (docs/operations.md, "Logs under a host's own logging") | 0.2.0b5 |
+
+```python
+from algen_agent_runtime.security import redact_error_text, redact_held
+
+try:
+    reply = await client.post(url, headers={"Authorization": f"Bearer {token}"})
+except httpx.HTTPError as exc:
+    log.warning("upstream_failed", error=redact_error_text(exc))
+body = redact_held(reply.json(), [token])  # the API quoted the token back
+```
 
 ```python
 from algen_agent_runtime.policies.engine import PIIRedactionPolicy
@@ -252,8 +265,11 @@ event whose payload is `{"kind": "ask_user", "tool_call_id", "question", "choice
 Answer it like any clarification: `runtime.resume(run_id, tenant_id, {"clarification": "..."})`,
 `POST /v1/runs/{run_id}/clarification`, or a conversation turn's input answer (the turn's
 `pending.choices` carries the choices). The answer is free text, not limited to the choices; the
-model gets `{"answer": "..."}` as the call's result and the run goes on. Outside a run (a workflow
-`tool:` step) the tool raises `ToolExecutionError`.
+model gets `{"answer": "..."}` as the call's result and the run goes on. Since 0.2.0b4 the answer
+(like any clarification answer) first passes the run's `input` policies, as a steering message
+does: a policy may redact it, and a denial raises `PolicyDeniedError` and leaves
+the run paused for another answer. Outside a run (a workflow `tool:` step) the tool raises
+`ToolExecutionError`.
 
 ## Delegating to another agent
 

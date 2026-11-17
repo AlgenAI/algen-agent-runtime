@@ -11,7 +11,10 @@ Implement the `ModelProvider` protocol without returning SDK objects:
 
 Translate provider errors to `ProviderError` with an `ErrorKind` and a correct `retryable` flag. Put provider-only inputs in `ModelRequest.extensions`; never add them to orchestration contracts. Raw metadata is returned only when `raw_response_enabled` is true. Register the adapter with `ModelRouter.register_provider`; orchestration requires no edit.
 
-OpenAI-compatible providers can reuse `OpenAICompatibleProvider`. Native protocols should implement the interface directly or override payload/response/stream conversion. Capability declarations must be conservative and should be covered by contract tests.
+OpenAI-compatible providers can reuse `OpenAICompatibleProvider`. Native protocols should implement the interface directly or override payload/response/stream conversion. Capability declarations must be conservative and should be covered by contract tests. A
+built-in adapter is also listed in the live provider contract suite (`tests/live`), which checks
+every capability it claims against the vendor's API before each release (see
+[provider compatibility](provider-compatibility.md#live-provider-contracts)).
 
 OpenAI and Azure OpenAI strict structured outputs are normalized at the provider boundary. Runtime
 requires every object property on the wire, forbids additional properties, removes defaults and
@@ -22,6 +25,31 @@ compatibility never weakens the application contract.
 `MistralProvider` is an example of a dedicated compatible adapter: it reuses normalized chat, tool, streaming, structured-output, and embedding handling while translating Mistral-specific multimodal image blocks. Configure it with `type: mistral` and an `env://MISTRAL_API_KEY` secret reference. Capability declarations can be narrowed in YAML for the selected Mistral model.
 
 Secrets are references (`env://NAME`) resolved immediately before a request. Never accept or log literal secret configuration.
+
+## Provider types
+
+`type:` on a `providers:` entry takes one of these (`SUPPORTED_PROVIDER_TYPES` in
+`orchestration/container.py`):
+
+| `type` | Default secret (`api_key` unset) | Endpoint | `base_url` |
+| --- | --- | --- | --- |
+| `openai` | `env://OPENAI_API_KEY` | `https://api.openai.com/v1` | optional; another host needs `api_key` (0.2.0b5; ignored before) |
+| `azure_openai` | `env://AZURE_OPENAI_API_KEY` | your resource endpoint; `default_model` is the deployment name, `api_version` defaults to `2024-10-21`; `embedding_deployment` names the embeddings deployment (0.2.0b5, see [Azure OpenAI notes](provider-compatibility.md#azure-openai-notes)) | required (the container refuses to build without it since 0.2.0b5) |
+| `anthropic` | `env://ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` (Messages API) | optional; another host needs `api_key` (0.2.0b5; ignored before) |
+| `deepseek` | `env://DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | optional; another host needs `api_key` (0.2.0b5; ignored before) |
+| `mistral` | `env://MISTRAL_API_KEY` | `https://api.mistral.ai/v1` | optional; another host needs `api_key` (0.2.0b4) |
+| `gemini`, `xai`, `groq` | `env://GEMINI_API_KEY`, `env://XAI_API_KEY`, `env://GROQ_API_KEY` | the vendor's OpenAI-compatible endpoint | optional; another host needs `api_key` (0.2.0b4) |
+| `huggingface_inference` | `env://HF_TOKEN` | `https://router.huggingface.co/v1` | optional; another host needs `api_key` (0.2.0b5; ignored before) |
+| `ollama` | none | `http://127.0.0.1:11434/v1` | optional |
+| `openai_compatible` | none (set `api_key` if the server needs one) | `base_url`, default `http://127.0.0.1:8001/v1` | the endpoint |
+| `local_transformers` | none | in process (`transformers` extra) | not used |
+| `mock` | none | deterministic, in process | not used |
+
+Before 0.2.0b5, `openai`, `anthropic`, `deepseek` and `huggingface_inference` ignored
+`base_url` and called the vendor's endpoint, so a configuration that named a gateway still sent
+its requests (and the default key) to the vendor. They now call the configured `base_url`, under
+the same key rule as the hosted vendors below. "Not used" means the setting has no effect. Capabilities per type are in
+[provider compatibility](provider-compatibility.md).
 
 ## Hosted OpenAI-compatible vendors
 
@@ -36,7 +64,8 @@ providers:
 ```
 
 The default secret is sent only to the vendor's own endpoint. Since 0.2.0b4, a `gemini`, `xai`,
-`groq` or `mistral` provider whose `base_url` points anywhere else (a gateway, a proxy, a
+`groq` or `mistral` provider (since 0.2.0b5 also `openai`, `anthropic`, `deepseek` and
+`huggingface_inference`) whose `base_url` points anywhere else (a gateway, a proxy, a
 compatible server) needs an explicit `api_key`; without one the container refuses to build
 (`ConfigurationError`, "set api_key explicitly") instead of sending, say, `env://GEMINI_API_KEY`
 to a host the configuration names. **Upgrade:** add `api_key: env://<THAT_HOST_KEY>` (it may be
@@ -52,6 +81,29 @@ invalid (HTTP 400 or 422, `invalid_request`) is raised without trying other mode
 would reject it too, and it does not count against the provider's circuit breaker. A streamed call
 falls back only before it starts, and only when the request does not fit a candidate's context
 budget.
+
+The kind follows the HTTP status the same way for plain and streamed calls (401 `authentication`,
+403 `authorization`, 400/404/422 `invalid_request`, 429 `rate_limit`, 5xx `unavailable`), and
+the error text keeps the provider's message with the key it was sent masked. Before 0.2.0b5 a
+streamed Anthropic call reported every status other than 429 as `unavailable` without the text,
+so a wrong key or an unknown model fell back to the next candidate. Gemini answers a wrong key
+with HTTP 400 `API_KEY_INVALID`; it is an `authentication` error (with `status_code` 400) since
+0.2.0b5, not an `invalid_request`.
+
+An error a provider reports inside a stream after HTTP 200 (an Anthropic `error` event such as
+`overloaded_error`, an OpenAI-style `{"error": ...}` chunk) fails the stream with a
+`ProviderError` since 0.2.0b5; before, the stream ended as `completed` with the text so far. An
+overloaded or server error is a retryable `unavailable`, a rate limit a retryable `rate_limit`,
+an invalid request a non-retryable `invalid_request`; its `status_code` is None. Once text has
+reached the caller the router raises it as is and never falls back, so another model's answer is
+not appended to the partial one; a run then withdraws the streamed text
+(`model.delta.retracted`, reason `model_error`) and, when the error is retryable, retries the
+step within its `retry_policy`.
+
+`embed` fails the same way as a chat call since 0.2.0b5: an HTTP error by its status, a call
+slower than the provider's `embed_timeout_seconds` (60 by default) as a retryable `timeout`, a
+refused or dropped connection as a retryable `unavailable`, a body without vectors as
+`invalid_response`. Before, it had no timeout and let httpx errors escape.
 
 ## Ordered fallback
 
@@ -218,8 +270,9 @@ budget check.
 The built-in estimator uses normalized serialized content sizes, not a provider tokenizer. The safety
 margin accommodates some wire overhead but cannot guarantee exact model token counts. Builder limits
 still apply earlier; increasing a profile's window cannot recover messages already evicted there.
-Configured budgets currently support text messages only: image/file blocks raise `ConfigurationError`
-because URL length cannot represent their token cost. Direct router callers must supply a positive
+Configured budgets support text and attached files (since 0.2.0b1 a `FileBlock` counts at a rough
+fixed cost); an inline image block raises `ConfigurationError`, because its token cost needs a
+provider-specific estimate. Direct router callers must supply a positive
 `ModelRequest.max_output_tokens`; Runtime supplies it from the agent budget or request override.
 
 When budgeting is enabled, profile extensions cannot override normalized input, model, tools,

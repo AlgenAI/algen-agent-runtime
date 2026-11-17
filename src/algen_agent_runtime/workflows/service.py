@@ -35,6 +35,7 @@ from algen_agent_runtime.exceptions.errors import (
     ConflictError,
     NotFoundError,
 )
+from algen_agent_runtime.observability.safe_spans import exception_log_text
 from algen_agent_runtime.plugins.signing import verify_module
 from algen_agent_runtime.runtime.client import AlgenAgentRuntimeClient
 from algen_agent_runtime.security.network import create_safe_http_client
@@ -433,8 +434,8 @@ class WorkflowService:
         async def drive() -> None:
             try:
                 state = await work
-            except Exception:
-                LOGGER.exception("workflow %s stopped with an error", name)
+            except Exception as exc:
+                LOGGER.error("workflow %s stopped with an error\n%s", name, exception_log_text(exc))
                 self._active.discard(key)
                 return
             self._active.discard(key)

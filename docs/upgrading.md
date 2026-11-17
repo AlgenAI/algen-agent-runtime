@@ -40,10 +40,10 @@ of each migration after `NNN` (from `0.2.0b3`), and `check_schema(...)` verifies
 
 | From | Migrations to apply | Long locks |
 | --- | --- | --- |
-| `0.1.0a23` | `017` to `022` | `021` and `022` build indexes on the runs table: on a large table create them `CONCURRENTLY` first (below) |
-| `0.2.0b1` | `019` to `022` | as above |
-| `0.2.0b2` | `021`, `022` | as above |
-| `0.2.0b3` | those `0.2.0b4` adds; see [0.2.0b4](#from-020b3-to-020b4) | |
+| `0.1.0a23` | `017` to `023` | `021` and `022` build indexes on the runs table: on a large table create them `CONCURRENTLY` first (below) |
+| `0.2.0b1` | `019` to `023` | as above |
+| `0.2.0b2` | `021` to `023` | as above |
+| `0.2.0b3` | `023` (see [0.2.0b4](#from-020b3-to-020b4)) | none: one nullable column and a partial index on the artifacts table |
 
 Each migration, and whether it can stay in place on a rollback, is listed under
 [Upgrades and rollback](operations.md#upgrades-and-rollback).
@@ -194,12 +194,60 @@ upgrade:
 - **Secrets in configuration.** Credential-named stdio MCP `env` values and retrieval
   `connection_url` values with a password must be `env://` references.
 - **Agent UI under `jwt`/`oidc`** needs a token with `agents:read`.
+- **Clarification and `core.ask_user` answers** pass the run's `input` policies; a denied answer
+  raises `PolicyDeniedError` and the run stays paused.
+- **API limits.** At most `api.max_streams_per_principal` (default 32) open event streams per
+  principal and process (429 beyond); a non-numeric `Last-Event-ID` is a 400; CORS `*` together
+  with credentials is refused at startup; a `*` scope in a static `jwt` token is ignored.
+- **Plugins.** Trust prefixes are checked against the module an entry point loads; an entry point
+  name declared by two distributions is refused; a signed plugin with loose `.pyc` files or a
+  mismatched bytecode cache is refused (delete `__pycache__` and reinstall).
+- **Generated SQL validation is strict.** `SemanticLayer.validate_generated_sql` refuses comments,
+  several statements, set operations, a top-level `OR` in `WHERE`, and required filters that are
+  not their own conjunct.
+- **Policies.** Mandatory policies always fail closed. The secrets guardrail recognises more token
+  shapes, so a tool call whose arguments it redacts may now be refused.
+- **Caches and stores.** The `tool_results` cache is user-scoped unless its `scope` is set;
+  PostgreSQL, Chroma, FAISS and Qdrant vector stores refuse documents without `tenant_id`.
 - **Framework adapters** return `FAILED`/`CANCELLED` instead of raising; LangGraph threads are
   `"{tenant}:{session}"` (checkpoints under a bare session id are not found); pass AutoGen a
   `factory=`; give `GovernedToolBridge` a permissive `approval_policy` if a framework must call
   state-changing tools.
 
 The full list, with the "You can now remove" entries, is in the changelog's `0.2.0b4` section.
+
+## From `0.2.0b4` to `0.2.0b5`
+
+`0.2.0b5` adds evidence (provider cancellation, redacted telemetry, live provider contracts),
+run-level metrics with dashboards and alert rules, and fixes. It has no new required setting.
+Check these before you upgrade:
+
+- **Migration `024`** drops the tool-execution ledger's foreign key to runs, so workflow
+  `tool:<name>` steps work on PostgreSQL (they failed with `ForeignKeyViolationError`). Hosts that
+  own the schema apply it with `algen-agent-runtime migrations sql --since 23`; rolling back to
+  `0.2.0b4` keeps working on the migrated database.
+- **Provider `max_concurrency`** is enforced when you set it (it was never read); left at its
+  default it sets no cap.
+
+- **Provider `base_url`.** `openai`, `anthropic`, `deepseek` and `huggingface_inference` now call
+  the configured `base_url` (they ignored it before); another host than the vendor's needs an
+  explicit `api_key`. `azure_openai` needs `base_url` at build time.
+- **Cancelled waiters.** Code that cancels a task awaiting `Runtime.run` or `Runtime.wait` gets
+  `CancelledError` instead of a cancelled `RunResult`; an `asyncio.timeout()` around them raises
+  `TimeoutError`. Use `Runtime.cancel(run_id, tenant_id)` to cancel the run itself.
+- **Masked text.** Run errors, tool errors shown to the model, approver comments, conversation
+  titles, steering text for a paused run, artifact metadata, API error bodies and readiness
+  reasons can carry `[REDACTED…]` markers. Do not parse secrets or personal data out of them.
+- **Logging.** Under your own structlog or stdlib configuration, Runtime log events arrive masked
+  with an `exception` string instead of `exc_info`; add `redact_log_event` after
+  `format_exc_info` to keep exception objects.
+- **Metrics.** If you scrape Prometheus, the `job` label becomes `telemetry.service_name` (unless
+  `OTEL_SERVICE_NAME` is set). Import the dashboards and alert rules from `deploy/observability`.
+- **Experimental interfaces.** Horizontal scaling, the AutoGen and CrewAI adapters, the
+  analytical graph engine, `model_services` and `decisions` are marked experimental (outside the
+  1.x promise); check `is_experimental()` before building on them.
+
+The full list is in the changelog's `0.2.0b5` section.
 
 ## Rolling back
 

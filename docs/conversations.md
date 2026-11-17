@@ -102,6 +102,8 @@ refuses the streamed answer (`reason: policy`), it fails verification and is rep
 (`verification`) or rejected (`rejected`), or the model call is retried after part of it streamed
 (`model_error`). Text streamed after it starts from empty; the completed message is still the
 answer. A client that ignores the event shows withdrawn text until the turn completes or fails.
+`algen_agent_runtime_examples/pattern_run_follower` handles the run-level `model.delta.retracted`
+the same way (a verification repair withdraws the first answer).
 An agent whose streamed text must never be shown before verification sets
 `guardrail_policy.stream_text: off`: its runs record no streamed text, and the turn shows only the
 completed message.
@@ -241,7 +243,11 @@ above), unless the container has a `recovery_credentials` provider.
 
 `submit(..., attachments=(RunAttachment(artifact_id=..., media_type=...),))` (from 0.1.0a19)
 attaches uploaded files by reference; the message keeps them as `file` blocks and the agent must
-accept attachments ([attachments](attachments.md)).
+accept attachments ([attachments](attachments.md)). From 0.2.0b4 an artifact belongs to its
+uploader: over HTTP a turn that attaches a file the user may not use (another user's upload,
+without `artifacts:admin`) is refused with the same error as a missing file. `submit` in process
+does not check: call `artifact_owned_by` (`algen_agent_runtime.artifacts`) first
+([artifacts](artifacts.md#who-may-use-an-artifact-020b4)).
 
 ## Sessions
 

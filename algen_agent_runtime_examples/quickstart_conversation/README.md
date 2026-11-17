@@ -11,7 +11,7 @@ python -m algen_agent_runtime_examples.quickstart_conversation.app --reject   # 
 
 | What | API | Where you see it |
 | --- | --- | --- |
-| Streamed answer | `conversation_streaming` in `agent.yaml`; the mock provider streams word by word | `assistant.message.delta` conversation events, printed after `assistant>` |
+| Streamed answer | `conversation_streaming` in `agent.yaml`; the mock provider streams word by word, and the Runtime redacts the text before sending it, holding back the last 128 characters until more arrives (`guardrail_policy.stream_text`, since 0.2.0b4), so answers this short arrive as one delta | `assistant.message.delta` conversation events, printed after `assistant>` (a UI discards text an `assistant.message.delta.retracted` withdraws) |
 | A note for the UI | `await context.emit_note(title=..., suggestions=..., data=...)` in `orders.track` | a `tool.note` run event; the model never sees it |
 | Steering mid-turn | `await runtime.steer(run_id, tenant_id, text)` while `orders.track` runs | `steer.delivered`; the next model call ends with the message |
 | Approval pause and resume | `orders.change_address` is a `write()` tool, so the agent's approval policy asks first; `ConversationService.respond(..., ConversationApprovalDecision(decision="approved"))` | `assistant.message.awaiting_approval`, the message's `pending` (tool, proposed action, redacted parameters), then `assistant.message.resumed` and `completed` |

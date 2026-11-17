@@ -86,11 +86,11 @@ New tools are easier to write with `@tool` and `Toolkit` ([writing agent tools](
 | `composers` | response composer | `name` |
 | `semantics` | `SemanticLayer` | `definition.name` |
 | `methods` | `(AnalyticalMethodManifest, implementation)` | `name@version` |
-| `model_services` | `ModelService` | `manifest.name@manifest.version` |
+| `model_services` | `ModelService` (experimental since `0.2.0b5`) | `manifest.name@manifest.version` |
 | `providers` | `ModelProvider`, with the `ModelRouter.register_provider` arguments | `registration_id`, else `provider_id` |
 | `mcp_servers` | an `MCPServerConfig`; the container connects at start | `name` |
 | `policies` | a guardrail policy an agent names in `guardrail_policy.policies` or `tool_policies` | `name` |
-| `analytical_nodes` | `(kind, handler)` for an analytical node kind with no handler (`semantic_query`, `model_call`) | the kind |
+| `analytical_nodes` | `(kind, handler)` for an analytical node kind with no handler (`semantic_query`, `model_call`); experimental since `0.2.0b5` | the kind |
 | `retrievers` | `(name, store, **options)`: a search store and its `retrieval.<name>` context builder | `name` |
 
 `context.secrets` resolves `env://` references with the container's environment (call it when a
@@ -152,7 +152,9 @@ Plugin packages can also be signed with Ed25519 and verified before import:
 `plugins.trusted_publishers` lists publisher keys and `plugins.require_signed: true` refuses
 any plugin (and any workflow hook package) not signed by one of them, even under a trusted
 prefix. `algen-agent-runtime plugin keygen | sign | verify` create keys, sign a package
-directory and check one. See [Plugin signing](operations.md#plugin-signing).
+directory and check one. Bytecode is not signed but is checked (since 0.2.0b4): a loose `.pyc`
+or `.pyo` outside `__pycache__`, or a `__pycache__` file that does not match its signed source,
+refuses the package. See [Plugin signing](operations.md#plugin-signing).
 
 ## Secrets
 
@@ -195,6 +197,8 @@ exit with status 1:
 | `COMPONENT_CONFLICT` | Two sources register the same name. |
 | `UNKNOWN_COMPONENT` | An agent names something nothing registered; `suggestion` holds the closest name. |
 | `UNSUPPORTED_PROVIDER_TYPE` | A provider's `type` is not one the Runtime builds. |
+| `APPROVAL_ARGUMENTS_UNBOUND` | A workflow tool step calls an approval-required tool with values that nodes after its approval produce, so no approver sees them and the engine always refuses the call (since 0.2.0b1). |
+| `HOOK_PROVIDER_UNTRUSTED` | A workflow's `hook_provider` module is not under `security.trusted_plugin_prefixes` (since 0.2.0b1). An error under `--profile standalone`, a warning under the default `studio` profile. |
 
 It warns about workflow tool steps whose tool `requires_approval` (see
 [multi-agent workflows](multi-agent-workflows.md#tool-steps)):
@@ -203,11 +207,15 @@ It warns about workflow tool steps whose tool `requires_approval` (see
 | --- | --- |
 | `APPROVAL_ARGUMENTS_NOT_REVIEWED` | The step's arguments read values its covering approval did not show the approver (`review_from`, `parameters_from`) or decide. |
 | `APPROVAL_MODIFICATION_IGNORED` | The approval allows modification, but the step does not read its `parameters`, so a modified decision would not change the call. |
+| `APPROVAL_BINDING_STEP` | The approval declares `binding: step`, so it approves any call the step makes, whatever its arguments (since 0.2.0b1). |
 
 A step is checked against the approvals that gate it, the nearest on each path, as the engine does.
-Literal arguments are part of the workflow's definition and are not checked, and a clean result does
-not prove the call matches what was approved; strict binding is planned
-([#109](https://github.com/AlgenAI/algen-agent-runtime/issues/109)).
+Literal arguments are part of the workflow's definition and are not checked. The check is advice:
+since 0.2.0b1 the engine itself binds each approval to the exact call and refuses a step whose
+arguments differ ([approvals bind the exact call](multi-agent-workflows.md#approvals-bind-the-exact-call)).
+
+It also warns `JWT_AUDIENCE_MISSING` (since 0.2.0b4) when `api.auth_mode: jwt` uses an asymmetric
+algorithm without `api.jwt_audience`.
 
 It also reads the Python under `--project-root` (skipping tests, virtual environments and hidden
 directories, and running none of it) and warns about what Studio will not run or cannot see:

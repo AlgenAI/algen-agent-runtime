@@ -35,6 +35,7 @@ from algen_agent_runtime.security.network import (
     OutboundNetwork,
     create_safe_http_client,
 )
+from algen_agent_runtime.security.redaction import redact_error_text, redact_held
 from algen_agent_runtime.security.sandbox import MCP_DEFAULT_ENV, SandboxSettings, prepare_command
 from algen_agent_runtime.tools.contracts import (
     Idempotency,
@@ -46,6 +47,8 @@ from algen_agent_runtime.tools.contracts import (
 
 # The Runtime's minimal environment for stdio servers; security.sandbox.env_allowlist replaces it.
 SAFE_ENV_PASSTHROUGH = set(MCP_DEFAULT_ENV)
+# The shortest secret value a tool masks when its server echoes it back.
+_MIN_HELD_CHARS = 8
 
 
 def _resolve_secret(reference: str, environment: Mapping[str, str] | None = None) -> str:
@@ -625,6 +628,44 @@ class MCPClientManager:
             return
         await self._drop_oauth_connection(key)
 
+    async def _held_credentials(
+        self, config: MCPServerConfigBase, context: ToolContext
+    ) -> tuple[str, ...]:
+        """The credentials this server is sent for ``context``: its ``env://`` token, secret
+        headers and stdio environment, and the caller's stored OAuth tokens (read, never
+        refreshed). A server that echoes one back (in a result or an error) does not hand it to
+        the model, the run's records or the ledger (0.2.0b5)."""
+        held: list[str] = []
+        references = [
+            *getattr(config, "secret_headers", {}).values(),
+            *(
+                value
+                for value in getattr(config, "env", {}).values()
+                if isinstance(value, str) and value.startswith("env://")
+            ),
+        ]
+        token_ref = getattr(config, "auth_token_ref", None)
+        if token_ref:
+            references.append(token_ref)
+        for reference in references:
+            try:
+                held.append(_resolve_secret(reference, self._environment))
+            except ConfigurationError:
+                continue
+        if self.oauth is not None and oauth_config(config) is not None:
+            try:
+                key = self.oauth.key_for(config.name, context.tenant_id, context.user_id)
+                tokens = await self.oauth.store.get(key)
+            except Exception:
+                tokens = None
+            if tokens is not None:
+                held.append(tokens.access_token.get_secret_value())
+                if tokens.refresh_token is not None:
+                    held.append(tokens.refresh_token.get_secret_value())
+        # A short value (an env:// flag such as "1" or "true") is no credential, and masking it
+        # would mangle every result.
+        return tuple(value for value in held if len(value) >= _MIN_HELD_CHARS)
+
     def _create_tool_instance(
         self,
         tool_def: ToolDefinition,
@@ -638,6 +679,7 @@ class MCPClientManager:
             # An OAuth server's tool always runs on the caller's own connection, never on the
             # one that listed the tools.
             active = await self._caller_session(config, context) if uses_oauth else session
+            held = await self._held_credentials(config, context)
             try:
                 call_task = asyncio.create_task(active.call_tool(remote_name, arguments))
                 try:
@@ -662,9 +704,18 @@ class MCPClientManager:
                 if uses_oauth:
                     # A broken or rejected session is reopened, with a fresh token, next time.
                     await self._forget_caller_session(config, context)
+                # The server's or the transport's text may quote the credentials it was sent,
+                # or personal data; they are masked before it is cut (0.2.0b5).
+                held = (*held, *await self._held_credentials(config, context))
+                message = redact_error_text(redact_held(str(exc), held))
+                # Not chained: a traceback (a span's, a log's) would print the raw text again.
                 raise ToolExecutionError(
-                    f"MCP tool {tool_def.name} execution error: {str(exc)[:200]}"
-                ) from exc
+                    f"MCP tool {tool_def.name} execution error "
+                    f"({type(exc).__name__}): {message[:200]}"
+                ) from None
+            if uses_oauth:
+                # A token refreshed during the call (after a 401) is the one the server saw.
+                held = (*held, *await self._held_credentials(config, context))
 
             is_error = getattr(result, "isError", False)
             content = getattr(result, "content", [])
@@ -682,6 +733,10 @@ class MCPClientManager:
                         extracted_text.append(text)
 
             combined_text = "\n".join(extracted_text)
+
+            combined_text = redact_held(combined_text, held)
+            if structured_data is not None:
+                structured_data = redact_held(structured_data, held)
 
             if is_error:
                 error_summary = combined_text[:300] if combined_text else "server reported error"

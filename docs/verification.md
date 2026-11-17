@@ -10,7 +10,14 @@ A run that failed verification delivers no answer: `RunResult.output` (and the r
 The last rejected answer is kept for diagnostics in `RunResult.rejected_output` (an attribute
 left out of `model_dump()` and JSON, so a result passed on whole, such as a sub-agent's tool
 result, never carries it) and in the run view's `rejected_output`. Do not show it to users as
-the answer.
+the answer. The run's `RunResult.error_type` is `VerificationError` (since 0.2.0b3), so callers
+can tell a verification failure from other failures without parsing `error`.
+
+On a streamed run (since 0.2.0b4), text the model streamed as `model.delta` that then fails
+verification is withdrawn with a `model.delta.retracted` event (`reason: verification` before a
+repair turn, `rejected` when the run fails); clients discard what they showed. With
+`guardrail_policy.stream_text: off` no text is streamed, only the verified answer. See
+[agent tool behaviour](agent-tooling.md).
 
 ### Structured output and guardrails
 

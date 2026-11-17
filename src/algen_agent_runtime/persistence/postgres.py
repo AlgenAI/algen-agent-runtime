@@ -7,14 +7,15 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
-import structlog
-
 from algen_agent_runtime.exceptions.errors import (
     ConfigurationError,
     ConflictError,
     RunConflictError,
     StoreUnavailableError,
 )
+from algen_agent_runtime.observability.metrics import observe_postgres_pool
+from algen_agent_runtime.observability.metrics import record as record_metric
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.persistence.naming import check_schema_name
 from algen_agent_runtime.persistence.quotas import (
     ResourceUsage,
@@ -37,8 +38,8 @@ from algen_agent_runtime.types.contracts import (
     RunState,
 )
 
-_logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
-_database_logger = structlog.get_logger("algen_agent_runtime.persistence.postgres")
+_logger = runtime_logger("algen_agent_runtime.tools.ledger")
+_database_logger = runtime_logger("algen_agent_runtime.persistence.postgres")
 
 
 # One key for every Runtime sharing the database: concurrent first starts create the schema and
@@ -72,6 +73,7 @@ def _unavailable(exc: BaseException) -> StoreUnavailableError | None:
         reason = type(exc).__name__
     else:
         return None
+    record_metric("algen_agent_runtime.store.unavailable", 1, {"store": "postgres"})
     return StoreUnavailableError(f"PostgreSQL is unavailable ({reason})")
 
 
@@ -164,6 +166,7 @@ class PostgresDatabase:
                 await pool.close()
                 raise
             self._pool = pool
+            observe_postgres_pool(self)
 
     async def _use_schema(self, pool: Any, schema: str) -> None:
         exists = await pool.fetchval(

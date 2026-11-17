@@ -50,11 +50,16 @@ def test_a_trace_endpoint_alone_installs_no_meter_provider(
 def test_a_metrics_endpoint_installs_a_periodic_otlp_reader(
     installed: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    built: list[tuple[str, int]] = []
+    built: list[tuple[str, int, str | None]] = []
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
 
-    def build(endpoint: str, *, export_interval_millis: int) -> MeterProvider:
-        built.append((endpoint, export_interval_millis))
-        return otlp_meter_provider(endpoint, export_interval_millis=export_interval_millis)
+    def build(
+        endpoint: str, *, export_interval_millis: int, service_name: str | None = None
+    ) -> MeterProvider:
+        built.append((endpoint, export_interval_millis, service_name))
+        return otlp_meter_provider(
+            endpoint, export_interval_millis=export_interval_millis, service_name=service_name
+        )
 
     monkeypatch.setattr(setup, "otlp_meter_provider", build)
     configure_telemetry(
@@ -65,9 +70,11 @@ def test_a_metrics_endpoint_installs_a_periodic_otlp_reader(
     )
 
     assert installed["tracer"] == []
-    assert built == [("http://127.0.0.1:4318/v1/metrics", 15_000)]
+    assert built == [("http://127.0.0.1:4318/v1/metrics", 15_000, "algen-agent-runtime")]
     [provider] = installed["meter"]
     assert isinstance(provider, MeterProvider)
+    # telemetry.service_name names the service (Prometheus's job label), since 0.2.0b5.
+    assert provider._sdk_config.resource.attributes["service.name"] == "algen-agent-runtime"
 
 
 def test_disabled_telemetry_or_an_existing_provider_is_left_alone(

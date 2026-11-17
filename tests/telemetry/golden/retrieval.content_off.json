@@ -1,0 +1,1201 @@
+{
+  "audits": [
+    {
+      "action": "model.call",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "step_id": "str",
+        "usage": {
+          "cache_write_tokens": "int",
+          "cached_tokens": "int",
+          "estimated_cost_usd": "float",
+          "input_tokens": "int",
+          "output_tokens": "int"
+        }
+      },
+      "outcome": "completed"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": [
+            "str"
+          ],
+          "transforms": [
+            "str"
+          ]
+        },
+        "reason_code": "policy.redacted"
+      },
+      "outcome": "redact"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": [
+            "str"
+          ],
+          "transforms": [
+            "str"
+          ]
+        },
+        "reason_code": "policy.redacted"
+      },
+      "outcome": "redact"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [
+            "str"
+          ],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    },
+    {
+      "action": "policy.decision",
+      "keys": [
+        "action",
+        "actor_id",
+        "id",
+        "metadata",
+        "outcome",
+        "resource_id",
+        "schema_version",
+        "tenant_id",
+        "timestamp"
+      ],
+      "metadata": {
+        "audit_metadata": {
+          "policies_invoked": [],
+          "policies_skipped": [
+            "str"
+          ],
+          "policies_triggered": []
+        },
+        "reason_code": "policy.allowed"
+      },
+      "outcome": "allow"
+    }
+  ],
+  "events": [
+    {
+      "payload": {
+        "agent": "str"
+      },
+      "type": "run.started"
+    },
+    {
+      "payload": {
+        "action": "allow",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.allowed",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "action": "redact",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.redacted",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "archived_history_messages": "int",
+        "citation_details_included": "bool",
+        "citations": [],
+        "estimated_tokens": "int",
+        "loaded_skills_tokens": "int",
+        "message_count": "int",
+        "retained_history_messages": "int",
+        "skill_catalog_tokens": "int",
+        "source_count": "int",
+        "summary_tokens": "int",
+        "working_state_tokens": "int"
+      },
+      "type": "context.retrieved"
+    },
+    {
+      "payload": {
+        "action": "model"
+      },
+      "type": "step.started"
+    },
+    {
+      "payload": {
+        "action": "allow",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.allowed",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {},
+      "type": "model.started"
+    },
+    {
+      "payload": {
+        "action": "redact",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.redacted",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "cache_hit": "bool",
+        "cache_write_tokens": "int",
+        "cached_tokens": "int",
+        "estimated_cost_usd": "float",
+        "finish_reason": "stop",
+        "input_tokens": "int",
+        "latency_ms": "float",
+        "model": "str",
+        "output_tokens": "int",
+        "provider": "str",
+        "tool_call_count": "int",
+        "tool_names": [],
+        "total_tokens": "int"
+      },
+      "type": "model.completed"
+    },
+    {
+      "payload": {
+        "action": "complete"
+      },
+      "type": "step.started"
+    },
+    {
+      "payload": {
+        "checks": [
+          {
+            "confidence": "float",
+            "passed": "bool",
+            "reason_code": "output.non_empty"
+          }
+        ],
+        "passed": "bool",
+        "repair_attempt": "int"
+      },
+      "type": "verification.completed"
+    },
+    {
+      "payload": {
+        "action": "allow",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.allowed",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "item_count": "int",
+        "operation": "str",
+        "retention_seconds": "int"
+      },
+      "type": "memory.written"
+    },
+    {
+      "payload": {
+        "action": "allow",
+        "boundary": "str",
+        "invoked_count": "int",
+        "reason_code": "policy.allowed",
+        "skipped_count": "int",
+        "triggered_count": "int"
+      },
+      "type": "policy.evaluated"
+    },
+    {
+      "payload": {
+        "outcome": "completed"
+      },
+      "type": "run.completed"
+    }
+  ],
+  "logs": [],
+  "metrics": [
+    {
+      "attributes": {
+        "agent": "str",
+        "reason": "str",
+        "run_kind": "str",
+        "status": "completed"
+      },
+      "name": "algen_agent_runtime.runs.finished"
+    },
+    {
+      "attributes": {
+        "agent": "str",
+        "run_kind": "str",
+        "status": "completed"
+      },
+      "name": "algen_agent_runtime.run.duration"
+    },
+    {
+      "attributes": {
+        "agent": "str",
+        "run_kind": "str"
+      },
+      "name": "algen_agent_runtime.runs.started"
+    },
+    {
+      "attributes": {
+        "error_kind": "str",
+        "model": "str",
+        "outcome": "ok",
+        "provider": "str",
+        "purpose": "str"
+      },
+      "name": "algen_agent_runtime.model.calls"
+    },
+    {
+      "attributes": {
+        "model": "str",
+        "outcome": "ok",
+        "provider": "str",
+        "purpose": "str"
+      },
+      "name": "algen_agent_runtime.model.call.duration"
+    },
+    {
+      "attributes": {
+        "model": "str",
+        "provider": "str",
+        "purpose": "str",
+        "token_type": "str"
+      },
+      "name": "algen_agent_runtime.model.tokens"
+    },
+    {
+      "attributes": {
+        "pause_kind": "str"
+      },
+      "name": "algen_agent_runtime.runs.paused"
+    },
+    {
+      "attributes": {},
+      "name": "algen_agent_runtime.runs.active"
+    }
+  ],
+  "spans": {
+    "common_agent_attributes": {
+      "agent.correlation.id": "str",
+      "agent.definition.id": "str",
+      "agent.id": "str",
+      "agent.name": "str",
+      "agent.run.id": "str",
+      "agent.session.id": "str",
+      "agent.tenant.id": "str",
+      "agent.user.id": "str",
+      "agent.version": "str",
+      "gen_ai.agent.id": "str",
+      "gen_ai.agent.name": "str",
+      "gen_ai.agent.version": "str",
+      "gen_ai.conversation.id": "str",
+      "governance.event_type": "str",
+      "policy.action": "str",
+      "policy.invoked_count": "int",
+      "policy.operation": "str",
+      "policy.policies_skipped": [
+        "str"
+      ],
+      "policy.skipped_count": "int",
+      "policy.source_sdk": "str",
+      "policy.subject_type": "str",
+      "policy.triggered": "bool",
+      "policy.triggered_count": "int",
+      "session.id": "str",
+      "span.type": "policy_pipeline",
+      "tenant.id": "str",
+      "user.id": "str"
+    },
+    "spans": [
+      {
+        "attributes": {
+          "agent.description": "str",
+          "agent.planning.strategy": "str",
+          "agent.run.input_chars": "int",
+          "agent.run.input_tokens": "int",
+          "agent.run.mode": "str",
+          "agent.run.model_calls": "int",
+          "agent.run.outcome": "completed",
+          "agent.run.output_chars": "int",
+          "agent.run.output_tokens": "int",
+          "agent.run.retry_count": "int",
+          "agent.run.status": "completed",
+          "agent.run.step_count": "int",
+          "agent.run.tool_calls": "int",
+          "agent.span.type": "str",
+          "agent.type": "str",
+          "gen_ai.operation.name": "str",
+          "span.type": "agent"
+        },
+        "name": "agent.run",
+        "parent": null,
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "input",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.input",
+        "parent": "agent.run",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "prompt_injection",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "prompt_injection",
+          "guardrail.reason_code": "prompt_injection.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.prompt_injection",
+        "parent": "agent.policy.input",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "policy.boundary": "before_retrieval",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.before_retrieval",
+        "parent": "agent.run",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.before_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.before_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "policy.boundary": "after_retrieval",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.after_retrieval",
+        "parent": "agent.run",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.after_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.after_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "context.builder": "str",
+          "context.message_count": "int",
+          "retrieval.maximum_score": "float",
+          "retrieval.scores": [
+            "float"
+          ],
+          "retrieval.source_count": "int",
+          "retrieval.source_ids": [
+            "str"
+          ],
+          "span.type": "context"
+        },
+        "name": "agent.context.build",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "after_retrieval",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.policies_triggered": [
+            "str"
+          ],
+          "policy.reason_code": "policy.redacted"
+        },
+        "name": "agent.policy.after_retrieval",
+        "parent": "agent.run",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.after_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.after_retrieval",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "agent.plan.action_count": "int",
+          "agent.plan.next_action": "str",
+          "agent.planner.name": "str",
+          "span.type": "planning"
+        },
+        "name": "agent.planning",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "agent.step.id": "str",
+          "agent.step.status": "planning",
+          "agent.step.type": "str",
+          "span.type": "step"
+        },
+        "name": "agent.step",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "before_model",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.before_model",
+        "parent": "agent.step",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.before_model",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.before_model",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "agent.model.prepare_ms": "float",
+          "agent.step.id": "str",
+          "cache.hit": "bool",
+          "cache.type": "str",
+          "gen_ai.request.max_tokens": "int",
+          "gen_ai.request.model": "str",
+          "gen_ai.response.model": "str",
+          "gen_ai.system": "str",
+          "gen_ai.usage.cache_creation.input_tokens": "int",
+          "gen_ai.usage.cache_read.input_tokens": "int",
+          "gen_ai.usage.input_tokens": "int",
+          "gen_ai.usage.output_tokens": "int",
+          "llm.finish_reason": "stop",
+          "llm.latency_ms": "float",
+          "llm.model": "str",
+          "llm.request.message_count": "int",
+          "llm.request.tool_count": "int",
+          "llm.response.id": "str",
+          "llm.response.output_chars": "int",
+          "llm.status": "completed",
+          "llm.tool_call_count": "int",
+          "llm.usage.cache_read_tokens": "int",
+          "llm.usage.cache_write_tokens": "int",
+          "llm.usage.completion_tokens": "int",
+          "llm.usage.prompt_tokens": "int",
+          "llm.usage.source": "str",
+          "llm.usage.total_tokens": "int",
+          "llm.vendor": "str",
+          "span.type": "LLM"
+        },
+        "name": "agent.model.call",
+        "parent": "agent.step",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "after_model",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.policies_triggered": [
+            "str"
+          ],
+          "policy.reason_code": "policy.redacted"
+        },
+        "name": "agent.policy.after_model",
+        "parent": "agent.step",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.after_model",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.redacted",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": true,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.after_model",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "output_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "output_validation",
+          "guardrail.reason_code": "output_validation.passed",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.output_validation",
+        "parent": "agent.policy.after_model",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "agent.plan.action_count": "int",
+          "agent.plan.next_action": "str",
+          "agent.planner.name": "str",
+          "span.type": "planning"
+        },
+        "name": "agent.planning",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "agent.step.id": "str",
+          "agent.step.status": "completed",
+          "agent.step.type": "str",
+          "span.type": "step"
+        },
+        "name": "agent.step",
+        "parent": "agent.run",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "agent.step.id": "str",
+          "span.type": "verification",
+          "verification.confidence": "float",
+          "verification.minimum_confidence": "float",
+          "verification.passed": true,
+          "verification.validator_count": "int"
+        },
+        "name": "agent.verification",
+        "parent": "agent.step",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "final_response",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.final_response",
+        "parent": "agent.step",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.final_response",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.final_response",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "output_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "output_validation",
+          "guardrail.reason_code": "output_validation.passed",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.output_validation",
+        "parent": "agent.policy.final_response",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "policy.boundary": "before_memory_write",
+          "policy.policies_invoked": [
+            "str"
+          ],
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.before_memory_write",
+        "parent": "agent.step",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "input_validation",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "secrets",
+          "guardrail.reason_code": "secret.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.secrets",
+        "parent": "agent.policy.before_memory_write",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "guardrail.boundary": "str",
+          "guardrail.category": "pii",
+          "guardrail.enforcement_mode": "str",
+          "guardrail.evidence_type": "str",
+          "guardrail.name": "pii",
+          "guardrail.reason_code": "pii.clear",
+          "guardrail.source_sdk": "str",
+          "guardrail.triggered": false,
+          "span.type": "guardrail"
+        },
+        "name": "guardrail.pii",
+        "parent": "agent.policy.before_memory_write",
+        "status": "UNSET"
+      },
+      {
+        "attributes": {
+          "memory.item_count": "int",
+          "memory.operation": "str",
+          "memory.retention_seconds": "int",
+          "span.type": "memory"
+        },
+        "name": "agent.memory.write",
+        "parent": "agent.step",
+        "status": "UNSET",
+        "without_common": [
+          "governance.event_type",
+          "policy.action",
+          "policy.invoked_count",
+          "policy.operation",
+          "policy.policies_skipped",
+          "policy.skipped_count",
+          "policy.source_sdk",
+          "policy.subject_type",
+          "policy.triggered",
+          "policy.triggered_count"
+        ]
+      },
+      {
+        "attributes": {
+          "policy.boundary": "after_memory_write",
+          "policy.reason_code": "policy.allowed"
+        },
+        "name": "agent.policy.after_memory_write",
+        "parent": "agent.step",
+        "status": "UNSET"
+      }
+    ]
+  }
+}

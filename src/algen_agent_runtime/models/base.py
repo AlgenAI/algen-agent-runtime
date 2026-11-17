@@ -4,10 +4,8 @@ import asyncio
 import math
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass, replace
-
-import structlog
 
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.context.budget import estimate_request_tokens, prepare_model_request
@@ -25,6 +23,8 @@ from algen_agent_runtime.models.metering import (
     accepts_estimated,
     require_call_parameter,
 )
+from algen_agent_runtime.observability.metrics import instrument as metric_instrument
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.types.contracts import (
     ErrorKind,
     ModelCapabilities,
@@ -36,7 +36,7 @@ from algen_agent_runtime.types.contracts import (
 )
 from algen_agent_runtime.types.interfaces import ModelProvider
 
-logger = structlog.get_logger("algen_agent_runtime.models")
+logger = runtime_logger("algen_agent_runtime.models")
 
 
 def _narrow_capabilities(
@@ -104,6 +104,13 @@ class SlidingWindowRateLimiter:
 _REQUEST_REJECTED_STATUSES = frozenset({400, 422})
 
 
+async def _close_stream(events: AsyncIterator[ModelStreamEvent] | None) -> None:
+    """Close a provider's stream; one without ``aclose`` (a plain iterator) has nothing to end."""
+    close = getattr(events, "aclose", None)
+    if close is not None:
+        await close()
+
+
 def _rejects_request(exc: ProviderError) -> bool:
     """Whether ``exc`` rejects the request itself, so another provider would fail the same way."""
     return exc.error_kind == ErrorKind.INVALID_REQUEST and (
@@ -133,6 +140,8 @@ class ModelRouter:
         self._profiles: dict[str, ModelProfile] = {}
         self._health: dict[str, ProviderHealth] = {}
         self._limits: dict[str, SlidingWindowRateLimiter] = {}
+        # Concurrent calls per registration, when the provider's max_concurrency is set.
+        self._slots: dict[str, asyncio.Semaphore] = {}
         self._costs: dict[str, tuple[float, float]] = {}
         self._local: dict[str, bool] = {}
         # WP-02: per-registration capability overrides applied before cache / adapter call.
@@ -150,6 +159,50 @@ class ModelRouter:
             require_call_parameter(usage_meter)
         # Whether the meter's settle takes ``estimated``, asked once (see _settle_estimate).
         self._meter_takes_estimated = usage_meter is not None and accepts_estimated(usage_meter)
+        self._call_counter = metric_instrument("algen_agent_runtime.model.calls")
+        self._call_duration = metric_instrument("algen_agent_runtime.model.call.duration")
+        self._token_counter = metric_instrument("algen_agent_runtime.model.tokens")
+
+    def _observe_call(
+        self,
+        registration_id: str,
+        profile: ModelProfile,
+        meter_call: MeterCall | None,
+        started: float,
+        *,
+        usage: TokenUsage | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """Record one provider call in the model metrics: never content, never ids."""
+        try:
+            attributes = {
+                "provider": registration_id,
+                "model": profile.model or "",
+                "purpose": meter_call.purpose if meter_call is not None else "other",
+            }
+            if error is None:
+                outcome, error_kind = "ok", "none"
+            elif isinstance(error, ProviderError):
+                outcome, error_kind = "error", error.error_kind.value
+            elif isinstance(error, (asyncio.CancelledError, GeneratorExit)):
+                outcome, error_kind = "cancelled", "cancelled"
+            else:
+                outcome, error_kind = "error", "unknown"
+            self._call_counter.add(1, {**attributes, "outcome": outcome, "error_kind": error_kind})
+            self._call_duration.record(
+                time.monotonic() - started, {**attributes, "outcome": outcome}
+            )
+            if usage is not None:
+                if usage.input_tokens:
+                    self._token_counter.add(
+                        usage.input_tokens, {**attributes, "token_type": "input"}
+                    )
+                if usage.output_tokens:
+                    self._token_counter.add(
+                        usage.output_tokens, {**attributes, "token_type": "output"}
+                    )
+        except Exception:
+            logger.debug("model_metrics_failed", exc_info=True)
 
     async def _capabilities(
         self,
@@ -196,6 +249,7 @@ class ModelRouter:
         *,
         registration_id: str | None = None,
         capability_override: ModelCapabilities | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
         """Register a provider instance.
 
@@ -211,6 +265,9 @@ class ModelRouter:
         model served by this registration, applying the configured narrowing policy
         (WP-02). When *None*, the adapter's ``capabilities()`` method is called
         normally.
+
+        ``max_concurrency`` caps the calls in flight on this registration (plain calls and open
+        streams); further calls wait for a slot. ``None`` sets no cap.
         """
         rid = registration_id if registration_id is not None else provider.provider_id
         if rid in self._providers:
@@ -221,6 +278,10 @@ class ModelRouter:
         self._providers[rid] = provider
         self._health[rid] = ProviderHealth()
         self._limits[rid] = SlidingWindowRateLimiter(requests_per_minute)
+        if max_concurrency is not None:
+            if max_concurrency < 1:
+                raise ValueError("max_concurrency must be at least 1")
+            self._slots[rid] = asyncio.Semaphore(max_concurrency)
         self._costs[rid] = (cost_per_1k_input, cost_per_1k_output)
         self._local[rid] = is_local
         self._registration_ids[rid] = provider.provider_id
@@ -342,7 +403,17 @@ class ModelRouter:
             )
             started = time.monotonic()
             try:
-                response = await self._dispatch(provider, candidate_request, ticket)
+                try:
+                    slot = self._slots.get(rid)
+                    if slot is None:
+                        response = await self._dispatch(provider, candidate_request, ticket)
+                    else:
+                        async with slot:
+                            response = await self._dispatch(provider, candidate_request, ticket)
+                except BaseException as exc:
+                    self._observe_call(rid, profile, meter_call, started, error=exc)
+                    raise
+                self._observe_call(rid, profile, meter_call, started, usage=response.usage)
                 health = self._health[rid]
                 health.consecutive_failures = 0
                 health.opened_at = None
@@ -453,10 +524,17 @@ class ModelRouter:
             delivered = False
             streamed_chars = 0
             started = time.monotonic()
+            usage: TokenUsage | None = None
+            observed = False
+            provider_events: AsyncIterator[ModelStreamEvent] | None = None
+            slot = self._slots.get(rid)
+            if slot is not None:
+                await slot.acquire()
             try:
-                async for event in provider.stream(
+                provider_events = provider.stream(
                     candidate_request.model_copy(update={"stream": True})
-                ):
+                )
+                async for event in provider_events:
                     if event.response:
                         input_cost, output_cost = self._costs[rid]
                         usage = event.response.usage
@@ -474,8 +552,9 @@ class ModelRouter:
                                 )
                             }
                         )
+                        assert event.response is not None
+                        usage = event.response.usage
                         if self._usage_meter is not None and not settled:
-                            assert event.response is not None
                             await self._usage_meter.settle(ticket, event.response.usage)
                             settled = True
                     elif event.delta:
@@ -484,12 +563,19 @@ class ModelRouter:
                         streamed_chars += len(event.tool_call.model_dump_json())
                     delivered = True
                     yield event
+                observed = True
+                self._observe_call(rid, profile, meter_call, started, usage=usage)
                 health = self._health[rid]
                 health.consecutive_failures = 0
                 health.opened_at = None
                 health.latency_ms = (time.monotonic() - started) * 1000
                 return
-            except ProviderError as exc:
+            except BaseException as exc:
+                if not observed:
+                    observed = True
+                    self._observe_call(rid, profile, meter_call, started, error=exc)
+                if not isinstance(exc, ProviderError):
+                    raise
                 if _rejects_request(exc):
                     # Every provider would reject this request the same way (see ``generate``).
                     raise
@@ -504,6 +590,12 @@ class ModelRouter:
                 errors.append(f"{rid}: {exc}")
                 failures.append(exc)
             finally:
+                # Close the provider's stream on every exit (cancellation, an error, a consumer
+                # that stops early), so its HTTP request ends here and now, not whenever the
+                # garbage collector finalizes the generator.
+                await _close_stream(provider_events)
+                if slot is not None:
+                    slot.release()
                 # An error, cancellation or a consumer that stops early ends the stream unsettled.
                 # Once output reached the caller the provider bills it, so the call is charged
                 # an estimate; only a call that delivered nothing is released.

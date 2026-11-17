@@ -24,16 +24,16 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from uuid import uuid4
 
-from opentelemetry import trace
-
 from algen_agent_runtime.exceptions.errors import (
     AlgenAgentRuntimeError,
     PolicyDeniedError,
     ToolExecutionError,
 )
 from algen_agent_runtime.frameworks.contracts import FrameworkRunRequest
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 from algen_agent_runtime.policies.contracts import PolicyAction
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
+from algen_agent_runtime.security.redaction import redact_error_text
 from algen_agent_runtime.tools.contracts import SideEffect, ToolContext, ToolDefinition
 from algen_agent_runtime.tools.executor import ToolExecutor
 from algen_agent_runtime.tools.registry import ToolRegistry
@@ -101,7 +101,7 @@ class GovernedToolBridge:
         self._secrets = dict(secrets or {})
         self._approval_policy = approval_policy or ApprovalPolicy()
         self._policies = policies
-        self._tracer = trace.get_tracer("algen_agent_runtime.frameworks")
+        self._tracer = runtime_tracer("algen_agent_runtime.frameworks")
 
     def definition(self, name: str) -> ToolDefinition:
         return self._registry.get(name).definition
@@ -187,7 +187,8 @@ class GovernedToolBridge:
         try:
             value = await self.call(name, arguments)
         except AlgenAgentRuntimeError as exc:
-            return json.dumps({"error": type(exc).__name__, "message": str(exc)})
+            # Masked like a run's error: the framework's model, traces and logs read it (0.2.0b5).
+            return json.dumps({"error": type(exc).__name__, "message": redact_error_text(exc)})
         return value if isinstance(value, str) else json.dumps(value, default=str)
 
     def openai_agents_tools(self, *names: str) -> list[Any]:

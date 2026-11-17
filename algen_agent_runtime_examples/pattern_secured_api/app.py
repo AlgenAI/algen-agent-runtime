@@ -3,7 +3,7 @@
 The Runtime's FastAPI app is served through ``httpx.ASGITransport``; the identity provider (a
 discovery document and a JWKS) and the upstream LMS are ``httpx.MockTransport`` stubs, and the
 signing key is generated at start-up. Three users of tenant ``acme``: alice and bob (members) and
-carol (an approver who may also revoke tokens).
+carol (an approver who may also revoke tokens and read every user's files).
 
 Needs the ``auth`` extra: ``pip install 'algen-agent-runtime[auth]'``. Without it the example
 says so and exits 0.
@@ -170,7 +170,8 @@ async def run() -> dict[str, Any]:
 
     alice = idp.issue("alice", roles=["member"])
     bob = idp.issue("bob", roles=["member"])
-    carol = idp.issue("carol", roles=["approver"], scope="auth:revoke")
+    # artifacts:admin (0.2.0b4) lets carol read every user's files in the tenant: operators only.
+    carol = idp.issue("carol", roles=["approver"], scope="auth:revoke artifacts:admin")
     summary: dict[str, Any] = {}
     ops_model = runtime.router.provider("ops-model")
     lms_model = runtime.router.provider("lms-model")
@@ -244,7 +245,7 @@ async def run() -> dict[str, Any]:
         summary["approval"] = {"status": final["status"], "shown": decision["modified_parameters"]}
 
         say()
-        say("== 3. Conversation ownership ==")
+        say("== 3. Conversation and file ownership ==")
         conversation = (
             await http.post("/v1/conversations", headers=alice.header, json={"agent": "helpdesk"})
         ).json()
@@ -277,6 +278,27 @@ async def run() -> dict[str, Any]:
         say(f"bob GET /v1/runs/<alice's turn's run> -> {other_view.status_code}")
         say(f"bob GET /v1/conversations/<alice's> -> {other_conversation.status_code}")
         summary["ownership"] = (owner_view.status_code, other_view.status_code)
+        # Since 0.2.0b4 a file belongs to its uploader: another user of the tenant gets 404 (as for
+        # a missing file), a principal with artifacts:admin may read it.
+        upload = await http.post(
+            "/v1/artifacts",
+            params={"name": "notes.txt", "media_type": "text/plain"},
+            headers=alice.header,
+            content=b"Maintenance notes",
+        )
+        artifact_id = upload.json()["id"]
+        files = {
+            name: (
+                await http.get(f"/v1/artifacts/{artifact_id}/metadata", headers=user.header)
+            ).status_code
+            for name, user in (("alice", alice), ("bob", bob), ("carol", carol))
+        }
+        say(f"alice POST /v1/artifacts -> {upload.status_code}")
+        say(
+            f"GET /v1/artifacts/<alice's file>/metadata -> alice {files['alice']}, "
+            f"bob {files['bob']}, carol (artifacts:admin) {files['carol']}"
+        )
+        summary["files"] = files
 
         say()
         say("== 4. Calling the LMS as the signed-in user (auth.type: caller) ==")

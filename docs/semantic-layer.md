@@ -187,6 +187,9 @@ ratio/non-additive/null behavior, semi-additive safety checks, time grains, rela
 freshness, slowly-changing validity, snapshot selection, contribution, lineage, and explainable
 compilation metadata. `SemanticQueryGraphPlanner` compiles independent governed queries into
 separately addressable `semantic_query` nodes and validates their explicit downstream transforms.
+`SemanticQueryGraphPlanner` and `SemanticQueryTask` are experimental since `0.2.0b5`, with the
+analytical graph engine they plan for; the layer and both compilers are stable
+([experimental interfaces](api-stability.md#experimental-interfaces)).
 Multi-fact metrics and same-DTD comparisons are
 deliberately split into separate `AnalyticalGraph` result handles and joined or compared by an explicit
 node; this prevents silent double counting.

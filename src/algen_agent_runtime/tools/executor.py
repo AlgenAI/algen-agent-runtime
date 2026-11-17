@@ -4,13 +4,12 @@ import asyncio
 import concurrent.futures
 import inspect
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 import jsonschema
-import structlog
-from opentelemetry import trace
 
 from algen_agent_runtime.cache import CacheContext, CacheService
 from algen_agent_runtime.exceptions.errors import (
@@ -19,6 +18,9 @@ from algen_agent_runtime.exceptions.errors import (
     ToolExecutionError,
     ToolNotAttemptedError,
 )
+from algen_agent_runtime.observability.metrics import instrument as metric_instrument
+from algen_agent_runtime.observability.safe_logging import runtime_logger
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 from algen_agent_runtime.persistence.tool_executions import InMemoryToolExecutionStore
 from algen_agent_runtime.policies.contracts import PolicyAction
 from algen_agent_runtime.policies.instrumentation import evaluate_policy_observed
@@ -43,7 +45,7 @@ from algen_agent_runtime.tools.contracts import (
 from algen_agent_runtime.tools.process import run_in_process
 from algen_agent_runtime.tools.registry import ToolRegistry
 
-_logger = structlog.get_logger("algen_agent_runtime.tools")
+_logger = runtime_logger("algen_agent_runtime.tools")
 
 # Told about a call the tool's reconcile hook settled while it was being replayed.
 ReconciledCallback = Callable[[ToolExecutionRecord], Awaitable[None]]
@@ -85,6 +87,26 @@ async def _call_handler(
         return await handler(arguments, context)
     result = await run_blocking(handler, arguments, context)
     return await result if inspect.isawaitable(result) else result
+
+
+async def _landed[T](write: Awaitable[T]) -> T:
+    """A ledger write awaited to the end, even when the call is cancelled meanwhile (a run
+    cancelled twice, a turn and its run both cancelled): a record left ``started`` waits for an
+    operator, and keeps its run from retention, for good. The cancellation is raised once the
+    write has landed."""
+    task = asyncio.ensure_future(write)
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
 
 
 def _never_started(definition: ToolDefinition, handler: ToolHandler, attempt: list[Any]) -> bool:
@@ -145,9 +167,9 @@ def _checked_arguments(
 async def _capacity(
     semaphore: asyncio.Semaphore,
 ) -> AsyncIterator[list[concurrent.futures.Future[Any]]]:
-    """One of the tool's ``max_concurrency`` slots, held until the call and every worker thread
-    it started have finished, even when the caller stopped waiting for a thread first."""
-    await semaphore.acquire()
+    """One of the tool's ``max_concurrency`` slots, already acquired, held until the call and
+    every worker thread it started have finished, even when the caller stopped waiting for a
+    thread first."""
     with track_threads() as threads:
         try:
             yield threads
@@ -173,7 +195,9 @@ class ToolExecutor:
         self._executions = executions or InMemoryToolExecutionStore()
         self._cache = cache
         self._semaphores: dict[str, asyncio.Semaphore] = {}
-        self._tracer = tracer or trace.get_tracer("algen_agent_runtime.tools")
+        self._tracer = tracer or runtime_tracer("algen_agent_runtime.tools")
+        self._call_counter = metric_instrument("algen_agent_runtime.tool.calls")
+        self._call_duration = metric_instrument("algen_agent_runtime.tool.call.duration")
 
     @property
     def executions(self) -> ToolExecutionStore:
@@ -232,6 +256,50 @@ class ToolExecutor:
         come before anything is recorded or run. The executor does not look the decision up:
         its caller proves it (see "Who proves an approval is valid" in the tool docs).
         """
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            result = await self._execute(
+                name,
+                arguments,
+                context,
+                agent=agent,
+                on_reconciled=on_reconciled,
+                approval=approval,
+            )
+            outcome = "failed" if result.failed else "completed"
+            return result
+        except (PolicyDeniedError, ApprovalMismatchError):
+            outcome = "denied"
+            raise
+        except ToolExecutionError:
+            outcome = "failed"
+            raise
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            self._observe_call(name, outcome, started)
+
+    def _observe_call(self, name: str, outcome: str, started: float) -> None:
+        """Count a call in the tool metrics, by tool name and outcome only."""
+        attributes = {"tool": name, "outcome": outcome}
+        try:
+            self._call_counter.add(1, attributes)
+            self._call_duration.record(time.monotonic() - started, attributes)
+        except Exception:
+            _logger.debug("tool_metrics_failed", exc_info=True)
+
+    async def _execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolContext,
+        *,
+        agent: Any,
+        on_reconciled: ReconciledCallback | None,
+        approval: ToolApproval | None,
+    ) -> ToolResult:
         tool = self._registry.get(name)
         definition = tool.definition
         if approval is None:
@@ -250,8 +318,22 @@ class ToolExecutor:
         arguments = _checked_arguments(
             name, definition, arguments, decision, approved=approval is not None
         )
-        execution, reserved = await self._executions.begin(context, name)
-        if not reserved:
+        begin = asyncio.ensure_future(self._executions.begin(context, name))
+        try:
+            execution, reserved = await _landed(begin)
+        except asyncio.CancelledError:
+            # Cancelled as the record was written: nothing ran.
+            if not begin.cancelled() and begin.exception() is None and begin.result()[1]:
+                await self._not_run(context, "CancelledError")
+            raise
+        # A call that changes nothing and was interrupted while running (the process died) is
+        # simply run again: its ledger record is still ``started`` and takes the outcome.
+        rerun = (
+            not reserved
+            and execution.status == ToolExecutionStatus.STARTED
+            and definition.side_effect in {SideEffect.NONE, SideEffect.READ}
+        )
+        if not reserved and not rerun:
             if execution.status == ToolExecutionStatus.COMPLETED and execution.result:
                 await tool.validate_replay(execution.result, context)
                 return execution.result
@@ -303,25 +385,28 @@ class ToolExecutor:
             cache_material["context"] = {
                 field: getattr(context, field) for field in sorted(definition.cache_context)
             }
-        if cacheable:
-            assert cache is not None
-            cached = await cache.get_json(
-                "tool_results", "tool.result", cache_material, cache_context
-            )
-            if cached is not None:
-                wrapped = ToolResult.model_validate(cached).model_copy(
-                    update={"metadata": {**cached.get("metadata", {}), "runtime_cache_hit": True}}
-                )
-                try:
-                    await tool.validate_replay(wrapped, context)
-                except BaseException as exc:
-                    await self._executions.fail(
-                        context.idempotency_key, type(exc).__name__, indeterminate=False
-                    )
-                    raise
-                await self._executions.complete(context.idempotency_key, wrapped)
-                return wrapped
         semaphore = self._semaphores.setdefault(name, asyncio.Semaphore(definition.max_concurrency))
+        try:
+            # Until the handler is called nothing ran: a failure or cancellation here (the cache,
+            # the wait for a slot) is a definite failure, never a record left ``started``.
+            if cacheable:
+                assert cache is not None
+                cached = await cache.get_json(
+                    "tool_results", "tool.result", cache_material, cache_context
+                )
+                if cached is not None:
+                    wrapped = ToolResult.model_validate(cached).model_copy(
+                        update={
+                            "metadata": {**cached.get("metadata", {}), "runtime_cache_hit": True}
+                        }
+                    )
+                    await tool.validate_replay(wrapped, context)
+                    await _landed(self._executions.complete(context.idempotency_key, wrapped))
+                    return wrapped
+            await semaphore.acquire()
+        except BaseException as exc:
+            await self._not_run(context, type(exc).__name__)
+            raise
         async with _capacity(semaphore) as threads:
             attempts = (
                 definition.retry_policy.max_attempts
@@ -369,10 +454,12 @@ class ToolExecutor:
                     SideEffect.NONE,
                     SideEffect.READ,
                 } and not isinstance(exc, (ToolNotAttemptedError, PolicyDeniedError))
-                await self._executions.fail(
-                    context.idempotency_key,
-                    type(exc).__name__,
-                    indeterminate=indeterminate,
+                await _landed(
+                    self._executions.fail(
+                        context.idempotency_key,
+                        type(exc).__name__,
+                        indeterminate=indeterminate,
+                    )
                 )
                 raise
             try:
@@ -385,7 +472,7 @@ class ToolExecutor:
                 wrapped = returned.model_copy(update={"value": result, "failed": failed})
                 # A returned failure finished: it is recorded completed, so a replay returns
                 # it rather than running the call again, but it is never cached.
-                await self._executions.complete(context.idempotency_key, wrapped)
+                await _landed(self._executions.complete(context.idempotency_key, wrapped))
                 if cacheable and not failed:
                     assert cache is not None
                     await cache.set_json(
@@ -399,12 +486,19 @@ class ToolExecutor:
                 return wrapped
             except BaseException as exc:
                 indeterminate = definition.side_effect not in {SideEffect.NONE, SideEffect.READ}
-                await self._executions.fail(
-                    context.idempotency_key,
-                    type(exc).__name__,
-                    indeterminate=indeterminate,
+                await _landed(
+                    self._executions.fail(
+                        context.idempotency_key,
+                        type(exc).__name__,
+                        indeterminate=indeterminate,
+                    )
                 )
                 raise
+
+    async def _not_run(self, context: ToolContext, error: str) -> None:
+        """Record a reserved call that stopped before its handler was called: nothing ran, so it
+        failed, whatever the tool's side effect."""
+        await _landed(self._executions.fail(context.idempotency_key, error, indeterminate=False))
 
     @staticmethod
     def _check_approval(tool: Tool, arguments: dict[str, Any], approval: ToolApproval) -> None:

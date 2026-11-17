@@ -24,15 +24,20 @@ sequenceDiagram
     API-->>UI: Reconnectable SSE events
 ```
 
-Handlers are plugins: the core has no analytics, SQL, or dashboard-specific behavior. Interrupted
-conversation responses are marked retryable rather than automatically replayed, because a generic
-handler may own externally visible side effects whose idempotency is unknown.
+Handlers are plugins: the core has no analytics, SQL, or dashboard-specific behavior. A turn is
+never replayed after a restart, because a generic handler may own externally visible side effects
+whose idempotency is unknown. From 0.2.0b3 each turn stores its run id when the run starts, and
+recovery follows or settles the turn by that run's state; only a turn with no run (or whose run
+is gone) is marked interrupted and retryable.
 
 A turn can stream and pause. The built-in `runtime` handler starts its run with `stream` when every
 model the agent may use can stream, and forwards the run's `model.delta` events as coalesced
-`assistant.message.delta` conversation events. When the run pauses for an approval or a
-clarification, the turn returns a `pending` action; the service stores it on the assistant message
-(`awaiting_approval` or `awaiting_input`) and refuses new messages until the turn is answered or
+`assistant.message.delta` conversation events. From 0.2.0b4 streamed text passes the agent's
+`after_model` and `final_response` policies before it is recorded, and text later withdrawn is
+retracted (`model.delta.retracted`, `assistant.message.delta.retracted`). When the run pauses for
+an approval, a clarification or (after a restart) the caller's credentials, the turn returns a
+`pending` action; the service stores it on the assistant message (`awaiting_approval`,
+`awaiting_input` or `awaiting_credentials`) and refuses new messages until the turn is answered or
 cancelled. `ConversationService.respond` (and the `.../turns/{turn_id}/approval|input` routes)
 applies the answer with `Runtime.resume` and follows the same run into the same assistant message.
 Because the pending action lives in the conversation store and the paused run in the run store, a
@@ -85,7 +90,9 @@ its tool call is dropped from the request with a warning log; required context t
 raises `BudgetExceededError` rather than silently dropping instructions or exceeding the
 configured bound.
 
-The default limit is 16,000 estimated tokens. Applications can replace the registered default builder:
+The default limit is 16,000 estimated tokens. From 0.2.0b3 an agent sets its own budget with
+`context_policy.max_context_tokens` (1,024 to 2,000,000), which the default and retrieval builders
+use instead of theirs; replace the registered builder only to change how context is built:
 
 ```python
 from algen_agent_runtime.context.builder import DefaultContextBuilder
@@ -162,6 +169,12 @@ Key decisions:
 12. Query permission is distinct from model permission. Source trust, purpose, metric/column access,
     workload quotas, fingerprints, exports and cache scope are checked before the database, whose RLS
     and grants remain authoritative.
+13. Delegation never widens what a run may do (0.2.0b4). `core.subagent` refuses a delegate that
+    enables a tool its coordinator does not (except the run-local `core.working_state_update`,
+    `core.skills_load` and `core.context_read`); the child runs with its parent's approval
+    requirements and guardrails added, its usage and tool calls count against the parent's
+    budget, and `runtime.subagent.max_descendants` (default 64) caps a run tree. See
+    [multi-agent workflows](multi-agent-workflows.md).
 
 See [Analytical Runtime](analytical-runtime.md) for the graph and extension contracts.
 

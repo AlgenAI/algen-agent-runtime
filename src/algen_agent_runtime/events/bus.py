@@ -7,6 +7,7 @@ from typing import Any
 
 from algen_agent_runtime.events.contracts import AuditEvent, RunEvent
 from algen_agent_runtime.exceptions.errors import EventStreamOverflowError, RunConflictError
+from algen_agent_runtime.observability.metrics import record as record_metric
 
 
 def _is_sequence_conflict(exc: BaseException) -> bool:
@@ -39,6 +40,9 @@ class _Subscription:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:
             self.overflowed = True
+            record_metric(
+                "algen_agent_runtime.events.backpressure", 1, {"kind": "subscriber_lagged"}
+            )
 
     @property
     def behind(self) -> bool:
@@ -113,6 +117,11 @@ class InMemoryEventBus:
                             if event.sequence > cursor
                         )
                     if missed and missed[0].sequence > cursor + 1:
+                        record_metric(
+                            "algen_agent_runtime.events.backpressure",
+                            1,
+                            {"kind": "stream_overflow"},
+                        )
                         raise EventStreamOverflowError(run_id, cursor)
                     for event in missed:
                         if event.sequence > cursor:

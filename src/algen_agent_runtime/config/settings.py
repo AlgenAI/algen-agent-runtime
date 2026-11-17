@@ -41,6 +41,7 @@ from algen_agent_runtime.retrieval.contracts import RetrievalMode, SourceDocumen
 from algen_agent_runtime.security.network import check_host_allowlist
 from algen_agent_runtime.security.outbound import NetworkSettings
 from algen_agent_runtime.security.sandbox import SandboxSettings
+from algen_agent_runtime.stability import EXPERIMENTAL_FIELD
 from algen_agent_runtime.tools.blocking import DEFAULT_MAX_QUEUED
 from algen_agent_runtime.tools.http_api import HttpToolConfig
 from algen_agent_runtime.types.contracts import (
@@ -64,7 +65,14 @@ class ProviderSettings(StrictSettings):
     default_model: str
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     timeout_seconds: float = Field(default=60, gt=0)
-    max_concurrency: int = Field(default=20, ge=1)
+    max_concurrency: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Calls in flight on this provider (plain calls and open streams); enforced only when "
+            "set explicitly (since 0.2.0b5), otherwise no cap"
+        ),
+    )
     requests_per_minute: int = Field(default=600, ge=1)
     cost_per_1k_input: float = Field(default=0, ge=0)
     cost_per_1k_output: float = Field(default=0, ge=0)
@@ -78,6 +86,12 @@ class ProviderSettings(StrictSettings):
         default=True,
         description="Anthropic: cache the instructions and the conversation (cache_control); "
         "false for a gateway that rejects the field.",
+    )
+    embedding_deployment: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Azure OpenAI: the deployment embed() uses when no model is given "
+        "(retrieval and memory without an embedding_model). Unset: embed() needs a model.",
     )
 
     @model_validator(mode="after")
@@ -773,12 +787,14 @@ class MaintenanceSettings(StrictSettings):
         default=None,
         ge=1,
         description="Delete completed, failed and cancelled analytical graphs not updated this long.",
+        json_schema_extra=EXPERIMENTAL_FIELD,
     )
     work_item_retention_days: int | None = Field(
         default=None,
         ge=1,
         description="Delete completed and failed work items not updated this long; their "
         "deduplication keys are released.",
+        json_schema_extra=EXPERIMENTAL_FIELD,
     )
 
 
@@ -827,6 +843,8 @@ class ConversationStreamingSettings(StrictSettings):
 
 
 class AnalyticalExecutionSettings(StrictSettings):
+    """Experimental: the analytical graph engine; not covered by the compatibility promise."""
+
     graph_store: Literal["memory", "postgres"] = "memory"
     maximum_concurrency: int = Field(default=8, ge=1, le=128)
     default_node_timeout_seconds: float = Field(
@@ -876,6 +894,8 @@ class QuerySourceSettings(StrictSettings):
 
 
 class DistributedExecutionSettings(StrictSettings):
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     enabled: bool = False
     queue_backend: Literal["memory", "postgres"] = "memory"
     lease_seconds: int = Field(default=30, ge=5, le=3600)
@@ -936,12 +956,12 @@ class AppSettings(StrictSettings):
         default_factory=ConversationStreamingSettings
     )
     analytical_execution: AnalyticalExecutionSettings = Field(
-        default_factory=AnalyticalExecutionSettings
+        default_factory=AnalyticalExecutionSettings, json_schema_extra=EXPERIMENTAL_FIELD
     )
     query_governance: QueryGovernanceSettings = Field(default_factory=QueryGovernanceSettings)
     query_sources: dict[str, QuerySourceSettings] = Field(default_factory=dict)
     distributed_execution: DistributedExecutionSettings = Field(
-        default_factory=DistributedExecutionSettings
+        default_factory=DistributedExecutionSettings, json_schema_extra=EXPERIMENTAL_FIELD
     )
     mcp_servers: tuple[MCPServerConfig, ...] = ()
     # Declarative HTTP API tools; see algen_agent_runtime.tools.http_api.

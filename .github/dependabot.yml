@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait before adopting a new release, so a compromised one is caught upstream first. Security
+    # updates are not delayed.
+    cooldown:
+      default-days: 14
     groups:
       python-runtime:
         dependency-type: production
@@ -14,6 +18,10 @@ updates:
     directory: /requirements
     schedule:
       interval: weekly
+    # Wait before adopting a new release, so a compromised one is caught upstream first. Security
+    # updates are not delayed.
+    cooldown:
+      default-days: 14
     groups:
       locked:
         patterns: ["*"]
@@ -22,10 +30,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Wait before adopting a new action release, so a compromised one is caught upstream first.
+    # Wait before adopting a new release, so a compromised one is caught upstream first. Security
+    # updates are not delayed.
     cooldown:
       default-days: 14
+    groups:
+      # init and analyze must move together, or the CodeQL job fails on mixed versions.
+      codeql:
+        patterns: ["github/codeql-action*"]
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    # Wait before adopting a new release, so a compromised one is caught upstream first. Security
+    # updates are not delayed.
+    cooldown:
+      default-days: 14

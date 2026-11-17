@@ -3,7 +3,8 @@ display_name: "Secured HTTP API (OIDC)"
 tier: pattern
 description: >
   Serves the HTTP API in-process behind OIDC with a local JWKS stub: scopes from claims, the
-  approval inbox, redacted modified parameters, conversation ownership, token revocation and an
+  approval inbox, redacted modified parameters, conversation and file ownership (artifacts:admin),
+  token revocation and an
   HTTP tool that forwards the signed-in user's credential.
 
 extras: [auth]

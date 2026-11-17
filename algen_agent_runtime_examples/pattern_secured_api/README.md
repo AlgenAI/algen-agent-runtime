@@ -6,7 +6,7 @@ are `httpx.MockTransport` stubs (`fakes.py`), and the EC P-256 signing key is ge
 example starts. No network, no API key, and no secret in the configuration.
 
 Three users of tenant `acme`: alice and bob (role `member`) and carol (role `approver`, plus the
-`auth:revoke` scope in her token's `scope` claim). The example shows:
+`auth:revoke` and `artifacts:admin` scopes in her token's `scope` claim). The example shows:
 
 1. **Scopes from claims.** `api.oidc.issuers[].claims` maps the `roles` claim through
    `role_scopes` and grants the `scope` claim directly. A request without a token, or with a token
@@ -15,8 +15,11 @@ Three users of tenant `acme`: alice and bob (role `member`) and carol (role `app
    `webhooks.register` (`tools.py`, registered by `WebhookPlugin`), needs approval. `GET /v1/approvals` needs `approvals:read`: alice gets 403,
    carol sees the pending request with the proposed `secret` shown as `[REDACTED len=24 sha256=…]` (its length and a digest prefix, so carol can tell it was changed without seeing it). carol approves
    with `modified_parameters` carrying a new secret; the inbox shows it redacted too.
-3. **Conversation ownership.** alice's conversation turn runs as a run. alice can read it; bob,
-   in the same tenant, gets 404 for the run and the conversation.
+3. **Conversation and file ownership.** alice's conversation turn runs as a run. alice can read
+   it; bob, in the same tenant, gets 404 for the run and the conversation. alice uploads a file
+   (`POST /v1/artifacts`); since 0.2.0b4 it is hers: bob gets 404 (the same answer as for a
+   missing file), and carol reads it with `artifacts:admin`. Grant `artifacts:admin` to operator
+   tools only.
 4. **Calling an API as the signed-in user.** The `lms.my_courses` entry in `http_tools` uses
    `auth.type: caller`. The HTTP API's run endpoints pass no caller credentials, so the example adds
    a host route (`POST /host/my-courses`) that authenticates the request the same way and calls
@@ -53,7 +56,7 @@ step 4) go to stderr.
 == 1. Tokens and scopes from claims ==
 alice: user=alice scopes=['conversations:read', 'conversations:write', 'runs:read', 'runs:write']
 bob: user=bob scopes=['conversations:read', 'conversations:write', 'runs:read', 'runs:write']
-carol: user=carol scopes=['approvals:decide', 'approvals:read', 'auth:revoke', 'runs:read', 'runs:write']
+carol: user=carol scopes=['approvals:decide', 'approvals:read', 'artifacts:admin', 'auth:revoke', 'runs:read', 'runs:write']
 no token -> 401
 token signed by another key -> 401
 
@@ -64,10 +67,12 @@ carol GET /v1/approvals -> 1 pending: Execute webhooks.register {'url': 'https:/
 carol modifies and approves -> 202; run completed
 inbox shows modified with {'url': 'https://hooks.acme.example/billing', 'secret': '[REDACTED len=24 sha256=f03d220e]'}
 
-== 3. Conversation ownership ==
+== 3. Conversation and file ownership ==
 alice GET /v1/runs/<her turn's run> -> 200
 bob GET /v1/runs/<alice's turn's run> -> 404
 bob GET /v1/conversations/<alice's> -> 404
+alice POST /v1/artifacts -> 201
+GET /v1/artifacts/<alice's file>/metadata -> alice 200, bob 404, carol (artifacts:admin) 200
 
 == 4. Calling the LMS as the signed-in user (auth.type: caller) ==
 host route runs course-assistant with alice's credential -> completed: You have two courses.
@@ -94,8 +99,9 @@ identity provider requests: 4 (discovery and JWKS once each for the API and the 
   so forwarding the incoming `Authorization` header is correct. When the target API is not an
   audience of the user's Runtime token, pass a token issued for it under its own key
   (`credentials={"lms_token": ...}` with `auth.credential: lms_token`).
-- **Revocation storage.** `token_revocation.store: memory` is per process; use `postgres` with more
-  than one replica.
+- **Revocation storage.** `token_revocation.store: memory` is per process and lost on restart; use
+  `postgres` in a deployment, so revocations survive restarts (and are shared by every process if
+  you run more than one, which is experimental in the 1.0 single-node scope).
 - The other stores are in memory too; see the durable configuration in the operations guide.
 
 ## Read next

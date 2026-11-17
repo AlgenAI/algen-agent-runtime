@@ -44,7 +44,7 @@ from algen_agent_runtime.exceptions.errors import (
     ToolExecutionError,
 )
 from algen_agent_runtime.planning.contracts import ActionType, PlannedAction
-from algen_agent_runtime.security.redaction import redact
+from algen_agent_runtime.security.redaction import redact, redact_error_text
 from algen_agent_runtime.tools.contracts import (
     ReconcilableToolExecutionStore,
     Tool,
@@ -630,7 +630,9 @@ class ToolReconciliation:
             # A reconciled result is tool output like any other: screened before the model.
             return await self._runtime._screen_tool_result(state, agent, action, text)
         except PolicyDeniedError as exc:
-            return json.dumps({"error": {"type": "PolicyDeniedError", "message": str(exc)}})
+            return json.dumps(
+                {"error": {"type": "PolicyDeniedError", "message": redact_error_text(exc)}}
+            )
 
 
 _OUTCOMES: dict[

@@ -1,0 +1,3 @@
+# pip itself, upgraded in the service image so it does not ship the base image's older pip and
+# its CVEs. Hash-locked in pip.txt (scripts/lock-requirements.sh).
+pip

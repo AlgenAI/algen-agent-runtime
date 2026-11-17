@@ -41,6 +41,12 @@ make typecheck
 make test
 ```
 
+Before pushing, build and test the way CI does: `scripts/ci-local.sh` builds the sdist and the
+wheel from it, runs `twine check` and `scripts/check_dist.py`, installs the wheel in a fresh
+environment (`scripts/smoke-install.sh`) and runs the base CI job (ruff, mypy, unit tests with only
+`.[dev]`) on Linux in `python:3.12-slim` with docker or podman. A wheel built from the checkout is
+not evidence for a packaging change.
+
 Tests requiring paid credentials or external services must use the `live` marker and must not run in untrusted pull-request contexts.
 
 ## Repository boundaries
@@ -59,6 +65,10 @@ Add the narrowest test that proves the behavior at the appropriate level:
 
 - `tests/unit`: deterministic behavior with no external services (e.g. Redis/in-memory queue behavioral doubles).
 - `tests/contract`: provider, tool, and adapter compatibility contracts.
+- `tests/live` (marker `live`): the live provider contracts, run against the real vendor APIs by a
+  maintainer before every release and skipped otherwise (see
+  [releasing](docs/releasing.md#live-provider-contracts)). A change to a provider class, or a new
+  one (a `Target` in `tests/live/live_support.py`), runs it offline with `ALGEN_LIVE_FAKE=1`.
 - `tests/integration`: multiple runtime components working together (marked with `integration`, `postgres`, or `redis`).
 - `tests/end_to_end`: public API and representative application paths.
 
@@ -101,9 +111,20 @@ Algen Agent Runtime maintains strict isolation of optional extras (`mcp`, `postg
 
 ## Documentation and compatibility
 
-Update documentation and examples when configuration, commands, behavior, or public imports change. Update [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
+Update documentation and examples when configuration, commands, behavior, or public imports change. Update [CHANGELOG.md](CHANGELOG.md) for user-visible changes; a capability that lets host applications delete code of their own also goes under `### You can now remove`.
 
-During the `0.x` series, public contracts are experimental, but breaking changes still require an upgrade note, tests, and a documented rationale. See the [API stability policy](docs/api-stability.md).
+Every change keeps three things in step with the code, in the same pull request (the full rules are in [AGENTS.md](AGENTS.md), "Documentation, Agent Skills and the Documentation Page"):
+
+- the Markdown docs in `docs/` for each affected reader;
+- the Agent Skills in `.agents/skills/` (`SKILL.md` and `references/`); after changing a
+  `SKILL.md`, run `python scripts/sync_docs_skills.py` (`tests/unit/test_docs_skills.py` fails
+  while the documentation page is out of date);
+- the documentation page `docs/docs.html`, where every feature section carries
+  `data-version-min`.
+
+Every "since" version in docs and skills comes from the git tags (`git grep <name> <tag>`).
+
+A change to the public surface regenerates [`docs/api/surface.json`](docs/api/surface.json) with `python scripts/api_surface.py --update` (`tests/unit/test_api_surface.py` fails otherwise). From `0.2.0b1` later `0.2` betas only add to that surface; a removal or an incompatible change needs an upgrade note, tests, and a documented rationale. See the [API stability policy](docs/api-stability.md).
 
 ## Secret Scanning & Security Checks
 
@@ -112,6 +133,14 @@ Automated CI runs secret detection on all commits using open-source Gitleaks:
 gitleaks detect --verbose --redact
 ```
 Never commit API tokens, keys, passwords, or credentials. Use `env://` secret references in configurations and tests.
+
+The security rules every change keeps, and the test that enforces each, are in
+[AGENTS.md, "Security invariants"](AGENTS.md#9-security-invariants-every-change): every HTTP route
+is classified in `tests/unit/test_api_tenant_matrix.py` and checked for authentication and tenant
+isolation, only an explicit approval runs a gated tool, only `ToolExecutor` runs tools, and
+`scripts/check-workflows.sh` (zizmor) audits `.github/`. A new route, approval status or way of
+running tools is added to those tests in the same pull request. Report a vulnerability privately as
+[SECURITY.md](SECURITY.md) describes, never in a public issue or pull request.
 
 ## Pull requests
 
@@ -124,7 +153,7 @@ Keep pull requests focused and explain:
   test;
 - rollout or rollback considerations where applicable.
 
-Pull requests from forks must not change maintainer-owned paths: agent instructions and skills (`AGENTS.md`, `.agents/`), `.github/`, governance documents, `scripts/` and database migrations. The `Protected paths` check fails such pull requests. Open an issue and a maintainer will make the change.
+Pull requests from forks must not change maintainer-owned paths: agent instructions and skills (`AGENTS.md`, `CLAUDE.md`, `.agents/`, `.claude/`), `.github/`, governance documents, `scripts/` and database migrations. The `Protected paths` check fails such pull requests. Open an issue and a maintainer will make the change.
 
 All required checks and maintainer reviews must pass before merge. Do not rewrite unrelated files or include generated caches, local databases, build products, or secrets.
 

@@ -2,9 +2,9 @@
 
 Owner: AlgenAI Architecture & Security
 
-Status: Active tracking — pre-production
+Status: Active tracking — beta, single-node scope ready for the `0.2.0` stability window
 
-Last reviewed: 2026-11-15 (Runtime `0.2.0b3`, preparing `0.2.0b4`)
+Last reviewed: 2026-11-16 (Runtime `0.2.0b4`, preparing `0.2.0b5`)
 
 Algen Agent Runtime is a restart-aware development runtime with durable execution, governance,
 security, and operability primitives. The capabilities below are implemented in the current
@@ -276,23 +276,38 @@ Hardened multi-worker operation still requires:
 
 Implemented release evidence includes supported-Python CI, package construction and inspection,
 SHA-256 checksums, clean wheel installation and scaffold smoke tests, security and dependency scans,
-container image build/scanning, and PyPI trusted publishing through OIDC.
+container image build/scanning, and PyPI trusted publishing through OIDC. Since `0.2.0b4`: every
+GitHub Action pinned to a commit SHA, hash-locked dependencies for CI, the release build and the
+image, a build job that runs nothing else, GitHub build provenance and PEP 740 attestations, a
+CycloneDX SBOM and license report on each release, and a container runtime smoke test (start,
+readiness, one mock run, drain).
 
-Remaining release and operational gates:
+Operational evidence ([operations](operations.md#performance-and-capacity-evidence)):
 
-- Reproducible dependency lock files, SBOM and license reports, signed tags/releases or equivalent
-  provenance attestations, and a container runtime smoke test rather than build/scan alone.
-- Provider sandbox contracts. Crash-recovery, store fault-injection (outage, failover) and a
-  bounded soak run as persistence drills (`tests/drills`); overhead benchmarks, a load test, a
-  noisy-neighbour test and a longer soak run in the performance suite (`tests/perf`, marker
-  `perf`), with results in [operations](operations.md#performance-and-capacity-evidence). A soak
-  of hours or weeks on a production-like deployment remains.
-- Golden telemetry/redaction tests across model, tool, retrieval, approval, verification, and failures.
-- Dashboards and profiling. Proposed SLOs, capacity guidance, alerts and runbooks for the
-  single-node scope are in [operations](operations.md#slos-alerts-and-runbooks-single-node).
-- Stable extension APIs. Framework adapter compatibility levels are decided (see
-  [Deployment scope](#deployment-scope)); observation compatibility is not equivalent to lifecycle
-  control.
+- Crash-recovery, store fault-injection (outage, failover), cancellation and a bounded soak run as
+  persistence drills (`tests/drills`); overhead benchmarks, a load test and a noisy-neighbour test
+  run in the performance suite (`tests/perf`, marker `perf`). A six-hour soak of the service image
+  (`scripts/long-soak.sh`, `0.2.0b5`) held every invariant through 15 restarts and kills: 274,696
+  operations, no effect lost or duplicated, flat memory, and retention keeping the database steady
+  ([results](operations.md#long-soak-hours)).
+- Golden telemetry and redaction tests across every run path and sink (`tests/telemetry`,
+  `0.2.0b5`).
+- Run-level metrics, Grafana dashboards, Prometheus alert rules, published SLOs and runbooks for the
+  single-node scope (`deploy/observability`,
+  [operations](operations.md#slos-alerts-and-runbooks-single-node), `0.2.0b5`); overhead per step
+  and per tool call is measured by `tests/perf/test_overhead.py`.
+- Provider contracts: offline contract tests for every provider type (`tests/contract`) and an
+  opt-in live suite against the real provider APIs (`tests/live`, marker `live`), run by a
+  maintainer before each release ([releasing](releasing.md)). The live suite checks generate, streaming and usage, tool round
+  trips, JSON schema, images, PDFs, embeddings, error kinds, cancellation and one agent run per
+  provider; its first run found six provider bugs, fixed in `0.2.0b5`.
+- Stable extension APIs: the public surface, its experimental parts and event payload shapes are
+  recorded and checked in CI ([API stability](api-stability.md)); framework adapter compatibility
+  levels are decided (see [Deployment scope](#deployment-scope)).
+
+Still open, outside the single-node `1.0` scope: everything under [Remaining for hardened
+multi-worker or horizontally scaled use](#remaining-for-hardened-multi-worker-or-horizontally-scaled-use),
+and a soak of weeks on a production deployment, which the `0.2.0` stability window provides.
 
 ## Production gate
 
@@ -301,10 +316,36 @@ tool execution, cross-tenant isolation, authenticated access, bounded resource u
 cancellation, schema upgrade and rollback, redacted telemetry, and recovery under repeated process
 failure.
 
-Evidence so far: restart-safe approvals and tool execution, schema upgrade and rollback (against
+Evidence: cross-tenant isolation and authenticated access are covered by the adversarial suite
+(`tests/adversarial/test_cross_tenant.py`) and the API, authentication and isolation tests
+(`tests/unit/test_api_authentication.py`, which covers JWT, OIDC/JWKS and revocation, and
+`tests/unit/test_isolation_hardening.py`), with tenant filters checked in every store on live PostgreSQL. Restart-safe
+approvals and tool execution, schema upgrade and rollback (against
 `0.1.0a23`, the last `0.1` release, and `0.2.0b3`, the previous release) and recovery under
 repeated process failure are covered by the persistence drills in `tests/drills` on live
 PostgreSQL and Redis. Bounded resource use under load and between tenants has measured results
 from the performance suite ([operations](operations.md#performance-and-capacity-evidence)).
-Provider cancellation and redacted telemetry across every path do not yet have this kind of
-evidence.
+Redacted telemetry is covered by the golden telemetry suite in `tests/telemetry` (0.2.0b5): canary
+credentials and personal data planted in the model, tool, retrieval, approval, verification,
+policy, provider-error, timeout, conversation, workflow, delegation, restart-recovery, steering,
+`core.ask_user` and clarification, learned-memory, upload and attachment, tool-result cache, MCP
+OAuth and schema-error paths reach no run event, SSE stream, audit record, span, span event,
+metric, log line (under `configure_logging` and under a host's own structlog configuration),
+Traccia span, usage-meter call or API error body, nor any PostgreSQL row or Redis key outside the
+run's own working data (every table and every key is read back on live PostgreSQL and Redis); the
+shape of what each sink records is pinned as golden files. What lies outside the Runtime (access
+logs, the ASGI server's log of an unhandled exception, the host's own code) is listed for hosts
+([operations](operations.md#redacted-telemetry)).
+
+Provider cancellation is covered against a local fake model API that records when the client
+hangs up: for every built-in HTTP provider, streamed and plain, a cancelled, closed or timed-out
+call aborts its HTTP request before the cancellation finishes and leaves no task behind
+(`tests/unit/test_provider_cancellation.py`); cancelling through `Runtime.cancel`, the HTTP route,
+a conversation turn, a workflow, a delegated child's parent, a deadline or a shutdown stops the
+request, records `run.cancelled` once with no model or tool call after it, and meters the call
+consistently (`tests/unit/test_run_cancellation.py`); async, HTTP, MCP and subprocess tools stop,
+and a thread tool, which cannot, does not hold the run (`tests/unit/test_tool_cancellation.py`);
+and on PostgreSQL a cancelled run stays cancelled across a restart, concurrent cancels end each
+run cancelled once, and a cancel from another process stops the drive at its next checkpoint
+(`tests/drills/test_cancellation.py`). What stops and what does not is in
+[operations](operations.md#cancellation).

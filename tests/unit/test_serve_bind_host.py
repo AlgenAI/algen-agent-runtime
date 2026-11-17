@@ -67,3 +67,17 @@ def test_create_app_refuses_settings_that_skipped_validation() -> None:
 
     with pytest.raises(ConfigurationError, match="development_headers"):
         create_app(unchecked)
+
+
+def test_serve_bounds_the_wait_for_open_connections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """On SIGTERM uvicorn waits for open connections before the drain runs; an event stream
+    stays open, so without a bound the drain never ran and the process was killed (found by the
+    long soak). The wait is bounded by the shutdown grace."""
+    config = tmp_path / "agent.yaml"
+    config.write_text("runtime:\n  shutdown_grace_seconds: 7\n")
+
+    served = _serve(monkeypatch, "--config", str(config))
+
+    assert [kwargs["timeout_graceful_shutdown"] for kwargs in served] == [7]

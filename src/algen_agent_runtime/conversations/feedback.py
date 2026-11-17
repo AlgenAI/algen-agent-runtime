@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from algen_agent_runtime.events.contracts import AuditEvent
 from algen_agent_runtime.exceptions.errors import NotFoundError
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 from algen_agent_runtime.security.redaction import redact
 from algen_agent_runtime.types.contracts import utc_now
 
@@ -225,7 +226,7 @@ async def record_feedback(
     }
     if saved.category:
         attributes["feedback.category"] = saved.category
-    tracer = trace.get_tracer("algen_agent_runtime.conversations.feedback")
+    tracer = runtime_tracer("algen_agent_runtime.conversations.feedback")
     with tracer.start_as_current_span(
         "conversation.feedback",
         context=feedback_trace_context(message.metadata) or Context(),

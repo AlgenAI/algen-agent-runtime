@@ -472,7 +472,7 @@ its own inbox.
 | Route | Scope | What it does |
 |---|---|---|
 | `GET /v1/workflows` | `runs:read` | The configured workflows, their input schema, and whether each can run |
-| `POST /v1/workflows/{name}/runs` | `runs:write` | Starts a run with `input` (text) or `inputs` (an object); a `workflow_id` you choose makes a retried start find the run it started |
+| `POST /v1/workflows/{name}/runs` | `runs:write` | Starts a run with `input` (text) or `inputs` (an object); a `workflow_id` you choose makes a retried start find the run it started. From 0.2.0b4 an `attachments` entry the caller may not use (another user's upload) is refused like a missing one |
 | `GET /v1/workflows/runs/{workflow_id}` | `runs:read` | Where the run stands: status, each step, what a waiting step asks (`pause`), and the result (`output`, from the manifest's `output_key`) |
 | `POST /v1/workflows/runs/{workflow_id}/approval` | `runs:write`; from 0.2.0b3 only the run's user or a principal with `approvals:decide` (others get 403) | Answers the approval step it waits on: `approved`, `rejected`, or `modified` with `modified_parameters`. The decision's `decided_by` is the authenticated user |
 | `POST /v1/workflows/runs/{workflow_id}/input` | `runs:write`; from 0.2.0b3 only the run's user (others get 403) | Answers the question a paused step asked, with `values`. They cannot set an approval node's `output_key`, or replace a value an approval already showed (400) |

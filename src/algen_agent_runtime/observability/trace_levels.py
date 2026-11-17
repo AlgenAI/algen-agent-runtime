@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from opentelemetry.trace import INVALID_SPAN_CONTEXT, NonRecordingSpan
 
+from algen_agent_runtime.observability.safe_spans import redacting_tracer
+
 TraceLevel = Literal["minimal", "standard", "detailed"]
 
 _LEVEL_ORDER: dict[TraceLevel, int] = {
@@ -37,10 +39,12 @@ def trace_level_includes(configured: TraceLevel, required: TraceLevel) -> bool:
 
 
 class TraceLevelTracer:
-    """Filter runtime-owned spans while preserving the active parent context."""
+    """Filter runtime-owned spans while preserving the active parent context.
+
+    Spans record an exception masked (see ``observability.safe_spans``)."""
 
     def __init__(self, tracer: Any, level: TraceLevel) -> None:
-        self._tracer = tracer
+        self._tracer = redacting_tracer(tracer)
         self._level = level
 
     def start_as_current_span(self, name: str, *args: Any, **kwargs: Any) -> Any:

@@ -189,7 +189,9 @@ boundaries or text: re-ingest the documents.
   packed to a retrieval token budget.
 
 Documents are explicitly described to the model as untrusted data. Retrieved text must never be
-interpreted as system instructions.
+interpreted as system instructions. To screen retrieved chunks for prompt-injection text before the model reads them, set
+`guardrail_policy.retrieval_injection: flag` (keep the chunk, marked) or `drop` (since 0.2.0b3; off
+by default).
 
 ## Adding a vector database
 

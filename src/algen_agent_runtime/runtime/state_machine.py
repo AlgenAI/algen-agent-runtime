@@ -4,9 +4,11 @@ from algen_agent_runtime.exceptions.errors import ConflictError
 from algen_agent_runtime.types.contracts import RunStatus
 
 ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
-    RunStatus.RECEIVED: frozenset({RunStatus.VALIDATING, RunStatus.CANCELLED}),
+    # A run's deadline can pass in any working status (a slow store, a busy process): each
+    # may end timed_out, or the run was left in it when its drive timed out.
+    RunStatus.RECEIVED: frozenset({RunStatus.VALIDATING, RunStatus.CANCELLED, RunStatus.TIMED_OUT}),
     RunStatus.VALIDATING: frozenset(
-        {RunStatus.BUILDING_CONTEXT, RunStatus.FAILED, RunStatus.CANCELLED}
+        {RunStatus.BUILDING_CONTEXT, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT}
     ),
     RunStatus.BUILDING_CONTEXT: frozenset(
         {
@@ -29,6 +31,7 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
             RunStatus.RETRYING,
             RunStatus.FAILED,
             RunStatus.CANCELLED,
+            RunStatus.TIMED_OUT,
         }
     ),
     RunStatus.AWAITING_CLARIFICATION: frozenset(
@@ -87,7 +90,13 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         }
     ),
     RunStatus.VERIFYING: frozenset(
-        {RunStatus.COMPOSING, RunStatus.RETRYING, RunStatus.FAILED, RunStatus.CANCELLED}
+        {
+            RunStatus.COMPOSING,
+            RunStatus.RETRYING,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.TIMED_OUT,
+        }
     ),
     RunStatus.RETRYING: frozenset(
         {
@@ -100,7 +109,9 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
             RunStatus.TIMED_OUT,
         }
     ),
-    RunStatus.COMPOSING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}),
+    RunStatus.COMPOSING: frozenset(
+        {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT}
+    ),
     RunStatus.COMPLETED: frozenset(),
     RunStatus.FAILED: frozenset(),
     RunStatus.CANCELLED: frozenset(),

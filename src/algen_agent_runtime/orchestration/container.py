@@ -108,6 +108,7 @@ from algen_agent_runtime.models.providers.adapters import (
 )
 from algen_agent_runtime.models.providers.local_transformers import LocalTransformersProvider
 from algen_agent_runtime.models.providers.openai_compatible import OpenAICompatibleProvider
+from algen_agent_runtime.observability.safe_spans import exception_log_text
 from algen_agent_runtime.observability.traccia_adapter import (
     NoopObservabilityAdapter,
     ObservabilityAdapter,
@@ -179,6 +180,7 @@ from algen_agent_runtime.security.network import (
     create_safe_http_client,
 )
 from algen_agent_runtime.security.outbound import build_outbound_network
+from algen_agent_runtime.security.redaction import redact_error_text
 from algen_agent_runtime.semantics import SemanticLayerRegistry
 from algen_agent_runtime.tools.authoring import Toolkit
 from algen_agent_runtime.tools.blocking import configure_tool_threads
@@ -291,7 +293,8 @@ class Container:
                     logger.warning(
                         "toolkit %r failed to start: %s", resource.name, type(exc).__name__
                     )
-                    self.degraded_dependencies[f"toolkit.{resource.name}"] = str(exc)
+                    # Shown by /health/ready and logged: masked (0.2.0b5).
+                    self.degraded_dependencies[f"toolkit.{resource.name}"] = redact_error_text(exc)
         if self.mcp is not None:
             for server_name in self.mcp.server_names:
                 config = self.mcp.get_server(server_name)
@@ -305,9 +308,10 @@ class Container:
                     # An OAuth server nobody has connected yet lists its tools on first connect.
                     if config.required and not isinstance(exc, MCPNotConnectedError):
                         raise ConfigurationError(
-                            f"failed to discover required MCP server {server_name!r}: {exc}"
+                            f"failed to discover required MCP server {server_name!r}: "
+                            f"{redact_error_text(exc)}"
                         ) from exc
-                    self.degraded_dependencies[f"mcp.{server_name}"] = str(exc)
+                    self.degraded_dependencies[f"mcp.{server_name}"] = redact_error_text(exc)
                     continue
                 _report_unknown_components(
                     unknown_mcp_tools(
@@ -326,7 +330,7 @@ class Container:
                     await workflows.recover(self.recovery_limit)
                 except Exception as exc:
                     # Serve the rest; readiness reports it and the next start tries again.
-                    logger.exception("workflow recovery failed")
+                    logger.error("workflow recovery failed\n%s", exception_log_text(exc))
                     self.degraded_dependencies["workflow.recovery"] = type(exc).__name__
         if self.maintenance is not None and self.run_maintenance_in_background:
             self.maintenance.start()
@@ -447,6 +451,10 @@ DEFAULT_PROVIDER_API_KEYS: dict[str, str] = {
 """The secret a provider type reads when its ``api_key`` is not configured."""
 
 _HOSTED_BASE_URLS: dict[str, str] = {
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "huggingface_inference": "https://router.huggingface.co/v1",
     "mistral": "https://api.mistral.ai/v1",
     "gemini": GEMINI_BASE_URL,
     "xai": XAI_BASE_URL,
@@ -796,11 +804,17 @@ def build_container(
         provider: ModelProvider
         if provider_config.type == "openai":
             provider = OpenAIProvider(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["openai"],
+                _hosted_api_key(name, "openai", provider_config.api_key, provider_config.base_url),
+                base_url=provider_config.base_url or _HOSTED_BASE_URLS["openai"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
         elif provider_config.type == "azure_openai":
+            if not provider_config.base_url:
+                raise ConfigurationError(
+                    f"providers.{name}: azure_openai needs base_url, the resource endpoint "
+                    "(https://<resource>.openai.azure.com)"
+                )
             provider = AzureOpenAIProvider(
                 provider_config.base_url or "",
                 provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["azure_openai"],
@@ -809,17 +823,24 @@ def build_container(
                 secret_provider=secret_provider,
                 stream_usage=provider_config.stream_usage,
                 client=kwargs.get("client"),
+                embedding_deployment=provider_config.embedding_deployment,
             )
         elif provider_config.type == "anthropic":
             provider = AnthropicProvider(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["anthropic"],
+                _hosted_api_key(
+                    name, "anthropic", provider_config.api_key, provider_config.base_url
+                ),
+                base_url=provider_config.base_url or _HOSTED_BASE_URLS["anthropic"],
                 secret_provider=secret_provider,
                 prompt_caching=provider_config.prompt_caching,
                 **kwargs,
             )
         elif provider_config.type == "deepseek":
             provider = DeepSeekProvider(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["deepseek"],
+                _hosted_api_key(
+                    name, "deepseek", provider_config.api_key, provider_config.base_url
+                ),
+                base_url=provider_config.base_url or _HOSTED_BASE_URLS["deepseek"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
@@ -861,7 +882,10 @@ def build_container(
             )
         elif provider_config.type == "huggingface_inference":
             provider = HuggingFaceInferenceProvider(
-                provider_config.api_key or DEFAULT_PROVIDER_API_KEYS["huggingface_inference"],
+                _hosted_api_key(
+                    name, "huggingface_inference", provider_config.api_key, provider_config.base_url
+                ),
+                base_url=provider_config.base_url or _HOSTED_BASE_URLS["huggingface_inference"],
                 secret_provider=secret_provider,
                 **kwargs,
             )
@@ -900,6 +924,12 @@ def build_container(
             is_local=provider_config.type in {"ollama", "local_transformers"},
             registration_id=name,  # WP-01: YAML key is the stable routing identity
             capability_override=capability_override,  # WP-02: None → adapter discovery
+            # Enforced when set explicitly (0.2.0b5); the field's default sets no cap, as before.
+            max_concurrency=(
+                provider_config.max_concurrency
+                if "max_concurrency" in provider_config.model_fields_set
+                else None
+            ),
         )
     retrievers = RetrieverRegistry()
     for name, retrieval_config in settings.retrieval.items():

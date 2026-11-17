@@ -5,7 +5,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from opentelemetry import metrics, trace
+from opentelemetry import metrics
 
 from algen_agent_runtime.evaluation.contracts import (
     CaseEvaluation,
@@ -13,13 +13,14 @@ from algen_agent_runtime.evaluation.contracts import (
     EvaluationReport,
     GoldenQuestion,
 )
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 
 CaseExecutor = Callable[[GoldenQuestion], Awaitable[EvaluationArtifact]]
 
 
 class EvaluationRunner:
     def __init__(self) -> None:
-        self._tracer = trace.get_tracer("algen_agent_runtime.evaluation")
+        self._tracer = runtime_tracer("algen_agent_runtime.evaluation")
         self._counter = metrics.get_meter("algen_agent_runtime.evaluation").create_counter(
             "algen_agent_runtime.evaluation.cases"
         )

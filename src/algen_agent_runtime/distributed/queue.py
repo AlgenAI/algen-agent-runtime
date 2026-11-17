@@ -10,6 +10,8 @@ from algen_agent_runtime.types.contracts import utc_now
 
 
 class InMemoryWorkQueue:
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     def __init__(self) -> None:
         self._items: dict[str, WorkItem] = {}
         self._deduplication: dict[tuple[str, str], str] = {}
@@ -109,6 +111,8 @@ class InMemoryWorkQueue:
 
 
 class PostgresWorkQueue:
+    """Experimental: horizontal scaling; not covered by the compatibility promise."""
+
     def __init__(self, database: Any) -> None:
         self._database = database
 

@@ -4,9 +4,8 @@ import asyncio
 from collections.abc import Collection, Sequence
 from datetime import timedelta
 
-import structlog
-
 from algen_agent_runtime.exceptions.errors import ConflictError
+from algen_agent_runtime.observability.safe_logging import runtime_logger
 from algen_agent_runtime.tools.contracts import (
     ToolContext,
     ToolExecutionRecord,
@@ -15,7 +14,7 @@ from algen_agent_runtime.tools.contracts import (
 )
 from algen_agent_runtime.types.contracts import utc_now
 
-_logger = structlog.get_logger("algen_agent_runtime.tools.ledger")
+_logger = runtime_logger("algen_agent_runtime.tools.ledger")
 
 
 class InMemoryToolExecutionStore:

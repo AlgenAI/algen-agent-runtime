@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import jsonschema
-from opentelemetry import metrics, trace
+from opentelemetry import metrics
 
 from algen_agent_runtime.analytics import AnalyticalResult, GraphExecutionContext
 from algen_agent_runtime.exceptions.errors import ConfigurationError, NotFoundError
@@ -15,6 +15,7 @@ from algen_agent_runtime.methods.contracts import (
     MethodExecutionRequest,
     MethodLifecycle,
 )
+from algen_agent_runtime.observability.safe_spans import runtime_tracer
 from algen_agent_runtime.semantics import AnalysisOutcome
 
 
@@ -23,7 +24,7 @@ class AnalyticalMethodRegistry:
 
     def __init__(self) -> None:
         self._methods: dict[tuple[str, str], tuple[AnalyticalMethodManifest, AnalyticalMethod]] = {}
-        self._tracer = trace.get_tracer("algen_agent_runtime.methods")
+        self._tracer = runtime_tracer("algen_agent_runtime.methods")
         self._counter = metrics.get_meter("algen_agent_runtime.methods").create_counter(
             "algen_agent_runtime.method.executions"
         )

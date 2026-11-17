@@ -5,15 +5,22 @@ from collections.abc import Callable
 from typing import Any
 
 from algen_agent_runtime.analytics.contracts import (
+    _GRAPH_ENGINE_EXPERIMENTAL,
     AnalyticalNode,
     AnalyticalResult,
     GraphExecutionContext,
     ResultProvenance,
 )
 from algen_agent_runtime.exceptions.errors import ConfigurationError
+from algen_agent_runtime.stability import experimental
 
 
+@experimental(_GRAPH_ENGINE_EXPERIMENTAL)
 def builtin_handlers() -> dict[str, Callable[..., Any]]:
+    """Experimental: the analytical graph engine; not covered by the compatibility promise.
+
+    The handlers the Runtime supplies for the built-in analytical node kinds, by kind.
+    """
     return {
         "join_results": join_results,
         "compare_periods": compare_periods,
