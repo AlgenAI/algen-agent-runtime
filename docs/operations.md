@@ -1854,7 +1854,7 @@ inside other strings are masked as `[REDACTED]`. Before 0.2.0b4, top-level `pass
 refuses (`PolicyDeniedError` with `approval.undeclared_secret_parameters`, handled by
 `tool_policy.on_error`) a call needing approval whose credential-named arguments its tool's input
 schema does not declare under `properties`: a model could otherwise hide a payload from the
-approver under a key such as `Token`. Declare every credential argument a tool takes. Workflow
+approver under a key such as `Token`. Declare every credential argument a tool takes. A value that holds no credential, a boolean or null (a flag such as `rotate_approval_secret: true`) or exactly a secret reference (`api_key: env://OPENAI_API_KEY`, `secret://prod/openai`), is shown as it is and never refused after 0.2.0b5; before, it was hidden and, when undeclared, refused. Workflow
 tool steps show the same markers but are not refused, since their arguments come from the
 manifest.
 A pending request past `expires_at` is reported as `expired`: `status=pending` leaves it out and

@@ -250,3 +250,45 @@ def test_undeclared_sensitive_parameters_names_keys_the_schema_does_not_declare(
     ]
     assert undeclared_sensitive_parameters({"api_key": "k"}, schema) == []
     assert undeclared_sensitive_parameters({"token": "t"}, {"type": "object"}) == ["token"]
+
+
+def test_a_flag_under_a_credential_name_is_shown_and_not_refused() -> None:
+    """``rotate_approval_secret: true`` holds no credential: the approver sees the flag, and an
+    undeclared one is not refused. A string or a number under such a name is still hidden."""
+    arguments = {
+        "rules": [{"rotate_approval_secret": True, "name": "r1"}],
+        "reset_token": None,
+        "otp_token": 482913,
+        "client_secret": "s3cr3t-value",
+    }
+    shown = redact_parameters(arguments)
+    assert shown["rules"][0]["rotate_approval_secret"] is True
+    assert shown["reset_token"] is None
+    assert shown["otp_token"] == hidden_value_marker(482913)
+    assert shown["client_secret"] == hidden_value_marker("s3cr3t-value")
+    assert undeclared_sensitive_parameters(arguments, {"type": "object"}) == [
+        "otp_token",
+        "client_secret",
+    ]
+
+
+def test_a_secret_reference_under_a_credential_name_is_shown_and_not_refused() -> None:
+    """``api_key: env://OPENAI_API_KEY`` names where a credential is kept, so the approver sees
+    it; anything that is not exactly a reference stays hidden and refused when undeclared."""
+    arguments = {
+        "providers": {"openai": {"api_key": "env://OPENAI_API_KEY"}},
+        "auth_token_ref": "secret://prod/mcp/github-token",
+        "padded_token": "env://OPENAI_API_KEY sk-live-0123456789",
+        "sentence_secret": "use env://X",
+        "client_secret": "env://",
+    }
+    shown = redact_parameters(arguments)
+    assert shown["providers"]["openai"]["api_key"] == "env://OPENAI_API_KEY"
+    assert shown["auth_token_ref"] == "secret://prod/mcp/github-token"
+    for hidden in ("padded_token", "sentence_secret", "client_secret"):
+        assert shown[hidden] == hidden_value_marker(arguments[hidden])
+    assert undeclared_sensitive_parameters(arguments, {"type": "object"}) == [
+        "padded_token",
+        "sentence_secret",
+        "client_secret",
+    ]

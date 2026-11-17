@@ -337,16 +337,37 @@ def hidden_value_marker(value: Any) -> str:
     return f"[REDACTED len={len(text)} sha256={digest}]"
 
 
+# A whole value that is only a secret reference (``env://OPENAI_API_KEY``,
+# ``secret://prod/openai``): it names where a credential is kept, not the credential.
+_SECRET_REFERENCE = re.compile(
+    r"env://[A-Za-z_][A-Za-z0-9_]{0,127}|secret://[A-Za-z0-9_][A-Za-z0-9_./:@-]{0,255}"
+)
+
+
+def _holds_no_secret(value: Any) -> bool:
+    """A credential-named key whose value cannot be a credential: a flag such as
+    ``rotate_approval_secret: true``, an empty value, or a secret reference such as
+    ``api_key: env://OPENAI_API_KEY``. An approver needs to see it; a number stays hidden,
+    since a one-time code is one."""
+    if value is None or isinstance(value, bool):
+        return True
+    return isinstance(value, str) and _SECRET_REFERENCE.fullmatch(value) is not None
+
+
+def _redact_entry(key: Any, item: Any) -> Any:
+    if not is_sensitive_key(key):
+        return _redact_parameter(item)
+    # Shown as it is: free-text masking would read ``secret://`` as a ``secret:`` assignment.
+    return item if _holds_no_secret(item) else hidden_value_marker(item)
+
+
 def _redact_parameter(value: Any) -> Any:
     if isinstance(value, Enum):
         return value
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, Mapping):
-        return {
-            key: hidden_value_marker(item) if is_sensitive_key(key) else _redact_parameter(item)
-            for key, item in value.items()
-        }
+        return {key: _redact_entry(key, item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
         return [_redact_parameter(item) for item in value]
     return value
@@ -356,8 +377,10 @@ def redact_parameters(value: Mapping[str, Any]) -> dict[str, Any]:
     """Tool arguments as an approval request shows them.
 
     The value of a key that names a credential (``is_sensitive_key``, at any depth) becomes
-    ``hidden_value_marker(value)``, ``[REDACTED len=<n> sha256=<8 hex>]``, and credentials
-    inside any string value are masked as ``redact_text`` masks them.
+    ``hidden_value_marker(value)``, ``[REDACTED len=<n> sha256=<8 hex>]``, unless it is a
+    boolean, null or a secret reference (``rotate_approval_secret: true``,
+    ``api_key: env://OPENAI_API_KEY``), shown as it is;
+    credentials inside any string value are masked as ``redact_text`` masks them.
 
     The runtime stores an approval's ``redacted_parameters`` through this, and the approval
     routes return ``modified_parameters`` through it, so both read the same way. An agent
@@ -375,7 +398,8 @@ def undeclared_sensitive_parameters(arguments: Mapping[str, Any], schema: Any) -
 
     An approval request shows a declared credential as a length and hash; one the schema does
     not declare is something the model added, which the approver could not see, so the Runtime
-    refuses the call instead of asking.
+    refuses the call instead of asking. A boolean, null or secret-reference value is shown, not
+    hidden, so it is not listed.
     """
     from algen_agent_runtime.policies.engine import _SchemaNode
 
@@ -386,7 +410,7 @@ def undeclared_sensitive_parameters(arguments: Mapping[str, Any], schema: Any) -
             for key, item in value.items():
                 child = node.property(key) if node is not None else None
                 where = f"{path}.{key}" if path else str(key)
-                if is_sensitive_key(key):
+                if is_sensitive_key(key) and not _holds_no_secret(item):
                     if child is None:
                         found.append(where)
                     continue

@@ -166,6 +166,31 @@ async def test_a_credential_the_tool_does_not_declare_is_never_put_to_an_approve
     assert not await runtime.approvals.list("tenant-a")
 
 
+async def test_an_undeclared_flag_under_a_credential_name_reaches_the_approver() -> None:
+    """A boolean such as ``rotate_approval_secret`` holds no credential, so it is shown to the
+    approver as it is instead of refusing the call; a string under the same name is refused."""
+    send, sent = tool("email.send", SideEffect.EXTERNAL, schema=_EMAIL_SCHEMA)
+    runtime, _ = build(
+        [calls(("email.send", {"to": "ops", "body": "hi", "rotate_approval_secret": True}))],
+        [send],
+    )
+
+    result = await runtime.run(request("Email ops the details"))
+
+    assert result.status == RunStatus.AWAITING_APPROVAL
+    assert sent.calls == []
+    shown = (await runtime.status(result.run_id, "tenant-a")).pause_payload or {}
+    assert shown["redacted_parameters"]["rotate_approval_secret"] is True
+
+    refused, _ = build(
+        [calls(("email.send", {"to": "ops", "body": "hi", "rotate_approval_secret": "s3cr3t"}))],
+        [tool("email.send", SideEffect.EXTERNAL, schema=_EMAIL_SCHEMA)[0]],
+    )
+    result = await refused.run(request("Email ops the details"))
+    assert result.status == RunStatus.FAILED
+    assert "undeclared_secret_parameters" in str(result.error)
+
+
 _EMAIL_SCHEMA = {
     "type": "object",
     "properties": {
