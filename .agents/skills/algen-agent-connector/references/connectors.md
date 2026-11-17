@@ -50,6 +50,9 @@ To mask PII or credentials in a tool's own logs or errors, call
 Since 0.2.0b4 an approval-gated tool must declare every credential argument it takes (a key such
 as `token`, `api_key` or `client_secret`) under its input schema's `properties`: an agent run
 refuses to put an undeclared one to an approver (`approval.undeclared_secret_parameters`).
+After 0.2.0b5 a boolean, null or exact secret reference under such a name
+(`rotate_approval_secret: true`, `api_key: env://OPENAI_API_KEY`) is shown to the approver as it
+is and is not refused.
 Approvers see a declared credential as `[REDACTED len=N sha256=xxxxxxxx]` (since 0.2.0b4; was
 `[REDACTED]`). The `secrets` guardrail now also redacts token
 shapes (`sk-...`, `AKIA...`, `ghp_...`, JWTs) and URL passwords, which refuses a tool call that

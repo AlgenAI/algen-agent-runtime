@@ -126,7 +126,7 @@ Declare every credential argument an approval-gated tool takes in its input sche
 0.2.0b4 an agent run refuses, with `PolicyDeniedError` (`approval.undeclared_secret_parameters`),
 to ask for approval of a call that carries a credential-named key (such as `token` or
 `api_key`) the schema does not declare (`undeclared_sensitive_parameters`): the approver would
-see only a marker, so the model could hide a payload there.
+see only a marker, so the model could hide a payload there. A value that holds no credential, a boolean or null (a flag such as `rotate_approval_secret: true`) or exactly a secret reference (`api_key: env://OPENAI_API_KEY`, `secret://prod/openai`), is shown as it is and never refused after 0.2.0b5; before, it was hidden and, when undeclared, refused.
 
 A decision is `approved`, `rejected` or `modified`; since 0.2.0b4 `pending` or `expired` is
 refused (HTTP 422, an error from `Runtime.resume`), and `modified_parameters` are accepted only

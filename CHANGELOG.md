@@ -15,6 +15,15 @@ host code are listed in the `algen-runtime-host` skill
 
 ### Fixed
 
+- A credential-named argument whose value holds no credential, a boolean or null (a flag such as
+  `rotate_approval_secret: true`) or exactly a secret reference (`api_key: env://OPENAI_API_KEY`,
+  `secret://prod/openai`), is shown to the approver as it is instead of `[REDACTED len=…
+  sha256=…]`, and an agent run no longer refuses an approval-gated call because such a value is not
+  declared in the tool's input schema (`approval.undeclared_secret_parameters`, since 0.2.0b4).
+  Since 0.2.0b4 this refused the Traccia azAI service's calls whose free-form request bodies carry
+  API fields named like that, and Studio's assistant changes that set a provider's `api_key` or an
+  MCP server's token to an `env://` reference. Any other string, and any number, under such a name
+  is still hidden, and refused when undeclared. Logs and telemetry mask as before.
 - Examples `reference_incident_response` and `reference_invoice_exceptions` act on the decision
   their approval node recorded (`remediation_approval`, `recommendation_approval`). They read an
   old `clarifications` list instead, so `--approve-all` recorded the approval as approved while
