@@ -13,6 +13,15 @@ host code are listed in the `algen-runtime-host` skill
 
 ## [Unreleased]
 
+### Fixed
+
+- Examples `reference_incident_response` and `reference_invoice_exceptions` act on the decision
+  their approval node recorded (`remediation_approval`, `recommendation_approval`). They read an
+  old `clarifications` list instead, so `--approve-all` recorded the approval as approved while
+  the remediation was reported rejected and the invoice was held. Their plan and route nodes no
+  longer look at clarifications either. A test now runs both examples approved and rejected as
+  the CLI does.
+
 ## [0.2.0b5] - 2026-11-16
 
 The last beta before 0.2.0: the remaining GA readiness evidence and the fixes it found. Provider

@@ -41,18 +41,20 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     )
 
     def plan(context: Any) -> dict[str, Any]:
-        answered = bool(context.state.values.get("clarifications"))
+        # The approve-remediation node asks the reviewer; the plan only proposes.
         return {
-            "status": "ready" if answered else "awaiting_approval",
-            "question": None if answered else "Approve the synthetic connection-pool rollback?",
+            "status": "proposed",
+            "question": "Approve the synthetic connection-pool rollback?",
             "action": "rollback_connection_pool_config",
         }
 
     hooks.register_builder("incident.plan", plan)
 
     def execute(context: Any) -> dict[str, Any]:
-        answers = context.state.values.get("clarifications", [])
-        approved = bool(answers) and str(answers[-1][1]).lower() in {"approve", "approved", "yes"}
+        # The decision the approve-remediation node recorded (its output_key). Only a decision
+        # that approves runs the write; a rejection skips this node (skip_dependents).
+        decision = (context.state.values.get("remediation_approval") or {}).get("decision")
+        approved = decision in {"approved", "modified"}
         return {
             "status": "simulated" if approved else "rejected",
             "synthetic": True,

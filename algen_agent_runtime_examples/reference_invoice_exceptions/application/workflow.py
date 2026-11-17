@@ -63,20 +63,20 @@ def create_hooks(**_: Any) -> WorkflowHookRegistry:
     )
 
     def route(context: Any) -> dict[str, Any]:
-        answered = bool(context.state.values.get("clarifications"))
+        # The approve-recommendation node asks the reviewer; the route only says why.
         return {
-            "status": "approved_for_recommendation" if answered else "needs_review",
-            "question": None
-            if answered
-            else "Approve the documented USD 50 purchase-order variance?",
+            "status": "needs_review",
+            "question": "Approve the documented USD 50 purchase-order variance?",
             "reason": "amount variance requires separation-of-duties review",
         }
 
     hooks.register_builder("invoice.route", route)
 
     def recommend(context: Any) -> dict[str, Any]:
-        answers = context.state.values.get("clarifications", [])
-        approved = bool(answers) and str(answers[-1][1]).lower() in {"approve", "approved", "yes"}
+        # The decision the approve-recommendation node recorded (its output_key). Only a decision
+        # that approves releases the invoice; a rejection skips this node (skip_dependents).
+        decision = (context.state.values.get("recommendation_approval") or {}).get("decision")
+        approved = decision in {"approved", "modified"}
         return {
             "invoice_id": context.state.values["invoice"]["invoice_id"],
             "recommendation": "release_for_payment_review" if approved else "hold",

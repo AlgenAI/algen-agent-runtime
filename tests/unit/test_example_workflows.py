@@ -21,6 +21,7 @@ from algen_agent_runtime_examples.pattern_openai_agents_integration.app import (
 )
 from algen_agent_runtime_examples.pattern_provider_fallback.app import deterministic_fallback
 from algen_agent_runtime_examples.quickstart_attachments.app import demonstrate
+from algen_agent_runtime_examples.workflow_cli import run_example
 
 ROOT = Path(__file__).parents[2]
 PORTABLE_EXAMPLES = (
@@ -226,3 +227,48 @@ async def test_human_checkpoint_examples_pause_without_a_decision(
         assert state.pause.get("question") or state.pause.get("prompt")
     finally:
         container.close()
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "workflow_name", "approval_key", "result_key", "approved_result"),
+    (
+        (
+            "algen_agent_runtime_examples/reference_incident_response/config/agent.yaml",
+            "incident-response",
+            "remediation_approval",
+            "execution",
+            {"status": "simulated"},
+        ),
+        (
+            "algen_agent_runtime_examples/reference_invoice_exceptions/config/agent.yaml",
+            "invoice-exception-review",
+            "recommendation_approval",
+            "recommendation",
+            {"recommendation": "release_for_payment_review"},
+        ),
+    ),
+)
+@pytest.mark.parametrize("approve", [True, False])
+@pytest.mark.asyncio
+async def test_approval_examples_act_on_the_recorded_decision(
+    relative_path: str,
+    workflow_name: str,
+    approval_key: str,
+    result_key: str,
+    approved_result: dict[str, Any],
+    approve: bool,
+) -> None:
+    """The step after an approval node follows the decision that node recorded, as the CLI
+    runs it (--approve-all, --reject-all): approved acts, rejected skips the step."""
+    values = await run_example(
+        ROOT / relative_path,
+        workflow_name,
+        "Review this synthetic request",
+        approve_all=approve,
+        reject_all=not approve,
+    )
+    assert values[approval_key]["decision"] == ("approved" if approve else "rejected")
+    if approve:
+        assert approved_result.items() <= values[result_key].items()
+    else:
+        assert result_key not in values
