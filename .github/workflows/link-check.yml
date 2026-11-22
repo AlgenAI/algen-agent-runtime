@@ -33,7 +33,7 @@ jobs:
       # SHA-256 of lychee-x86_64-unknown-linux-gnu.tar.gz from the lychee-v0.24.2 GitHub release.
       LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Install a pinned, checksum-verified binary rather than a third-party action.
